@@ -2125,7 +2125,7 @@ function App() {
     return { ok: true, error: '' }
   }
 
-  const handleRegister = ({ name, password, confirmPassword, phone, department, position }) => {
+  const handleRegister = async ({ name, password, confirmPassword, phone, department, position }) => {
     const trimmedName = name.trim()
     if (!trimmedName) {
       return { ok: false, error: '真实姓名不能为空' }
@@ -2164,6 +2164,18 @@ function App() {
       lastLoginAt: now,
       authProvider: 'password',
     })
+
+    if (isCloudDatabaseReady()) {
+      try {
+        await upsertRecord(STORAGE_KEYS.employees, newEmployee)
+      } catch (error) {
+        console.error('员工注册保存到 Supabase 失败', error)
+        return {
+          ok: false,
+          error: '注册信息保存到云端失败，请检查网络后重试。',
+        }
+      }
+    }
 
     setEmployees((currentEmployees) => [newEmployee, ...currentEmployees])
     setCurrentUser(buildCurrentUser(newEmployee))
@@ -2400,6 +2412,7 @@ function App() {
 function LoginPage({ onLogin, onRegister }) {
   const [activeTab, setActiveTab] = useState('login')
   const [formError, setFormError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [loginForm, setLoginForm] = useState({ name: '', password: '' })
   const [registerForm, setRegisterForm] = useState({
     name: '',
@@ -2444,10 +2457,15 @@ function LoginPage({ onLogin, onRegister }) {
         {activeTab === 'login' ? (
           <form
             className="login-form"
-            onSubmit={(event) => {
+            onSubmit={async (event) => {
               event.preventDefault()
-              const result = onLogin(loginForm)
-              setFormError(result?.error || '')
+              setIsSubmitting(true)
+              try {
+                const result = await onLogin(loginForm)
+                setFormError(result?.error || '')
+              } finally {
+                setIsSubmitting(false)
+              }
             }}
           >
             {formError && <div className="form-error">{formError}</div>}
@@ -2464,17 +2482,22 @@ function LoginPage({ onLogin, onRegister }) {
               onChange={(value) => setLoginForm({ ...loginForm, password: value })}
               required
             />
-            <button className="primary-button" type="submit">
-              登录
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? '处理中...' : '登录'}
             </button>
           </form>
         ) : (
           <form
             className="login-form"
-            onSubmit={(event) => {
+            onSubmit={async (event) => {
               event.preventDefault()
-              const result = onRegister(registerForm)
-              setFormError(result?.error || '')
+              setIsSubmitting(true)
+              try {
+                const result = await onRegister(registerForm)
+                setFormError(result?.error || '')
+              } finally {
+                setIsSubmitting(false)
+              }
             }}
           >
             {formError && <div className="form-error">{formError}</div>}
@@ -2516,8 +2539,8 @@ function LoginPage({ onLogin, onRegister }) {
               onChange={(value) => setRegisterForm({ ...registerForm, position: value })}
               options={positionOptions}
             />
-            <button className="primary-button" type="submit">
-              注册并进入 ERP
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? '正在保存...' : '注册并进入 ERP'}
             </button>
             <div className="empty-state cost-note">
               自助注册默认是普通员工，需要管理员开通业务模块权限。
