@@ -2685,6 +2685,140 @@ body {
   font-size: 13px;
 }
 
+.payment-plan-note,
+.payment-plan-reallocation-note,
+.payment-plan-manual-alert {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.payment-plan-note {
+  color: #25578f;
+  background: #edf4ff;
+  border: 1px solid #cfe0f6;
+}
+
+.payment-plan-reallocation-note {
+  color: #8a4b08;
+  background: #fff7e6;
+  border: 1px solid #f6c56d;
+  font-weight: 700;
+}
+
+.payment-plan-manual-alert {
+  display: grid;
+  gap: 4px;
+  color: #9f2d20;
+  background: #fff1f0;
+  border: 2px solid #e4584b;
+  box-shadow: 0 0 0 3px rgba(228, 88, 75, 0.08);
+}
+
+.payment-plan-manual-alert strong {
+  font-size: 18px;
+}
+
+.payment-plan-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.payment-plan-summary div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  background: #f7f9fc;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+}
+
+.payment-plan-summary span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.payment-plan-summary strong {
+  color: #172033;
+  font-size: 18px;
+}
+
+.payment-plan-summary .danger-text {
+  color: #b42318;
+}
+
+.payment-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.payment-plan-card {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+}
+
+.payment-plan-card.locked {
+  background: #f8fafc;
+  border-color: #aebdce;
+}
+
+.payment-plan-card legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 7px;
+  color: #172033;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.payment-plan-card legend span {
+  padding: 3px 7px;
+  color: #8a4b08;
+  background: #fff3df;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.payment-plan-card .field + .field {
+  margin-top: 10px;
+}
+
+.payment-plan-card textarea {
+  min-height: 76px;
+}
+
+.payment-plan-card input:disabled,
+.payment-plan-card textarea:disabled {
+  color: #667085;
+  background: #eef2f6;
+  cursor: not-allowed;
+}
+
+.payment-plan-card .field small {
+  margin-top: 5px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+@media (max-width: 900px) {
+  .payment-plan-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 640px) {
   .contract-section-heading {
     align-items: stretch;
@@ -2707,5 +2841,9 @@ body {
 
   .contract-change-list-heading span {
     text-align: left;
+  }
+
+  .payment-plan-summary {
+    grid-template-columns: 1fr;
   }
 }

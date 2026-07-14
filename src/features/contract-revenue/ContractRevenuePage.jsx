@@ -1,5 +1,6 @@
 import ContractChangesSection from './ContractChangesSection.jsx'
 import OriginalContractSection from './OriginalContractSection.jsx'
+import PaymentPlanSection from './PaymentPlanSection.jsx'
 
 function formatYen(value) {
   const amount = Number(value)
@@ -10,10 +11,13 @@ export default function ContractRevenuePage({
   project,
   revenueSnapshot,
   contractChanges,
+  paymentPlans,
+  receipts,
   currentUser,
   onProjectChange,
   onCreateContractChange,
   onVoidContractChange,
+  onSavePaymentPlan,
   onBack,
 }) {
   if (!project) {
@@ -75,6 +79,15 @@ export default function ContractRevenuePage({
         currentUser={currentUser}
         onCreateContractChange={onCreateContractChange}
         onVoidContractChange={onVoidContractChange}
+      />
+
+      <PaymentPlanSection
+        project={project}
+        revenueSnapshot={revenueSnapshot}
+        paymentPlans={paymentPlans}
+        receipts={receipts}
+        currentUser={currentUser}
+        onSavePaymentPlan={onSavePaymentPlan}
       />
     </main>
   )

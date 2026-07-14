@@ -11,7 +11,7 @@ test('App loads all contract revenue records and memoizes the project snapshot c
   )
   assert.match(
     appSource,
-    /const \[projectPaymentPlans\] = usePersistentState\(\s*STORAGE_KEYS\.projectPaymentPlans/,
+    /const \[projectPaymentPlans, setProjectPaymentPlans\] = usePersistentState\(\s*STORAGE_KEYS\.projectPaymentPlans/,
   )
   assert.match(
     appSource,

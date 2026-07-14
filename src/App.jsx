@@ -10,7 +10,9 @@ import { initializeOriginalContractProject } from './features/contract-revenue/o
 import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   createContractChange as persistContractChange,
+  createPaymentPlan as persistCreatePaymentPlan,
   sanitizeProjectForPersistence,
+  updatePaymentPlan as persistUpdatePaymentPlan,
   voidContractChange as persistVoidContractChange,
 } from './services/contractRevenueService'
 import {
@@ -1784,9 +1786,10 @@ function App() {
     [],
     { cloudPersistence: 'record' },
   )
-  const [projectPaymentPlans] = usePersistentState(
+  const [projectPaymentPlans, setProjectPaymentPlans] = usePersistentState(
     STORAGE_KEYS.projectPaymentPlans,
     [],
+    { cloudPersistence: 'record' },
   )
   const [projectReceipts] = usePersistentState(STORAGE_KEYS.projectReceipts, [])
   const [storedEmployees, setStoredEmployees] = usePersistentState(STORAGE_KEYS.employees, [])
@@ -2203,6 +2206,24 @@ function App() {
     return voided
   }
 
+  const handleSavePaymentPlan = async (input) => {
+    const saved = input.planId
+      ? await persistUpdatePaymentPlan(input)
+      : await persistCreatePaymentPlan(input)
+    setProjectPaymentPlans((currentPlans) => [
+      saved,
+      ...currentPlans.filter((plan) => {
+        const sameActiveStage =
+          plan.projectId === saved.projectId &&
+          plan.stage === saved.stage &&
+          plan.statusCode !== 'void' &&
+          plan.statusCode !== 'deleted'
+        return plan.planId !== saved.planId && !sameActiveStage
+      }),
+    ])
+    return saved
+  }
+
   const handleLogin = ({ name, password }) => {
     const matchedEmployees = employees.filter((employee) => employee.name === name.trim())
 
@@ -2332,10 +2353,13 @@ function App() {
         project={contractRevenueProject}
         revenueSnapshot={projectRevenueSnapshots.get(contractRevenueProjectId)}
         contractChanges={projectContractChanges}
+        paymentPlans={projectPaymentPlans}
+        receipts={projectReceipts}
         currentUser={currentUser}
         onProjectChange={handleContractRevenueProjectChange}
         onCreateContractChange={handleCreateContractChange}
         onVoidContractChange={handleVoidContractChange}
+        onSavePaymentPlan={handleSavePaymentPlan}
         onBack={() => setCurrentView('projects')}
       />
     )
