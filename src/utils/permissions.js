@@ -1,3 +1,5 @@
+import { normalizeEmployeeNumber } from '../auth/employeeAuthDomain.js'
+
 export const roleOptions = [
   { value: 'super_admin', label: '最高权限' },
   { value: 'custom', label: '自定义权限' },
@@ -34,6 +36,33 @@ export const sensitivePermissionOptions = [
 ]
 
 const allPermission = ['all']
+const modulePermissionCodes = {
+  老板驾驶舱: 'owner_dashboard',
+  工程项目: 'projects',
+  人员管理: 'employees',
+  人工记录: 'labor',
+  采购管理: 'purchases',
+  仓库库存: 'inventory',
+  工具管理: 'tools',
+  车辆管理: 'vehicles',
+  会计成本: 'accounting',
+  工资记录: 'salaries',
+  项目成本: 'project_costs',
+  经营费用: 'operating_expenses',
+  系统设置: 'settings',
+}
+const sensitivePermissionCodes = {
+  查看工资: 'salary_view',
+  修改工资: 'salary_update',
+  查看合同金额: 'contract_amount_view',
+  修改合同金额: 'contract_amount_update',
+  查看利润: 'profit_view',
+  查看采购付款: 'purchase_payments_view',
+  修改采购付款: 'purchase_payments_update',
+  查看人员身份资料: 'employee_identity_view',
+  修改人员身份资料: 'employee_identity_update',
+  查看老板驾驶舱全部数据: 'owner_dashboard_full_view',
+}
 const employeeDefaults = {
   role: 'employee',
   accessibleModules: [],
@@ -41,10 +70,12 @@ const employeeDefaults = {
   canEditModules: [],
   canDeleteModules: [],
   sensitivePermissions: [],
+  effectivePermissionKeys: [],
 }
 
 export function isSuperAdmin(employee = {}) {
-  return employee.role === 'super_admin'
+  const employeeNumber = employee.employeeNumber ?? employee.employee_number
+  return normalizeEmployeeNumber(employeeNumber) === 'SW-000' || employee.role === 'super_admin'
 }
 
 export function isHiddenSystemEmployee(employee = {}) {
@@ -87,6 +118,9 @@ export function normalizePermissionFields(employee = {}) {
     sensitivePermissions: Array.isArray(employee.sensitivePermissions)
       ? employee.sensitivePermissions
       : employeeDefaults.sensitivePermissions,
+    effectivePermissionKeys: Array.isArray(employee.effectivePermissionKeys)
+      ? employee.effectivePermissionKeys
+      : employeeDefaults.effectivePermissionKeys,
   }
 
   if (normalized.role === 'super_admin') {
@@ -97,34 +131,47 @@ export function normalizePermissionFields(employee = {}) {
       canEditModules: allPermission,
       canDeleteModules: allPermission,
       sensitivePermissions: allPermission,
+      effectivePermissionKeys: allPermission,
     }
   }
 
   return normalized
 }
 
-function hasPermission(employee, field, value) {
+function hasEffectivePermission(employee, permissionKey) {
   if (isSuperAdmin(employee)) return true
-  const permissions = Array.isArray(employee[field]) ? employee[field] : []
-  return permissions.includes('all') || permissions.includes(value)
+  const permissions = Array.isArray(employee.effectivePermissionKeys)
+    ? employee.effectivePermissionKeys
+    : []
+  return permissions.includes('all') || Boolean(permissionKey && permissions.includes(permissionKey))
+}
+
+function getModulePermissionKey(moduleName, action) {
+  const moduleCode = modulePermissionCodes[moduleName]
+  return moduleCode ? `module.${moduleCode}.${action}` : ''
+}
+
+function getSensitivePermissionKey(permissionName) {
+  const permissionCode = sensitivePermissionCodes[permissionName]
+  return permissionCode ? `sensitive.${permissionCode}` : ''
 }
 
 export function canAccessModule(employee, moduleName) {
-  return hasPermission(employee, 'accessibleModules', moduleName)
+  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'view'))
 }
 
 export function canCreate(employee, moduleName) {
-  return hasPermission(employee, 'canCreateModules', moduleName)
+  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'create'))
 }
 
 export function canEdit(employee, moduleName) {
-  return hasPermission(employee, 'canEditModules', moduleName)
+  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'update'))
 }
 
 export function canDelete(employee, moduleName) {
-  return hasPermission(employee, 'canDeleteModules', moduleName)
+  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'delete'))
 }
 
 export function canViewSensitive(employee, permissionName) {
-  return hasPermission(employee, 'sensitivePermissions', permissionName)
+  return hasEffectivePermission(employee, getSensitivePermissionKey(permissionName))
 }
