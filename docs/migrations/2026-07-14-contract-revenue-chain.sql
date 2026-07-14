@@ -36,6 +36,7 @@ begin
   );
 
   execute format('alter table public.%I enable row level security', target_table);
+  execute format('revoke all on table public.%I from anon', target_table);
 
   execute format(
     'drop policy if exists "%s prototype select" on public.%I',
@@ -53,21 +54,8 @@ begin
     target_table
   );
 
-  execute format(
-    'create policy "%s prototype select" on public.%I for select using (true)',
-    target_table,
-    target_table
-  );
-  execute format(
-    'create policy "%s prototype insert" on public.%I for insert with check (true)',
-    target_table,
-    target_table
-  );
-  execute format(
-    'create policy "%s prototype update" on public.%I for update using (true) with check (true)',
-    target_table,
-    target_table
-  );
+  -- Intentionally create no permissive policy here. Standalone execution is
+  -- fail-closed; the employee-auth migration owns authenticated business RLS.
 
   execute format(
     'drop trigger if exists set_%s_updated_at on public.%I',
@@ -88,3 +76,4 @@ select public.create_contract_revenue_record_table('project_payment_plans');
 select public.create_contract_revenue_record_table('project_receipts');
 
 drop function if exists public.create_contract_revenue_record_table(text);
+revoke all on function public.set_updated_at() from public, anon, authenticated;
