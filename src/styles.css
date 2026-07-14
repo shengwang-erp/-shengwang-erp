@@ -2523,6 +2523,10 @@ body {
   gap: 16px;
 }
 
+.contract-revenue-page > * {
+  min-width: 0;
+}
+
 .contract-revenue-page .page-header,
 .contract-revenue-page .form-panel,
 .contract-revenue-page .contract-revenue-overview {
