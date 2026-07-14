@@ -32,6 +32,38 @@ function requiredConfiguration(
   return value.trim()
 }
 
+function configurationCollection(value: string | undefined) {
+  if (!value?.trim()) return []
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return trimmed.split(',').map((item) => item.trim()).filter(Boolean)
+  }
+  try {
+    const parsed = JSON.parse(trimmed)
+    const values = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object'
+      ? Object.values(parsed)
+      : []
+    return values
+      .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+      .map((item) => item.trim())
+  } catch {
+    throw configurationError()
+  }
+}
+
+function firstConfiguredKey(
+  getEnv: (name: string) => string | undefined,
+  names: string[],
+) {
+  for (const name of names) {
+    const values = configurationCollection(getEnv(name))
+    if (values.length > 0) return values[0]
+  }
+  throw configurationError()
+}
+
 async function loadCreateClient(factory?: CreateClientFactory) {
   if (factory) return factory
 
@@ -54,7 +86,11 @@ const statelessAuthOptions = {
 export async function createAdminClient(dependencies: ClientDependencies = {}) {
   const getEnv = dependencies.getEnv ?? runtimeEnvironment
   const url = requiredConfiguration(getEnv, 'SUPABASE_URL')
-  const serviceRoleKey = requiredConfiguration(getEnv, 'SUPABASE_SERVICE_ROLE_KEY')
+  const serviceRoleKey = firstConfiguredKey(getEnv, [
+    'SUPABASE_SECRET_KEY',
+    'SUPABASE_SECRET_KEYS',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  ])
   const createClient = await loadCreateClient(dependencies.createClient)
 
   try {
@@ -74,9 +110,11 @@ export async function createUserClient(
 
   const getEnv = dependencies.getEnv ?? runtimeEnvironment
   const url = requiredConfiguration(getEnv, 'SUPABASE_URL')
-  const publicKey = getEnv('SUPABASE_PUBLISHABLE_KEY')?.trim() ||
-    getEnv('SUPABASE_ANON_KEY')?.trim()
-  if (!publicKey) throw configurationError()
+  const publicKey = firstConfiguredKey(getEnv, [
+    'SUPABASE_PUBLISHABLE_KEY',
+    'SUPABASE_PUBLISHABLE_KEYS',
+    'SUPABASE_ANON_KEY',
+  ])
   const createClient = await loadCreateClient(dependencies.createClient)
 
   try {

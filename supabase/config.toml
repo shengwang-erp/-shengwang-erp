@@ -25,3 +25,12 @@ enable_signup = false
 [edge_runtime]
 enabled = true
 policy = "oneshot"
+
+[functions.employee-login]
+verify_jwt = false
+
+[functions.employee-change-password]
+verify_jwt = true
+
+[functions.employee-bootstrap-admin]
+verify_jwt = false

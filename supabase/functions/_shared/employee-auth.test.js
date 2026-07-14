@@ -215,6 +215,53 @@ test('createAdminClient uses only server configuration and never attaches a call
   })
 })
 
+test('client factories prefer modern singular and named key collections with legacy fallback', async () => {
+  const adminCalls = []
+  const userCalls = []
+
+  await createAdminClient({
+    getEnv: getEnv({
+      SUPABASE_URL: TEST_URL,
+      SUPABASE_SECRET_KEY: 'modern-secret-key',
+      SUPABASE_SERVICE_ROLE_KEY: 'legacy-service-role-key',
+    }),
+    createClient: (...args) => {
+      adminCalls.push(args)
+      return { kind: 'admin-modern' }
+    },
+  })
+  await createAdminClient({
+    getEnv: getEnv({
+      SUPABASE_URL: TEST_URL,
+      SUPABASE_SECRET_KEYS: JSON.stringify({
+        primary: 'named-secret-key',
+        rotating: 'next-secret-key',
+      }),
+    }),
+    createClient: (...args) => {
+      adminCalls.push(args)
+      return { kind: 'admin-named' }
+    },
+  })
+  await createUserClient(VALID_TOKEN, {
+    getEnv: getEnv({
+      SUPABASE_URL: TEST_URL,
+      SUPABASE_PUBLISHABLE_KEYS: JSON.stringify({
+        browser: 'named-publishable-key',
+      }),
+    }),
+    createClient: (...args) => {
+      userCalls.push(args)
+      return { kind: 'user-named' }
+    },
+  })
+
+  assert.equal(adminCalls[0][1], 'modern-secret-key')
+  assert.equal(adminCalls[1][1], 'named-secret-key')
+  assert.equal(userCalls[0][1], 'named-publishable-key')
+  assert.notEqual(adminCalls[0][1], 'legacy-service-role-key')
+})
+
 test('createUserClient uses a public key and the caller token without service-role fallback', async () => {
   const calls = []
   const client = { kind: 'user' }
