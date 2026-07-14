@@ -891,12 +891,14 @@ git commit -m "feat: add project location map picker"
 - Create: supabase/migrations/202607150001_project_core_security.sql
 - Create: supabase/tests/project_core_security.sql
 - Create: src/services/projectCoreSecuritySchema.test.js
+- Modify: supabase/tests/employee_auth.sql
 - Modify: docs/supabase-schema.sql
 - Modify: docs/supabase-schema.md
 
 **Interfaces:**
 - Produces public.can_current_employee_view_project_financials() -> boolean.
 - Produces list_projects_secure() -> setof jsonb, create_project_secure(p_project jsonb) -> jsonb, update_project_secure(p_project_id text, p_patch jsonb) -> jsonb, soft_delete_project_secure(p_project_id text) -> text, and migrate_legacy_project_contract_secure(p_project_id text, p_expected_legacy_contract jsonb, p_opening_receipt jsonb) -> jsonb.
+- list/create/update responses all apply the same fixed financial projection. A base-only update by a non-whitelist caller preserves stored financial keys without returning them.
 - Direct authenticated projects access is revoked. The three contract-revenue tables retain direct RLS but use the fixed whitelist plus project view/update permissions.
 - Every SECURITY DEFINER/private helper has a fixed search_path and explicit EXECUTE revocation; no function created here retains PostgreSQL's default PUBLIC EXECUTE.
 
@@ -914,12 +916,18 @@ The pgTAP fixture must create active users for 设计部, 财务部, 社长, SW-
 8. selected assignee IDs are canonical, eligible, and server-written snapshots;
 9. forbidden template grants are deleted and audited, and future forbidden replacements fail;
 10. anonymous, disabled, former, and must-change-password identities fail;
-11. two concurrent create_project_secure calls return distinct server-generated Pxxx IDs;
+11. sequential create_project_secure calls return distinct server-generated Pxxx IDs in pgTAP, and a separate two-connection verification proves concurrent calls are distinct;
 12. a base-only update preserves every pre-existing key returned by private.project_financial_payload_keys();
 13. soft_delete_project_secure returns the deleted project ID as text;
 14. migrate_legacy_project_contract_secure atomically creates the deterministic opening receipt and project schema fields, and an identical replay returns the already-migrated project without duplication;
 15. anon cannot execute can_current_employee_view_project_financials or any private helper; authenticated/service_role can execute the public predicate/RPCs only as explicitly granted;
 16. even a whitelist updater cannot submit derived snapshot/read-model keys, and a confirmation transition stores the authenticated employee snapshot/server timestamp rather than submitted actor values.
+17. create/update responses to a non-whitelist caller omit every financial key even when the stored row retains them;
+18. zero-paid legacy migration accepts `p_opening_receipt = null`, creates no receipt, migrates atomically, and replays idempotently;
+19. confirmation actor/time keys are rejected outside a valid transition and are always canonicalized from the authenticated employee/server clock for a confirmed result;
+20. project payloads must be JSON objects with a nonblank projectName and typed/ranged base values.
+
+The cleanup assertion requires a two-phase upgrade check: apply through `202607140004`, insert a forbidden financial grant, apply this migration, then verify deletion plus exactly one safe cleanup audit. The concurrency assertion requires two committed database connections; a single pgTAP transaction is not evidence of concurrency. Record both commands/results in the task report.
 
 Static test core:
 
@@ -1067,7 +1075,9 @@ end;
 $$;
 ~~~
 
-update_project_secure requires module.projects.update, locks the row FOR UPDATE, rejects projectId in p_patch, validates an exact base-plus-financial-source allowlist, and computes next_payload := current_payload || p_patch. It must never rebuild the row from p_patch, because omitted keys—including every historical/current financial key—must survive a project master edit. The financial write allowlist is exactly contractRevenueSchemaVersion, contractRevenueSetupStatus, contractConfirmationStatus, the four originalContractTax* fields, needsManualReview, contractConfirmedById, contractConfirmedByName, and contractConfirmedAt. Derived snapshot/read-model keys such as adjustedTaxInclusiveAmount, paidAmount, paymentProgress, allocation fields, locked/unlocked fields, and totals are projection-removal keys only and are never writable. A non-whitelist caller must be rejected if p_patch contains any key from private.project_financial_payload_keys(); a whitelist caller still needs module.projects.update. When confirmation moves to a confirmed state, the RPC overwrites submitted confirmation actor ID/name from the authenticated canonical employee and writes the server timestamp; it never trusts a client actor snapshot. If an assignee ID changes, require a currently active employee in the correct department and overwrite snapshots; if unchanged, preserve the stored snapshot so a renamed/retired historical assignee remains readable.
+update_project_secure requires module.projects.update, locks the row FOR UPDATE, rejects projectId in p_patch, validates an exact base-plus-financial-source allowlist, and computes next_payload := current_payload || p_patch. It must never rebuild the row from p_patch, because omitted keys—including every historical/current financial key—must survive a project master edit. The financial write allowlist is exactly contractRevenueSchemaVersion, contractRevenueSetupStatus, contractConfirmationStatus, the four originalContractTax* fields, needsManualReview, contractConfirmedById, contractConfirmedByName, and contractConfirmedAt. Derived snapshot/read-model keys such as adjustedTaxInclusiveAmount, paidAmount, paymentProgress, allocation fields, locked/unlocked fields, and totals are projection-removal keys only and are never writable. A non-whitelist caller must be rejected if p_patch contains any key from private.project_financial_payload_keys(); a whitelist caller still needs module.projects.update. Reject submitted contractConfirmedById/Name/At outside a valid transition; whenever the resulting confirmation state is confirmed, overwrite actor ID/name from the authenticated canonical employee and write the server timestamp so actor-only patches cannot spoof metadata. If an assignee ID changes, require a currently active employee in the correct department and overwrite snapshots; if unchanged, preserve the stored snapshot so a renamed/retired historical assignee remains readable.
+
+create_project_secure and update_project_secure must project their return through the same fixed predicate/key set as list_projects_secure. They may retain financial keys in storage, but must never disclose them to a non-whitelist response.
 
 soft_delete_project_secure requires module.projects.delete, locks the row, sets status=deleted, and returns p_project_id as text:
 
@@ -1095,9 +1105,9 @@ end;
 $$;
 ~~~
 
-Implement migrate_legacy_project_contract_secure as one PostgreSQL function call/transaction. It requires can_current_employee_view_project_financials() and module.projects.update, locks the project row, compares p_expected_legacy_contract.contractAmount/paidAmount with the current legacy payload, and either: (a) returns immediately when contractRevenueSchemaVersion >= 1; or (b) inserts the deterministic opening receipt with ON CONFLICT (record_key) DO NOTHING, verifies an existing conflict belongs to the same project/amount/sourceCode, removes contractAmount/paidAmount/paymentProgress/paymentStatus, and writes schema-version/original-contract fields. Any mismatch raises 40001 so neither receipt nor project update commits. Replaying the same request returns the migrated project and never duplicates a receipt.
+Implement migrate_legacy_project_contract_secure as one PostgreSQL function call/transaction. It requires can_current_employee_view_project_financials() and module.projects.update, locks the project row, compares p_expected_legacy_contract.contractAmount/paidAmount with the current legacy payload, and either: (a) returns immediately when contractRevenueSchemaVersion >= 1; or (b) when paidAmount is greater than zero, inserts the deterministic opening receipt with ON CONFLICT (record_key) DO NOTHING and verifies an existing conflict belongs to the same project/amount/sourceCode; when paidAmount is zero it requires/accepts `p_opening_receipt = null` and creates no receipt. It then removes contractAmount/paidAmount/paymentProgress/paymentStatus and writes schema-version/original-contract fields. Any mismatch raises 40001 so neither receipt nor project update commits. Replaying the same request returns the migrated project and never duplicates a receipt.
 
-Use a shared private.validate_project_payload(jsonb) that raises 22023 for invalid status, radius/coordinate ranges, or unconfirmed current-address location for 待开工/进行中. Compare normalized addresses with btrim(regexp_replace(value, '\s+', ' ', 'g')); never silently write locationAddressSnapshot on ordinary save.
+Use a shared private.validate_project_payload(jsonb) that first requires a JSON object, a nonblank string projectName, the exact seven statuses, typed base fields, valid radius/coordinate ranges, and confirmed current-address location for 待开工/进行中. Compare addresses after PostgreSQL `normalize(value, NFKC)`, trim, and whitespace collapse so the server matches the client normalization contract; never silently write locationAddressSnapshot on ordinary save.
 
 Revoke direct project privileges and expose only the five RPCs:
 
@@ -1147,7 +1157,7 @@ pgTAP must set role anon and assert calling the public predicate throws permissi
 
 - [ ] **Step 5: Replace contract-revenue policies and close template bypass**
 
-For project_contract_changes, project_payment_plans, and project_receipts, drop existing policies and status triggers; SELECT requires is_current_employee_active() + module.projects.view + can_current_employee_view_project_financials(), while INSERT/UPDATE requires is_current_employee_active() + module.projects.update + can_current_employee_view_project_financials(). Keep hard DELETE ungranted. Do not call sensitive.contract_amount permissions.
+For project_contract_changes, project_payment_plans, and project_receipts, catalog-drop existing policies and drop only their three `enforce_*_status_permission` triggers; keep their `set_*_updated_at` triggers. Explicitly revoke all browser table privileges, grant only SELECT/INSERT/UPDATE to authenticated and all to service_role, then recreate policies: SELECT requires is_current_employee_active() + module.projects.view + can_current_employee_view_project_financials(), while INSERT/UPDATE requires is_current_employee_active() + module.projects.update + can_current_employee_view_project_financials(). Keep hard DELETE ungranted. Do not call sensitive.contract_amount permissions.
 
 Delete permission_grants containing either contract amount key unless subject is department 设计部/财务部 or position 社长. Insert one employee_security_audit row with action project_financial_template_grants.cleaned and safe_details containing deletedCount only. Add this exact guard before replace_permission_template_admin deletes old rows:
 
@@ -1165,7 +1175,7 @@ and not (
 end if;
 ~~~
 
-Mirror the final schema in docs/supabase-schema.sql and document the RPC-only boundary/deployment order in docs/supabase-schema.md.
+`docs/supabase-schema.sql` currently mirrors only the first employee-auth migration and is not a complete final bootstrap. Do not append a replacement function whose later private dependencies are absent. Mark ordered files in `supabase/migrations/` as the canonical fresh-install path, retain the SQL document only as a clearly labeled historical base reference, and document the RPC-only boundary/deployment order in docs/supabase-schema.md.
 
 - [ ] **Step 6: Run SQL tests and commit**
 
@@ -1181,8 +1191,14 @@ Run: supabase test db supabase/tests/project_core_security.sql
 
 Expected: pgTAP prints all assertions ok and exits 0. If Docker/local Supabase is unavailable, record the exact command/error in the execution handoff and do not claim database integration passed.
 
+Run the complete pgTAP suite after updating `supabase/tests/employee_auth.sql` for the final 69-policy count, zero direct projects policies, and RPC-only project denials:
+
+Run: supabase test db
+
+Expected: every existing and new pgTAP suite passes. Also perform the documented two-phase upgrade-cleanup check and two-connection create concurrency check; do not claim either property from a single post-migration transaction.
+
 ~~~bash
-git add supabase/migrations/202607150001_project_core_security.sql supabase/tests/project_core_security.sql src/services/projectCoreSecuritySchema.test.js docs/supabase-schema.sql docs/supabase-schema.md
+git add supabase/migrations/202607150001_project_core_security.sql supabase/tests/project_core_security.sql supabase/tests/employee_auth.sql src/services/projectCoreSecuritySchema.test.js docs/supabase-schema.sql docs/supabase-schema.md
 git commit -m "feat: secure project and financial database access"
 ~~~
 
