@@ -444,3 +444,46 @@ export function buildProjectRevenueSnapshot(
     profitAnchorTaxExclusiveAmount: adjustedTotals.adjustedTaxExclusiveAmount,
   }
 }
+
+const COMPATIBILITY_PAYMENT_STATUS = Object.freeze({
+  未收款: '未付款',
+  部分收款: '部分付款',
+  已收清: '已付清',
+  超额收款: '超额收款',
+})
+
+export function buildProjectRevenueSnapshotCollection(
+  projects = [],
+  changes = [],
+  plans = [],
+  receipts = [],
+) {
+  const snapshots = new Map()
+
+  for (const project of Array.isArray(projects) ? projects : []) {
+    const projectId = requireProjectId(project)
+    snapshots.set(
+      projectId,
+      buildProjectRevenueSnapshot(project, changes, plans, receipts),
+    )
+  }
+
+  return snapshots
+}
+
+export function buildProjectRevenueReadModel(project, snapshot) {
+  if (!snapshot) return { ...project }
+
+  return {
+    ...project,
+    ...snapshot,
+    revenuePaymentStatus: snapshot.paymentStatus,
+    paymentStatus:
+      COMPATIBILITY_PAYMENT_STATUS[snapshot.paymentStatus] || snapshot.paymentStatus,
+  }
+}
+
+export function getProfitAnchorTaxExclusiveAmount(project) {
+  const amount = Number(project?.profitAnchorTaxExclusiveAmount)
+  return Number.isFinite(amount) && amount > 0 ? amount : 0
+}

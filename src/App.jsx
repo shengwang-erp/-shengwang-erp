@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { isCloudDatabaseReady, getList, migrateLocalStorageToSupabase, saveList, upsertRecord } from './services/baseRecordService'
 import {
+  buildProjectRevenueReadModel,
+  buildProjectRevenueSnapshotCollection,
+  getProfitAnchorTaxExclusiveAmount,
+} from './features/contract-revenue/contractRevenueCalculations'
+import {
+  CONTRACT_REVENUE_STORAGE_KEYS,
+  sanitizeProjectForPersistence,
+} from './services/contractRevenueService'
+import {
   canAccessModule,
   canEdit,
   getPermissionCount,
@@ -16,6 +25,9 @@ import {
 
 const STORAGE_KEYS = {
   projects: 'erp.projects',
+  projectContractChanges: CONTRACT_REVENUE_STORAGE_KEYS.contractChanges,
+  projectPaymentPlans: CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans,
+  projectReceipts: CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts,
   employees: 'erp.employees',
   stockOutRecords: 'erp.stockOutRecords',
   stockReturnRecords: 'erp.stockReturnRecords',
@@ -45,7 +57,7 @@ const BUSINESS_STORAGE_KEYS = Object.values(STORAGE_KEYS).filter(
 )
 
 const statusOptions = ['进行中', '已完工', '暂停']
-const paymentStatusOptions = ['未付款', '部分付款', '已付清']
+const paymentStatusOptions = ['未付款', '部分付款', '已付清', '超额收款']
 const genderOptions = ['男', '女', '其他']
 const employmentStatusOptions = ['在职', '离职', '休假', '停工']
 const departmentOptions = ['现场', '仓库', '设计', '事务', '会计', '管理', '其他']
@@ -258,6 +270,7 @@ function normalizeProject(project) {
   const paymentInfo = getPaymentInfo(contractAmount, paidAmount)
 
   return {
+    ...project,
     projectId: project.projectId,
     projectName: project.projectName || '',
     customerName: project.customerName || '',
@@ -272,6 +285,15 @@ function normalizeProject(project) {
     paymentStatus: paymentInfo.paymentStatus,
     remark: project.remark || '',
   }
+}
+
+function prepareProjectForPersistence(project) {
+  const normalizedProject = normalizeProject(project)
+  const revenueSchemaVersion = Number(normalizedProject.contractRevenueSchemaVersion)
+
+  return Number.isInteger(revenueSchemaVersion) && revenueSchemaVersion >= 1
+    ? sanitizeProjectForPersistence(normalizedProject)
+    : normalizedProject
 }
 
 function normalizeEmployee(employee) {
@@ -765,14 +787,21 @@ function getVehicleCostTotal(fuelRecords = [], vehicleExpenseRecords = [], vehic
 }
 
 function getGrossProfitInfo(project, projectCostRecords, laborRecords = [], vehicleCostTotal = 0) {
-  const contractAmount = toAmount(project.contractAmount)
+  const profitAnchorTaxExclusiveAmount = getProfitAnchorTaxExclusiveAmount(project)
   const projectCostTotal =
     getProjectCostTotal(project.projectId, projectCostRecords, laborRecords) + vehicleCostTotal
-  const estimatedGrossProfit = contractAmount - projectCostTotal
+  const estimatedGrossProfit = profitAnchorTaxExclusiveAmount - projectCostTotal
   const grossProfitRate =
-    contractAmount > 0 ? Math.round((estimatedGrossProfit / contractAmount) * 100) : 0
+    profitAnchorTaxExclusiveAmount > 0
+      ? Math.round((estimatedGrossProfit / profitAnchorTaxExclusiveAmount) * 100)
+      : 0
 
-  return { projectCostTotal, estimatedGrossProfit, grossProfitRate }
+  return {
+    profitAnchorTaxExclusiveAmount,
+    projectCostTotal,
+    estimatedGrossProfit,
+    grossProfitRate,
+  }
 }
 
 function normalizeVehicleRecord(record) {
@@ -1738,6 +1767,15 @@ function App() {
     readStorage(STORAGE_KEYS.currentUser, null),
   )
   const [storedProjects, setStoredProjects] = usePersistentState(STORAGE_KEYS.projects, [])
+  const [projectContractChanges] = usePersistentState(
+    STORAGE_KEYS.projectContractChanges,
+    [],
+  )
+  const [projectPaymentPlans] = usePersistentState(
+    STORAGE_KEYS.projectPaymentPlans,
+    [],
+  )
+  const [projectReceipts] = usePersistentState(STORAGE_KEYS.projectReceipts, [])
   const [storedEmployees, setStoredEmployees] = usePersistentState(STORAGE_KEYS.employees, [])
   const [stockOutRecords, setStockOutRecords] = usePersistentState(
     STORAGE_KEYS.stockOutRecords,
@@ -1848,6 +1886,26 @@ function App() {
     () => storedProjects.map((project) => normalizeProject(project)),
     [storedProjects],
   )
+  const projectRevenueSnapshots = useMemo(
+    () =>
+      buildProjectRevenueSnapshotCollection(
+        projects,
+        projectContractChanges,
+        projectPaymentPlans,
+        projectReceipts,
+      ),
+    [projects, projectContractChanges, projectPaymentPlans, projectReceipts],
+  )
+  const projectRevenueProjects = useMemo(
+    () =>
+      projects.map((project) =>
+        buildProjectRevenueReadModel(
+          project,
+          projectRevenueSnapshots.get(project.projectId),
+        ),
+      ),
+    [projects, projectRevenueSnapshots],
+  )
   const employees = useMemo(
     () => rawEmployees.map((employee) => normalizeEmployee(employee)),
     [rawEmployees],
@@ -1929,7 +1987,7 @@ function App() {
       const normalizedCurrent = currentProjects.map((project) => normalizeProject(project))
       const resolvedProjects =
         typeof nextProjects === 'function' ? nextProjects(normalizedCurrent) : nextProjects
-      return resolvedProjects.map((project) => normalizeProject(project))
+      return resolvedProjects.map((project) => prepareProjectForPersistence(project))
     })
   }
   const setEmployees = (nextEmployees) => {
@@ -2220,7 +2278,12 @@ function App() {
 
   if (currentView === 'projects') {
     return (
-      <ProjectPage projects={projects} setProjects={setProjects} onBack={() => setCurrentView('home')} />
+      <ProjectPage
+        projects={projects}
+        projectRevenueSnapshots={projectRevenueSnapshots}
+        setProjects={setProjects}
+        onBack={() => setCurrentView('home')}
+      />
     )
   }
 
@@ -2255,7 +2318,7 @@ function App() {
   if (currentView === 'dashboard') {
     return (
       <DashboardPage
-        projects={projects}
+        projects={projectRevenueProjects}
         employees={employees}
         records={recordGroups}
         projectCostRecords={projectCostRecords}
@@ -2398,7 +2461,7 @@ function App() {
 
   return (
     <HomePage
-      projects={projects}
+      projects={projectRevenueProjects}
       employees={employees}
       records={recordGroups}
       accountingRecords={accountingRecords}
@@ -3338,7 +3401,7 @@ function EmployeeOwnedTools({ employee, assignments, responsibilityRecords }) {
   )
 }
 
-function ProjectPage({ projects, setProjects, onBack }) {
+function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack }) {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState('')
   const [form, setForm] = useState(createEmptyProject)
@@ -3362,7 +3425,9 @@ function ProjectPage({ projects, setProjects, onBack }) {
       const projectPayload = buildProjectPayload({ ...form, projectId: editingProjectId })
       setProjects((currentProjects) =>
         currentProjects.map((project) =>
-          project.projectId === editingProjectId ? projectPayload : project,
+          project.projectId === editingProjectId
+            ? { ...project, ...projectPayload, projectId: editingProjectId }
+            : project,
         ),
       )
     } else {
@@ -3512,79 +3577,86 @@ function ProjectPage({ projects, setProjects, onBack }) {
         {projects.length === 0 ? (
           <EmptyState text="暂无工程项目，请先新增项目" />
         ) : (
-          projects.map((project) => (
-            <article className="record-card" key={project.projectId}>
-              <div className="record-header">
-                <div>
-                  <strong>{project.projectName}</strong>
-                  <span>{project.projectId}</span>
-                </div>
-                <span className={`status-badge ${project.status}`}>{project.status}</span>
-              </div>
-              <dl className="detail-list">
-                <div>
-                  <dt>客户</dt>
-                  <dd>{project.customerName || '未填写'}</dd>
-                </div>
-                <div>
-                  <dt>地址</dt>
-                  <dd>{project.address || '未填写'}</dd>
-                </div>
-                <div>
-                  <dt>负责人</dt>
-                  <dd>{project.manager || '未填写'}</dd>
-                </div>
-                <div>
-                  <dt>开始日期</dt>
-                  <dd>{project.startDate || '未填写'}</dd>
-                </div>
-                <div>
-                  <dt>工程结束日期</dt>
-                  <dd>{project.endDate || '未结束'}</dd>
-                </div>
-                <div>
-                  <dt>合同金额</dt>
-                  <dd>{formatYen(project.contractAmount)}</dd>
-                </div>
-                <div>
-                  <dt>已收款</dt>
-                  <dd>{formatYen(project.paidAmount)}</dd>
-                </div>
-                <div>
-                  <dt>付款进度</dt>
-                  <dd>
-                    <PaymentProgress project={project} />
-                  </dd>
-                </div>
-                <div>
-                  <dt>付款状态</dt>
-                  <dd>
-                    <span className={`payment-badge ${project.paymentStatus}`}>
-                      {project.paymentStatus}
-                    </span>
-                  </dd>
-                </div>
-                {project.remark && (
+          projects.map((project) => {
+            const displayProject = buildProjectRevenueReadModel(
+              project,
+              projectRevenueSnapshots.get(project.projectId),
+            )
+
+            return (
+              <article className="record-card" key={project.projectId}>
+                <div className="record-header">
                   <div>
-                    <dt>备注</dt>
-                    <dd>{project.remark}</dd>
+                    <strong>{project.projectName}</strong>
+                    <span>{project.projectId}</span>
                   </div>
-                )}
-              </dl>
-              <div className="record-actions">
-                <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
-                  编辑
-                </button>
-                <button
-                  className="danger-button"
-                  type="button"
-                  onClick={() => handleDelete(project.projectId)}
-                >
-                  删除
-                </button>
-              </div>
-            </article>
-          ))
+                  <span className={`status-badge ${project.status}`}>{project.status}</span>
+                </div>
+                <dl className="detail-list">
+                  <div>
+                    <dt>客户</dt>
+                    <dd>{project.customerName || '未填写'}</dd>
+                  </div>
+                  <div>
+                    <dt>地址</dt>
+                    <dd>{project.address || '未填写'}</dd>
+                  </div>
+                  <div>
+                    <dt>负责人</dt>
+                    <dd>{project.manager || '未填写'}</dd>
+                  </div>
+                  <div>
+                    <dt>开始日期</dt>
+                    <dd>{project.startDate || '未填写'}</dd>
+                  </div>
+                  <div>
+                    <dt>工程结束日期</dt>
+                    <dd>{project.endDate || '未结束'}</dd>
+                  </div>
+                  <div>
+                    <dt>合同金额</dt>
+                    <dd>{formatYen(displayProject.adjustedTaxInclusiveAmount)}</dd>
+                  </div>
+                  <div>
+                    <dt>已收款</dt>
+                    <dd>{formatYen(displayProject.totalReceivedTaxInclusiveAmount)}</dd>
+                  </div>
+                  <div>
+                    <dt>付款进度</dt>
+                    <dd>
+                      <PaymentProgress project={displayProject} />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>付款状态</dt>
+                    <dd>
+                      <span className={`payment-badge ${displayProject.paymentStatus}`}>
+                        {displayProject.paymentStatus}
+                      </span>
+                    </dd>
+                  </div>
+                  {project.remark && (
+                    <div>
+                      <dt>备注</dt>
+                      <dd>{project.remark}</dd>
+                    </div>
+                  )}
+                </dl>
+                <div className="record-actions">
+                  <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
+                    编辑
+                  </button>
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={() => handleDelete(project.projectId)}
+                  >
+                    删除
+                  </button>
+                </div>
+              </article>
+            )
+          })
         )}
       </div>
     </PageShell>
@@ -8043,14 +8115,17 @@ function DashboardPage({
 
   const financialStats = useMemo(() => {
     const totalContractAmount = financialScopeProjects.reduce(
-      (total, project) => total + toAmount(project.contractAmount),
+      (total, project) => total + toAmount(project.adjustedTaxInclusiveAmount),
       0,
     )
     const totalPaidAmount = financialScopeProjects.reduce(
-      (total, project) => total + toAmount(project.paidAmount),
+      (total, project) => total + toAmount(project.totalReceivedTaxInclusiveAmount),
       0,
     )
-    const totalUnpaidAmount = Math.max(totalContractAmount - totalPaidAmount, 0)
+    const totalUnpaidAmount = financialScopeProjects.reduce(
+      (total, project) => total + toAmount(project.outstandingTaxInclusiveAmount),
+      0,
+    )
     const totalPaymentProgress =
       totalContractAmount > 0 ? Math.round((totalPaidAmount / totalContractAmount) * 100) : 0
 
@@ -8088,8 +8163,8 @@ function DashboardPage({
   }, [financialScopeProjects])
 
   const profitStats = useMemo(() => {
-    const totalContractAmount = financialScopeProjects.reduce(
-      (total, project) => total + toAmount(project.contractAmount),
+    const totalProfitAnchorTaxExclusiveAmount = financialScopeProjects.reduce(
+      (total, project) => total + getProfitAnchorTaxExclusiveAmount(project),
       0,
     )
     const totalProjectCost = financialScopeProjects.reduce(
@@ -8105,14 +8180,18 @@ function DashboardPage({
         ),
       0,
     )
-    const estimatedGrossProfit = totalContractAmount - totalProjectCost
+    const estimatedGrossProfit = totalProfitAnchorTaxExclusiveAmount - totalProjectCost
     const grossProfitRate =
-      totalContractAmount > 0
-        ? Math.round((estimatedGrossProfit / totalContractAmount) * 100)
+      totalProfitAnchorTaxExclusiveAmount > 0
+        ? Math.round((estimatedGrossProfit / totalProfitAnchorTaxExclusiveAmount) * 100)
         : 0
 
     return [
-      { label: '合同金额', value: formatYen(totalContractAmount), tone: 'money' },
+      {
+        label: '利润计算收入（税抜）',
+        value: formatYen(totalProfitAnchorTaxExclusiveAmount),
+        tone: 'money',
+      },
       { label: '项目成本合计', value: formatYen(totalProjectCost), tone: 'money' },
       { label: '预估毛利润', value: formatYen(estimatedGrossProfit), tone: 'money' },
       { label: '毛利率', value: formatPercent(grossProfitRate) },
@@ -8447,10 +8526,7 @@ function DashboardPage({
             </thead>
             <tbody>
               {detailProjects.map((project) => {
-                const unpaidAmount = Math.max(
-                  toAmount(project.contractAmount) - toAmount(project.paidAmount),
-                  0,
-                )
+                const unpaidAmount = toAmount(project.outstandingTaxInclusiveAmount)
                 const projectPurchases = activePurchases.filter(
                   (record) => record.projectId === project.projectId,
                 )
@@ -8528,10 +8604,14 @@ function DashboardPage({
                   projectVehicleTotal,
                 )
                 const estimatedGrossProfit =
-                  toAmount(project.contractAmount) - profitInfo.projectCostTotal - purchaseTotal
+                  profitInfo.profitAnchorTaxExclusiveAmount -
+                  profitInfo.projectCostTotal -
+                  purchaseTotal
                 const grossProfitRate =
-                  toAmount(project.contractAmount) > 0
-                    ? Math.round((estimatedGrossProfit / toAmount(project.contractAmount)) * 100)
+                  profitInfo.profitAnchorTaxExclusiveAmount > 0
+                    ? Math.round(
+                        (estimatedGrossProfit / profitInfo.profitAnchorTaxExclusiveAmount) * 100,
+                      )
                     : 0
 
                 return (
@@ -8541,8 +8621,8 @@ function DashboardPage({
                     <td>{project.status}</td>
                     <td>{project.startDate || '未填写'}</td>
                     <td>{project.endDate || '未结束'}</td>
-                    <td>{formatYen(project.contractAmount)}</td>
-                    <td>{formatYen(project.paidAmount)}</td>
+                    <td>{formatYen(project.adjustedTaxInclusiveAmount)}</td>
+                    <td>{formatYen(project.totalReceivedTaxInclusiveAmount)}</td>
                     <td>{formatYen(unpaidAmount)}</td>
                     <td>
                       <PaymentProgress project={project} />

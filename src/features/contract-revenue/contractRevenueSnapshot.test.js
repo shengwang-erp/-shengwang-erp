@@ -271,3 +271,110 @@ test('invalid legacy and migrated source amounts are rejected instead of convert
     assertValidationError('receipt-invalid.taxInclusiveAmount'),
   )
 })
+
+test('snapshot collection keeps legacy project amounts unchanged in the read model', () => {
+  const projects = [
+    {
+      projectId: 'P-LEGACY',
+      projectName: '旧项目',
+      contractAmount: 500000,
+      paidAmount: 125000,
+      paymentProgress: 25,
+      paymentStatus: '部分付款',
+    },
+  ]
+  const originalProjects = clone(projects)
+
+  const snapshots = revenueCalculations.buildProjectRevenueSnapshotCollection(
+    projects,
+    [],
+    [],
+    [],
+  )
+  const readModel = revenueCalculations.buildProjectRevenueReadModel(
+    projects[0],
+    snapshots.get('P-LEGACY'),
+  )
+
+  assert.equal(readModel.contractAmount, 500000)
+  assert.equal(readModel.paidAmount, 125000)
+  assert.equal(readModel.paymentProgress, 25)
+  assert.equal(readModel.paymentStatus, '部分付款')
+  assert.equal(readModel.outstandingTaxInclusiveAmount, 375000)
+  assert.deepEqual(projects, originalProjects)
+})
+
+test('migrated project read model separates tax-inclusive receipts from tax-exclusive profit anchor', () => {
+  const project = migratedProject({
+    projectName: '迁移项目',
+    contractAmount: 1,
+    paidAmount: 2,
+  })
+  const changes = [contractChange()]
+  const plans = [
+    paymentPlan('initial', 396000, 30),
+    paymentPlan('middle', 528000, 40),
+    paymentPlan('final', 396000, 30),
+  ]
+  const receipts = [receipt('initial', 396000)]
+  const originals = {
+    project: clone(project),
+    changes: clone(changes),
+    plans: clone(plans),
+    receipts: clone(receipts),
+  }
+
+  const snapshots = revenueCalculations.buildProjectRevenueSnapshotCollection(
+    [project],
+    changes,
+    plans,
+    receipts,
+  )
+  const readModel = revenueCalculations.buildProjectRevenueReadModel(
+    project,
+    snapshots.get('P001'),
+  )
+
+  assert.equal(readModel.contractAmount, 1320000)
+  assert.equal(readModel.paidAmount, 396000)
+  assert.equal(readModel.outstandingTaxInclusiveAmount, 924000)
+  assert.equal(readModel.paymentProgress, 30)
+  assert.equal(readModel.paymentStatus, '部分付款')
+  assert.equal(readModel.revenuePaymentStatus, '部分收款')
+  assert.equal(readModel.profitAnchorTaxExclusiveAmount, 1200000)
+  assert.equal(revenueCalculations.getProfitAnchorTaxExclusiveAmount(readModel), 1200000)
+  assert.notEqual(
+    revenueCalculations.getProfitAnchorTaxExclusiveAmount(readModel),
+    readModel.contractAmount,
+  )
+  assert.deepEqual(project, originals.project)
+  assert.deepEqual(changes, originals.changes)
+  assert.deepEqual(plans, originals.plans)
+  assert.deepEqual(receipts, originals.receipts)
+})
+
+test('building a revenue read model never adds snapshot fields to the persisted project object', () => {
+  const project = {
+    projectId: 'P-LEGACY',
+    projectName: '只读项目',
+    contractAmount: 800000,
+    paidAmount: 0,
+  }
+  const originalProject = clone(project)
+  const snapshots = revenueCalculations.buildProjectRevenueSnapshotCollection(
+    [project],
+    [],
+    [],
+    [],
+  )
+
+  const readModel = revenueCalculations.buildProjectRevenueReadModel(
+    project,
+    snapshots.get(project.projectId),
+  )
+
+  assert.notEqual(readModel, project)
+  assert.equal(Object.hasOwn(project, 'profitAnchorTaxExclusiveAmount'), false)
+  assert.equal(Object.hasOwn(readModel, 'profitAnchorTaxExclusiveAmount'), true)
+  assert.deepEqual(project, originalProject)
+})
