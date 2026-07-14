@@ -212,6 +212,7 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
     totalReceivedTaxInclusiveAmount: 500000,
     outstandingTaxInclusiveAmount: 600000,
     overpaidTaxInclusiveAmount: 0,
+    profitAnchorTaxExclusiveAmount: 1000000,
     allocationStatus: 'manual_review_required',
     allocationReason: 'all_stages_locked',
     lockedStages: ['initial'],
@@ -227,6 +228,10 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
   assert.notEqual(sanitized, project)
   assert.equal(sanitized.projectId, 'P001')
   assert.equal(sanitized.originalContractTaxExclusiveAmount, 1000000)
+  assert.equal(
+    PROJECT_REVENUE_SNAPSHOT_FIELDS.includes('profitAnchorTaxExclusiveAmount'),
+    true,
+  )
   for (const field of PROJECT_REVENUE_SNAPSHOT_FIELDS) {
     assert.equal(Object.hasOwn(sanitized, field), false, `${field} should be removed`)
     assert.equal(Object.hasOwn(project, field), true, `${field} should remain on input`)

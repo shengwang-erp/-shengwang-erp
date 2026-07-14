@@ -354,3 +354,93 @@ export function validateManualPaymentPlanAllocation({
     lockedStages,
   }
 }
+
+function usesContractRevenueSchema(project) {
+  const version = Number(project?.contractRevenueSchemaVersion)
+  return Number.isInteger(version) && version >= 1
+}
+
+function requireProjectId(project) {
+  const projectId = project?.projectId
+  if (typeof projectId !== 'string' || !projectId.trim()) {
+    throw new ContractRevenueValidationError('projectId', 'projectId不能为空')
+  }
+  return projectId.trim()
+}
+
+function filterProjectRecords(records, projectId) {
+  return (Array.isArray(records) ? records : []).filter(
+    (record) => record?.projectId === projectId,
+  )
+}
+
+function buildLegacyCompatibilitySnapshot(project) {
+  const contractAmount = parseRequiredYen(project?.contractAmount, 'contractAmount')
+  const paidAmount = parseRequiredYen(project?.paidAmount, 'paidAmount', {
+    allowZero: true,
+  })
+  const receiptSummary = calculateReceiptSummary(
+    contractAmount,
+    paidAmount > 0
+      ? [
+          {
+            receiptId: 'legacy-paidAmount-compatibility',
+            taxInclusiveAmount: paidAmount,
+          },
+        ]
+      : [],
+  )
+
+  return {
+    adjustedTaxExclusiveAmount: contractAmount,
+    adjustedTaxAmount: 0,
+    adjustedTaxInclusiveAmount: contractAmount,
+    ...receiptSummary,
+    allocationStatus: 'legacy_compatibility',
+    allocationReason: 'contract_revenue_schema_not_migrated',
+    lockedStages: [],
+    unlockedStages: [],
+    lockedPlannedTaxInclusiveAmount: 0,
+    remainingAssignableTaxInclusiveAmount: contractAmount,
+    unallocatedTaxInclusiveAmount: contractAmount,
+    lockedAmountExcess: 0,
+    contractAmount,
+    paidAmount,
+    profitAnchorTaxExclusiveAmount: contractAmount,
+  }
+}
+
+export function buildProjectRevenueSnapshot(
+  project,
+  changes = [],
+  plans = [],
+  receipts = [],
+) {
+  if (!usesContractRevenueSchema(project)) {
+    return buildLegacyCompatibilitySnapshot(project)
+  }
+
+  const projectId = requireProjectId(project)
+  const projectChanges = filterProjectRecords(changes, projectId)
+  const projectPlans = filterProjectRecords(plans, projectId)
+  const projectReceipts = filterProjectRecords(receipts, projectId)
+  const adjustedTotals = calculateAdjustedContractTotals(project, projectChanges)
+  const receiptSummary = calculateReceiptSummary(
+    adjustedTotals.adjustedTaxInclusiveAmount,
+    projectReceipts,
+  )
+  const { plans: _allocatedPlans, ...allocationSummary } = reallocateUnpaidPaymentStages({
+    adjustedTaxInclusiveAmount: adjustedTotals.adjustedTaxInclusiveAmount,
+    plans: projectPlans,
+    receipts: projectReceipts,
+  })
+
+  return {
+    ...adjustedTotals,
+    ...receiptSummary,
+    ...allocationSummary,
+    contractAmount: adjustedTotals.adjustedTaxInclusiveAmount,
+    paidAmount: receiptSummary.totalReceivedTaxInclusiveAmount,
+    profitAnchorTaxExclusiveAmount: adjustedTotals.adjustedTaxExclusiveAmount,
+  }
+}

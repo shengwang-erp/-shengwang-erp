@@ -15,6 +15,7 @@ export const PROJECT_REVENUE_SNAPSHOT_FIELDS = Object.freeze([
   'totalReceivedTaxInclusiveAmount',
   'outstandingTaxInclusiveAmount',
   'overpaidTaxInclusiveAmount',
+  'profitAnchorTaxExclusiveAmount',
   'allocationStatus',
   'allocationReason',
   'lockedStages',
