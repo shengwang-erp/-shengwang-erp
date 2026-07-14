@@ -196,6 +196,25 @@ test('SW-000 and transitional all keys keep full UI authorization', () => {
   assert.equal(canViewSensitive(transitionalAdministrator, '查看利润'), true)
 })
 
+test('legacy super_admin role cannot grant authorization to a non-SW-000 employee', () => {
+  const legacyRoleEmployee = {
+    employeeNumber: 'SW-001',
+    role: 'super_admin',
+  }
+  const normalizedEmployee = normalizePermissionFields(legacyRoleEmployee)
+
+  assert.equal(isSuperAdmin(legacyRoleEmployee), false)
+  assert.deepEqual(normalizedEmployee.effectivePermissionKeys, [])
+
+  for (const employee of [legacyRoleEmployee, normalizedEmployee]) {
+    assert.equal(canAccessModule(employee, '工程项目'), false)
+    assert.equal(canCreate(employee, '工程项目'), false)
+    assert.equal(canEdit(employee, '工程项目'), false)
+    assert.equal(canDelete(employee, '工程项目'), false)
+    assert.equal(canViewSensitive(employee, '查看工资'), false)
+  }
+})
+
 test('permission normalization preserves effective keys and gives positions no personal defaults', () => {
   assert.deepEqual(getPermissionDefaults('社长'), {
     role: 'employee',

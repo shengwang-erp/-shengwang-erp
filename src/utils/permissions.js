@@ -75,7 +75,7 @@ const employeeDefaults = {
 
 export function isSuperAdmin(employee = {}) {
   const employeeNumber = employee.employeeNumber ?? employee.employee_number
-  return normalizeEmployeeNumber(employeeNumber) === 'SW-000' || employee.role === 'super_admin'
+  return normalizeEmployeeNumber(employeeNumber) === 'SW-000'
 }
 
 export function isHiddenSystemEmployee(employee = {}) {
@@ -131,7 +131,7 @@ export function normalizePermissionFields(employee = {}) {
       canEditModules: allPermission,
       canDeleteModules: allPermission,
       sensitivePermissions: allPermission,
-      effectivePermissionKeys: allPermission,
+      effectivePermissionKeys: normalized.effectivePermissionKeys,
     }
   }
 
