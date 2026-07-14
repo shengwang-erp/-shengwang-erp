@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
+import markerIconUrl from 'leaflet/dist/images/marker-icon.png'
+import markerIconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
+import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png'
 import 'leaflet/dist/leaflet.css'
 
 import { GeocodingError } from './projectLocationService.js'
@@ -11,6 +14,16 @@ const NOT_FOUND_MESSAGE = '地址未找到，请补充都道府县、市区町�
 const GEOCODING_RETRY_MESSAGE = '地址定位失败，请稍后重试'
 const SERVICE_RETRY_MESSAGE = '地址定位服务暂时不可用，请稍后重试'
 const INVALID_RESULT_MESSAGE = '地址定位服务返回了无效位置，请稍后重试'
+const PROJECT_LOCATION_MARKER_ICON = L.icon({
+  iconUrl: markerIconUrl,
+  iconRetinaUrl: markerIconRetinaUrl,
+  shadowUrl: markerShadowUrl,
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  tooltipAnchor: [16, -28],
+  shadowSize: [41, 41],
+})
 
 function toCoordinate(value, minimum, maximum) {
   if (
@@ -131,7 +144,10 @@ export default function ProjectLocationPicker({
     const latLng = L.latLng(selection.latitude, selection.longitude)
     let marker = markerRef.current
     if (!marker) {
-      marker = L.marker(latLng, { draggable: true }).addTo(map)
+      marker = L.marker(latLng, {
+        draggable: true,
+        icon: PROJECT_LOCATION_MARKER_ICON,
+      }).addTo(map)
       marker.on('dragend', handleMarkerDragEnd)
       markerRef.current = marker
     } else {

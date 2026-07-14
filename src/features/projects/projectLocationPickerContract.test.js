@@ -59,3 +59,37 @@ test('picker is manual, short-lived, attributed, adjustable, and stale-safe', ()
   assert.match(source, /mountedRef\.current/)
   assert.match(source, /AbortError/)
 })
+
+test('picker bundles explicit Vite-resolved Leaflet marker assets', () => {
+  assert.match(
+    source,
+    /import markerIconUrl from ['"]leaflet\/dist\/images\/marker-icon\.png['"]/,
+  )
+  assert.match(
+    source,
+    /import markerIconRetinaUrl from ['"]leaflet\/dist\/images\/marker-icon-2x\.png['"]/,
+  )
+  assert.match(
+    source,
+    /import markerShadowUrl from ['"]leaflet\/dist\/images\/marker-shadow\.png['"]/,
+  )
+
+  const iconDeclaration = source.match(
+    /const PROJECT_LOCATION_MARKER_ICON = L\.icon\(\{([\s\S]*?)\}\)/,
+  )
+  assert.ok(iconDeclaration)
+  assert.match(iconDeclaration[1], /iconUrl:\s*markerIconUrl/)
+  assert.match(iconDeclaration[1], /iconRetinaUrl:\s*markerIconRetinaUrl/)
+  assert.match(iconDeclaration[1], /shadowUrl:\s*markerShadowUrl/)
+  assert.match(iconDeclaration[1], /iconSize:\s*\[25,\s*41\]/)
+  assert.match(iconDeclaration[1], /iconAnchor:\s*\[12,\s*41\]/)
+  assert.match(iconDeclaration[1], /popupAnchor:\s*\[1,\s*-34\]/)
+  assert.match(iconDeclaration[1], /tooltipAnchor:\s*\[16,\s*-28\]/)
+  assert.match(iconDeclaration[1], /shadowSize:\s*\[41,\s*41\]/)
+
+  assert.match(
+    source,
+    /L\.marker\(latLng,\s*\{[\s\S]*?icon:\s*PROJECT_LOCATION_MARKER_ICON[\s\S]*?\}\)\.addTo\(map\)/,
+  )
+  assert.doesNotMatch(source, /L\.Icon\.Default|imagePath/)
+})
