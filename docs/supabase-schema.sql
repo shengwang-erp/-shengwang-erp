@@ -71,6 +71,9 @@ $$;
 
 select public.create_erp_record_table('employees');
 select public.create_erp_record_table('projects');
+select public.create_erp_record_table('project_contract_changes');
+select public.create_erp_record_table('project_payment_plans');
+select public.create_erp_record_table('project_receipts');
 select public.create_erp_record_table('labor_records');
 select public.create_erp_record_table('purchase_records');
 select public.create_erp_record_table('purchase_payment_records');

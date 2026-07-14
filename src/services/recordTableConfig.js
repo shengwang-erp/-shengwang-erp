@@ -1,6 +1,18 @@
 export const recordTableConfigs = {
   'erp.employees': { tableName: 'employees', recordKeyField: 'employeeId' },
   'erp.projects': { tableName: 'projects', recordKeyField: 'projectId' },
+  'erp.projectContractChanges': {
+    tableName: 'project_contract_changes',
+    recordKeyField: 'changeId',
+  },
+  'erp.projectPaymentPlans': {
+    tableName: 'project_payment_plans',
+    recordKeyField: 'planId',
+  },
+  'erp.projectReceipts': {
+    tableName: 'project_receipts',
+    recordKeyField: 'receiptId',
+  },
   'erp.laborRecords': { tableName: 'labor_records', recordKeyField: 'laborRecordId' },
   'erp.purchaseRecords': { tableName: 'purchase_records', recordKeyField: 'purchaseId' },
   'erp.purchasePaymentRecords': {
