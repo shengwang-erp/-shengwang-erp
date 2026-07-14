@@ -3,14 +3,13 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(67);
+select plan(68);
 
 create temporary table task2_business_tables (
   table_name text primary key
 ) on commit drop;
 
 insert into task2_business_tables (table_name) values
-  ('projects'),
   ('project_contract_changes'),
   ('project_payment_plans'),
   ('project_receipts'),
@@ -60,12 +59,22 @@ select is(
       on business.table_name = policy.tablename
     where policy.schemaname = 'public'
   ),
-  72::bigint,
-  'business tables retain exactly three whitelisted policies each'
+  69::bigint,
+  'direct-RLS business tables retain exactly 69 whitelisted policies'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'projects'
+  ),
+  0::bigint,
+  'projects retains zero policies because access is RPC-only'
 );
 select ok(
   (
-    select count(*) = 24 and bool_and(policy_count = 3)
+    select count(*) = 23 and bool_and(policy_count = 3)
     from (
       select business.table_name, count(policy.policyname) as policy_count
       from task2_business_tables as business
@@ -86,8 +95,8 @@ select is(
     where policy.schemaname = 'public'
       and policy.cmd = 'SELECT'
   ),
-  24::bigint,
-  'every mapped business table has one SELECT policy'
+  23::bigint,
+  'every direct-RLS business table has one SELECT policy'
 );
 select is(
   (
@@ -98,8 +107,8 @@ select is(
     where policy.schemaname = 'public'
       and policy.cmd = 'INSERT'
   ),
-  24::bigint,
-  'every mapped business table has one INSERT policy'
+  23::bigint,
+  'every direct-RLS business table has one INSERT policy'
 );
 select is(
   (
@@ -110,8 +119,8 @@ select is(
     where policy.schemaname = 'public'
       and policy.cmd = 'UPDATE'
   ),
-  24::bigint,
-  'every mapped business table has one UPDATE policy'
+  23::bigint,
+  'every direct-RLS business table has one UPDATE policy'
 );
 select is(
   (
@@ -402,10 +411,10 @@ select ok(
   not public.has_current_permission('module.projects.view'),
   'a former employee has no effective permission'
 );
-select is(
-  (select count(*) from public.projects),
-  0::bigint,
-  'a former employee is denied by business-table RLS'
+select throws_like(
+  $$select * from public.projects$$,
+  '%permission denied for table projects%',
+  'a former employee cannot bypass RPC-only project access'
 );
 
 reset role;
@@ -442,10 +451,10 @@ select ok(
     ?| array['passportNumber', 'baseSalary'],
   'employee detail omits identity and salary without sensitive grants'
 );
-select is(
-  (select count(*) from public.projects where record_key = 'PROJECT-RLS-1'),
-  0::bigint,
-  'module access alone cannot read contract amount records'
+select throws_like(
+  $$select * from public.projects where record_key = 'PROJECT-RLS-1'$$,
+  '%permission denied for table projects%',
+  'module access alone never enables direct project reads'
 );
 select is(
   (select count(*) from public.salary_records where record_key = 'SALARY-RLS-1'),
@@ -544,16 +553,15 @@ select results_eq(
   'purchase payment update requires both module and sensitive permission'
 );
 
-select is(
-  (select count(*) from public.projects where record_key = 'PROJECT-RLS-1'),
-  1::bigint,
-  'an active employee with view permission can read a mapped business table'
+select throws_like(
+  $$select * from public.projects where record_key = 'PROJECT-RLS-1'$$,
+  '%permission denied for table projects%',
+  'sensitive template grants do not restore direct project reads'
 );
-select throws_ok(
+select throws_like(
   $$update public.projects set status = 'deleted' where record_key = 'PROJECT-RLS-1'$$,
-  '42501',
-  'delete permission required',
-  'update permission cannot perform a soft delete'
+  '%permission denied for table projects%',
+  'module update permission does not restore direct project writes'
 );
 
 reset role;
@@ -566,9 +574,10 @@ reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '20000000-0000-0000-0000-000000000001', true);
-select lives_ok(
+select throws_like(
   $$update public.projects set status = 'deleted' where record_key = 'PROJECT-RLS-1'$$,
-  'delete permission allows a soft delete'
+  '%permission denied for table projects%',
+  'delete permission still requires the project soft-delete RPC'
 );
 select throws_like(
   $$delete from public.projects where record_key = 'PROJECT-RLS-1'$$,
@@ -590,10 +599,10 @@ reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '20000000-0000-0000-0000-000000000003', true);
-select is(
-  (select count(*) from public.projects),
-  0::bigint,
-  'a disabled employee is denied by business-table RLS'
+select throws_like(
+  $$select * from public.projects$$,
+  '%permission denied for table projects%',
+  'a disabled employee cannot bypass RPC-only project access'
 );
 
 select * from finish();

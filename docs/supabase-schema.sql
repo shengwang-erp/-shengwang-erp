@@ -1,6 +1,10 @@
+-- HISTORICAL BASE REFERENCE ONLY: snapshot of migration 202607140001.
+-- This file is not the final schema and intentionally omits dependencies and
+-- replacements introduced by migrations 202607140002 and later. Fresh installs
+-- and upgrades must apply the ordered files in supabase/migrations/ instead.
 -- Shengwang ERP employee authentication, authorization, and strict business RLS.
--- Additive migration: legacy JSONB tables and records are preserved, but the legacy
--- employees table is quarantined from browser roles.
+-- Legacy JSONB tables and records are preserved, but the legacy employees table
+-- is quarantined from browser roles.
 
 create extension if not exists pgcrypto;
 create schema if not exists private;

@@ -1,8 +1,11 @@
 # Supabase 数据库字段说明
 
-新环境可执行 [supabase-schema.sql](./supabase-schema.sql)；已有环境使用
-[`202607140001_employee_auth.sql`](../supabase/migrations/202607140001_employee_auth.sql)
-增量迁移。两者创建相同的员工认证、权限和业务 RLS 对象。
+新环境和已有环境都以 [`supabase/migrations/`](../supabase/migrations/) 中按文件名排序的
+迁移为唯一规范路径，依次执行 `202607140001`、`202607140002`、`202607140003`、
+`202607140004`、`202607150001`，不可跳过或交换顺序。
+[supabase-schema.sql](./supabase-schema.sql) 仅是 `202607140001` 的历史基础快照；它没有
+`003/004` 的私有依赖，也没有 `005` 的替换函数和策略，不能作为最终 bootstrap，不能在
+已执行有序迁移的数据库上再次运行。
 
 业务模块暂时继续使用“每模块一张表 + `payload jsonb` + 公共审计字段”的兼容结构，
 但员工身份的可信来源已经改为规范化的 `employee_profiles`。旧 `employees.payload`
@@ -56,17 +59,26 @@
 
 ### projects 工程项目
 
-- `project_id text`
-- `project_name text`
-- `customer_name text`
-- `address text`
-- `status text`
-- `manager text`
-- `start_date date`
-- `end_date date`
-- `contract_amount numeric`
-- `paid_amount numeric`
-- `remark text`
+`projects` 延续通用记录信封：`record_key` 是服务端分配的 `Pxxx`，`payload jsonb` 保存业务
+字段，信封 `status` 用于软删除。浏览器不能直接 SELECT/INSERT/UPDATE/DELETE 此表，统一使用：
+
+- `list_projects_secure()`
+- `create_project_secure(project)`
+- `update_project_secure(project_id, patch)`
+- `soft_delete_project_secure(project_id)`
+- `migrate_legacy_project_contract_secure(project_id, expected, opening_receipt)`
+
+可变基础 payload 只允许 `projectName`、`customerName`、`address`、经纬度、打卡半径、
+定位确认时间与地址快照、七种项目状态、设计/现场担当各三项快照、起止日期和备注。
+`projectId` 由数据库写入。`待开工`、`进行中` 必须具有当前地址的有效确认；地址比较执行
+NFKC、trim 和空白折叠。担当只接受当前在职、启用且属于准确部门的规范员工 ID，编号与
+姓名由数据库覆盖；ID 未变时保留历史快照，避免员工改名或离职破坏旧项目显示。
+
+合同金额、收款和派生快照共 31 个键属于金融投影边界。普通调用者的 list/create/update
+响应全部删除这些键；普通基础更新仍以 `current_payload || patch` 合并，因而不会擦除库存中
+已有的金融或历史键。金融源字段写入还必须同时满足固定身份白名单与
+`module.projects.update`。确认人 ID/姓名来自当前规范员工，确认时间来自数据库时钟，客户端
+提交值不能伪造。
 
 ## 业务记录
 
@@ -420,7 +432,7 @@
 
 ## 权限与安全
 
-所有业务表均启用严格 RLS，`anon` 没有业务表权限。每个 authenticated 请求同时验证：
+`anon` 没有业务表权限。除 `projects` 外的直接 RLS 业务表，每个 authenticated 请求同时验证：
 
 1. JWT 的 `auth.uid()` 已关联 `employee_profiles`；
 2. `employment_status = '在职'`；
@@ -433,7 +445,7 @@
 
 | 表 | 模块代码 |
 | --- | --- |
-| `projects`、合同变更、付款计划、收款 | `projects` |
+| 合同变更、付款计划、收款 | `projects` |
 | `labor_records` | `labor` |
 | 采购及采购付款 | `purchases` |
 | 库存及出入退库 | `inventory` |
@@ -443,18 +455,33 @@
 | `project_cost_records` | `project_costs` |
 | `operating_expense_records` | `operating_expenses` |
 
-含敏感金额的 JSONB 表还必须同时通过敏感权限：工程、合同增减、付款计划和客户收款要求
-`sensitive.contract_amount_view/update`；采购记录及采购付款要求
+`projects` 不在这组直接策略中：它有零条 policy，authenticated 没有任何表权限，只能走前述
+RPC。其余 23 张直接 RLS 业务表合计 69 条 SELECT/INSERT/UPDATE policy。
+
+项目金融可见性不读取可编辑的 `sensitive.contract_amount_view/update`。数据库固定允许当前
+有效的设计部、财务部、社长或 `SW-000` 查看金融字段；同时仍要求项目模块的 view/update
+动作权限。合同变更、付款计划和收款三表使用同一固定身份判断：SELECT 要求
+`module.projects.view`，INSERT/UPDATE 要求 `module.projects.update`。这三表显式只向
+authenticated 授予 SELECT/INSERT/UPDATE，不授予 DELETE；迁移只删除它们的状态权限触发器，
+保留 `set_*_updated_at` 触发器。
+
+其他含敏感金额的 JSONB 表继续使用模板敏感权限：采购记录及采购付款要求
 `sensitive.purchase_payments_view/update`；人工记录及工资记录要求
 `sensitive.salary_view/update`。因此只有模块权限不能读取或改写这些完整记录。
 
-插入只允许 `status = 'active'`。普通更新要求 `update` 权限；任何涉及
-`deleted/void` 的状态更新由触发器重新检查 `delete` 权限，防止编辑权限等同删除权限。
-authenticated 角色没有业务表物理 `DELETE` 权限；删除和作废必须保留记录并通过受控状态更新完成。
+直接 RLS 表插入只允许 `status = 'active'`。除上述三张合同收入表外，普通更新要求 `update`
+权限，涉及 `deleted/void` 的信封状态更新仍由既有触发器重新检查 `delete` 权限。
+authenticated 角色没有业务表物理 DELETE；项目软删除只能调用
+`soft_delete_project_secure(text)`。
 迁移不信任任何历史 policy 名称，而是从 `pg_policies` 枚举并删除目标表的全部旧策略，
 随后只创建 SELECT/INSERT/UPDATE 三个白名单策略。它也先撤销 PUBLIC、anon、authenticated
 的全部历史表权限，再仅向 authenticated 授予 SELECT/INSERT/UPDATE，因此 TRUNCATE 等绕过
-RLS 的旧权限不会残留。独立合同收入迁移采用相同清理方式并保持零策略、零浏览器权限。
+RLS 的旧权限不会残留。
+
+迁移 `202607150001` 会删除设计部/财务部/社长以外主体上持久化的合同金额敏感授权，并只写
+一条 `project_financial_template_grants.cleaned` 审计，`safe_details` 仅含
+`deletedCount`。模板替换函数在删除旧模板前执行同一固定白名单 guard，不能重新引入越权
+授权。该审计不记录被删明细，因此部署前必须单独备份 `permission_grants`。
 
 员工安全表不向 anon/authenticated 授予直接表写权限。浏览器使用以下裁剪 RPC：
 
@@ -469,6 +496,27 @@ RLS 的旧权限不会残留。独立合同收入迁移采用相同清理方式�
 `SW-000` 不在 SQL 中 seed，也没有 Git 管理的默认密码。它由后续服务端引导流程通过
 部署 secret 创建，并由数据库约束保持隐藏、在职、启用、无需首次改密及不可删除。
 
-部署严格 RLS 会立即阻止旧 anon 客户端；数据库迁移、Edge Functions 和新 Auth 前端
-必须协调发布。独立合同收入迁移只建表并保持无策略的 fail-closed 状态，严格策略始终由
-员工认证迁移统一创建。
+## 部署、验证与回滚
+
+部署顺序：先备份 `permission_grants`、`projects` 和三张合同收入表，再在一个事务中执行
+`202607150001_project_core_security.sql`；验证 forbidden grant 清理与唯一安全审计后，发布只
+调用项目 RPC 的客户端。旧版直接读写 `projects` 的浏览器会立即失败，因此数据库与客户端
+必须协调发布。
+
+静态与数据库验证：
+
+```bash
+node --test src/services/projectCoreSecuritySchema.test.js
+npm test
+supabase test db supabase/tests/project_core_security.sql
+supabase test db
+```
+
+没有 Supabase CLI 时，可用本地专用 Supabase PostgreSQL 容器中的 `psql` 执行同一 pgTAP
+文件。升级验证必须先在仅有 `202607140001`–`004` 的测试库插入一条 forbidden grant，再以
+单事务应用 `005`；并发编号验证必须使用两个独立、均 COMMIT 的连接，不能用一个顺序
+pgTAP session 代替。
+
+本迁移没有安全的自动 down migration：回退旧策略会重新开放已禁止的直接项目访问，而清理
+审计也无法重建每条已删授权。需要回滚时，应停止浏览器流量，协调回退客户端，并从部署前
+备份恢复完整数据库或经审计恢复所需授权；不要只恢复旧 project policies 或状态触发器。
