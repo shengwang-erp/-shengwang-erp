@@ -26,7 +26,6 @@ const ACTIVE_PROFILE = Object.freeze({
   deleted_at: null,
   effective_permission_keys: ['module.projects.view'],
 })
-
 function getEnv(values = {}) {
   return (name) => values[name]
 }
@@ -213,6 +212,77 @@ test('createAdminClient uses only server configuration and never attaches a call
     autoRefreshToken: false,
     detectSessionInUrl: false,
   })
+})
+
+test('createAdminClient installs a bounded fetch that truly aborts the upstream request', async () => {
+  let options
+  let observedSignal
+  await createAdminClient({
+    getEnv: getEnv({
+      SUPABASE_URL: TEST_URL,
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret',
+    }),
+    createClient: (_url, _key, clientOptions) => {
+      options = clientOptions
+      return { kind: 'admin' }
+    },
+    authRequestTimeoutMs: 5,
+    fetchImpl: async (_input, init) => {
+      observedSignal = init.signal
+      return await new Promise((_resolve, reject) => {
+        init.signal.addEventListener(
+          'abort',
+          () => reject(init.signal.reason),
+          { once: true },
+        )
+      })
+    },
+  })
+
+  await assert.rejects(
+    options.global.fetch('https://auth.example.test/admin/users'),
+  )
+  assert.equal(observedSignal.aborted, true)
+})
+
+test('bounded admin fetch merges the absolute request signal and clears its timer', async () => {
+  let options
+  const requestController = new AbortController()
+  const timers = []
+  const cleared = []
+  await createAdminClient({
+    getEnv: getEnv({
+      SUPABASE_URL: TEST_URL,
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret',
+    }),
+    createClient: (_url, _key, clientOptions) => {
+      options = clientOptions
+      return { kind: 'admin' }
+    },
+    requestSignal: requestController.signal,
+    fetchImpl: async (_input, init) => {
+      assert.equal(init.signal.aborted, false)
+      requestController.abort(new Error('request deadline'))
+      assert.equal(init.signal.aborted, true)
+      return new Response(null, { status: 204 })
+    },
+    setTimeoutImpl: (callback, milliseconds) => {
+      timers.push({ callback, milliseconds })
+      return 123
+    },
+    clearTimeoutImpl: (timer) => cleared.push(timer),
+  })
+
+  const response = await options.global.fetch(
+    'https://auth.example.test/admin/users',
+    {
+      signal: new AbortController().signal,
+    },
+  )
+
+  assert.equal(response.status, 204)
+  assert.deepEqual(timers.map(({ milliseconds }) => milliseconds), [30_000])
+  assert.deepEqual(cleared, [123])
 })
 
 test('client factories prefer modern singular and named key collections with legacy fallback', async () => {
