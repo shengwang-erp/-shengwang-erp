@@ -2066,6 +2066,267 @@ button:disabled {
   }
 }
 
+/* Desktop-only black and gold administration frame. Mobile keeps the existing page tree. */
+.desktop-admin-layout,
+.desktop-admin-workspace,
+.desktop-admin-content {
+  display: contents;
+}
+
+.desktop-admin-sidebar,
+.desktop-admin-topbar {
+  display: none;
+}
+
+@media (min-width: 901px) {
+  .desktop-admin-layout {
+    --desktop-admin-sidebar-width: 220px;
+    --desktop-admin-topbar-height: 64px;
+    display: block;
+    min-height: 100vh;
+    background: #0d0d0b;
+  }
+
+  .desktop-admin-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    width: var(--desktop-admin-sidebar-width);
+    min-height: 100vh;
+    padding: 18px 14px 14px;
+    overflow-y: auto;
+    color: #e8dfcf;
+    background:
+      radial-gradient(circle at 18% 8%, rgba(216, 170, 82, 0.13), transparent 24%),
+      linear-gradient(180deg, #141411 0%, #0b0b09 54%, #11100d 100%);
+    border-right: 1px solid rgba(216, 170, 82, 0.32);
+    box-shadow: 12px 0 34px rgba(0, 0, 0, 0.24);
+  }
+
+  .desktop-admin-brand {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    align-items: center;
+    gap: 11px;
+    padding: 0 5px 16px;
+    border-bottom: 1px solid rgba(216, 170, 82, 0.22);
+  }
+
+  .desktop-admin-brand-mark {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    color: #f0d69b;
+    background: linear-gradient(145deg, #392b19, #11110f 58%, #241a0f);
+    border: 1px solid #a87c3c;
+    border-radius: 50%;
+    box-shadow:
+      inset 0 0 0 3px rgba(240, 214, 155, 0.08),
+      0 8px 22px rgba(0, 0, 0, 0.32);
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: -1px;
+  }
+
+  .desktop-admin-brand strong,
+  .desktop-admin-brand small,
+  .desktop-admin-sidebar-foot strong,
+  .desktop-admin-sidebar-foot small,
+  .desktop-admin-topbar-user strong,
+  .desktop-admin-topbar-user small {
+    display: block;
+  }
+
+  .desktop-admin-brand strong {
+    color: #f3e8d4;
+    font-family: Georgia, "Songti SC", serif;
+    font-size: 15px;
+    letter-spacing: 0.08em;
+  }
+
+  .desktop-admin-brand small {
+    margin-top: 4px;
+    color: #a99a82;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+
+  .desktop-admin-menu {
+    display: grid;
+    gap: 4px;
+    margin-top: 14px;
+  }
+
+  .desktop-admin-menu-item {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    align-items: center;
+    min-height: 40px;
+    padding: 7px 10px;
+    color: #c6bba9;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .desktop-admin-menu-item > span {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: #caa767;
+    border: 1px solid rgba(202, 167, 103, 0.28);
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 850;
+  }
+
+  .desktop-admin-menu-item strong {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .desktop-admin-menu-item:hover {
+    color: #f0dfbd;
+    background: rgba(216, 170, 82, 0.08);
+    border-color: rgba(216, 170, 82, 0.18);
+  }
+
+  .desktop-admin-menu-item.active {
+    color: #f3d18b;
+    background: linear-gradient(90deg, #3a2a16, rgba(58, 42, 22, 0.52));
+    border-color: rgba(216, 170, 82, 0.42);
+    box-shadow: inset 3px 0 #d8aa52;
+  }
+
+  .desktop-admin-menu-item:focus-visible {
+    outline: 2px solid #d8aa52;
+    outline-offset: 2px;
+  }
+
+  .desktop-admin-sidebar-foot {
+    margin-top: auto;
+    padding: 13px 10px 2px;
+    color: #9f927e;
+    border-top: 1px solid rgba(216, 170, 82, 0.18);
+    font-size: 11px;
+  }
+
+  .desktop-admin-sidebar-foot strong {
+    margin-top: 5px;
+    color: #ecdfca;
+    font-size: 13px;
+  }
+
+  .desktop-admin-sidebar-foot small {
+    margin-top: 3px;
+    line-height: 1.45;
+  }
+
+  .desktop-admin-workspace {
+    display: block;
+    min-width: 0;
+    min-height: 100vh;
+    margin-left: var(--desktop-admin-sidebar-width);
+    background: #f3f0e9;
+  }
+
+  .desktop-admin-topbar {
+    position: fixed;
+    inset: 0 0 auto var(--desktop-admin-sidebar-width);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+    height: var(--desktop-admin-topbar-height);
+    padding: 0 22px;
+    color: #e8dfcf;
+    background: rgba(15, 15, 12, 0.97);
+    border-bottom: 1px solid rgba(216, 170, 82, 0.28);
+    box-shadow: 0 10px 28px rgba(25, 20, 12, 0.18);
+    backdrop-filter: blur(12px);
+  }
+
+  .desktop-admin-topbar-title {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .desktop-admin-topbar-title span {
+    color: #a99a82;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+  }
+
+  .desktop-admin-topbar-title strong {
+    color: #f3d18b;
+    font-size: 16px;
+  }
+
+  .desktop-admin-topbar-user {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .desktop-admin-topbar-user > span {
+    text-align: right;
+  }
+
+  .desktop-admin-topbar-user strong {
+    color: #f3e8d4;
+    font-size: 13px;
+  }
+
+  .desktop-admin-topbar-user small {
+    margin-top: 2px;
+    color: #9f927e;
+    font-size: 10px;
+  }
+
+  .desktop-admin-topbar-user button {
+    min-height: 34px;
+    padding: 0 12px;
+    color: #e8c87f;
+    background: rgba(216, 170, 82, 0.08);
+    border: 1px solid rgba(216, 170, 82, 0.34);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .desktop-admin-topbar-user button:hover {
+    color: #fff3d3;
+    background: rgba(216, 170, 82, 0.16);
+  }
+
+  .desktop-admin-content {
+    display: block;
+    min-width: 0;
+    min-height: 100vh;
+    padding-top: var(--desktop-admin-topbar-height);
+    background:
+      linear-gradient(90deg, rgba(172, 128, 54, 0.035) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(172, 128, 54, 0.03) 1px, transparent 1px),
+      #f3f0e9;
+    background-size: 30px 30px, 30px 30px, auto;
+  }
+}
+
 @media (max-width: 460px) {
   h1 {
     font-size: 28px;

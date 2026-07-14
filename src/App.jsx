@@ -7,6 +7,7 @@ import {
 } from './features/contract-revenue/contractRevenueCalculations'
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
+import DesktopAdminShell from './DesktopAdminShell'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import {
@@ -2400,8 +2401,19 @@ function App() {
     )
   }
 
+  const renderInDesktopShell = (page) => (
+    <DesktopAdminShell
+      currentView={currentView}
+      currentUser={currentUser}
+      onNavigate={setCurrentView}
+      onLogout={handleLogout}
+    >
+      {page}
+    </DesktopAdminShell>
+  )
+
   if (currentView === 'contractRevenue') {
-    return (
+    return renderInDesktopShell(
       <ContractRevenuePage
         project={contractRevenueProject}
         revenueSnapshot={projectRevenueSnapshots.get(contractRevenueProjectId)}
@@ -2422,7 +2434,7 @@ function App() {
   }
 
   if (currentView === 'projects') {
-    return (
+    return renderInDesktopShell(
       <ProjectPage
         projects={projects}
         projectRevenueSnapshots={projectRevenueSnapshots}
@@ -2434,7 +2446,7 @@ function App() {
   }
 
   if (currentView === 'employees') {
-    return (
+    return renderInDesktopShell(
       <PersonnelPage
         employees={employees}
         setEmployees={setEmployees}
@@ -2462,7 +2474,7 @@ function App() {
   }
 
   if (currentView === 'dashboard') {
-    return (
+    return renderInDesktopShell(
       <DashboardPage
         projects={projectRevenueProjects}
         employees={employees}
@@ -2488,7 +2500,7 @@ function App() {
   }
 
   if (currentView === 'purchase') {
-    return (
+    return renderInDesktopShell(
       <PurchaseManagementPage
         projects={projects}
         employees={employees}
@@ -2506,7 +2518,7 @@ function App() {
   }
 
   if (currentView === 'labor') {
-    return (
+    return renderInDesktopShell(
       <LaborPage
         projects={projects}
         employees={employees}
@@ -2519,7 +2531,7 @@ function App() {
   }
 
   if (currentView === 'vehicle') {
-    return (
+    return renderInDesktopShell(
       <VehicleManagementPage
         projects={projects}
         employees={employees}
@@ -2539,7 +2551,7 @@ function App() {
   }
 
   if (currentView === 'toolBorrow' || currentView === 'toolReturn') {
-    return (
+    return renderInDesktopShell(
       <ToolManagementPage
         initialSection={currentView === 'toolReturn' ? 'returns' : 'borrow'}
         projects={projects}
@@ -2561,7 +2573,7 @@ function App() {
   }
 
   if (currentView === 'accounting') {
-    return (
+    return renderInDesktopShell(
       <AccountingCostPage
         projects={projects}
         employees={employees}
@@ -2582,7 +2594,7 @@ function App() {
   }
 
   if (currentView === 'settings') {
-    return (
+    return renderInDesktopShell(
       <SystemSettingsPage
         currentUser={currentUser}
         storageKeys={BUSINESS_STORAGE_KEYS}
@@ -2596,7 +2608,7 @@ function App() {
   }
 
   if (businessConfigs[currentView]) {
-    return (
+    return renderInDesktopShell(
       <BusinessPage
         config={businessConfigs[currentView]}
         projects={projects}
@@ -2608,7 +2620,7 @@ function App() {
     )
   }
 
-  return (
+  return renderInDesktopShell(
     <HomePage
       projects={projectRevenueProjects}
       employees={employees}
