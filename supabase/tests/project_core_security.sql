@@ -1306,6 +1306,57 @@ select is(
   (select result_payload from task5_results where result_name = 'legacy-positive'),
   '14. identical migration replay returns the already-migrated project'
 );
+select throws_ok(
+  $$select public.migrate_legacy_project_contract_secure(
+      'T5-LEGACY-001',
+      '{"contractAmount":800001,"paidAmount":120000}'::jsonb,
+      '{
+        "receiptId":"legacy-opening-receipt-v1:T5-LEGACY-001",
+        "projectId":"T5-LEGACY-001",
+        "receiptType":"opening_balance",
+        "taxInclusiveAmount":120000,
+        "statusCode":"active",
+        "sourceCode":"legacy_contract_migration"
+      }'::jsonb
+    )$$,
+  '40001',
+  'legacy project contract changed',
+  '14. migrated replay rejects a mismatched expected contract'
+);
+select throws_ok(
+  $$select public.migrate_legacy_project_contract_secure(
+      'T5-LEGACY-001',
+      '{"contractAmount":800000,"paidAmount":120000}'::jsonb,
+      '{
+        "receiptId":"legacy-opening-receipt-v1:T5-LEGACY-001",
+        "projectId":"T5-LEGACY-001",
+        "receiptType":"opening_balance",
+        "taxInclusiveAmount":120001,
+        "statusCode":"active",
+        "sourceCode":"legacy_contract_migration"
+      }'::jsonb
+    )$$,
+  '22023',
+  'invalid opening receipt',
+  '14. migrated replay rejects opening-receipt parameters that differ from expected paid amount'
+);
+select throws_ok(
+  $$select public.migrate_legacy_project_contract_secure(
+      'T5-LEGACY-001',
+      '{"contractAmount":800000,"paidAmount":120001}'::jsonb,
+      '{
+        "receiptId":"legacy-opening-receipt-v1:T5-LEGACY-001",
+        "projectId":"T5-LEGACY-001",
+        "receiptType":"opening_balance",
+        "taxInclusiveAmount":120001,
+        "statusCode":"active",
+        "sourceCode":"legacy_contract_migration"
+      }'::jsonb
+    )$$,
+  '40001',
+  'opening receipt conflict',
+  '14. migrated replay rejects a changed expected paid amount even when its submitted receipt agrees'
+);
 reset role;
 select is(
   (

@@ -1168,6 +1168,7 @@ declare
   deterministic_receipt_id text;
   unknown_key text;
   receipt_row public.project_receipts%rowtype;
+  already_migrated boolean;
 begin
   if not public.is_current_employee_active()
     or not public.has_current_permission('module.projects.update')
@@ -1186,12 +1187,6 @@ begin
     for update;
   if not found then
     raise exception using errcode = 'P0002', message = 'project not found';
-  end if;
-
-  if jsonb_typeof(current_payload->'contractRevenueSchemaVersion') = 'number'
-    and (current_payload->>'contractRevenueSchemaVersion')::numeric >= 1
-  then
-    return current_payload;
   end if;
 
   if jsonb_typeof(p_expected_legacy_contract) is distinct from 'object'
@@ -1213,23 +1208,6 @@ begin
   then
     raise exception using errcode = '22023', message = 'invalid legacy contract expectation';
   end if;
-
-  if current_payload->'contractAmount'
-      is distinct from p_expected_legacy_contract->'contractAmount'
-    or current_payload->'paidAmount'
-      is distinct from p_expected_legacy_contract->'paidAmount'
-  then
-    raise exception using errcode = '40001', message = 'legacy project contract changed';
-  end if;
-
-  select employee.*
-    into actor
-    from public.employee_profiles as employee
-    where employee.auth_user_id = auth.uid()
-      and employee.deleted_at is null
-      and employee.employment_status = '在职'
-      and employee.account_status = 'active'
-      and employee.must_change_password = false;
 
   deterministic_receipt_id := 'legacy-opening-receipt-v1:' || p_project_id;
   if expected_paid_amount = 0 then
@@ -1261,35 +1239,101 @@ begin
     then
       raise exception using errcode = '22023', message = 'invalid opening receipt';
     end if;
+  end if;
 
-    insert into public.project_receipts (
-      record_key,
-      payload,
-      status,
-      created_by_employee_id,
-      created_by_employee_name,
-      updated_by_employee_id,
-      updated_by_employee_name
-    ) values (
-      deterministic_receipt_id,
-      p_opening_receipt,
-      'active',
-      actor.id::text,
-      actor.name,
-      actor.id::text,
-      actor.name
-    )
-    on conflict (record_key) do nothing;
+  already_migrated :=
+    jsonb_typeof(current_payload->'contractRevenueSchemaVersion') = 'number'
+    and (current_payload->>'contractRevenueSchemaVersion')::numeric >= 1;
 
+  if already_migrated then
+    if current_payload->'originalContractTaxExclusiveAmount'
+        is distinct from to_jsonb(expected_contract_amount)
+      or current_payload->'originalContractTaxRate' is distinct from '0'::jsonb
+      or current_payload->'originalContractTaxAmount' is distinct from '0'::jsonb
+      or current_payload->'originalContractTaxInclusiveAmount'
+        is distinct from to_jsonb(expected_contract_amount)
+    then
+      raise exception using errcode = '40001', message = 'legacy project contract changed';
+    end if;
+  else
+    if current_payload->'contractAmount'
+        is distinct from p_expected_legacy_contract->'contractAmount'
+      or current_payload->'paidAmount'
+        is distinct from p_expected_legacy_contract->'paidAmount'
+    then
+      raise exception using errcode = '40001', message = 'legacy project contract changed';
+    end if;
+
+    select employee.*
+      into actor
+      from public.employee_profiles as employee
+      where employee.auth_user_id = auth.uid()
+        and employee.deleted_at is null
+        and employee.employment_status = '在职'
+        and employee.account_status = 'active'
+        and employee.must_change_password = false;
+
+    if expected_paid_amount > 0 then
+      insert into public.project_receipts (
+        record_key,
+        payload,
+        status,
+        created_by_employee_id,
+        created_by_employee_name,
+        updated_by_employee_id,
+        updated_by_employee_name
+      ) values (
+        deterministic_receipt_id,
+        p_opening_receipt,
+        'active',
+        actor.id::text,
+        actor.name,
+        actor.id::text,
+        actor.name
+      )
+      on conflict (record_key) do nothing;
+    end if;
+
+    next_payload := current_payload
+      - array['contractAmount', 'paidAmount', 'paymentProgress', 'paymentStatus']::text[]
+      || jsonb_build_object(
+        'contractRevenueSchemaVersion', 1,
+        'originalContractTaxExclusiveAmount', expected_contract_amount,
+        'originalContractTaxRate', 0,
+        'originalContractTaxAmount', 0,
+        'originalContractTaxInclusiveAmount', expected_contract_amount,
+        'contractConfirmationStatus', 'historical_migrated_confirmed',
+        'needsManualReview', true
+      );
+
+    update public.projects
+      set payload = next_payload,
+          updated_by_employee_id = actor.id::text,
+          updated_by_employee_name = actor.name
+      where record_key = p_project_id;
+    current_payload := next_payload;
+  end if;
+
+  if expected_paid_amount = 0 then
+    if exists (
+      select 1
+      from public.project_receipts as receipt
+      where receipt.record_key = deterministic_receipt_id
+    ) then
+      raise exception using errcode = '40001', message = 'opening receipt conflict';
+    end if;
+  else
     select receipt.*
       into receipt_row
       from public.project_receipts as receipt
       where receipt.record_key = deterministic_receipt_id;
     if not found
       or receipt_row.status <> 'active'
+      or receipt_row.payload->>'receiptId' is distinct from deterministic_receipt_id
       or receipt_row.payload->>'projectId' is distinct from p_project_id
       or jsonb_typeof(receipt_row.payload->'taxInclusiveAmount') is distinct from 'number'
       or (receipt_row.payload->>'taxInclusiveAmount')::numeric <> expected_paid_amount
+      or receipt_row.payload->>'statusCode' is distinct from 'active'
       or receipt_row.payload->>'sourceCode'
         is distinct from 'legacy_contract_migration'
       or receipt_row.payload->>'receiptType' is distinct from 'opening_balance'
@@ -1298,24 +1342,7 @@ begin
     end if;
   end if;
 
-  next_payload := current_payload
-    - array['contractAmount', 'paidAmount', 'paymentProgress', 'paymentStatus']::text[]
-    || jsonb_build_object(
-      'contractRevenueSchemaVersion', 1,
-      'originalContractTaxExclusiveAmount', expected_contract_amount,
-      'originalContractTaxRate', 0,
-      'originalContractTaxAmount', 0,
-      'originalContractTaxInclusiveAmount', expected_contract_amount,
-      'contractConfirmationStatus', 'historical_migrated_confirmed',
-      'needsManualReview', true
-    );
-
-  update public.projects
-    set payload = next_payload,
-        updated_by_employee_id = actor.id::text,
-        updated_by_employee_name = actor.name
-    where record_key = p_project_id;
-  return next_payload;
+  return current_payload;
 end;
 $$;
 
