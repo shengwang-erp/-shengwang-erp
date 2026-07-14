@@ -92,7 +92,7 @@ test('App adds single-record create and void callbacks and refreshes receipts in
   )
   assert.match(
     appSource,
-    /const \[projectReceipts, setProjectReceipts\] = usePersistentState\(\s*STORAGE_KEYS\.projectReceipts,\s*\[\],\s*\{ cloudPersistence: 'record' \}/,
+    /const \[projectReceipts, setProjectReceipts\] = usePersistentState\(\s*STORAGE_KEYS\.projectReceipts,\s*\[\],\s*\{\s*\.\.\.persistenceOptions,\s*cloudPersistence:\s*'record',?\s*\}/,
   )
   assert.match(appSource, /const handleCreateCustomerReceipt = async \(input\)/)
   assert.match(appSource, /await persistCreateCustomerReceipt\(input\)/)

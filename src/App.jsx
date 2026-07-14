@@ -56,7 +56,9 @@ const STORAGE_KEYS = {
   inventoryItems: 'erp.inventoryItems',
 }
 
-const BUSINESS_STORAGE_KEYS = Object.values(STORAGE_KEYS)
+const MIGRATABLE_STORAGE_KEYS = Object.values(STORAGE_KEYS).filter(
+  (storageKey) => storageKey !== STORAGE_KEYS.employees,
+)
 
 const statusOptions = ['进行中', '已完工', '暂停']
 const paymentStatusOptions = ['未付款', '部分付款', '已付清', '超额收款']
@@ -1261,45 +1263,61 @@ function normalizeOperatingExpenseRecord(record) {
 
 function usePersistentState(key, fallback, options = {}) {
   const cloudPersistence = options.cloudPersistence || 'list'
-  const [value, setValue] = useState(() => readStorage(key, fallback))
+  const cloudRead = options.cloudRead !== false
+  const localCompatibility = options.localCompatibility === true
+  const readOnly = options.readOnly === true
+  const [value, setValue] = useState(() =>
+    localCompatibility ? readStorage(key, fallback) : fallback,
+  )
   const [cloudState, setCloudState] = useState({
-    loading: isCloudDatabaseReady(),
+    loading: cloudRead,
     error: '',
-    source: isCloudDatabaseReady() ? 'supabase' : 'local',
+    source: localCompatibility ? 'compatibility-local' : 'supabase',
   })
+
+  const failClosed = (error, message) => {
+    setValue(fallback)
+    window.localStorage.removeItem(key)
+    setCloudState({
+      loading: false,
+      error: message,
+      source: 'blocked',
+    })
+    options.onError?.({
+      key,
+      code: error?.code || 'DATA_OPERATION_FAILED',
+      status: error?.status || 503,
+      message,
+    })
+  }
 
   useEffect(() => {
     let isMounted = true
 
     async function loadCloudValue() {
-      if (!isCloudDatabaseReady()) return
+      if (!cloudRead) {
+        setCloudState({
+          loading: false,
+          error: '',
+          source: localCompatibility ? 'compatibility-local' : 'disabled',
+        })
+        return
+      }
+      if (!isCloudDatabaseReady()) {
+        failClosed(null, '云端数据服务未配置，已停止访问业务数据。')
+        return
+      }
 
       setCloudState((current) => ({ ...current, loading: true, error: '' }))
       try {
         const cloudValue = await getList(key)
         if (!isMounted || cloudValue === undefined) return
-
-        const localValue = readStorage(key, fallback)
-        const shouldKeepLocalCache =
-          Array.isArray(localValue) &&
-          localValue.length > 0 &&
-          Array.isArray(cloudValue) &&
-          cloudValue.length === 0
-
-        if (!shouldKeepLocalCache) {
-          setValue(cloudValue)
-          window.localStorage.setItem(key, JSON.stringify(cloudValue))
-        }
+        setValue(cloudValue)
+        window.localStorage.setItem(key, JSON.stringify(cloudValue))
         setCloudState({ loading: false, error: '', source: 'supabase' })
       } catch (error) {
         console.error(`Supabase 读取失败: ${key}`, error)
-        if (isMounted) {
-          setCloudState({
-            loading: false,
-            error: '数据读取失败，已暂时使用本机缓存。',
-            source: 'local-cache',
-          })
-        }
+        if (isMounted) failClosed(error, '云端数据读取失败，已停止访问业务数据。')
       }
     }
 
@@ -1308,25 +1326,36 @@ function usePersistentState(key, fallback, options = {}) {
     return () => {
       isMounted = false
     }
-  }, [key])
+  }, [key, cloudRead])
 
   const updateValue = (nextValue, updateOptions = {}) => {
     setValue((currentValue) => {
+      if (readOnly) return currentValue
       const resolvedValue =
         typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
-      if (!updateOptions.stateOnly) {
+      if (updateOptions.stateOnly) return resolvedValue
+
+      if (cloudPersistence === 'record') {
         window.localStorage.setItem(key, JSON.stringify(resolvedValue))
-        if (isCloudDatabaseReady() && cloudPersistence === 'list') {
-          saveList(key, resolvedValue).catch((error) => {
-            console.error(`Supabase 保存失败: ${key}`, error)
-            setCloudState({
-              loading: false,
-              error: '保存失败，请检查网络或 Supabase 配置。',
-              source: 'local-cache',
-            })
-          })
-        }
+        return resolvedValue
       }
+
+      if (!isCloudDatabaseReady()) {
+        queueMicrotask(() =>
+          failClosed(null, '云端数据服务未配置，已停止保存业务数据。'),
+        )
+        return fallback
+      }
+
+      saveList(key, resolvedValue)
+        .then(() => {
+          window.localStorage.setItem(key, JSON.stringify(resolvedValue))
+          setCloudState({ loading: false, error: '', source: 'supabase' })
+        })
+        .catch((error) => {
+          console.error(`Supabase 保存失败: ${key}`, error)
+          failClosed(error, '云端数据保存失败，已停止访问业务数据。')
+        })
       return resolvedValue
     })
   }
@@ -1353,40 +1382,6 @@ function createEmptyProject() {
     manager: '',
     startDate: todayValue(),
     endDate: '',
-    remark: '',
-  }
-}
-
-function createEmptyEmployee() {
-  return {
-    name: '',
-    gender: '男',
-    birthDate: '',
-    nationality: '中国',
-    employmentStatus: '在职',
-    hireDate: todayValue(),
-    resignDate: '',
-    department: '现场',
-    position: '小工',
-    level: '1星',
-    phone: '',
-    emergencyContactName: '',
-    emergencyContactPhone: '',
-    currentAddress: '',
-    visaAgency: '',
-    visaType: '',
-    visaExpireDate: '',
-    passportNumber: '',
-    residenceCardNumber: '',
-    salaryType: '未设置',
-    baseSalary: '',
-    dailySalary: '',
-    hourlyWage: '',
-    salaryRemark: '',
-    source: '人员管理新增',
-    wecomUserId: '',
-    wecomDepartmentId: '',
-    wecomDepartmentName: '',
     remark: '',
   }
 }
@@ -1659,99 +1654,133 @@ function createEmptyToolResponsibilityForm() {
 function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
-  const [storedProjects, setStoredProjects] = usePersistentState(STORAGE_KEYS.projects, [])
+  const [persistenceFailure, setPersistenceFailure] = useState(null)
+  const persistenceOptions = { onError: setPersistenceFailure }
+  const [storedProjects, setStoredProjects] = usePersistentState(
+    STORAGE_KEYS.projects,
+    [],
+    persistenceOptions,
+  )
   const [projectContractChanges, setProjectContractChanges] = usePersistentState(
     STORAGE_KEYS.projectContractChanges,
     [],
-    { cloudPersistence: 'record' },
+    { ...persistenceOptions, cloudPersistence: 'record' },
   )
   const [projectPaymentPlans, setProjectPaymentPlans] = usePersistentState(
     STORAGE_KEYS.projectPaymentPlans,
     [],
-    { cloudPersistence: 'record' },
+    { ...persistenceOptions, cloudPersistence: 'record' },
   )
   const [projectReceipts, setProjectReceipts] = usePersistentState(
     STORAGE_KEYS.projectReceipts,
     [],
-    { cloudPersistence: 'record' },
+    { ...persistenceOptions, cloudPersistence: 'record' },
   )
-  const [storedEmployees, setStoredEmployees] = usePersistentState(STORAGE_KEYS.employees, [])
+  const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {
+    cloudRead: false,
+    cloudPersistence: 'none',
+    localCompatibility: true,
+    readOnly: true,
+  })
   const [stockOutRecords, setStockOutRecords] = usePersistentState(
     STORAGE_KEYS.stockOutRecords,
     [],
+    persistenceOptions,
   )
   const [stockReturnRecords, setStockReturnRecords] = usePersistentState(
     STORAGE_KEYS.stockReturnRecords,
     [],
+    persistenceOptions,
   )
-  const [laborRecords, setLaborRecords] = usePersistentState(STORAGE_KEYS.laborRecords, [])
+  const [laborRecords, setLaborRecords] = usePersistentState(
+    STORAGE_KEYS.laborRecords,
+    [],
+    persistenceOptions,
+  )
   const [vehicleRecords, setVehicleRecords] = usePersistentState(
     STORAGE_KEYS.vehicleRecords,
     [],
+    persistenceOptions,
   )
   const [storedVehicleUsageRecords, setStoredVehicleUsageRecords] = usePersistentState(
     STORAGE_KEYS.vehicleUsageRecords,
     [],
+    persistenceOptions,
   )
   const [storedFuelRecords, setStoredFuelRecords] = usePersistentState(
     STORAGE_KEYS.fuelRecords,
     [],
+    persistenceOptions,
   )
   const [storedVehicleExpenseRecords, setStoredVehicleExpenseRecords] = usePersistentState(
     STORAGE_KEYS.vehicleExpenseRecords,
     [],
+    persistenceOptions,
   )
   const [storedVehicleIssueRecords, setStoredVehicleIssueRecords] = usePersistentState(
     STORAGE_KEYS.vehicleIssueRecords,
     [],
+    persistenceOptions,
   )
   const [toolBorrowRecords, setToolBorrowRecords] = usePersistentState(
     STORAGE_KEYS.toolBorrowRecords,
     [],
+    persistenceOptions,
   )
   const [toolReturnRecords, setToolReturnRecords] = usePersistentState(
     STORAGE_KEYS.toolReturnRecords,
     [],
+    persistenceOptions,
   )
   const [storedToolRecords, setStoredToolRecords] = usePersistentState(
     STORAGE_KEYS.toolRecords,
     [],
+    persistenceOptions,
   )
   const [storedLifelongToolAssignments, setStoredLifelongToolAssignments] = usePersistentState(
     STORAGE_KEYS.lifelongToolAssignments,
     [],
+    persistenceOptions,
   )
   const [storedToolResponsibilityRecords, setStoredToolResponsibilityRecords] = usePersistentState(
     STORAGE_KEYS.toolResponsibilityRecords,
     [],
+    persistenceOptions,
   )
   const [storedSalaryRecords, setStoredSalaryRecords] = usePersistentState(
     STORAGE_KEYS.salaryRecords,
     [],
+    persistenceOptions,
   )
   const [storedProjectCostRecords, setStoredProjectCostRecords] = usePersistentState(
     STORAGE_KEYS.projectCostRecords,
     [],
+    persistenceOptions,
   )
   const [storedOperatingExpenseRecords, setStoredOperatingExpenseRecords] = usePersistentState(
     STORAGE_KEYS.operatingExpenseRecords,
     [],
+    persistenceOptions,
   )
   const [storedPurchaseRecords, setStoredPurchaseRecords] = usePersistentState(
     STORAGE_KEYS.purchaseRecords,
     [],
+    persistenceOptions,
   )
   const [storedPurchasePaymentRecords, setStoredPurchasePaymentRecords] = usePersistentState(
     STORAGE_KEYS.purchasePaymentRecords,
     [],
+    persistenceOptions,
   )
   const [storedStockInRecords, setStoredStockInRecords] = usePersistentState(
     STORAGE_KEYS.stockInRecords,
     [],
+    persistenceOptions,
   )
   const [storedInventoryItems, setStoredInventoryItems] = usePersistentState(
     STORAGE_KEYS.inventoryItems,
     [],
+    persistenceOptions,
   )
 
   const refreshStoredProjectsFromLocal = () => {
@@ -1881,20 +1910,41 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     [storedToolResponsibilityRecords],
   )
 
+  if (persistenceFailure) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel auth-status-panel" role="alert">
+          <img
+            className="auth-brand-mark"
+            src="/sw-erp-logo.jpg"
+            alt="生旺株式会社标志"
+          />
+          <p>生旺株式会社 · ERP 数据中心</p>
+          <h1>云端数据访问已停止</h1>
+          <span>{persistenceFailure.message}</span>
+          <div className="auth-account-actions">
+            <button
+              className="auth-primary-button"
+              type="button"
+              onClick={() => window.location.reload()}
+            >
+              重新验证
+            </button>
+            <button className="auth-secondary-button" type="button" onClick={onLogout}>
+              退出登录
+            </button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   const setProjects = (nextProjects) => {
     setStoredProjects((currentProjects) => {
       const normalizedCurrent = currentProjects.map((project) => normalizeProject(project))
       const resolvedProjects =
         typeof nextProjects === 'function' ? nextProjects(normalizedCurrent) : nextProjects
       return resolvedProjects.map((project) => prepareProjectForPersistence(project))
-    })
-  }
-  const setEmployees = (nextEmployees) => {
-    setStoredEmployees((currentEmployees) => {
-      const normalizedCurrent = currentEmployees.map((employee) => normalizeEmployee(employee))
-      const resolvedEmployees =
-        typeof nextEmployees === 'function' ? nextEmployees(normalizedCurrent) : nextEmployees
-      return resolvedEmployees.map((employee) => normalizeEmployee(employee))
     })
   }
   const setVehicles = (nextVehicles) => {
@@ -2133,18 +2183,6 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return voided
   }
 
-  const handleClearTestData = async () => {
-    for (const key of BUSINESS_STORAGE_KEYS) {
-      const nextValue = []
-      window.localStorage.setItem(key, JSON.stringify(nextValue))
-      if (isCloudDatabaseReady()) {
-        await saveList(key, nextValue)
-      }
-    }
-
-    window.location.reload()
-  }
-
   const renderInDesktopShell = (page) => (
     <DesktopAdminShell
       currentView={currentView}
@@ -2191,27 +2229,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   if (currentView === 'employees') {
     return renderInDesktopShell(
-      <PersonnelPage
+      <LegacyEmployeeCompatibilityPage
         employees={employees}
-        setEmployees={setEmployees}
-        currentUser={currentUser}
-        references={{
-          salaryRecords,
-          laborRecords,
-          stockOutRecords,
-          stockReturnRecords,
-          vehicleArchiveRecords: vehicles,
-          vehicleRecords: vehicleUsageRecords,
-          fuelRecords,
-          vehicleExpenseRecords,
-          vehicleIssueRecords,
-          toolBorrowRecords,
-          toolReturnRecords,
-          lifelongToolAssignments,
-          toolResponsibilityRecords,
-          projectCostRecords,
-          operatingExpenseRecords,
-        }}
         onBack={() => setCurrentView('home')}
       />
     )
@@ -2341,11 +2360,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return renderInDesktopShell(
       <SystemSettingsPage
         currentUser={currentUser}
-        storageKeys={BUSINESS_STORAGE_KEYS}
+        storageKeys={MIGRATABLE_STORAGE_KEYS}
         onLocalContractRevenueMigrationComplete={
           handleLocalContractRevenueMigrationComplete
         }
-        onClearTestData={handleClearTestData}
         onBack={() => setCurrentView('home')}
       />
     )
@@ -2612,11 +2630,9 @@ function SystemSettingsPage({
   currentUser,
   storageKeys,
   onLocalContractRevenueMigrationComplete: handleLocalContractRevenueMigrationComplete,
-  onClearTestData,
   onBack,
 }) {
   const [isMigrating, setIsMigrating] = useState(false)
-  const [isClearing, setIsClearing] = useState(false)
   const [migrationResults, setMigrationResults] = useState([])
   const [message, setMessage] = useState('')
   const canMigrate = isSuperAdmin(currentUser)
@@ -2652,28 +2668,6 @@ function SystemSettingsPage({
     }
   }
 
-  const handleClearTestData = async () => {
-    if (!canMigrate) {
-      window.alert('您没有权限操作此模块')
-      return
-    }
-
-    const confirmed = window.confirm(
-      '确定清空当前测试数据吗？本机和 Supabase 中的业务测试数据都会清空，只保留系统恢复账号。',
-    )
-    if (!confirmed) return
-
-    setIsClearing(true)
-    setMessage('正在清空测试数据...')
-    try {
-      await onClearTestData()
-    } catch (error) {
-      console.error('清空测试数据失败', error)
-      setMessage('清空失败，请检查 Supabase 连接后重试。')
-      setIsClearing(false)
-    }
-  }
-
   return (
     <PageShell title="系统设置" subtitle="云端数据库与数据迁移" onBack={onBack}>
       <section className="form-card">
@@ -2682,8 +2676,9 @@ function SystemSettingsPage({
           <span>{isCloudDatabaseReady() ? '已配置' : '未配置'}</span>
         </div>
         <div className="detail-list">
-          <span>业务数据：{isCloudDatabaseReady() ? '优先读取和保存到 Supabase' : '当前仍使用本机缓存'}</span>
+          <span>业务数据：仅在认证会话与云端权限验证成功后读取和保存</span>
           <span>登录状态：由 Supabase Auth 安全会话管理</span>
+          <span>失败策略：认证、权限或网络错误时停止访问，不回退本机旧数据</span>
           <span>附件：已预留 attachments 字段，后续接 Supabase Storage</span>
         </div>
       </section>
@@ -2713,8 +2708,7 @@ function SystemSettingsPage({
           <span>{canMigrate ? '最高权限可用' : '无权限'}</span>
         </div>
         <div className="empty-state cost-note">
-          迁移工具用于把当前浏览器已有测试数据上传到云端。迁移前请先在 Supabase SQL Editor 执行
-          docs/supabase-schema.sql。
+          迁移工具只处理明确允许的旧业务缓存，不包含旧员工档案。每次迁移都会重新确认登录会话并由云端 RLS 校验权限；失败后不会继续重试整表。
         </div>
         <div className="form-actions">
           <button
@@ -2749,119 +2743,18 @@ function SystemSettingsPage({
         )}
       </section>
 
-      <section className="form-card danger-zone">
-        <div className="section-heading">
-          <h2>测试数据清理</h2>
-          <span>上传前整理</span>
-        </div>
-        <div className="empty-state cost-note">
-          仅用于测试阶段。会清空本机和 Supabase 中的旧版业务测试数据；认证账号不受影响。
-        </div>
-        <div className="form-actions">
-          <button
-            className="danger-button"
-            type="button"
-            onClick={handleClearTestData}
-            disabled={!canMigrate || isClearing}
-          >
-            {isClearing ? '清空中...' : '清空测试数据'}
-          </button>
-        </div>
-      </section>
     </PageShell>
   )
 }
 
-function PersonnelPage({ employees, setEmployees, currentUser, references, onBack }) {
-  const [isFormOpen, setIsFormOpen] = useState(false)
-  const [editingId, setEditingId] = useState('')
-  const [form, setForm] = useState(createEmptyEmployee)
+function LegacyEmployeeCompatibilityPage({ employees, onBack }) {
   const [nameFilter, setNameFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [agencyFilter, setAgencyFilter] = useState('')
-  const formSalaryStandard = getSalaryStandard(form)
 
   const agencies = Array.from(
     new Set(employees.map((employee) => employee.visaAgency).filter(Boolean)),
   )
-
-  const resetForm = () => {
-    setForm(createEmptyEmployee())
-    setEditingId('')
-    setIsFormOpen(false)
-  }
-
-  const updatePosition = (position) => {
-    setForm((currentForm) => ({
-      ...currentForm,
-      position,
-    }))
-  }
-
-  const isEmployeeReferenced = (employeeId) =>
-    [
-      references.salaryRecords,
-      references.laborRecords,
-      references.stockOutRecords,
-      references.stockReturnRecords,
-      references.vehicleArchiveRecords,
-      references.vehicleRecords,
-      references.fuelRecords,
-      references.vehicleExpenseRecords,
-      references.vehicleIssueRecords,
-      references.toolBorrowRecords,
-      references.toolReturnRecords,
-      references.lifelongToolAssignments,
-      references.toolResponsibilityRecords,
-      references.projectCostRecords,
-      references.operatingExpenseRecords,
-    ].some((list) =>
-      list.some(
-        (record) =>
-          record.employeeId === employeeId || record.responsibleEmployeeId === employeeId,
-      ),
-    )
-
-  const handleSubmit = (event) => {
-    event.preventDefault()
-
-    if (!form.name.trim()) {
-      window.alert('请填写员工姓名')
-      return
-    }
-
-    if (
-      form.employmentStatus === '离职' &&
-      (references.lifelongToolAssignments || []).some(
-        (assignment) =>
-          assignment.employeeId === editingId &&
-          !['已退回公司', '作废'].includes(assignment.responsibilityStatus),
-      )
-    ) {
-      window.alert('该员工名下仍有工具，请处理退回、赔偿或作废。')
-    }
-
-    if (editingId) {
-      const payload = normalizeEmployee({
-        ...form,
-        employeeId: editingId,
-        updatedAt: todayValue(),
-      })
-      setEmployees((currentEmployees) =>
-        currentEmployees.map((employee) => (employee.employeeId === editingId ? payload : employee)),
-      )
-    } else {
-      const payload = normalizeEmployee({
-        ...form,
-        employeeId: nextId('E', employees, 'employeeId'),
-        createdAt: todayValue(),
-        updatedAt: todayValue(),
-      })
-      setEmployees((currentEmployees) => [payload, ...currentEmployees])
-    }
-
-    resetForm()
-  }
 
   const filteredEmployees = employees.filter((employee) => {
     if (isHiddenSystemEmployee(employee)) return false
@@ -2874,66 +2767,12 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
   return (
     <PageShell
       title="人员管理"
-      subtitle="员工档案・工资・身份"
+      subtitle="旧员工兼容档案（不可信，只读）"
       onBack={onBack}
-      action={
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => {
-            setForm(createEmptyEmployee())
-            setEditingId('')
-            setIsFormOpen(true)
-          }}
-        >
-          新增员工
-        </button>
-      }
     >
-      {isFormOpen && (
-        <form className="form-panel" onSubmit={handleSubmit}>
-          <div className="form-grid">
-            <Field label="姓名" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
-            <OptionField label="性别" value={form.gender} onChange={(value) => setForm({ ...form, gender: value })} options={genderOptions} />
-            <Field label="出生日期" type="date" value={form.birthDate} onChange={(value) => setForm({ ...form, birthDate: value })} />
-            <Field label="国籍" value={form.nationality} onChange={(value) => setForm({ ...form, nationality: value })} />
-            <OptionField label="在职状态" value={form.employmentStatus} onChange={(value) => setForm({ ...form, employmentStatus: value })} options={employmentStatusOptions} />
-            <Field label="入职日期" type="date" value={form.hireDate} onChange={(value) => setForm({ ...form, hireDate: value })} />
-            <Field label="离职日期" type="date" value={form.resignDate} onChange={(value) => setForm({ ...form, resignDate: value })} />
-            <OptionField label="所属部门" value={form.department} onChange={(value) => setForm({ ...form, department: value })} options={departmentOptions} />
-            <OptionField label="职位" value={form.position} onChange={updatePosition} options={positionOptions} />
-            <OptionField label="星级" value={form.level} onChange={(value) => setForm({ ...form, level: value })} options={levelOptions} />
-            <Field label="联系电话" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} />
-            <Field label="紧急联系人" value={form.emergencyContactName} onChange={(value) => setForm({ ...form, emergencyContactName: value })} />
-            <Field label="紧急联系人电话" value={form.emergencyContactPhone} onChange={(value) => setForm({ ...form, emergencyContactPhone: value })} />
-            <Field label="现住址" value={form.currentAddress} onChange={(value) => setForm({ ...form, currentAddress: value })} />
-            <Field label="身份办理组合/机构" value={form.visaAgency} onChange={(value) => setForm({ ...form, visaAgency: value })} />
-            <Field label="在留资格" value={form.visaType} onChange={(value) => setForm({ ...form, visaType: value })} />
-            <Field label="在留期限" type="date" value={form.visaExpireDate} onChange={(value) => setForm({ ...form, visaExpireDate: value })} />
-            <Field label="护照号码" value={form.passportNumber} onChange={(value) => setForm({ ...form, passportNumber: value })} />
-            <Field label="在留卡号码" value={form.residenceCardNumber} onChange={(value) => setForm({ ...form, residenceCardNumber: value })} />
-            <OptionField label="工资类型" value={form.salaryType || '未设置'} onChange={(value) => setForm({ ...form, salaryType: value })} options={salaryTypeOptions} />
-            <Field label="基本工资（月薪）" type="number" value={form.baseSalary} onChange={(value) => setForm({ ...form, baseSalary: value })} />
-            <Field label="日工资（日薪）" type="number" value={form.dailySalary} onChange={(value) => setForm({ ...form, dailySalary: value })} />
-            <Field label="时薪" type="number" value={form.hourlyWage} onChange={(value) => setForm({ ...form, hourlyWage: value })} />
-            <ReadOnlyField label="项目分摊日工费" value={formatYen(formSalaryStandard.dailySalary)} />
-            <ReadOnlyField label="项目分摊时薪" value={formatYen(formSalaryStandard.hourlyWage)} />
-            <Field label="工资备注" type="textarea" value={form.salaryRemark} onChange={(value) => setForm({ ...form, salaryRemark: value })} />
-            <Field label="备注" type="textarea" value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
-          </div>
-          <div className="empty-state cost-note">
-            月薪人员按基本工资 / 24 天换算项目分摊日工费；项目人工成本只是分摊，不额外增加工资支出。
-          </div>
-          <div className="form-actions">
-            <button className="primary-button" type="submit">
-              {editingId ? '保存修改' : '保存员工'}
-            </button>
-            <button className="ghost-button" type="button" onClick={resetForm}>
-              取消
-            </button>
-          </div>
-        </form>
-      )}
+      <div className="empty-state cost-note" role="note">
+        此处只用于识别历史业务记录中的旧员工编号，不是当前认证员工目录，也不能用于登录、授权、新增或修改。规范员工资料由服务端人员管理接口维护。
+      </div>
 
       <div className="filter-panel">
         <Field label="按姓名搜索" value={nameFilter} onChange={setNameFilter} placeholder="输入姓名" />
@@ -2958,73 +2797,13 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
                 <div><dt>部门</dt><dd>{employee.department}</dd></div>
                 <div><dt>职位</dt><dd>{employee.position}</dd></div>
                 <div><dt>来源</dt><dd>{employee.source || '未填写'}</dd></div>
-                <div><dt>权限来源</dt><dd>部门与职位模板</dd></div>
-                <div><dt>星级</dt><dd>{employee.level}</dd></div>
-                <div><dt>入职日期</dt><dd>{employee.hireDate || '未填写'}</dd></div>
-                <div><dt>联系电话</dt><dd>{employee.phone || '未填写'}</dd></div>
-                <div><dt>现住址</dt><dd>{employee.currentAddress || '未填写'}</dd></div>
-                <div><dt>办理机构</dt><dd>{employee.visaAgency || '未填写'}</dd></div>
-                <div><dt>在留期限</dt><dd>{employee.visaExpireDate || '未填写'}</dd></div>
-                <div><dt>工资类型</dt><dd>{employee.salaryType}</dd></div>
-                <div><dt>基本工资</dt><dd>{formatYen(employee.baseSalary)}</dd></div>
-                <div><dt>项目分摊日工费</dt><dd>{formatYen(employee.dailySalary)}</dd></div>
-                <div><dt>项目分摊时薪</dt><dd>{formatYen(employee.hourlyWage)}</dd></div>
+                <div><dt>兼容用途</dt><dd>仅历史记录人工映射</dd></div>
               </dl>
-              <EmployeeOwnedTools
-                employee={employee}
-                assignments={references.lifelongToolAssignments || []}
-                responsibilityRecords={references.toolResponsibilityRecords || []}
-              />
-              <RecordActions
-                onEdit={() => {
-                  setEditingId(employee.employeeId)
-                  setForm(employee)
-                  setIsFormOpen(true)
-                }}
-                onDelete={() => {
-                  if (isEmployeeReferenced(employee.employeeId)) {
-                    window.alert('该员工已有业务记录，建议改为离职状态，不建议删除。')
-                    return
-                  }
-                  if (window.confirm('确定删除这个员工档案吗？')) {
-                    setEmployees((currentEmployees) =>
-                      currentEmployees.filter((item) => item.employeeId !== employee.employeeId),
-                    )
-                  }
-                }}
-              />
             </article>
           ))
         )}
       </div>
     </PageShell>
-  )
-}
-
-function EmployeeOwnedTools({ employee, assignments, responsibilityRecords }) {
-  const ownedTools = assignments.filter(
-    (assignment) =>
-      assignment.employeeId === employee.employeeId && assignment.responsibilityStatus !== '作废',
-  )
-
-  if (ownedTools.length === 0) return null
-
-  return (
-    <div className="owned-tools-panel">
-      <strong>员工名下工具</strong>
-      <div className="owned-tools-list">
-        {ownedTools.map((assignment) => (
-          <div className="owned-tool-row" key={assignment.assignmentId}>
-            <span>
-              {assignment.toolName}｜{assignment.specification || '未填写规格'}｜{assignment.brand || '未填写品牌'}｜{assignment.serialNumber || '无编号'}
-            </span>
-            <small>
-              领用 {assignment.assignDate}｜价值 {formatYen(assignment.toolValue)}｜{assignment.responsibilityStatus}｜未赔偿 {formatYen(getAssignmentUnpaidCompensation(assignment.assignmentId, responsibilityRecords))}
-            </small>
-          </div>
-        ))}
-      </div>
-    </div>
   )
 }
 

@@ -62,7 +62,10 @@ test('App saves each plan with create or update single-record service and refres
     appSource,
     /const \[projectPaymentPlans, setProjectPaymentPlans\] = usePersistentState/,
   )
-  assert.match(appSource, /STORAGE_KEYS\.projectPaymentPlans,\s*\[\],\s*\{ cloudPersistence: 'record' \}/)
+  assert.match(
+    appSource,
+    /STORAGE_KEYS\.projectPaymentPlans,\s*\[\],\s*\{\s*\.\.\.persistenceOptions,\s*cloudPersistence:\s*'record',?\s*\}/,
+  )
   assert.match(appSource, /const handleSavePaymentPlan = async \(input\)/)
   assert.match(appSource, /input\.planId\s*\? await persistUpdatePaymentPlan\(input\)/)
   assert.match(appSource, /: await persistCreatePaymentPlan\(input\)/)

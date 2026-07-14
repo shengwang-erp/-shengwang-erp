@@ -81,6 +81,15 @@ test('App persists create and void as single records and refreshes the snapshot 
 
 test('record-mode state updates keep local cache but do not invoke whole-table cloud save', () => {
   assert.match(appSource, /function usePersistentState\(key, fallback, options = \{\}\)/)
-  assert.match(appSource, /cloudPersistence === 'list'/)
-  assert.match(appSource, /window\.localStorage\.setItem\(key, JSON\.stringify\(resolvedValue\)\)/)
+  const recordModeBranch = appSource.match(
+    /if \(cloudPersistence === 'record'\) \{([\s\S]*?)\n\s*\}/,
+  )?.[1]
+
+  assert.ok(recordModeBranch)
+  assert.match(
+    recordModeBranch,
+    /window\.localStorage\.setItem\(key, JSON\.stringify\(resolvedValue\)\)/,
+  )
+  assert.doesNotMatch(recordModeBranch, /saveList\(/)
+  assert.match(appSource, /saveList\(key, resolvedValue\)/)
 })
