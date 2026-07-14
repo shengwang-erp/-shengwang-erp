@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isCloudDatabaseReady, getList, migrateLocalStorageToSupabase, saveList } from './services/baseRecordService'
 import {
   buildProjectRevenueReadModel,
@@ -7,8 +7,11 @@ import {
 } from './features/contract-revenue/contractRevenueCalculations'
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
+import PersonnelPage from './features/employees/PersonnelPage'
+import { shouldBlockPersonnelExit } from './features/employees/personnelCriticalState.js'
 import DesktopAdminShell from './DesktopAdminShell'
 import AuthGate from './auth/AuthGate'
+import { employeeAdminService } from './services/employeeAdminService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import {
@@ -1653,6 +1656,14 @@ function createEmptyToolResponsibilityForm() {
 
 function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
+  const [personnelEmployees, setPersonnelEmployees] = useState([])
+  const [personnelLoadState, setPersonnelLoadState] = useState({
+    loading: false,
+    error: '',
+  })
+  const [personnelProtectedState, setPersonnelProtectedState] = useState(false)
+  const personnelProtectedStateRef = useRef(false)
+  const personnelRequestVersion = useRef(0)
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
   const [persistenceFailure, setPersistenceFailure] = useState(null)
   const persistenceOptions = { onError: setPersistenceFailure }
@@ -1782,6 +1793,92 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     [],
     persistenceOptions,
   )
+
+  const refreshPersonnelEmployees = useCallback(async () => {
+    const requestVersion = personnelRequestVersion.current + 1
+    personnelRequestVersion.current = requestVersion
+    setPersonnelLoadState({ loading: true, error: '' })
+    try {
+      const directory = await employeeAdminService.listEmployeeDirectory()
+      if (personnelRequestVersion.current !== requestVersion) return directory
+      setPersonnelEmployees(directory)
+      setPersonnelLoadState({ loading: false, error: '' })
+      return directory
+    } catch (error) {
+      if (personnelRequestVersion.current !== requestVersion) return []
+      setPersonnelEmployees([])
+      setPersonnelLoadState({
+        loading: false,
+        error:
+          error?.name === 'EmployeeAdminError'
+            ? error.message
+            : '规范员工目录暂时无法读取，请稍后重试',
+      })
+      throw error
+    }
+  }, [])
+
+  const personnelExitBlocked = shouldBlockPersonnelExit({
+    currentView,
+    protectedStateActive: personnelProtectedState,
+  })
+  const handlePersonnelCriticalStateChange = useCallback((active) => {
+    const nextActive = active === true
+    personnelProtectedStateRef.current = nextActive
+    setPersonnelProtectedState(nextActive)
+    return true
+  }, [])
+  const handlePersonnelAwareNavigate = useCallback(
+    (nextView) => {
+      const exitBlockedNow = shouldBlockPersonnelExit({
+        currentView,
+        protectedStateActive: personnelProtectedStateRef.current,
+      })
+      if (exitBlockedNow && nextView !== currentView) return
+      setCurrentView(nextView)
+    },
+    [currentView],
+  )
+  const handlePersonnelAwareLogout = useCallback(() => {
+    const exitBlockedNow = shouldBlockPersonnelExit({
+      currentView,
+      protectedStateActive: personnelProtectedStateRef.current,
+    })
+    if (exitBlockedNow) return
+    return onLogout()
+  }, [currentView, onLogout])
+
+  useEffect(() => {
+    const preventProtectedExit = (event) => {
+      const exitBlockedNow = shouldBlockPersonnelExit({
+        currentView,
+        protectedStateActive: personnelProtectedStateRef.current,
+      })
+      if (!exitBlockedNow) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', preventProtectedExit)
+    return () => {
+      window.removeEventListener('beforeunload', preventProtectedExit)
+    }
+  }, [currentView, personnelExitBlocked])
+
+  useEffect(() => {
+    if (currentView !== 'employees') {
+      personnelRequestVersion.current += 1
+      setPersonnelEmployees([])
+      setPersonnelLoadState({ loading: false, error: '' })
+      return undefined
+    }
+
+    refreshPersonnelEmployees().catch((error) => {
+      if (error?.authInvalid) onLogout()
+    })
+    return () => {
+      personnelRequestVersion.current += 1
+    }
+  }, [currentView, onLogout, refreshPersonnelEmployees])
 
   const refreshStoredProjectsFromLocal = () => {
     setStoredProjects(readStorage(STORAGE_KEYS.projects, []), { stateOnly: true })
@@ -2187,8 +2284,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     <DesktopAdminShell
       currentView={currentView}
       currentUser={currentUser}
-      onNavigate={setCurrentView}
-      onLogout={onLogout}
+      onNavigate={handlePersonnelAwareNavigate}
+      onLogout={handlePersonnelAwareLogout}
     >
       {page}
     </DesktopAdminShell>
@@ -2229,9 +2326,15 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   if (currentView === 'employees') {
     return renderInDesktopShell(
-      <LegacyEmployeeCompatibilityPage
-        employees={employees}
-        onBack={() => setCurrentView('home')}
+      <PersonnelPage
+        employees={personnelEmployees}
+        currentEmployee={currentUser}
+        employeeAdmin={employeeAdminService}
+        loadState={personnelLoadState}
+        onRefreshEmployees={refreshPersonnelEmployees}
+        onAuthInvalid={onLogout}
+        onCriticalStateChange={handlePersonnelCriticalStateChange}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
