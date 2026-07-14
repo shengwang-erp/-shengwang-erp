@@ -63,7 +63,31 @@ export const PERMISSION_CATALOG = Object.freeze([
 ])
 
 const PERMISSION_CATALOG_SET = new Set(PERMISSION_CATALOG)
+const PROJECT_FINANCIAL_KEYS = new Set([
+  'sensitive.contract_amount_view',
+  'sensitive.contract_amount_update',
+])
 
 export function isTemplatePermissionKey(value) {
   return typeof value === 'string' && PERMISSION_CATALOG_SET.has(value)
+}
+
+export function canTemplateSubjectReceiveProjectFinancials(
+  subjectType,
+  subjectCode,
+) {
+  return (
+    (subjectType === 'department' &&
+      ['设计部', '财务部'].includes(subjectCode)) ||
+    (subjectType === 'position' && subjectCode === '社长')
+  )
+}
+
+export function templateContainsForbiddenProjectFinancialGrant(
+  subjectType,
+  subjectCode,
+  permissionKeys,
+) {
+  return permissionKeys.some((key) => PROJECT_FINANCIAL_KEYS.has(key)) &&
+    !canTemplateSubjectReceiveProjectFinancials(subjectType, subjectCode)
 }

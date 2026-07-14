@@ -2,6 +2,9 @@ import {
   DEPARTMENT_OPTIONS,
   POSITION_OPTIONS,
 } from '../../auth/employeeAuthDomain.js'
+import {
+  templateContainsForbiddenProjectFinancialGrant,
+} from '../../auth/permissionCatalog.js'
 
 const EMPTY_PERMISSION_KEYS = Object.freeze([])
 
@@ -116,6 +119,13 @@ export function togglePermissionTemplateDraft(editorData, permissionKey) {
   if (!editorData.templates || !isDraftBoundToSelection(editorData)) {
     return editorData
   }
+  if (
+    templateContainsForbiddenProjectFinancialGrant(
+      editorData.subjectType,
+      editorData.selectedSubject,
+      [permissionKey],
+    )
+  ) return editorData
 
   const current = editorData.draft.permissionKeys
   const permissionKeys = current.includes(permissionKey)

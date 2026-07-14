@@ -21,6 +21,10 @@ import * as permissionTemplateEditorState from './permissionTemplateEditorState.
 
 const MODULE_KEY = 'module.projects.view'
 const OTHER_MODULE_KEY = 'module.personnel.create'
+const FINANCIAL_KEYS = Object.freeze([
+  'sensitive.contract_amount_view',
+  'sensitive.contract_amount_update',
+])
 
 function createSnapshot() {
   return {
@@ -141,6 +145,67 @@ test('only a dirty draft bound to the current subject can be saved', () => {
   const discarded = discardPermissionTemplateDraft(changed)
   assert.deepEqual(discarded.draft.permissionKeys, [MODULE_KEY])
   assert.equal(isPermissionTemplateDraftDirty(discarded), false)
+})
+
+test('forbidden project financial toggles are strict no-ops while unrelated keys remain interactive', () => {
+  const loaded = applyPermissionTemplateSnapshot(
+    createPermissionTemplateEditorData(),
+    createSnapshot(),
+  )
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '工程部'],
+      ['position', '主任'],
+    ]
+  ) {
+    const selected = selectPermissionTemplateSubject(
+      loaded,
+      subjectType,
+      subjectCode,
+    )
+
+    for (const financialKey of FINANCIAL_KEYS) {
+      assert.equal(
+        togglePermissionTemplateDraft(selected, financialKey),
+        selected,
+      )
+    }
+
+    const changed = togglePermissionTemplateDraft(selected, MODULE_KEY)
+    assert.notEqual(changed, selected)
+    assert.deepEqual(changed.draft.permissionKeys, [MODULE_KEY])
+  }
+})
+
+test('allowed project financial subjects can toggle both financial permissions', () => {
+  const loaded = applyPermissionTemplateSnapshot(
+    createPermissionTemplateEditorData(),
+    createSnapshot(),
+  )
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '设计部'],
+      ['department', '财务部'],
+      ['position', '社长'],
+    ]
+  ) {
+    const selected = selectPermissionTemplateSubject(
+      loaded,
+      subjectType,
+      subjectCode,
+    )
+    const changed = FINANCIAL_KEYS.reduce(
+      (editorData, permissionKey) =>
+        togglePermissionTemplateDraft(editorData, permissionKey),
+      selected,
+    )
+
+    for (const financialKey of FINANCIAL_KEYS) {
+      assert.equal(changed.draft.permissionKeys.includes(financialKey), true)
+    }
+  }
 })
 
 test('clearing a snapshot fails closed without carrying a previous subject draft', () => {

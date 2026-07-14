@@ -6,10 +6,12 @@ import {
   POSITION_OPTIONS,
 } from '../auth/employeeAuthDomain.js'
 import {
+  canTemplateSubjectReceiveProjectFinancials,
   PERMISSION_ACTIONS,
   PERMISSION_CATALOG,
   PERMISSION_MODULES,
   SENSITIVE_PERMISSION_CATALOG,
+  templateContainsForbiddenProjectFinancialGrant,
 } from '../auth/permissionCatalog.js'
 import {
   createPermissionTemplateService,
@@ -60,6 +62,64 @@ test('permission catalog is the closed 62-key module/action and sensitive set', 
       key.startsWith('module.permission_templates.')
     ),
   )
+})
+
+test('project financial template grants use the fixed allowed and forbidden subject matrix', () => {
+  const financialKeys = [
+    'sensitive.contract_amount_view',
+    'sensitive.contract_amount_update',
+  ]
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '工程部'],
+      ['position', '主任'],
+    ]
+  ) {
+    assert.equal(
+      canTemplateSubjectReceiveProjectFinancials(subjectType, subjectCode),
+      false,
+    )
+    for (const financialKey of financialKeys) {
+      assert.equal(
+        templateContainsForbiddenProjectFinancialGrant(
+          subjectType,
+          subjectCode,
+          [financialKey],
+        ),
+        true,
+      )
+    }
+    assert.equal(
+      templateContainsForbiddenProjectFinancialGrant(
+        subjectType,
+        subjectCode,
+        ['module.projects.view'],
+      ),
+      false,
+    )
+  }
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '设计部'],
+      ['department', '财务部'],
+      ['position', '社长'],
+    ]
+  ) {
+    assert.equal(
+      canTemplateSubjectReceiveProjectFinancials(subjectType, subjectCode),
+      true,
+    )
+    assert.equal(
+      templateContainsForbiddenProjectFinancialGrant(
+        subjectType,
+        subjectCode,
+        financialKeys,
+      ),
+      false,
+    )
+  }
 })
 
 test('read invokes permission-templates with the exact body and validates a complete snapshot', async () => {
@@ -148,6 +208,74 @@ test('invalid subjects, duplicate and non-catalog permissions fail before networ
         error.code === 'PERMISSION_TEMPLATE_INPUT_INVALID',
     )
     assert.deepEqual(calls, [])
+  }
+})
+
+test('forbidden project financial replacements fail locally without Edge invocation', async () => {
+  const financialKeys = [
+    'sensitive.contract_amount_view',
+    'sensitive.contract_amount_update',
+  ]
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '工程部'],
+      ['position', '主任'],
+    ]
+  ) {
+    for (const financialKey of financialKeys) {
+      const { client, calls } = createClient()
+      const service = createPermissionTemplateService(client, {
+        configured: true,
+      })
+
+      await assert.rejects(
+        service.replacePermissionTemplate({
+          subjectType,
+          subjectCode,
+          permissionKeys: [financialKey],
+        }),
+        (error) =>
+          error instanceof PermissionTemplateError &&
+          error.code === 'PERMISSION_TEMPLATE_INPUT_INVALID',
+      )
+      assert.deepEqual(calls, [])
+    }
+  }
+})
+
+test('allowed project financial subjects still invoke the Edge replacement', async () => {
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '设计部'],
+      ['department', '财务部'],
+      ['position', '社长'],
+    ]
+  ) {
+    const { client, calls } = createClient()
+    const service = createPermissionTemplateService(client, {
+      configured: true,
+    })
+
+    await service.replacePermissionTemplate({
+      subjectType,
+      subjectCode,
+      permissionKeys: [
+        'sensitive.contract_amount_view',
+        'sensitive.contract_amount_update',
+      ],
+    })
+
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].options.body, {
+      operation: 'replace',
+      subjectType,
+      subjectCode,
+      permissionKeys: [
+        'sensitive.contract_amount_update',
+        'sensitive.contract_amount_view',
+      ],
+    })
   }
 })
 

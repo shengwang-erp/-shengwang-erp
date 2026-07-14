@@ -58,7 +58,10 @@ function createDependencies(overrides = {}) {
       replaceTemplate: async (client, input) => {
         calls.push(['replace', client, input])
         const snapshot = emptySnapshot()
-        snapshot.departments[input.subjectCode] = [...input.permissionKeys]
+        const collection = input.subjectType === 'department'
+          ? snapshot.departments
+          : snapshot.positions
+        collection[input.subjectCode] = [...input.permissionKeys]
         return snapshot
       },
       ...overrides,
@@ -117,6 +120,77 @@ test('replace accepts only one fixed subject and sends a sorted atomic replaceme
       permissionKeys: sortedPermissions,
     }],
   ])
+})
+
+test('forbidden project financial grants return 400 before authorization or admin client creation', async () => {
+  const financialKeys = [
+    'sensitive.contract_amount_view',
+    'sensitive.contract_amount_update',
+  ]
+
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '工程部'],
+      ['position', '主任'],
+    ]
+  ) {
+    for (const financialKey of financialKeys) {
+      const setup = createDependencies()
+      const handler = createPermissionTemplatesHandler(setup.dependencies)
+      const response = await handler(request({
+        operation: 'replace',
+        subjectType,
+        subjectCode,
+        permissionKeys: [financialKey],
+      }))
+
+      assert.equal(response.status, 400)
+      assert.deepEqual(await responseBody(response), {
+        error: {
+          code: 'PERMISSION_TEMPLATE_INPUT_INVALID',
+          message: '权限模板请求格式无效',
+        },
+      })
+      assert.deepEqual(setup.calls, [])
+    }
+  }
+})
+
+test('allowed project financial subjects reach atomic replacement', async () => {
+  for (
+    const [subjectType, subjectCode] of [
+      ['department', '设计部'],
+      ['department', '财务部'],
+      ['position', '社长'],
+    ]
+  ) {
+    const setup = createDependencies()
+    const handler = createPermissionTemplatesHandler(setup.dependencies)
+    const response = await handler(request({
+      operation: 'replace',
+      subjectType,
+      subjectCode,
+      permissionKeys: [
+        'sensitive.contract_amount_view',
+        'sensitive.contract_amount_update',
+      ],
+    }))
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(
+      setup.calls.map(([operation]) => operation),
+      ['authorize', 'createAdminClient', 'replace'],
+    )
+    assert.deepEqual(setup.calls[2][2], {
+      actorAuthUserId: ACTOR.authUserId,
+      subjectType,
+      subjectCode,
+      permissionKeys: [
+        'sensitive.contract_amount_update',
+        'sensitive.contract_amount_view',
+      ],
+    })
+  }
 })
 
 test('default adapters invoke only the exact service-role read and replacement RPC shapes', async () => {

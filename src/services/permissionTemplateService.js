@@ -5,6 +5,7 @@ import {
 import {
   isTemplatePermissionKey,
   PERMISSION_CATALOG,
+  templateContainsForbiddenProjectFinancialGrant,
 } from '../auth/permissionCatalog.js'
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient.js'
 
@@ -120,7 +121,12 @@ function validateReplacementInput(value) {
     value.permissionKeys.some((permission) =>
       !isTemplatePermissionKey(permission)
     ) ||
-    new Set(value.permissionKeys).size !== value.permissionKeys.length
+    new Set(value.permissionKeys).size !== value.permissionKeys.length ||
+    templateContainsForbiddenProjectFinancialGrant(
+      value.subjectType,
+      value.subjectCode,
+      value.permissionKeys,
+    )
   ) {
     throw templateError('PERMISSION_TEMPLATE_INPUT_INVALID')
   }

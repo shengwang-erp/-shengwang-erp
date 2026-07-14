@@ -14,6 +14,7 @@ import {
 import {
   isTemplatePermissionKey,
   PERMISSION_CATALOG,
+  templateContainsForbiddenProjectFinancialGrant,
 } from '../../../src/auth/permissionCatalog.js'
 
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -71,7 +72,12 @@ function validateReplacement(value) {
     value.permissionKeys.some((permission) =>
       !isTemplatePermissionKey(permission)
     ) ||
-    new Set(value.permissionKeys).size !== value.permissionKeys.length
+    new Set(value.permissionKeys).size !== value.permissionKeys.length ||
+    templateContainsForbiddenProjectFinancialGrant(
+      value.subjectType,
+      value.subjectCode,
+      value.permissionKeys,
+    )
   ) {
     throw inputError()
   }

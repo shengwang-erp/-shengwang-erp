@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
+import {
+  SENSITIVE_PERMISSION_CATALOG,
+  templateContainsForbiddenProjectFinancialGrant,
+} from '../../auth/permissionCatalog.js'
+
 const source = await readFile(
   new URL('./PermissionTemplateEditor.jsx', import.meta.url),
   'utf8',
@@ -154,6 +159,55 @@ test('editor renders all module actions and sensitive permissions from the close
     /checked=\{draftPermissionKeys\.includes\(permissionKey\)\}/,
   )
   assert.match(source, /敏感数据权限/)
+})
+
+test('forbidden subjects render both project financial checkboxes disabled without disabling unrelated keys', () => {
+  const forbiddenStates = SENSITIVE_PERMISSION_CATALOG.map(({ key }) => ({
+    key,
+    disabled: templateContainsForbiddenProjectFinancialGrant(
+      'department',
+      '工程部',
+      [key],
+    ),
+  }))
+  assert.deepEqual(
+    forbiddenStates.filter(({ disabled }) => disabled).map(({ key }) => key),
+    [
+      'sensitive.contract_amount_view',
+      'sensitive.contract_amount_update',
+    ],
+  )
+  assert.equal(
+    templateContainsForbiddenProjectFinancialGrant(
+      'position',
+      '主任',
+      ['sensitive.contract_amount_view'],
+    ),
+    true,
+  )
+  assert.equal(
+    templateContainsForbiddenProjectFinancialGrant(
+      'department',
+      '设计部',
+      ['sensitive.contract_amount_view'],
+    ),
+    false,
+  )
+
+  const permissionCatalogImport = source.match(
+    /import\s*\{([^}]*)\}\s*from ['"]\.\.\/\.\.\/auth\/permissionCatalog\.js['"]/,
+  )
+  assert.ok(permissionCatalogImport)
+  assert.match(
+    permissionCatalogImport[1],
+    /\btemplateContainsForbiddenProjectFinancialGrant\b/,
+  )
+  assert.match(
+    source,
+    /const financialPermissionDisabled =\s*templateContainsForbiddenProjectFinancialGrant\(\s*subjectType,\s*selectedSubject,\s*\[key\],?\s*\)/,
+  )
+  assert.match(source, /disabled=\{financialPermissionDisabled\}/)
+  assert.match(source, /aria-disabled=\{financialPermissionDisabled\}/)
 })
 
 test('changes remain a local draft until explicit atomic save or discard', () => {

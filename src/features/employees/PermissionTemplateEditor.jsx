@@ -5,6 +5,7 @@ import {
   PERMISSION_ACTIONS,
   PERMISSION_MODULES,
   SENSITIVE_PERMISSION_CATALOG,
+  templateContainsForbiddenProjectFinancialGrant,
 } from '../../auth/permissionCatalog.js'
 import {
   applyPermissionTemplateSnapshot,
@@ -446,17 +447,30 @@ function AuthorizedPermissionTemplateEditor({
         >
           <legend>敏感数据权限</legend>
           <div className='permission-template-sensitive-grid'>
-            {SENSITIVE_PERMISSION_CATALOG.map(({ key, label }) => (
-              <label className='permission-template-sensitive-option' key={key}>
-                <input
-                  type='checkbox'
-                  checked={draftPermissionKeys.includes(key)}
-                  onChange={() =>
-                    togglePermission(key)}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
+            {SENSITIVE_PERMISSION_CATALOG.map(({ key, label }) => {
+              const financialPermissionDisabled =
+                templateContainsForbiddenProjectFinancialGrant(
+                  subjectType,
+                  selectedSubject,
+                  [key],
+                )
+              return (
+                <label
+                  className='permission-template-sensitive-option'
+                  key={key}
+                >
+                  <input
+                    type='checkbox'
+                    checked={draftPermissionKeys.includes(key)}
+                    disabled={financialPermissionDisabled}
+                    aria-disabled={financialPermissionDisabled}
+                    onChange={() =>
+                      togglePermission(key)}
+                  />
+                  <span>{label}</span>
+                </label>
+              )
+            })}
           </div>
         </fieldset>
 
