@@ -25,6 +25,8 @@ returns void
 language plpgsql
 set search_path = pg_catalog, public
 as $$
+declare
+  existing_policy text;
 begin
   execute format(
     'create table if not exists public.%I (
@@ -44,9 +46,14 @@ begin
   );
 
   execute format('alter table public.%I enable row level security', target_table);
-  execute format('drop policy if exists %I on public.%I', target_table || ' prototype select', target_table);
-  execute format('drop policy if exists %I on public.%I', target_table || ' prototype insert', target_table);
-  execute format('drop policy if exists %I on public.%I', target_table || ' prototype update', target_table);
+  for existing_policy in
+    select policies.policyname
+    from pg_catalog.pg_policies as policies
+    where policies.schemaname = 'public'
+      and policies.tablename = target_table
+  loop
+    execute format('drop policy if exists %I on public.%I', existing_policy, target_table);
+  end loop;
 
   execute format('drop trigger if exists %I on public.%I', 'set_' || target_table || '_updated_at', target_table);
   execute format(
@@ -764,10 +771,9 @@ grant execute on function public.employee_profile_detail(uuid) to authenticated,
 
 -- The legacy employee JSONB table is retained for later audited migration only.
 alter table public.employees enable row level security;
-drop policy if exists "employees prototype select" on public.employees;
-drop policy if exists "employees prototype insert" on public.employees;
-drop policy if exists "employees prototype update" on public.employees;
-revoke all on table public.employees from anon, authenticated;
+-- create_erp_record_table catalog-dropped every pre-existing policy, including
+-- policies whose names were never known to this migration.
+revoke all on table public.employees from public, anon, authenticated;
 grant all on table public.employees to service_role;
 
 do $$
@@ -788,8 +794,8 @@ begin
       ('project_contract_changes', 'projects', 'contract_amount'),
       ('project_payment_plans', 'projects', 'contract_amount'),
       ('project_receipts', 'projects', 'contract_amount'),
-      ('labor_records', 'labor', null),
-      ('purchase_records', 'purchases', null),
+      ('labor_records', 'labor', 'salary'),
+      ('purchase_records', 'purchases', 'purchase_payments'),
       ('purchase_payment_records', 'purchases', 'purchase_payments'),
       ('inventory_items', 'inventory', null),
       ('stock_in_records', 'inventory', null),
@@ -826,21 +832,15 @@ begin
     end;
 
     execute format('alter table public.%I enable row level security', business_table);
-    execute format('revoke all on table public.%I from anon', business_table);
-    execute format('revoke delete on table public.%I from authenticated', business_table);
+    execute format(
+      'revoke all on table public.%I from public, anon, authenticated',
+      business_table
+    );
     execute format(
       'grant select, insert, update on table public.%I to authenticated',
       business_table
     );
     execute format('grant all on table public.%I to service_role', business_table);
-
-    execute format('drop policy if exists %I on public.%I', business_table || ' prototype select', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' prototype insert', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' prototype update', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' authenticated select', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' authenticated insert', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' authenticated update', business_table);
-    execute format('drop policy if exists %I on public.%I', business_table || ' authenticated delete', business_table);
 
     execute format(
       'create policy %I on public.%I for select to authenticated

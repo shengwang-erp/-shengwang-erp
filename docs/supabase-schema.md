@@ -444,13 +444,17 @@
 | `operating_expense_records` | `operating_expenses` |
 
 含敏感金额的 JSONB 表还必须同时通过敏感权限：工程、合同增减、付款计划和客户收款要求
-`sensitive.contract_amount_view/update`；采购付款要求
-`sensitive.purchase_payments_view/update`；工资记录要求
+`sensitive.contract_amount_view/update`；采购记录及采购付款要求
+`sensitive.purchase_payments_view/update`；人工记录及工资记录要求
 `sensitive.salary_view/update`。因此只有模块权限不能读取或改写这些完整记录。
 
 插入只允许 `status = 'active'`。普通更新要求 `update` 权限；任何涉及
 `deleted/void` 的状态更新由触发器重新检查 `delete` 权限，防止编辑权限等同删除权限。
 authenticated 角色没有业务表物理 `DELETE` 权限；删除和作废必须保留记录并通过受控状态更新完成。
+迁移不信任任何历史 policy 名称，而是从 `pg_policies` 枚举并删除目标表的全部旧策略，
+随后只创建 SELECT/INSERT/UPDATE 三个白名单策略。它也先撤销 PUBLIC、anon、authenticated
+的全部历史表权限，再仅向 authenticated 授予 SELECT/INSERT/UPDATE，因此 TRUNCATE 等绕过
+RLS 的旧权限不会残留。独立合同收入迁移采用相同清理方式并保持零策略、零浏览器权限。
 
 员工安全表不向 anon/authenticated 授予直接表写权限。浏览器使用以下裁剪 RPC：
 

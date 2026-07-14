@@ -3,7 +3,37 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(40);
+select plan(63);
+
+create temporary table task2_business_tables (
+  table_name text primary key
+) on commit drop;
+
+insert into task2_business_tables (table_name) values
+  ('projects'),
+  ('project_contract_changes'),
+  ('project_payment_plans'),
+  ('project_receipts'),
+  ('labor_records'),
+  ('purchase_records'),
+  ('purchase_payment_records'),
+  ('inventory_items'),
+  ('stock_in_records'),
+  ('stock_out_records'),
+  ('stock_return_records'),
+  ('tool_records'),
+  ('tool_borrow_records'),
+  ('tool_return_records'),
+  ('lifelong_tool_assignments'),
+  ('tool_responsibility_records'),
+  ('vehicle_records'),
+  ('vehicle_usage_records'),
+  ('fuel_records'),
+  ('vehicle_expense_records'),
+  ('vehicle_issue_records'),
+  ('salary_records'),
+  ('project_cost_records'),
+  ('operating_expense_records');
 
 select has_table('public', 'employee_profiles', 'employee_profiles exists');
 select has_table('public', 'employee_provisioning_requests', 'provisioning requests exist');
@@ -11,6 +41,124 @@ select has_table('public', 'permission_grants', 'permission grants exist');
 select has_table('public', 'auth_login_attempts', 'login attempts exist');
 select has_table('public', 'employee_security_audit', 'security audit exists');
 select has_sequence('public', 'employee_number_sequence', 'employee sequence exists');
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'employees'
+  ),
+  0::bigint,
+  'legacy employees retains no policies, including unknown policy names'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+  ),
+  72::bigint,
+  'business tables retain exactly three whitelisted policies each'
+);
+select ok(
+  (
+    select count(*) = 24 and bool_and(policy_count = 3)
+    from (
+      select business.table_name, count(policy.policyname) as policy_count
+      from task2_business_tables as business
+      left join pg_catalog.pg_policies as policy
+        on policy.schemaname = 'public'
+        and policy.tablename = business.table_name
+      group by business.table_name
+    ) as policy_counts
+  ),
+  'every mapped business table has exactly three policies'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+      and policy.cmd = 'SELECT'
+  ),
+  24::bigint,
+  'every mapped business table has one SELECT policy'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+      and policy.cmd = 'INSERT'
+  ),
+  24::bigint,
+  'every mapped business table has one INSERT policy'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+      and policy.cmd = 'UPDATE'
+  ),
+  24::bigint,
+  'every mapped business table has one UPDATE policy'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+      and policy.cmd not in ('SELECT', 'INSERT', 'UPDATE')
+  ),
+  0::bigint,
+  'business policy commands are exactly SELECT, INSERT, and UPDATE'
+);
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_policies as policy
+    join task2_business_tables as business
+      on business.table_name = policy.tablename
+    where policy.schemaname = 'public'
+      and policy.policyname not in (
+        policy.tablename || ' authenticated select',
+        policy.tablename || ' authenticated insert',
+        policy.tablename || ' authenticated update'
+      )
+  ),
+  0::bigint,
+  'business tables retain no unknown policy names'
+);
+select ok(
+  (
+    select bool_and(
+      not has_table_privilege('authenticated', format('public.%I', table_name), 'DELETE')
+    )
+    from task2_business_tables
+  ),
+  'authenticated has no physical DELETE privilege on any business table'
+);
+select ok(
+  (
+    select bool_and(
+      not has_table_privilege('authenticated', format('public.%I', table_name), 'TRUNCATE')
+    )
+    from task2_business_tables
+  ),
+  'authenticated has no TRUNCATE privilege on any business table'
+);
 
 alter sequence public.employee_number_sequence restart with 1;
 truncate table public.employee_provisioning_requests;
@@ -77,6 +225,45 @@ insert into public.employee_profiles (
   ('30000000-0000-0000-0000-000000000004', 'SW-004', '20000000-0000-0000-0000-000000000004', '待改密员工', '工程部', '设计师', '在职', 'active', true, false, null, null),
   ('30000000-0000-0000-0000-000000000005', 'SW-000', '20000000-0000-0000-0000-000000000005', '隐藏管理员', '总务部', '社长', '在职', 'active', false, true, null, null);
 
+select throws_ok(
+  $$delete from public.employee_profiles where employee_number = 'SW-000'$$,
+  '23514',
+  'SW-000 cannot be deleted',
+  'SW-000 cannot be deleted'
+);
+select throws_ok(
+  $$update public.employee_profiles
+    set is_hidden_system_account = false
+    where employee_number = 'SW-000'$$,
+  '23514',
+  'SW-000 security state cannot be changed',
+  'SW-000 hidden state cannot be changed'
+);
+select throws_ok(
+  $$update public.employee_profiles
+    set account_status = 'disabled'
+    where employee_number = 'SW-000'$$,
+  '23514',
+  'SW-000 security state cannot be changed',
+  'SW-000 active state cannot be changed'
+);
+select throws_ok(
+  $$update public.employee_profiles
+    set deleted_at = now()
+    where employee_number = 'SW-000'$$,
+  '23514',
+  'SW-000 security state cannot be changed',
+  'SW-000 cannot be soft-deleted'
+);
+select throws_ok(
+  $$update public.employee_profiles
+    set employment_status = '离职'
+    where employee_number = 'SW-000'$$,
+  '23514',
+  'SW-000 security state cannot be changed',
+  'SW-000 employment state cannot be changed'
+);
+
 select throws_like(
   $$insert into public.employee_profiles (employee_number, name, department, position)
     values ('SW-900', '非法部门', '现场', '设计师')$$,
@@ -100,7 +287,11 @@ select throws_ok(
 insert into public.permission_grants (subject_type, subject_code, permission_key) values
   ('department', '工程部', 'module.projects.view'),
   ('position', '设计师', 'module.projects.update'),
-  ('department', '工程部', 'module.salaries.view');
+  ('department', '工程部', 'module.salaries.view'),
+  ('department', '工程部', 'module.labor.view'),
+  ('department', '工程部', 'module.labor.update'),
+  ('department', '工程部', 'module.purchases.view'),
+  ('department', '工程部', 'module.purchases.update');
 
 select throws_like(
   $$insert into public.permission_grants (subject_type, subject_code, permission_key)
@@ -119,6 +310,10 @@ insert into public.projects (record_key, payload, status)
 values ('PROJECT-RLS-1', '{"projectId":"PROJECT-RLS-1"}'::jsonb, 'active');
 insert into public.salary_records (record_key, payload, status)
 values ('SALARY-RLS-1', '{"employeeNumber":"SW-001","amount":420000}'::jsonb, 'active');
+insert into public.labor_records (record_key, payload, status)
+values ('LABOR-RLS-1', '{"employeeNumber":"SW-001","laborCost":420000}'::jsonb, 'active');
+insert into public.purchase_records (record_key, payload, status)
+values ('PURCHASE-RLS-1', '{"purchaseId":"PURCHASE-RLS-1","paidAmount":120000}'::jsonb, 'active');
 
 reset role;
 set local role authenticated;
@@ -233,6 +428,38 @@ select is(
   0::bigint,
   'module access alone cannot read salary records'
 );
+select is(
+  (select count(*) from public.labor_records where record_key = 'LABOR-RLS-1'),
+  0::bigint,
+  'module access alone cannot read labor pay records'
+);
+select is(
+  (select count(*) from public.purchase_records where record_key = 'PURCHASE-RLS-1'),
+  0::bigint,
+  'module access alone cannot read purchase payment records'
+);
+select results_eq(
+  $$with changed as (
+      update public.labor_records
+      set payload = payload || '{"reviewed":true}'::jsonb
+      where record_key = 'LABOR-RLS-1'
+      returning 1
+    )
+    select count(*)::bigint from changed$$,
+  $$values (0::bigint)$$,
+  'module update alone cannot change labor pay records'
+);
+select results_eq(
+  $$with changed as (
+      update public.purchase_records
+      set payload = payload || '{"reviewed":true}'::jsonb
+      where record_key = 'PURCHASE-RLS-1'
+      returning 1
+    )
+    select count(*)::bigint from changed$$,
+  $$values (0::bigint)$$,
+  'module update alone cannot change purchase payment records'
+);
 
 reset role;
 set local role service_role;
@@ -240,6 +467,9 @@ select set_config('request.jwt.claim.role', 'service_role', true);
 insert into public.permission_grants (subject_type, subject_code, permission_key) values
   ('department', '工程部', 'sensitive.employee_identity_view'),
   ('department', '工程部', 'sensitive.salary_view'),
+  ('department', '工程部', 'sensitive.salary_update'),
+  ('department', '工程部', 'sensitive.purchase_payments_view'),
+  ('department', '工程部', 'sensitive.purchase_payments_update'),
   ('department', '工程部', 'sensitive.contract_amount_view'),
   ('department', '工程部', 'sensitive.contract_amount_update');
 
@@ -256,6 +486,38 @@ select is(
   (select count(*) from public.salary_records where record_key = 'SALARY-RLS-1'),
   1::bigint,
   'salary view requires both module and sensitive permission'
+);
+select is(
+  (select count(*) from public.labor_records where record_key = 'LABOR-RLS-1'),
+  1::bigint,
+  'labor pay view requires both module and sensitive permission'
+);
+select is(
+  (select count(*) from public.purchase_records where record_key = 'PURCHASE-RLS-1'),
+  1::bigint,
+  'purchase payment view requires both module and sensitive permission'
+);
+select results_eq(
+  $$with changed as (
+      update public.labor_records
+      set payload = payload || '{"reviewed":true}'::jsonb
+      where record_key = 'LABOR-RLS-1'
+      returning 1
+    )
+    select count(*)::bigint from changed$$,
+  $$values (1::bigint)$$,
+  'labor pay update requires both module and sensitive permission'
+);
+select results_eq(
+  $$with changed as (
+      update public.purchase_records
+      set payload = payload || '{"reviewed":true}'::jsonb
+      where record_key = 'PURCHASE-RLS-1'
+      returning 1
+    )
+    select count(*)::bigint from changed$$,
+  $$values (1::bigint)$$,
+  'purchase payment update requires both module and sensitive permission'
 );
 
 select is(

@@ -17,6 +17,8 @@ create or replace function public.create_contract_revenue_record_table(target_ta
 returns void
 language plpgsql
 as $$
+declare
+  existing_policy text;
 begin
   execute format(
     'create table if not exists public.%I (
@@ -36,23 +38,18 @@ begin
   );
 
   execute format('alter table public.%I enable row level security', target_table);
-  execute format('revoke all on table public.%I from anon', target_table);
-
   execute format(
-    'drop policy if exists "%s prototype select" on public.%I',
-    target_table,
+    'revoke all on table public.%I from public, anon, authenticated',
     target_table
   );
-  execute format(
-    'drop policy if exists "%s prototype insert" on public.%I',
-    target_table,
-    target_table
-  );
-  execute format(
-    'drop policy if exists "%s prototype update" on public.%I',
-    target_table,
-    target_table
-  );
+  for existing_policy in
+    select policies.policyname
+    from pg_catalog.pg_policies as policies
+    where policies.schemaname = 'public'
+      and policies.tablename = target_table
+  loop
+    execute format('drop policy if exists %I on public.%I', existing_policy, target_table);
+  end loop;
 
   -- Intentionally create no permissive policy here. Standalone execution is
   -- fail-closed; the employee-auth migration owns authenticated business RLS.

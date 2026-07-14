@@ -222,7 +222,10 @@ test('every business table maps to strict authenticated action policies', () => 
   assert.match(sql, /to authenticated/i)
   assert.match(sql, /public\.is_current_employee_active\(\)/i)
   assert.match(sql, /public\.has_current_permission\(/i)
-  assert.match(sql, /revoke all on table public\.%I from anon/i)
+  assert.match(
+    sql,
+    /revoke all on table public\.%I from public, anon, authenticated/i,
+  )
   assert.match(sql, /grant all on table public\.%I to service_role/i)
   assert.match(sql, /for insert to authenticated[\s\S]{0,260}status = ''active''/i)
 })
@@ -248,6 +251,8 @@ test('sensitive business records require their sensitive permission in addition 
     ['project_contract_changes', 'contract_amount'],
     ['project_payment_plans', 'contract_amount'],
     ['project_receipts', 'contract_amount'],
+    ['labor_records', 'salary'],
+    ['purchase_records', 'purchase_payments'],
     ['purchase_payment_records', 'purchase_payments'],
     ['salary_records', 'salary'],
   ]) {
@@ -264,15 +269,44 @@ test('sensitive business records require their sensitive permission in addition 
 test('browser roles cannot hard-delete business records', () => {
   const sql = migrationSql()
 
-  assert.match(sql, /revoke delete on table public\.%I from authenticated/i)
+  assert.match(
+    sql,
+    /revoke all on table public\.%I from public, anon, authenticated/i,
+  )
   assert.doesNotMatch(sql, /grant select, insert, update, delete on table public\.%I to authenticated/i)
   assert.doesNotMatch(sql, /create policy %I on public\.%I for delete to authenticated/i)
+})
+
+test('policy replacement enumerates the catalog so unknown permissive policies cannot survive', () => {
+  const migration = migrationSql()
+  const standaloneMigration = readOptional(LEGACY_CONTRACT_MIGRATION_URL)
+  const catalogCleanupPattern =
+    /for existing_policy in[\s\S]*from pg_catalog\.pg_policies[\s\S]*schemaname = 'public'[\s\S]*tablename = target_table[\s\S]*drop policy if exists %I on public\.%I/i
+
+  assert.match(migration, catalogCleanupPattern)
+  assert.match(standaloneMigration, catalogCleanupPattern)
+  assert.match(
+    standaloneMigration,
+    /revoke all on table public\.%I from public, anon, authenticated/i,
+  )
+  assert.match(migration, /select public\.create_erp_record_table\('employees'\)/i)
+  for (const tableName of Object.keys(BUSINESS_TABLE_PERMISSIONS)) {
+    assert.match(
+      migration,
+      new RegExp(`select public\\.create_erp_record_table\\('${tableName}'\\)`, 'i'),
+    )
+  }
+  assert.doesNotMatch(migration, /drop policy if exists[^\n]*prototype/i)
+  assert.doesNotMatch(standaloneMigration, /drop policy if exists[^\n]*prototype/i)
 })
 
 test('legacy employees and normalized security tables deny browser table access', () => {
   const sql = migrationSql()
 
-  assert.match(sql, /revoke all on table public\.employees from anon, authenticated/i)
+  assert.match(
+    sql,
+    /revoke all on table public\.employees from public, anon, authenticated/i,
+  )
   for (const tableName of SECURITY_TABLES) {
     assert.match(
       sql,
@@ -353,6 +387,11 @@ test('Supabase config and executable pgTAP contract cover the security behavior'
     'anon',
     'disabled',
     'must change password',
+    'unknown policy names',
+    'policy commands are exactly',
+    'SW-000 cannot be deleted',
+    'SW-000 hidden state cannot be changed',
+    'SW-000 active state cannot be changed',
   ]) {
     assert.match(sqlTest, new RegExp(escapeRegExp(behavior), 'i'))
   }
