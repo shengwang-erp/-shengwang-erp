@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(63);
+select plan(67);
 
 create temporary table task2_business_tables (
   table_name text primary key
@@ -183,6 +183,16 @@ select is(
 );
 
 reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select throws_ok(
+  $$select public.reserve_employee_number('10000000-0000-0000-0000-000000000003'::uuid)$$,
+  '42501',
+  'permission denied for function reserve_employee_number',
+  'authenticated cannot reserve employee numbers'
+);
+
+reset role;
 
 insert into auth.users (
   instance_id,
@@ -201,7 +211,8 @@ insert into auth.users (
   ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000002', 'authenticated', 'authenticated', 'president@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000003', 'authenticated', 'authenticated', 'disabled@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000004', 'authenticated', 'authenticated', 'must-change@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
-  ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000005', 'authenticated', 'authenticated', 'sw000@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
+  ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000005', 'authenticated', 'authenticated', 'sw000@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', '20000000-0000-0000-0000-000000000006', 'authenticated', 'authenticated', 'former@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
 
 set local role service_role;
 
@@ -223,7 +234,8 @@ insert into public.employee_profiles (
   ('30000000-0000-0000-0000-000000000002', 'SW-002', '20000000-0000-0000-0000-000000000002', '社长员工', '总务部', '社长', '在职', 'active', false, false, null, null),
   ('30000000-0000-0000-0000-000000000003', 'SW-003', '20000000-0000-0000-0000-000000000003', '停用员工', '工程部', '设计师', '在职', 'disabled', false, false, null, null),
   ('30000000-0000-0000-0000-000000000004', 'SW-004', '20000000-0000-0000-0000-000000000004', '待改密员工', '工程部', '设计师', '在职', 'active', true, false, null, null),
-  ('30000000-0000-0000-0000-000000000005', 'SW-000', '20000000-0000-0000-0000-000000000005', '隐藏管理员', '总务部', '社长', '在职', 'active', false, true, null, null);
+  ('30000000-0000-0000-0000-000000000005', 'SW-000', '20000000-0000-0000-0000-000000000005', '隐藏管理员', '总务部', '社长', '在职', 'active', false, true, null, null),
+  ('30000000-0000-0000-0000-000000000006', 'SW-005', '20000000-0000-0000-0000-000000000006', '离职员工', '工程部', '设计师', '离职', 'active', false, false, null, null);
 
 select throws_ok(
   $$delete from public.employee_profiles where employee_number = 'SW-000'$$,
@@ -382,6 +394,18 @@ select set_config('request.jwt.claim.sub', '20000000-0000-0000-0000-000000000004
 select ok(
   not public.is_current_employee_active(),
   'must change password blocks business access'
+);
+
+select set_config('request.jwt.claim.sub', '20000000-0000-0000-0000-000000000006', true);
+select ok(not public.is_current_employee_active(), 'a former employee is inactive');
+select ok(
+  not public.has_current_permission('module.projects.view'),
+  'a former employee has no effective permission'
+);
+select is(
+  (select count(*) from public.projects),
+  0::bigint,
+  'a former employee is denied by business-table RLS'
 );
 
 reset role;
