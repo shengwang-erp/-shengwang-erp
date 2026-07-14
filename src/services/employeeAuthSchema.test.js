@@ -363,7 +363,7 @@ test('bootstrap and legacy SQL never recreate open prototype policies or plainte
   for (const sql of sqlFiles) {
     assert.doesNotMatch(sql, /create policy[\s\S]{0,240}using\s*\(true\)/i)
     assert.doesNotMatch(sql, /create policy[\s\S]{0,240}with check\s*\(true\)/i)
-    assert.doesNotMatch(sql, /320086|passwordHash|SUPER_ADMIN/i)
+    assert.doesNotMatch(sql, /passwordHash|SUPER_ADMIN|["']password["']\s*:/i)
   }
 
   const bootstrap = sqlFiles[1]
