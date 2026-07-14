@@ -9,7 +9,9 @@ import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import {
   CONTRACT_REVENUE_STORAGE_KEYS,
+  createContractChange as persistContractChange,
   sanitizeProjectForPersistence,
+  voidContractChange as persistVoidContractChange,
 } from './services/contractRevenueService'
 import {
   canAccessModule,
@@ -1282,7 +1284,8 @@ function normalizeOperatingExpenseRecord(record) {
   }
 }
 
-function usePersistentState(key, fallback) {
+function usePersistentState(key, fallback, options = {}) {
+  const cloudPersistence = options.cloudPersistence || 'list'
   const [value, setValue] = useState(() => readStorage(key, fallback))
   const [cloudState, setCloudState] = useState({
     loading: isCloudDatabaseReady(),
@@ -1342,7 +1345,7 @@ function usePersistentState(key, fallback) {
       const resolvedValue =
         typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
       window.localStorage.setItem(key, JSON.stringify(resolvedValue))
-      if (isCloudDatabaseReady()) {
+      if (isCloudDatabaseReady() && cloudPersistence === 'list') {
         saveList(key, resolvedValue).catch((error) => {
           console.error(`Supabase 保存失败: ${key}`, error)
           setCloudState({
@@ -1776,9 +1779,10 @@ function App() {
     readStorage(STORAGE_KEYS.currentUser, null),
   )
   const [storedProjects, setStoredProjects] = usePersistentState(STORAGE_KEYS.projects, [])
-  const [projectContractChanges] = usePersistentState(
+  const [projectContractChanges, setProjectContractChanges] = usePersistentState(
     STORAGE_KEYS.projectContractChanges,
     [],
+    { cloudPersistence: 'record' },
   )
   const [projectPaymentPlans] = usePersistentState(
     STORAGE_KEYS.projectPaymentPlans,
@@ -2180,6 +2184,25 @@ function App() {
     )
   }
 
+  const handleCreateContractChange = async (input) => {
+    const created = await persistContractChange(input)
+    setProjectContractChanges((currentChanges) => [
+      created,
+      ...currentChanges.filter((change) => change.changeId !== created.changeId),
+    ])
+    return created
+  }
+
+  const handleVoidContractChange = async (record, details) => {
+    const voided = await persistVoidContractChange(record, details)
+    setProjectContractChanges((currentChanges) =>
+      currentChanges.map((change) =>
+        change.changeId === voided.changeId ? voided : change,
+      ),
+    )
+    return voided
+  }
+
   const handleLogin = ({ name, password }) => {
     const matchedEmployees = employees.filter((employee) => employee.name === name.trim())
 
@@ -2308,8 +2331,11 @@ function App() {
       <ContractRevenuePage
         project={contractRevenueProject}
         revenueSnapshot={projectRevenueSnapshots.get(contractRevenueProjectId)}
+        contractChanges={projectContractChanges}
         currentUser={currentUser}
         onProjectChange={handleContractRevenueProjectChange}
+        onCreateContractChange={handleCreateContractChange}
+        onVoidContractChange={handleVoidContractChange}
         onBack={() => setCurrentView('projects')}
       />
     )

@@ -1,3 +1,4 @@
+import ContractChangesSection from './ContractChangesSection.jsx'
 import OriginalContractSection from './OriginalContractSection.jsx'
 
 function formatYen(value) {
@@ -8,8 +9,11 @@ function formatYen(value) {
 export default function ContractRevenuePage({
   project,
   revenueSnapshot,
+  contractChanges,
   currentUser,
   onProjectChange,
+  onCreateContractChange,
+  onVoidContractChange,
   onBack,
 }) {
   if (!project) {
@@ -63,6 +67,14 @@ export default function ContractRevenuePage({
         project={project}
         currentUser={currentUser}
         onProjectChange={onProjectChange}
+      />
+
+      <ContractChangesSection
+        project={project}
+        contractChanges={contractChanges}
+        currentUser={currentUser}
+        onCreateContractChange={onCreateContractChange}
+        onVoidContractChange={onVoidContractChange}
       />
     </main>
   )

@@ -7,7 +7,7 @@ const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf
 test('App loads all contract revenue records and memoizes the project snapshot collection', () => {
   assert.match(
     appSource,
-    /const \[projectContractChanges\] = usePersistentState\(\s*STORAGE_KEYS\.projectContractChanges/,
+    /const \[projectContractChanges, setProjectContractChanges\] = usePersistentState\(\s*STORAGE_KEYS\.projectContractChanges/,
   )
   assert.match(
     appSource,

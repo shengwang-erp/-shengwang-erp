@@ -2544,6 +2544,147 @@ body {
   border-color: currentColor;
 }
 
+.contract-change-form {
+  padding: 16px;
+  background: #f8fbff;
+  border: 1px solid #dce7f5;
+  border-radius: 8px;
+}
+
+.contract-change-reason-field {
+  grid-column: 1 / -1;
+}
+
+.contract-change-reason-field textarea {
+  min-height: 88px;
+}
+
+.contract-change-list-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 22px 0 12px;
+}
+
+.contract-change-list-heading h3 {
+  margin: 0;
+  color: #172033;
+  font-size: 18px;
+}
+
+.contract-change-list-heading span {
+  color: #667085;
+  font-size: 13px;
+  text-align: right;
+}
+
+.contract-change-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+}
+
+.contract-change-table {
+  width: 100%;
+  min-width: 1180px;
+  border-collapse: collapse;
+  background: #ffffff;
+}
+
+.contract-change-table th,
+.contract-change-table td {
+  padding: 12px;
+  border-bottom: 1px solid #e8edf5;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  vertical-align: top;
+}
+
+.contract-change-table th {
+  color: #475467;
+  background: #f7f9fc;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.contract-change-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.contract-change-table td > span,
+.contract-change-table td > strong,
+.contract-change-table td > small {
+  display: block;
+}
+
+.contract-change-table td > small {
+  margin-top: 4px;
+  color: #667085;
+  overflow-wrap: anywhere;
+}
+
+.contract-change-table .void-row td {
+  color: #667085;
+  background: #fafafa;
+}
+
+.contract-change-type,
+.contract-change-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 26px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.contract-change-type.increase {
+  color: #12684f;
+  background: #e4f7ee;
+}
+
+.contract-change-type.decrease,
+.contract-change-status.void {
+  color: #b42318;
+  background: #fff1f0;
+}
+
+.contract-change-void-note {
+  color: #b42318 !important;
+}
+
+.contract-change-void-form {
+  display: grid;
+  gap: 8px;
+  width: 220px;
+}
+
+.contract-change-void-form label,
+.contract-change-void-form label span {
+  display: grid;
+  gap: 5px;
+}
+
+.contract-change-void-form textarea {
+  min-height: 72px;
+  padding: 8px;
+  border: 1px solid #d0d9e6;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.contract-change-void-form .danger-button,
+.contract-change-void-form .ghost-button {
+  min-height: 36px;
+  font-size: 13px;
+}
+
 @media (max-width: 640px) {
   .contract-section-heading {
     align-items: stretch;
@@ -2557,5 +2698,14 @@ body {
   .contract-amount-details,
   .contract-confirmation-details {
     grid-template-columns: 1fr;
+  }
+
+  .contract-change-list-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .contract-change-list-heading span {
+    text-align: left;
   }
 }
