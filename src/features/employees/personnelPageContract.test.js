@@ -153,7 +153,7 @@ test('temporary-password reset is available only for active employed accounts', 
   )
   assert.match(
     pageSource,
-    /disabled=\{Boolean\(mutation\) \|\| !canResetTemporaryPassword\(employee\)\}/,
+    /disabled=\{Boolean\(mutation\) \|\| templateCritical \|\| !canResetTemporaryPassword\(employee\)\}/,
   )
   assert.match(pageSource, /仅已启用且在职员工可重置临时密码/)
 })
@@ -216,6 +216,73 @@ test('App owns a memory-only canonical directory and passes the AuthGate boundar
   assert.doesNotMatch(appSource, /<PersonnelPage[\s\S]{0,500}setEmployees=/)
 })
 
+test('permission templates integrate through injected service and forced AuthGate re-login', () => {
+  assert.match(
+    pageSource,
+    /import PermissionTemplateEditor from ['"]\.\/PermissionTemplateEditor\.jsx['"]/,
+  )
+  assert.match(pageSource, /permissionTemplateService/)
+  assert.match(pageSource, /onPermissionTemplatesChanged/)
+  assert.match(
+    pageSource,
+    /\{canAdminister && !employeeFlowActive && \([\s\S]*<PermissionTemplateEditor/,
+  )
+  assert.match(pageSource, /currentEmployee=\{currentEmployee\}/)
+  assert.match(pageSource, /permissionTemplateService=\{permissionTemplateService\}/)
+  assert.match(pageSource, /onTemplatesChanged=\{onPermissionTemplatesChanged\}/)
+  assert.match(pageSource, /onAuthInvalid=\{onAuthInvalid\}/)
+
+  assert.match(
+    appSource,
+    /import \{ permissionTemplateService \} from ['"]\.\/services\/permissionTemplateService(?:\.js)?['"]/,
+  )
+  assert.match(appSource, /permissionTemplateService=\{permissionTemplateService\}/)
+  assert.match(appSource, /onPermissionTemplatesChanged=\{onLogout\}/)
+  assert.doesNotMatch(appSource, /currentUser\.(?:effectivePermissionKeys|department|position)\s*=/)
+})
+
+test('employee and template locks stay independent, aggregate with OR, and block cross-mutations', () => {
+  assert.match(pageSource, /const \[templateCritical, setTemplateCritical\] = useState\(false\)/)
+  assert.match(pageSource, /const templateCriticalRef = useRef\(false\)/)
+  assert.match(pageSource, /const handleTemplateCriticalStateChange = useCallback/)
+  assert.match(
+    pageSource,
+    /onTemplateCriticalStateChange\?\.\(nextActive\) !== true[\s\S]*return false/,
+  )
+  assert.match(pageSource, /templateCriticalRef\.current = nextActive/)
+  assert.match(pageSource, /setTemplateCritical\(nextActive\)/)
+  assert.match(pageSource, /onMutationStateChange=\{handleTemplateCriticalStateChange\}/)
+  assert.match(
+    pageSource,
+    /const employeeFlowActive = Boolean\(formState \|\| mutation \|\| credentials\)/,
+  )
+  assert.match(
+    pageSource,
+    /const protectedStateActive = employeeProtectedStateActive \|\| templateCritical/,
+  )
+  assert.match(pageSource, /if \(!canAdminister \|\| mutation \|\| templateCriticalRef\.current\) return/)
+  assert.match(
+    pageSource,
+    /disabled=\{Boolean\(mutation\) \|\| templateCritical\}/,
+  )
+
+  assert.match(appSource, /const \[employeeCritical, setEmployeeCritical\] = useState\(false\)/)
+  assert.match(appSource, /const employeeCriticalRef = useRef\(false\)/)
+  assert.match(appSource, /const \[templateCritical, setTemplateCritical\] = useState\(false\)/)
+  assert.match(appSource, /const templateCriticalRef = useRef\(false\)/)
+  assert.match(
+    appSource,
+    /const personnelProtectedState = combinePersonnelProtectionSources\(\{[\s\S]*employeeCritical,[\s\S]*templateCritical,[\s\S]*\}\)/,
+  )
+  assert.match(appSource, /const handlePersonnelCriticalStateChange = useCallback/)
+  assert.match(appSource, /const handleTemplateCriticalStateChange = useCallback/)
+  assert.match(
+    appSource,
+    /personnelProtectedStateRef\.current = combinePersonnelProtectionSources\(\{[\s\S]*employeeCritical:\s*employeeCriticalRef\.current,[\s\S]*templateCritical:\s*templateCriticalRef\.current/,
+  )
+  assert.match(appSource, /onTemplateCriticalStateChange=\{handleTemplateCriticalStateChange\}/)
+})
+
 test('App gives each employee-directory caller single ownership of auth-invalid logout', () => {
   const refreshStart = appSource.indexOf('const refreshPersonnelEmployees = useCallback')
   const refreshEnd = appSource.indexOf('const personnelExitBlocked', refreshStart)
@@ -231,7 +298,7 @@ test('App gives each employee-directory caller single ownership of auth-invalid 
   )
 })
 
-test('App owns a hard exit lock for in-flight one-time credentials and beforeunload', () => {
+test('App owns a hard exit lock for employee credentials and permission-template saves', () => {
   assert.match(pageSource, /acquirePersonnelProtection/)
   assert.match(pageSource, /hasProtectedPersonnelState/)
   assert.match(pageSource, /onCriticalStateChange/)
@@ -261,12 +328,12 @@ test('App owns a hard exit lock for in-flight one-time credentials and beforeunl
     /\{credentials && !mutation && \([\s\S]*<EmployeeCredentialsDialog/,
   )
 
-  assert.match(appSource, /const \[personnelProtectedState, setPersonnelProtectedState\] = useState\(false\)/)
+  assert.match(appSource, /combinePersonnelProtectionSources/)
   assert.match(appSource, /const personnelProtectedStateRef = useRef\(false\)/)
   assert.match(appSource, /const handlePersonnelCriticalStateChange = useCallback/)
   assert.match(
     appSource,
-    /personnelProtectedStateRef\.current\s*=\s*nextActive[\s\S]*setPersonnelProtectedState\(nextActive\)[\s\S]*return true/,
+    /employeeCriticalRef\.current\s*=\s*nextActive[\s\S]*setEmployeeCritical\(nextActive\)[\s\S]*return true/,
   )
   assert.match(appSource, /shouldBlockPersonnelExit/)
   assert.match(appSource, /const handlePersonnelAwareNavigate = useCallback/)
@@ -298,4 +365,12 @@ test('new personnel and credential styles are prefixed and responsive', () => {
   assert.match(cssSource, /\.credentials-backdrop/)
   assert.match(cssSource, /\.credentials-dialog/)
   assert.match(cssSource, /@media[\s\S]*\.personnel-actions[\s\S]*\.credentials-grid/)
+  assert.match(cssSource, /\.permission-template-editor/)
+  assert.match(cssSource, /\.permission-template-matrix-scroll/)
+  assert.match(cssSource, /\.permission-template-sensitive-grid/)
+  assert.match(cssSource, /\.permission-template-save/)
+  assert.match(
+    cssSource,
+    /@media \(max-width: 680px\)[\s\S]*\.permission-template-heading[\s\S]*\.permission-template-actions/,
+  )
 })

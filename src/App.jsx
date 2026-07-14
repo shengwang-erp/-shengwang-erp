@@ -8,10 +8,14 @@ import {
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import PersonnelPage from './features/employees/PersonnelPage'
-import { shouldBlockPersonnelExit } from './features/employees/personnelCriticalState.js'
+import {
+  combinePersonnelProtectionSources,
+  shouldBlockPersonnelExit,
+} from './features/employees/personnelCriticalState.js'
 import DesktopAdminShell from './DesktopAdminShell'
 import AuthGate from './auth/AuthGate'
 import { employeeAdminService } from './services/employeeAdminService'
+import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import {
@@ -1661,7 +1665,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     loading: false,
     error: '',
   })
-  const [personnelProtectedState, setPersonnelProtectedState] = useState(false)
+  const [employeeCritical, setEmployeeCritical] = useState(false)
+  const employeeCriticalRef = useRef(false)
+  const [templateCritical, setTemplateCritical] = useState(false)
+  const templateCriticalRef = useRef(false)
   const personnelProtectedStateRef = useRef(false)
   const personnelRequestVersion = useRef(0)
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
@@ -1818,16 +1825,34 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     }
   }, [])
 
+  const personnelProtectedState = combinePersonnelProtectionSources({
+    employeeCritical,
+    templateCritical,
+  })
   const personnelExitBlocked = shouldBlockPersonnelExit({
     currentView,
     protectedStateActive: personnelProtectedState,
   })
+  const synchronizePersonnelProtectionRef = useCallback(() => {
+    personnelProtectedStateRef.current = combinePersonnelProtectionSources({
+      employeeCritical: employeeCriticalRef.current,
+      templateCritical: templateCriticalRef.current,
+    })
+  }, [])
   const handlePersonnelCriticalStateChange = useCallback((active) => {
     const nextActive = active === true
-    personnelProtectedStateRef.current = nextActive
-    setPersonnelProtectedState(nextActive)
+    employeeCriticalRef.current = nextActive
+    setEmployeeCritical(nextActive)
+    synchronizePersonnelProtectionRef()
     return true
-  }, [])
+  }, [synchronizePersonnelProtectionRef])
+  const handleTemplateCriticalStateChange = useCallback((active) => {
+    const nextActive = active === true
+    templateCriticalRef.current = nextActive
+    setTemplateCritical(nextActive)
+    synchronizePersonnelProtectionRef()
+    return true
+  }, [synchronizePersonnelProtectionRef])
   const handlePersonnelAwareNavigate = useCallback(
     (nextView) => {
       const exitBlockedNow = shouldBlockPersonnelExit({
@@ -2334,6 +2359,9 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         onRefreshEmployees={refreshPersonnelEmployees}
         onAuthInvalid={onLogout}
         onCriticalStateChange={handlePersonnelCriticalStateChange}
+        permissionTemplateService={permissionTemplateService}
+        onPermissionTemplatesChanged={onLogout}
+        onTemplateCriticalStateChange={handleTemplateCriticalStateChange}
         onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )

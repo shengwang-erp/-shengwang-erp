@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import * as personnelCriticalState from './personnelCriticalState.js'
+
 import {
   acquirePersonnelProtection,
   hasProtectedPersonnelState,
   shouldBlockPersonnelExit,
 } from './personnelCriticalState.js'
+
+test('employee and permission-template critical sources combine without clearing each other', () => {
+  assert.equal(typeof personnelCriticalState.combinePersonnelProtectionSources, 'function')
+  const combine = personnelCriticalState.combinePersonnelProtectionSources
+
+  assert.equal(combine({ employeeCritical: false, templateCritical: false }), false)
+  assert.equal(combine({ employeeCritical: true, templateCritical: false }), true)
+  assert.equal(combine({ employeeCritical: false, templateCritical: true }), true)
+  assert.equal(combine({ employeeCritical: true, templateCritical: true }), true)
+})
 
 test('protected credential work acquires its parent lock fail-closed', () => {
   const calls = []

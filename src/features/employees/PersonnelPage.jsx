@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import {
   DEPARTMENT_OPTIONS,
@@ -7,6 +7,7 @@ import {
 } from '../../auth/employeeAuthDomain.js'
 import { canViewSensitive } from '../../utils/permissions.js'
 import EmployeeCredentialsDialog from './EmployeeCredentialsDialog.jsx'
+import PermissionTemplateEditor from './PermissionTemplateEditor.jsx'
 import {
   acquirePersonnelProtection,
   hasProtectedPersonnelState,
@@ -242,6 +243,9 @@ export default function PersonnelPage({
   onRefreshEmployees,
   onAuthInvalid,
   onCriticalStateChange,
+  permissionTemplateService,
+  onPermissionTemplatesChanged,
+  onTemplateCriticalStateChange,
   onBack,
 }) {
   const [nameFilter, setNameFilter] = useState('')
@@ -252,6 +256,8 @@ export default function PersonnelPage({
   const [credentials, setCredentials] = useState(null)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [templateCritical, setTemplateCritical] = useState(false)
+  const templateCriticalRef = useRef(false)
 
   const canAdminister = isPersonnelAdministrator(currentEmployee)
   const identityAllowed =
@@ -305,10 +311,24 @@ export default function PersonnelPage({
       formState.mode === 'edit' &&
       formState.dirtyKeys.size === 0,
   )
-  const protectedStateActive = hasProtectedPersonnelState({
+  const employeeProtectedStateActive = hasProtectedPersonnelState({
     mutation,
     credentials,
   })
+  const employeeFlowActive = Boolean(formState || mutation || credentials)
+  const protectedStateActive = employeeProtectedStateActive || templateCritical
+
+  const handleTemplateCriticalStateChange = useCallback((active) => {
+    const nextActive = active === true
+    try {
+      if (onTemplateCriticalStateChange?.(nextActive) !== true) return false
+    } catch {
+      return false
+    }
+    templateCriticalRef.current = nextActive
+    setTemplateCritical(nextActive)
+    return true
+  }, [onTemplateCriticalStateChange])
 
   const resetMessages = () => {
     setError('')
@@ -332,7 +352,7 @@ export default function PersonnelPage({
   }
 
   const openCreateForm = () => {
-    if (!canAdminister || mutation) return
+    if (!canAdminister || mutation || templateCriticalRef.current) return
     resetMessages()
     if (!globalThis.crypto?.randomUUID) {
       setError('当前浏览器无法安全创建请求编号，请更换浏览器后重试')
@@ -353,7 +373,7 @@ export default function PersonnelPage({
   }
 
   const openEditForm = async (employee) => {
-    if (!canAdminister || mutation) return
+    if (!canAdminister || mutation || templateCriticalRef.current) return
     resetMessages()
     setMutation({ operation: 'detail', targetId: employee.id })
     try {
@@ -401,7 +421,7 @@ export default function PersonnelPage({
 
   const handleSubmit = async (event) => {
     event.preventDefault()
-    if (mutation) return
+    if (mutation || templateCriticalRef.current) return
     resetMessages()
     if (!formState) return
 
@@ -481,7 +501,10 @@ export default function PersonnelPage({
   }
 
   const handleAccountStatus = async (employee) => {
-    if (!canAdminister || mutation || employee.id === currentEmployee.id) return
+    if (
+      !canAdminister || mutation || templateCriticalRef.current ||
+      employee.id === currentEmployee.id
+    ) return
     const nextStatus = employee.accountStatus === 'active' ? 'disabled' : 'active'
     const action = nextStatus === 'disabled' ? '停用' : '启用'
     if (!window.confirm(`确认${action} ${employee.employeeNumber} 的登录账号？`)) return
@@ -516,7 +539,10 @@ export default function PersonnelPage({
   }
 
   const handleResetPassword = async (employee) => {
-    if (!canAdminister || mutation || employee.id === currentEmployee.id) return
+    if (
+      !canAdminister || mutation || templateCriticalRef.current ||
+      employee.id === currentEmployee.id
+    ) return
     if (!canResetTemporaryPassword(employee)) return
     const confirmed = window.confirm(
       `确认为 ${employee.employeeNumber} 生成新的临时密码？旧密码将立即失效，员工下次登录必须修改新密码。`,
@@ -581,7 +607,7 @@ export default function PersonnelPage({
             className="primary-button"
             type="button"
             onClick={openCreateForm}
-            disabled={Boolean(mutation)}
+            disabled={Boolean(mutation) || templateCritical}
           >新增员工</button>
         )}
       </header>
@@ -595,12 +621,22 @@ export default function PersonnelPage({
       {loadState.loading && <p className="personnel-message" role="status">正在读取规范员工目录…</p>}
       {protectedStateActive && (!credentials || mutation) && (
         <p className="personnel-message" role="status">
-          正在完成一次性凭据操作，完成前已锁定导航和退出。
+          正在完成受保护的人员或权限操作，完成前已锁定导航和退出。
         </p>
       )}
       {loadState.error && <p className="personnel-error" role="alert">{loadState.error}</p>}
       {error && <p className="personnel-error" role="alert">{error}</p>}
       {notice && <p className="personnel-message" role="status">{notice}</p>}
+
+      {canAdminister && !employeeFlowActive && (
+        <PermissionTemplateEditor
+          currentEmployee={currentEmployee}
+          permissionTemplateService={permissionTemplateService}
+          onTemplatesChanged={onPermissionTemplatesChanged}
+          onAuthInvalid={onAuthInvalid}
+          onMutationStateChange={handleTemplateCriticalStateChange}
+        />
+      )}
 
       {formState && (
         <form className="personnel-form" onSubmit={handleSubmit}>
@@ -746,17 +782,17 @@ export default function PersonnelPage({
               </dl>
               {canAdminister && (
                 <div className="personnel-actions">
-                  <button className="ghost-button" type="button" onClick={() => openEditForm(employee)} disabled={Boolean(mutation)}>编辑资料</button>
+                  <button className="ghost-button" type="button" onClick={() => openEditForm(employee)} disabled={Boolean(mutation) || templateCritical}>编辑资料</button>
                   {employee.id !== currentEmployee.id && (
                     <>
-                      <button className={employee.accountStatus === 'active' ? 'danger-button' : 'ghost-button'} type="button" onClick={() => handleAccountStatus(employee)} disabled={Boolean(mutation)}>
+                      <button className={employee.accountStatus === 'active' ? 'danger-button' : 'ghost-button'} type="button" onClick={() => handleAccountStatus(employee)} disabled={Boolean(mutation) || templateCritical}>
                         {employee.accountStatus === 'active' ? '停用账号' : '启用账号'}
                       </button>
                       <button
                         className="ghost-button"
                         type="button"
                         onClick={() => handleResetPassword(employee)}
-                        disabled={Boolean(mutation) || !canResetTemporaryPassword(employee)}
+                        disabled={Boolean(mutation) || templateCritical || !canResetTemporaryPassword(employee)}
                         title={canResetTemporaryPassword(employee) ? '' : '仅已启用且在职员工可重置临时密码'}
                       >生成临时密码</button>
                       {!canResetTemporaryPassword(employee) && (

@@ -7,6 +7,13 @@ export function acquirePersonnelProtection(onCriticalStateChange) {
   }
 }
 
+export function combinePersonnelProtectionSources({
+  employeeCritical,
+  templateCritical,
+}) {
+  return employeeCritical === true || templateCritical === true
+}
+
 export function hasProtectedPersonnelState({ mutation, credentials }) {
   return (
     mutation?.operation === 'create' ||
