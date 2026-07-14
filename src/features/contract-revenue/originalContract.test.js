@@ -33,6 +33,22 @@ function draftProject(overrides = {}) {
   }
 }
 
+function historicalProject(overrides = {}) {
+  return {
+    projectId: 'P-HISTORY',
+    projectName: '历史项目',
+    contractRevenueSchemaVersion: 1,
+    contractRevenueSetupStatus: 'configured',
+    contractConfirmationStatus: 'historical_migrated_confirmed',
+    originalContractTaxExclusiveAmount: 1000000,
+    originalContractTaxRate: 0,
+    originalContractTaxAmount: 0,
+    originalContractTaxInclusiveAmount: 1000000,
+    needsManualReview: true,
+    ...overrides,
+  }
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -200,4 +216,118 @@ test('legacy and not-started projects cannot bypass the required draft confirmat
         error.code === 'original_contract_draft_required',
     )
   }
+})
+
+test('historical review strictly validates tax fields and confirms the contract once', () => {
+  const confirmHistoricalContractReview = requireExport(
+    'confirmHistoricalContractReview',
+  )
+  const source = historicalProject()
+  const original = clone(source)
+
+  const result = confirmHistoricalContractReview(
+    source,
+    {
+      taxExclusiveAmount: '1000000',
+      taxRate: '10',
+      taxAmount: '100000',
+      taxInclusiveAmount: '1100000',
+    },
+    { employeeId: 'E009', name: '会计王' },
+    '2026-07-14T13:00:00.000Z',
+  )
+
+  assert.equal(result.contractConfirmationStatus, 'confirmed')
+  assert.equal(result.needsManualReview, false)
+  assert.equal(result.originalContractTaxExclusiveAmount, 1000000)
+  assert.equal(result.originalContractTaxRate, 10)
+  assert.equal(result.originalContractTaxAmount, 100000)
+  assert.equal(result.originalContractTaxInclusiveAmount, 1100000)
+  assert.equal(result.contractConfirmedById, 'E009')
+  assert.equal(result.contractConfirmedByName, '会计王')
+  assert.equal(result.contractConfirmedAt, '2026-07-14T13:00:00.000Z')
+  assert.deepEqual(source, original)
+})
+
+test('historical review rejects inconsistent tax amounts and preserves the migrated project', () => {
+  const confirmHistoricalContractReview = requireExport(
+    'confirmHistoricalContractReview',
+  )
+  const source = historicalProject()
+  const original = clone(source)
+
+  assert.throws(
+    () =>
+      confirmHistoricalContractReview(
+        source,
+        {
+          taxExclusiveAmount: 1000000,
+          taxRate: 10,
+          taxAmount: 100000,
+          taxInclusiveAmount: 1099999,
+        },
+        { employeeId: 'E009', name: '会计王' },
+        '2026-07-14T13:00:00.000Z',
+      ),
+    (error) =>
+      error instanceof ContractRevenueValidationError &&
+      error.field === 'taxInclusiveAmount',
+  )
+  assert.deepEqual(source, original)
+})
+
+test('historical review requires the pending-review state, actor and review time', () => {
+  const confirmHistoricalContractReview = requireExport(
+    'confirmHistoricalContractReview',
+  )
+  const OriginalContractStateError = requireExport('OriginalContractStateError')
+  const validInput = {
+    taxExclusiveAmount: 1000000,
+    taxRate: 0,
+    taxAmount: 0,
+    taxInclusiveAmount: 1000000,
+  }
+
+  for (const project of [
+    historicalProject({ needsManualReview: false }),
+    historicalProject({ contractConfirmationStatus: 'confirmed' }),
+  ]) {
+    assert.throws(
+      () =>
+        confirmHistoricalContractReview(
+          project,
+          validInput,
+          { employeeId: 'E009', name: '会计王' },
+          '2026-07-14T13:00:00.000Z',
+        ),
+      (error) =>
+        error instanceof OriginalContractStateError &&
+        error.code === 'historical_review_not_required',
+    )
+  }
+
+  assert.throws(
+    () =>
+      confirmHistoricalContractReview(
+        historicalProject(),
+        validInput,
+        { employeeId: '', name: '' },
+        '2026-07-14T13:00:00.000Z',
+      ),
+    (error) =>
+      error instanceof OriginalContractStateError &&
+      error.code === 'confirmation_actor_required',
+  )
+  assert.throws(
+    () =>
+      confirmHistoricalContractReview(
+        historicalProject(),
+        validInput,
+        { employeeId: 'E009', name: '会计王' },
+        '',
+      ),
+    (error) =>
+      error instanceof OriginalContractStateError &&
+      error.code === 'confirmation_time_required',
+  )
 })

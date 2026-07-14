@@ -539,6 +539,59 @@ h1 {
   color: inherit;
 }
 
+.contract-revenue-migration-panel,
+.contract-migration-preview,
+.contract-migration-result {
+  display: grid;
+  gap: 14px;
+}
+
+.migration-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.migration-summary-grid article {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  background: #f6f8fb;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+}
+
+.migration-summary-grid strong {
+  color: #172033;
+  font-size: 24px;
+}
+
+.migration-summary-grid span {
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.migration-issue-list {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  color: #7a4c00;
+  background: #fff8e8;
+  border: 1px solid #f4d58a;
+  border-radius: 8px;
+}
+
+.migration-issue-list.error {
+  color: var(--danger, #b42318);
+  background: var(--danger-soft, #fff1f0);
+  border-color: #ffd2cc;
+}
+
+.historical-review-baseline {
+  margin: 12px 0 16px;
+}
+
 .labor-card-list,
 .timeline-list {
   display: grid;

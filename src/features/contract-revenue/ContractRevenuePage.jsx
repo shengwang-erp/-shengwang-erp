@@ -16,6 +16,7 @@ export default function ContractRevenuePage({
   receipts,
   currentUser,
   onProjectChange,
+  onHistoricalReview,
   onCreateContractChange,
   onVoidContractChange,
   onSavePaymentPlan,
@@ -72,8 +73,10 @@ export default function ContractRevenuePage({
 
       <OriginalContractSection
         project={project}
+        revenueSnapshot={revenueSnapshot}
         currentUser={currentUser}
         onProjectChange={onProjectChange}
+        onHistoricalReview={onHistoricalReview}
       />
 
       <ContractChangesSection

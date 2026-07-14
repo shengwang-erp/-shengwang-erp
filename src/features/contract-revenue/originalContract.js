@@ -146,3 +146,50 @@ export function confirmOriginalContract(project, actor, confirmedAt) {
     contractConfirmedAt: confirmedAt.trim(),
   })
 }
+
+export function confirmHistoricalContractReview(project, input, actor, confirmedAt) {
+  requireProject(project)
+  if (
+    project.contractConfirmationStatus !== HISTORICAL_MIGRATED_CONFIRMED ||
+    project.needsManualReview !== true
+  ) {
+    throw new OriginalContractStateError(
+      'historical_review_not_required',
+      '该项目不需要历史合同复核',
+    )
+  }
+
+  const amounts = validateTaxBreakdown(input)
+  const employeeId =
+    typeof actor?.employeeId === 'string' && actor.employeeId.trim()
+      ? actor.employeeId.trim()
+      : ''
+  const employeeName =
+    typeof actor?.name === 'string' && actor.name.trim() ? actor.name.trim() : ''
+  if (!employeeId || !employeeName) {
+    throw new OriginalContractStateError(
+      'confirmation_actor_required',
+      '会计确认人不能为空',
+    )
+  }
+  if (typeof confirmedAt !== 'string' || !confirmedAt.trim()) {
+    throw new OriginalContractStateError(
+      'confirmation_time_required',
+      '会计确认时间不能为空',
+    )
+  }
+
+  return sanitizeProjectForPersistence({
+    ...project,
+    contractRevenueSetupStatus: CONTRACT_REVENUE_SETUP_CONFIGURED,
+    contractConfirmationStatus: CONTRACT_CONFIRMATION_CONFIRMED,
+    originalContractTaxExclusiveAmount: amounts.taxExclusiveAmount,
+    originalContractTaxRate: amounts.taxRate,
+    originalContractTaxAmount: amounts.taxAmount,
+    originalContractTaxInclusiveAmount: amounts.taxInclusiveAmount,
+    needsManualReview: false,
+    contractConfirmedById: employeeId,
+    contractConfirmedByName: employeeName,
+    contractConfirmedAt: confirmedAt.trim(),
+  })
+}

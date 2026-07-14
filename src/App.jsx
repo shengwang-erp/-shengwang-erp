@@ -6,7 +6,9 @@ import {
   getProfitAnchorTaxExclusiveAmount,
 } from './features/contract-revenue/contractRevenueCalculations'
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
+import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
+import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   createContractChange as persistContractChange,
@@ -1344,20 +1346,22 @@ function usePersistentState(key, fallback, options = {}) {
     }
   }, [key])
 
-  const updateValue = (nextValue) => {
+  const updateValue = (nextValue, updateOptions = {}) => {
     setValue((currentValue) => {
       const resolvedValue =
         typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
-      window.localStorage.setItem(key, JSON.stringify(resolvedValue))
-      if (isCloudDatabaseReady() && cloudPersistence === 'list') {
-        saveList(key, resolvedValue).catch((error) => {
-          console.error(`Supabase 保存失败: ${key}`, error)
-          setCloudState({
-            loading: false,
-            error: '保存失败，请检查网络或 Supabase 配置。',
-            source: 'local-cache',
+      if (!updateOptions.stateOnly) {
+        window.localStorage.setItem(key, JSON.stringify(resolvedValue))
+        if (isCloudDatabaseReady() && cloudPersistence === 'list') {
+          saveList(key, resolvedValue).catch((error) => {
+            console.error(`Supabase 保存失败: ${key}`, error)
+            setCloudState({
+              loading: false,
+              error: '保存失败，请检查网络或 Supabase 配置。',
+              source: 'local-cache',
+            })
           })
-        })
+        }
       }
       return resolvedValue
     })
@@ -1877,6 +1881,15 @@ function App() {
     [],
   )
 
+  const refreshStoredProjectsFromLocal = () => {
+    setStoredProjects(readStorage(STORAGE_KEYS.projects, []), { stateOnly: true })
+  }
+  const refreshProjectReceiptsFromLocal = () => {
+    setProjectReceipts(readStorage(STORAGE_KEYS.projectReceipts, []), {
+      stateOnly: true,
+    })
+  }
+
   const recordGroups = {
     stockOut: stockOutRecords,
     stockReturn: stockReturnRecords,
@@ -2193,6 +2206,19 @@ function App() {
     )
   }
 
+  const handleHistoricalContractReview = async (nextProject) => {
+    const upsertLocalRecord = createLocalStorageUpsertRecord(window.localStorage)
+    const persistedProject = prepareProjectForPersistence(nextProject)
+    await upsertLocalRecord(STORAGE_KEYS.projects, persistedProject)
+    refreshStoredProjectsFromLocal()
+    return persistedProject
+  }
+
+  const handleLocalContractRevenueMigrationComplete = () => {
+    refreshStoredProjectsFromLocal()
+    refreshProjectReceiptsFromLocal()
+  }
+
   const handleCreateContractChange = async (input) => {
     const created = await persistContractChange(input)
     setProjectContractChanges((currentChanges) => [
@@ -2384,6 +2410,7 @@ function App() {
         receipts={projectReceipts}
         currentUser={currentUser}
         onProjectChange={handleContractRevenueProjectChange}
+        onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}
         onVoidContractChange={handleVoidContractChange}
         onSavePaymentPlan={handleSavePaymentPlan}
@@ -2559,6 +2586,9 @@ function App() {
       <SystemSettingsPage
         currentUser={currentUser}
         storageKeys={BUSINESS_STORAGE_KEYS}
+        onLocalContractRevenueMigrationComplete={
+          handleLocalContractRevenueMigrationComplete
+        }
         onClearTestData={handleClearTestData}
         onBack={() => setCurrentView('home')}
       />
@@ -2965,7 +2995,13 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
   )
 }
 
-function SystemSettingsPage({ currentUser, storageKeys, onClearTestData, onBack }) {
+function SystemSettingsPage({
+  currentUser,
+  storageKeys,
+  onLocalContractRevenueMigrationComplete: handleLocalContractRevenueMigrationComplete,
+  onClearTestData,
+  onBack,
+}) {
   const [isMigrating, setIsMigrating] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
   const [migrationResults, setMigrationResults] = useState([])
@@ -3052,6 +3088,11 @@ function SystemSettingsPage({ currentUser, storageKeys, onClearTestData, onBack 
           </div>
         </section>
       )}
+
+      <ContractRevenueMigrationPanel
+        canExecute={canMigrate}
+        onMigrationComplete={handleLocalContractRevenueMigrationComplete}
+      />
 
       <section className="form-card">
         <div className="section-heading">
