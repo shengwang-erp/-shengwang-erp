@@ -378,3 +378,29 @@ test('building a revenue read model never adds snapshot fields to the persisted 
   assert.equal(Object.hasOwn(readModel, 'profitAnchorTaxExclusiveAmount'), true)
   assert.deepEqual(project, originalProject)
 })
+
+test('new base projects awaiting original contract entry receive a zero read-only snapshot', () => {
+  const project = {
+    projectId: 'P-NEW',
+    projectName: '待录合同项目',
+    contractRevenueSetupStatus: 'not_started',
+  }
+  const original = clone(project)
+
+  const snapshots = revenueCalculations.buildProjectRevenueSnapshotCollection(
+    [project],
+    [],
+    [],
+    [],
+  )
+  const snapshot = snapshots.get('P-NEW')
+
+  assert.equal(snapshot.adjustedTaxExclusiveAmount, 0)
+  assert.equal(snapshot.adjustedTaxInclusiveAmount, 0)
+  assert.equal(snapshot.totalReceivedTaxInclusiveAmount, 0)
+  assert.equal(snapshot.outstandingTaxInclusiveAmount, 0)
+  assert.equal(snapshot.paymentProgress, 0)
+  assert.equal(snapshot.allocationStatus, 'contract_not_started')
+  assert.equal(snapshot.profitAnchorTaxExclusiveAmount, 0)
+  assert.deepEqual(project, original)
+})

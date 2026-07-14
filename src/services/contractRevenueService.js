@@ -9,6 +9,7 @@ export const PROJECT_REVENUE_SNAPSHOT_FIELDS = Object.freeze([
   'paidAmount',
   'paymentProgress',
   'paymentStatus',
+  'revenuePaymentStatus',
   'adjustedTaxExclusiveAmount',
   'adjustedTaxAmount',
   'adjustedTaxInclusiveAmount',

@@ -5,6 +5,8 @@ import {
   buildProjectRevenueSnapshotCollection,
   getProfitAnchorTaxExclusiveAmount,
 } from './features/contract-revenue/contractRevenueCalculations'
+import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
+import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   sanitizeProjectForPersistence,
@@ -290,8 +292,11 @@ function normalizeProject(project) {
 function prepareProjectForPersistence(project) {
   const normalizedProject = normalizeProject(project)
   const revenueSchemaVersion = Number(normalizedProject.contractRevenueSchemaVersion)
+  const isOriginalContractPending =
+    normalizedProject.contractRevenueSetupStatus === 'not_started'
 
-  return Number.isInteger(revenueSchemaVersion) && revenueSchemaVersion >= 1
+  return (Number.isInteger(revenueSchemaVersion) && revenueSchemaVersion >= 1) ||
+    isOriginalContractPending
     ? sanitizeProjectForPersistence(normalizedProject)
     : normalizedProject
 }
@@ -352,12 +357,17 @@ function normalizeEmployee(employee) {
 }
 
 function buildProjectPayload(form) {
-  return normalizeProject({
-    ...form,
+  return {
     projectId: form.projectId || '',
-    contractAmount: form.contractAmount,
-    paidAmount: form.paidAmount,
-  })
+    projectName: form.projectName || '',
+    customerName: form.customerName || '',
+    address: form.address || '',
+    status: form.status || '进行中',
+    manager: form.manager || '',
+    startDate: form.startDate || '',
+    endDate: form.endDate || '',
+    remark: form.remark || '',
+  }
 }
 
 function formatYen(value) {
@@ -1368,8 +1378,6 @@ function createEmptyProject() {
     manager: '',
     startDate: todayValue(),
     endDate: '',
-    contractAmount: '',
-    paidAmount: '',
     remark: '',
   }
 }
@@ -1763,6 +1771,7 @@ function createEmptyToolResponsibilityForm() {
 
 function App() {
   const [currentView, setCurrentView] = useState('home')
+  const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
   const [currentUser, setCurrentUserState] = useState(() =>
     readStorage(STORAGE_KEYS.currentUser, null),
   )
@@ -2152,6 +2161,24 @@ function App() {
     vehicleExpense: vehicleExpenseRecords,
     vehicleIssue: vehicleIssueRecords,
   }
+  const contractRevenueProject = projects.find(
+    (project) => project.projectId === contractRevenueProjectId,
+  )
+
+  const openContractRevenue = (projectId) => {
+    setContractRevenueProjectId(projectId)
+    setCurrentView('contractRevenue')
+  }
+
+  const handleContractRevenueProjectChange = (nextProject) => {
+    setProjects((currentProjects) =>
+      currentProjects.map((project) =>
+        project.projectId === nextProject.projectId
+          ? { ...project, ...nextProject }
+          : project,
+      ),
+    )
+  }
 
   const handleLogin = ({ name, password }) => {
     const matchedEmployees = employees.filter((employee) => employee.name === name.trim())
@@ -2276,12 +2303,25 @@ function App() {
     )
   }
 
+  if (currentView === 'contractRevenue') {
+    return (
+      <ContractRevenuePage
+        project={contractRevenueProject}
+        revenueSnapshot={projectRevenueSnapshots.get(contractRevenueProjectId)}
+        currentUser={currentUser}
+        onProjectChange={handleContractRevenueProjectChange}
+        onBack={() => setCurrentView('projects')}
+      />
+    )
+  }
+
   if (currentView === 'projects') {
     return (
       <ProjectPage
         projects={projects}
         projectRevenueSnapshots={projectRevenueSnapshots}
         setProjects={setProjects}
+        onOpenContractRevenue={openContractRevenue}
         onBack={() => setCurrentView('home')}
       />
     )
@@ -3401,11 +3441,16 @@ function EmployeeOwnedTools({ employee, assignments, responsibilityRecords }) {
   )
 }
 
-function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack }) {
+function ProjectPage({
+  projects,
+  projectRevenueSnapshots,
+  setProjects,
+  onOpenContractRevenue,
+  onBack,
+}) {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState('')
   const [form, setForm] = useState(createEmptyProject)
-  const formPaymentInfo = getPaymentInfo(form.contractAmount, form.paidAmount)
 
   const resetForm = () => {
     setForm(createEmptyProject())
@@ -3431,10 +3476,16 @@ function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack })
         ),
       )
     } else {
-      const project = {
-        ...buildProjectPayload({ ...form, projectId: nextId('P', projects, 'projectId') }),
-      }
+      const project = initializeOriginalContractProject(
+        buildProjectPayload({
+          ...form,
+          projectId: nextId('P', projects, 'projectId'),
+        }),
+      )
       setProjects((currentProjects) => [project, ...currentProjects])
+      resetForm()
+      onOpenContractRevenue(project.projectId)
+      return
     }
 
     resetForm()
@@ -3450,8 +3501,6 @@ function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack })
       manager: project.manager,
       startDate: project.startDate,
       endDate: project.endDate,
-      contractAmount: project.contractAmount,
-      paidAmount: project.paidAmount,
       remark: project.remark,
     })
     setIsFormOpen(true)
@@ -3537,22 +3586,6 @@ function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack })
               value={form.endDate}
               onChange={(value) => setForm({ ...form, endDate: value })}
             />
-            <Field
-              label="合同金额（日元）"
-              type="number"
-              value={form.contractAmount}
-              onChange={(value) => setForm({ ...form, contractAmount: value })}
-              placeholder="例如 800000"
-            />
-            <Field
-              label="已收款金额（日元）"
-              type="number"
-              value={form.paidAmount}
-              onChange={(value) => setForm({ ...form, paidAmount: value })}
-              placeholder="例如 400000"
-            />
-            <ReadOnlyField label="付款进度" value={formatPercent(formPaymentInfo.paymentProgress)} />
-            <ReadOnlyField label="付款状态" value={formPaymentInfo.paymentStatus} />
             <Field
               label="备注"
               type="textarea"
@@ -3643,6 +3676,13 @@ function ProjectPage({ projects, projectRevenueSnapshots, setProjects, onBack })
                   )}
                 </dl>
                 <div className="record-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => onOpenContractRevenue(project.projectId)}
+                  >
+                    合同收入
+                  </button>
                   <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
                     编辑
                   </button>

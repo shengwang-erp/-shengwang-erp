@@ -206,6 +206,7 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
     paidAmount: 500000,
     paymentProgress: 45,
     paymentStatus: '部分收款',
+    revenuePaymentStatus: '部分收款',
     adjustedTaxExclusiveAmount: 1000000,
     adjustedTaxAmount: 100000,
     adjustedTaxInclusiveAmount: 1100000,
@@ -232,6 +233,7 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
     PROJECT_REVENUE_SNAPSHOT_FIELDS.includes('profitAnchorTaxExclusiveAmount'),
     true,
   )
+  assert.equal(PROJECT_REVENUE_SNAPSHOT_FIELDS.includes('revenuePaymentStatus'), true)
   for (const field of PROJECT_REVENUE_SNAPSHOT_FIELDS) {
     assert.equal(Object.hasOwn(sanitized, field), false, `${field} should be removed`)
     assert.equal(Object.hasOwn(project, field), true, `${field} should remain on input`)

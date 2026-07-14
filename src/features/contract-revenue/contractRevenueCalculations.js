@@ -410,6 +410,30 @@ function buildLegacyCompatibilitySnapshot(project) {
   }
 }
 
+function buildPendingContractSnapshot() {
+  return {
+    adjustedTaxExclusiveAmount: 0,
+    adjustedTaxAmount: 0,
+    adjustedTaxInclusiveAmount: 0,
+    totalReceivedTaxInclusiveAmount: 0,
+    outstandingTaxInclusiveAmount: 0,
+    overpaidTaxInclusiveAmount: 0,
+    paymentProgress: 0,
+    paymentStatus: '未收款',
+    allocationStatus: 'contract_not_started',
+    allocationReason: 'original_contract_not_entered',
+    lockedStages: [],
+    unlockedStages: [],
+    lockedPlannedTaxInclusiveAmount: 0,
+    remainingAssignableTaxInclusiveAmount: 0,
+    unallocatedTaxInclusiveAmount: 0,
+    lockedAmountExcess: 0,
+    contractAmount: 0,
+    paidAmount: 0,
+    profitAnchorTaxExclusiveAmount: 0,
+  }
+}
+
 export function buildProjectRevenueSnapshot(
   project,
   changes = [],
@@ -464,7 +488,9 @@ export function buildProjectRevenueSnapshotCollection(
     const projectId = requireProjectId(project)
     snapshots.set(
       projectId,
-      buildProjectRevenueSnapshot(project, changes, plans, receipts),
+      project?.contractRevenueSetupStatus === 'not_started'
+        ? buildPendingContractSnapshot()
+        : buildProjectRevenueSnapshot(project, changes, plans, receipts),
     )
   }
 
