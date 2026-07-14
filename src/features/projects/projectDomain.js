@@ -89,11 +89,11 @@ export function updateProjectAddress(project, address) {
 }
 
 export function confirmProjectLocation(project, point, confirmedAt) {
-  const latitude = Number(point?.latitude)
-  const longitude = Number(point?.longitude)
+  const latitude = parseCoordinate(point?.latitude, -90, 90)
+  const longitude = parseCoordinate(point?.longitude, -180, 180)
   if (
-    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-    !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+    latitude === null ||
+    longitude === null ||
     !normalizeAddress(project?.address) ||
     typeof confirmedAt !== 'string' || !confirmedAt
   ) throw new TypeError('定位确认数据无效')

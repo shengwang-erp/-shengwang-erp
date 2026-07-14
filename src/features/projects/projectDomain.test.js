@@ -113,6 +113,44 @@ test('address edits preserve coordinates but invalidate confirmation', () => {
   )
 })
 
+test('location confirmation rejects missing, null, empty, and whitespace coordinates', () => {
+  const project = { ...createEmptyProject(), address: '東京都江東区森下4-17-5' }
+  const confirmedAt = '2026-07-15T01:02:03.000Z'
+  assert.throws(
+    () => confirmProjectLocation(project, undefined, confirmedAt),
+    /定位确认数据无效/,
+  )
+  for (const missing of [null, '', ' ', '\t']) {
+    assert.throws(
+      () => confirmProjectLocation(
+        project,
+        { latitude: missing, longitude: 139.8 },
+        confirmedAt,
+      ),
+      /定位确认数据无效/,
+    )
+    assert.throws(
+      () => confirmProjectLocation(
+        project,
+        { latitude: 35.687, longitude: missing },
+        confirmedAt,
+      ),
+      /定位确认数据无效/,
+    )
+  }
+})
+
+test('location confirmation accepts explicitly provided numeric zero coordinates', () => {
+  const confirmed = confirmProjectLocation(
+    { ...createEmptyProject(), address: 'Null Island' },
+    { latitude: 0, longitude: 0 },
+    '2026-07-15T01:02:03.000Z',
+  )
+  assert.equal(confirmed.latitude, 0)
+  assert.equal(confirmed.longitude, 0)
+  assert.equal(isProjectLocationConfirmed(confirmed), true)
+})
+
 test('only active employed employees in the exact department are candidates', () => {
   const rows = [
     design,
