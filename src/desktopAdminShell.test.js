@@ -39,7 +39,24 @@ test('desktop shell exposes every real first-level route without approval or rep
   assert.doesNotMatch(shellSource, /审批中心|报表中心/)
   assert.match(
     shellSource,
-    /isSuperAdmin\(currentUser\)[\s\S]*?currentUser\.position\s*===\s*'会计'[\s\S]*?currentUser\.department\s*===\s*'会计'/,
+    /view:\s*'stockOut'[\s\S]*?permissionName:\s*'仓库库存'/,
+  )
+  assert.match(
+    shellSource,
+    /view:\s*'stockReturn'[\s\S]*?permissionName:\s*'仓库库存'/,
+  )
+  assert.doesNotMatch(shellSource, /currentUser\.(?:position|department)\s*===/)
+  assert.match(
+    shellSource,
+    /item\.view === 'home'[\s\S]*?isSuperAdmin\(currentUser\)[\s\S]*?canAccessModule\(currentUser, item\.permissionName\)/,
+  )
+  assert.match(
+    appSource,
+    /title:\s*'我要出库'[\s\S]*?permissionName:\s*'仓库库存'/,
+  )
+  assert.match(
+    appSource,
+    /title:\s*'我要退回'[\s\S]*?permissionName:\s*'仓库库存'/,
   )
 })
 
@@ -47,7 +64,8 @@ test('authenticated views share the desktop shell while login stays outside it',
   assert.match(appSource, /import DesktopAdminShell from '\.\/DesktopAdminShell'/)
   assert.match(appSource, /const renderInDesktopShell\s*=\s*\(page\)\s*=>/)
   assert.equal((appSource.match(/return renderInDesktopShell\(/g) || []).length, 12)
-  assert.match(appSource, /if \(!currentUser\)[\s\S]*?return \(\s*<LoginPage/)
+  assert.match(appSource, /<AuthGate>[\s\S]*?<AuthenticatedApp/)
+  assert.doesNotMatch(appSource, /if \(!currentUser\)[\s\S]*?<LoginPage/)
 })
 
 test('desktop frame is fixed and gold-highlighted only above the mobile breakpoint', () => {

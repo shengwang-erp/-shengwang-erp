@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { isCloudDatabaseReady, getList, migrateLocalStorageToSupabase, saveList, upsertRecord } from './services/baseRecordService'
+import { isCloudDatabaseReady, getList, migrateLocalStorageToSupabase, saveList } from './services/baseRecordService'
 import {
   buildProjectRevenueReadModel,
   buildProjectRevenueSnapshotCollection,
@@ -8,6 +8,7 @@ import {
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import DesktopAdminShell from './DesktopAdminShell'
+import AuthGate from './auth/AuthGate'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import {
@@ -23,15 +24,8 @@ import {
 import {
   canAccessModule,
   canEdit,
-  getPermissionCount,
-  getPermissionDefaults,
-  getRoleLabel,
   isHiddenSystemEmployee,
   isSuperAdmin,
-  normalizePermissionFields,
-  permissionModuleOptions,
-  roleOptions,
-  sensitivePermissionOptions,
 } from './utils/permissions'
 
 const STORAGE_KEYS = {
@@ -60,12 +54,9 @@ const STORAGE_KEYS = {
   purchasePaymentRecords: 'erp.purchasePaymentRecords',
   stockInRecords: 'erp.stockInRecords',
   inventoryItems: 'erp.inventoryItems',
-  currentUser: 'currentUser',
 }
 
-const BUSINESS_STORAGE_KEYS = Object.values(STORAGE_KEYS).filter(
-  (key) => key !== STORAGE_KEYS.currentUser,
-)
+const BUSINESS_STORAGE_KEYS = Object.values(STORAGE_KEYS)
 
 const statusOptions = ['进行中', '已完工', '暂停']
 const paymentStatusOptions = ['未付款', '部分付款', '已付清', '超额收款']
@@ -312,7 +303,6 @@ function prepareProjectForPersistence(project) {
 
 function normalizeEmployee(employee) {
   const now = todayValue()
-  const permissionInfo = normalizePermissionFields(employee)
   const salaryStandard = getSalaryStandard(employee)
 
   return {
@@ -341,23 +331,10 @@ function normalizeEmployee(employee) {
     dailySalary: salaryStandard.dailySalary,
     hourlyWage: salaryStandard.hourlyWage,
     salaryRemark: employee.salaryRemark || '',
-    username: employee.username || employee.name || '',
-    passwordHash: employee.passwordHash || '',
-    loginEnabled:
-      employee.loginEnabled === undefined ? false : Boolean(employee.loginEnabled),
-    mustChangePassword: Boolean(employee.mustChangePassword),
-    role: permissionInfo.role,
-    accessibleModules: permissionInfo.accessibleModules,
-    canCreateModules: permissionInfo.canCreateModules,
-    canEditModules: permissionInfo.canEditModules,
-    canDeleteModules: permissionInfo.canDeleteModules,
-    sensitivePermissions: permissionInfo.sensitivePermissions,
     source: employee.source || '',
-    lastLoginAt: employee.lastLoginAt || '',
     wecomUserId: employee.wecomUserId || '',
     wecomDepartmentId: employee.wecomDepartmentId || '',
     wecomDepartmentName: employee.wecomDepartmentName || '',
-    authProvider: employee.authProvider || 'password',
     isHiddenSystemAccount: Boolean(employee.isHiddenSystemAccount),
     remark: employee.remark || '',
     createdAt: employee.createdAt || now,
@@ -387,11 +364,6 @@ function formatYen(value) {
 
 function formatPercent(value) {
   return `${Math.round(Number(value) || 0)}%`
-}
-
-function formatPermissionCount(values) {
-  const count = getPermissionCount(values)
-  return count === '全部' ? '全部模块' : `${count} 个模块`
 }
 
 function inferSalaryType(employee = {}) {
@@ -635,11 +607,7 @@ function getLaborTimeConflictPairs(records) {
 }
 
 function canForceLaborRepeat(currentUser) {
-  return (
-    isSuperAdmin(currentUser) ||
-    ['老板', '操作员', '超级管理员'].includes(currentUser?.position) ||
-    canEdit(currentUser, '人工记录')
-  )
+  return isSuperAdmin(currentUser) || canEdit(currentUser, '人工记录')
 }
 
 function getLaborPlaceLabel(record) {
@@ -1312,16 +1280,11 @@ function usePersistentState(key, fallback, options = {}) {
         if (!isMounted || cloudValue === undefined) return
 
         const localValue = readStorage(key, fallback)
-        const cloudOnlyHasHiddenAccount =
-          key === STORAGE_KEYS.employees &&
-          Array.isArray(cloudValue) &&
-          cloudValue.length === 1 &&
-          cloudValue[0]?.employeeId === 'SUPER_ADMIN'
         const shouldKeepLocalCache =
           Array.isArray(localValue) &&
           localValue.length > 0 &&
           Array.isArray(cloudValue) &&
-          (cloudValue.length === 0 || cloudOnlyHasHiddenAccount)
+          cloudValue.length === 0
 
         if (!shouldKeepLocalCache) {
           setValue(cloudValue)
@@ -1420,100 +1383,12 @@ function createEmptyEmployee() {
     dailySalary: '',
     hourlyWage: '',
     salaryRemark: '',
-    username: '',
-    passwordHash: '',
-    loginEnabled: false,
-    mustChangePassword: false,
-    role: 'employee',
-    accessibleModules: [],
-    canCreateModules: [],
-    canEditModules: [],
-    canDeleteModules: [],
-    sensitivePermissions: [],
     source: '人员管理新增',
-    lastLoginAt: '',
     wecomUserId: '',
     wecomDepartmentId: '',
     wecomDepartmentName: '',
-    authProvider: 'password',
     remark: '',
   }
-}
-
-function createDefaultAdmin() {
-  const now = dateTimeValue()
-
-  return normalizeEmployee({
-    employeeId: 'SUPER_ADMIN',
-    name: '超级管理员',
-    username: '超级管理员',
-    passwordHash: '320086',
-    phone: '',
-    department: '管理',
-    position: '超级管理员',
-    employmentStatus: '在职',
-    role: 'super_admin',
-    loginEnabled: true,
-    mustChangePassword: false,
-    accessibleModules: ['all'],
-    canCreateModules: ['all'],
-    canEditModules: ['all'],
-    canDeleteModules: ['all'],
-    sensitivePermissions: ['all'],
-    isHiddenSystemAccount: true,
-    source: '系统恢复账号',
-    createdAt: now,
-    updatedAt: now,
-    lastLoginAt: '',
-  })
-}
-
-function ensureSuperAdminEmployee(employees = []) {
-  const hasSuperAdmin = employees.some((employee) => employee.employeeId === 'SUPER_ADMIN')
-  if (hasSuperAdmin) {
-    return employees.map((employee) =>
-      employee.employeeId === 'SUPER_ADMIN'
-        ? normalizeEmployee({
-            ...employee,
-            name: '超级管理员',
-            username: '超级管理员',
-            passwordHash: employee.passwordHash || '320086',
-            position: '超级管理员',
-            role: 'super_admin',
-            loginEnabled: true,
-            accessibleModules: ['all'],
-            canCreateModules: ['all'],
-            canEditModules: ['all'],
-            canDeleteModules: ['all'],
-            sensitivePermissions: ['all'],
-            isHiddenSystemAccount: true,
-            source: '系统恢复账号',
-          })
-        : employee,
-    )
-  }
-
-  return [createDefaultAdmin(), ...employees]
-}
-
-function buildCurrentUser(employee) {
-  return {
-    employeeId: employee.employeeId,
-    name: employee.name,
-    position: employee.position,
-    department: employee.department,
-    role: employee.role,
-    accessibleModules: employee.accessibleModules || [],
-    canCreateModules: employee.canCreateModules || [],
-    canEditModules: employee.canEditModules || [],
-    canDeleteModules: employee.canDeleteModules || [],
-    sensitivePermissions: employee.sensitivePermissions || [],
-    loginAt: dateTimeValue(),
-  }
-}
-
-function isSixDigitPassword(password) {
-  return /^\d{6}$/.test(password)
 }
 
 function createEmptyBusinessForm(fields) {
@@ -1781,12 +1656,9 @@ function createEmptyToolResponsibilityForm() {
   }
 }
 
-function App() {
+function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
-  const [currentUser, setCurrentUserState] = useState(() =>
-    readStorage(STORAGE_KEYS.currentUser, null),
-  )
   const [storedProjects, setStoredProjects] = usePersistentState(STORAGE_KEYS.projects, [])
   const [projectContractChanges, setProjectContractChanges] = usePersistentState(
     STORAGE_KEYS.projectContractChanges,
@@ -1909,15 +1781,6 @@ function App() {
     toolReturn: setToolReturnRecords,
   }
 
-  const rawEmployees = ensureSuperAdminEmployee(storedEmployees)
-
-  useEffect(() => {
-    if (!isCloudDatabaseReady()) return
-    upsertRecord(STORAGE_KEYS.employees, createDefaultAdmin()).catch((error) => {
-      console.error('Supabase 隐藏恢复账号初始化失败', error)
-    })
-  }, [])
-
   const projects = useMemo(
     () => storedProjects.map((project) => normalizeProject(project)),
     [storedProjects],
@@ -1943,8 +1806,8 @@ function App() {
     [projects, projectRevenueSnapshots],
   )
   const employees = useMemo(
-    () => rawEmployees.map((employee) => normalizeEmployee(employee)),
-    [rawEmployees],
+    () => storedEmployees.map((employee) => normalizeEmployee(employee)),
+    [storedEmployees],
   )
   const vehicles = useMemo(
     () => vehicleRecords.map((record) => normalizeVehicleRecord(record)),
@@ -2028,19 +1891,11 @@ function App() {
   }
   const setEmployees = (nextEmployees) => {
     setStoredEmployees((currentEmployees) => {
-      const normalizedCurrent = ensureSuperAdminEmployee(currentEmployees).map((employee) => normalizeEmployee(employee))
+      const normalizedCurrent = currentEmployees.map((employee) => normalizeEmployee(employee))
       const resolvedEmployees =
         typeof nextEmployees === 'function' ? nextEmployees(normalizedCurrent) : nextEmployees
-      return ensureSuperAdminEmployee(resolvedEmployees).map((employee) => normalizeEmployee(employee))
+      return resolvedEmployees.map((employee) => normalizeEmployee(employee))
     })
-  }
-  const setCurrentUser = (nextUser) => {
-    if (nextUser) {
-      window.localStorage.setItem(STORAGE_KEYS.currentUser, JSON.stringify(nextUser))
-    } else {
-      window.localStorage.removeItem(STORAGE_KEYS.currentUser)
-    }
-    setCurrentUserState(nextUser)
   }
   const setVehicles = (nextVehicles) => {
     setVehicleRecords((currentRecords) => {
@@ -2278,127 +2133,16 @@ function App() {
     return voided
   }
 
-  const handleLogin = ({ name, password }) => {
-    const matchedEmployees = employees.filter((employee) => employee.name === name.trim())
-
-    if (matchedEmployees.length === 0) {
-      return { ok: false, error: '未找到该员工，请先注册或联系管理员' }
-    }
-    if (matchedEmployees.length > 1) {
-      return { ok: false, error: '存在同名员工，请联系管理员确认账号' }
-    }
-
-    const employee = matchedEmployees[0]
-    if (!employee.loginEnabled) {
-      return { ok: false, error: '该账号未启用，请联系管理员' }
-    }
-    if (!employee.passwordHash || employee.passwordHash !== password) {
-      return { ok: false, error: '密码错误' }
-    }
-
-    const lastLoginAt = dateTimeValue()
-    const nextEmployee = normalizeEmployee({ ...employee, lastLoginAt, updatedAt: lastLoginAt })
-    setEmployees((currentEmployees) =>
-      currentEmployees.map((item) =>
-        item.employeeId === employee.employeeId ? nextEmployee : item,
-      ),
-    )
-    setCurrentUser(buildCurrentUser(nextEmployee))
-    setCurrentView('home')
-    return { ok: true, error: '' }
-  }
-
-  const handleRegister = async ({ name, password, confirmPassword, phone, department, position }) => {
-    const trimmedName = name.trim()
-    if (!trimmedName) {
-      return { ok: false, error: '真实姓名不能为空' }
-    }
-    if (!isSixDigitPassword(password)) {
-      return { ok: false, error: '密码必须是 6 位数字' }
-    }
-    if (password !== confirmPassword) {
-      return { ok: false, error: '确认密码必须一致' }
-    }
-    if (employees.some((employee) => employee.name === trimmedName)) {
-      return { ok: false, error: '该姓名已存在，请联系管理员确认是否已建档' }
-    }
-
-    const now = dateTimeValue()
-    const newEmployee = normalizeEmployee({
-      employeeId: `E${Date.now()}`,
-      name: trimmedName,
-      username: trimmedName,
-      passwordHash: password,
-      phone,
-      department: department || '其他',
-      position: position || '其他',
-      employmentStatus: '在职',
-      role: 'employee',
-      loginEnabled: true,
-      mustChangePassword: false,
-      accessibleModules: [],
-      canCreateModules: [],
-      canEditModules: [],
-      canDeleteModules: [],
-      sensitivePermissions: [],
-      source: '员工自助注册',
-      createdAt: now,
-      updatedAt: now,
-      lastLoginAt: now,
-      authProvider: 'password',
-    })
-
-    if (isCloudDatabaseReady()) {
-      try {
-        await upsertRecord(STORAGE_KEYS.employees, newEmployee)
-      } catch (error) {
-        console.error('员工注册保存到 Supabase 失败', error)
-        return {
-          ok: false,
-          error: '注册信息保存到云端失败，请检查网络后重试。',
-        }
-      }
-    }
-
-    setEmployees((currentEmployees) => [newEmployee, ...currentEmployees])
-    setCurrentUser(buildCurrentUser(newEmployee))
-    setCurrentView('home')
-    return { ok: true, error: '' }
-  }
-
-  const handleLogout = () => {
-    setCurrentUser(null)
-    setCurrentView('home')
-  }
-
   const handleClearTestData = async () => {
-    const systemAdmin = createDefaultAdmin()
-
     for (const key of BUSINESS_STORAGE_KEYS) {
-      const nextValue = key === STORAGE_KEYS.employees ? [systemAdmin] : []
+      const nextValue = []
       window.localStorage.setItem(key, JSON.stringify(nextValue))
       if (isCloudDatabaseReady()) {
         await saveList(key, nextValue)
       }
     }
 
-    if (currentUser.employeeId === 'SUPER_ADMIN') {
-      setCurrentUser(buildCurrentUser(systemAdmin))
-    } else {
-      setCurrentUser(null)
-    }
-
     window.location.reload()
-  }
-
-  if (!currentUser) {
-    return (
-      <LoginPage
-        employees={employees}
-        onLogin={handleLogin}
-        onRegister={handleRegister}
-      />
-    )
   }
 
   const renderInDesktopShell = (page) => (
@@ -2406,7 +2150,7 @@ function App() {
       currentView={currentView}
       currentUser={currentUser}
       onNavigate={setCurrentView}
-      onLogout={handleLogout}
+      onLogout={onLogout}
     >
       {page}
     </DesktopAdminShell>
@@ -2627,152 +2371,9 @@ function App() {
       records={recordGroups}
       accountingRecords={accountingRecords}
       currentUser={currentUser}
-      onLogout={handleLogout}
+      onLogout={onLogout}
       onOpenView={(view) => setCurrentView(view)}
     />
-  )
-}
-
-function LoginPage({ onLogin, onRegister }) {
-  const [activeTab, setActiveTab] = useState('login')
-  const [formError, setFormError] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [loginForm, setLoginForm] = useState({ name: '', password: '' })
-  const [registerForm, setRegisterForm] = useState({
-    name: '',
-    password: '',
-    confirmPassword: '',
-    phone: '',
-    department: '其他',
-    position: '其他',
-  })
-
-  return (
-    <main className="app-shell login-shell">
-      <section className="login-panel">
-        <div className="login-title">
-          <p className="eyebrow dark-text">独立网页版 ERP</p>
-          <h1>生旺 ERP 数据中心</h1>
-          <span>请输入姓名和密码登录</span>
-        </div>
-        <div className="login-tabs">
-          <button
-            className={activeTab === 'login' ? 'active' : ''}
-            type="button"
-            onClick={() => {
-              setActiveTab('login')
-              setFormError('')
-            }}
-          >
-            登录
-          </button>
-          <button
-            className={activeTab === 'register' ? 'active' : ''}
-            type="button"
-            onClick={() => {
-              setActiveTab('register')
-              setFormError('')
-            }}
-          >
-            注册
-          </button>
-        </div>
-
-        {activeTab === 'login' ? (
-          <form
-            className="login-form"
-            onSubmit={async (event) => {
-              event.preventDefault()
-              setIsSubmitting(true)
-              try {
-                const result = await onLogin(loginForm)
-                setFormError(result?.error || '')
-              } finally {
-                setIsSubmitting(false)
-              }
-            }}
-          >
-            {formError && <div className="form-error">{formError}</div>}
-            <Field
-              label="真实姓名"
-              value={loginForm.name}
-              onChange={(value) => setLoginForm({ ...loginForm, name: value })}
-              required
-            />
-            <Field
-              label="6位数字密码"
-              type="password"
-              value={loginForm.password}
-              onChange={(value) => setLoginForm({ ...loginForm, password: value })}
-              required
-            />
-            <button className="primary-button" type="submit" disabled={isSubmitting}>
-              {isSubmitting ? '处理中...' : '登录'}
-            </button>
-          </form>
-        ) : (
-          <form
-            className="login-form"
-            onSubmit={async (event) => {
-              event.preventDefault()
-              setIsSubmitting(true)
-              try {
-                const result = await onRegister(registerForm)
-                setFormError(result?.error || '')
-              } finally {
-                setIsSubmitting(false)
-              }
-            }}
-          >
-            {formError && <div className="form-error">{formError}</div>}
-            <Field
-              label="真实姓名"
-              value={registerForm.name}
-              onChange={(value) => setRegisterForm({ ...registerForm, name: value })}
-              required
-            />
-            <Field
-              label="6位数字密码"
-              type="password"
-              value={registerForm.password}
-              onChange={(value) => setRegisterForm({ ...registerForm, password: value })}
-              placeholder="只能输入 6 位数字"
-              required
-            />
-            <Field
-              label="确认密码"
-              type="password"
-              value={registerForm.confirmPassword}
-              onChange={(value) => setRegisterForm({ ...registerForm, confirmPassword: value })}
-              required
-            />
-            <Field
-              label="联系电话"
-              value={registerForm.phone}
-              onChange={(value) => setRegisterForm({ ...registerForm, phone: value })}
-            />
-            <OptionField
-              label="所属部门"
-              value={registerForm.department}
-              onChange={(value) => setRegisterForm({ ...registerForm, department: value })}
-              options={departmentOptions}
-            />
-            <OptionField
-              label="职位"
-              value={registerForm.position}
-              onChange={(value) => setRegisterForm({ ...registerForm, position: value })}
-              options={positionOptions}
-            />
-            <button className="primary-button" type="submit" disabled={isSubmitting}>
-              {isSubmitting ? '正在保存...' : '注册并进入 ERP'}
-            </button>
-            <div className="empty-state cost-note">
-              自助注册默认是普通员工，需要管理员开通业务模块权限。
-            </div>
-          </form>
-        )}
-      </section>
-    </main>
   )
 }
 
@@ -2842,7 +2443,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
     { title: '仓库库存', code: 'KC', color: 'green', count: '静态', label: '库存物料' },
     {
       title: '我要出库',
-      permissionName: '材料出入库',
+      permissionName: '仓库库存',
       code: '出库',
       color: 'orange',
       count: records.stockOut.length,
@@ -2851,7 +2452,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
     },
     {
       title: '我要退回',
-      permissionName: '材料出入库',
+      permissionName: '仓库库存',
       code: '退回',
       color: 'rose',
       count: records.stockReturn.length,
@@ -2929,7 +2530,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
     canAccessModule(currentUser, module.permissionName || module.title),
   )
   const isPendingAuthorization =
-    currentUser.role === 'employee' && (currentUser.accessibleModules || []).length === 0
+    (currentUser.effectivePermissionKeys || []).length === 0
 
   return (
     <main className="app-shell">
@@ -2957,7 +2558,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
             </div>
           ))}
         </div>
-        {currentUser.employeeId === 'SUPER_ADMIN' && (
+        {isSuperAdmin(currentUser) && (
           <div className="system-account-panel">
             <strong>当前为系统恢复账号</strong>
             <span>状态：已启用</span>
@@ -3082,12 +2683,12 @@ function SystemSettingsPage({
         </div>
         <div className="detail-list">
           <span>业务数据：{isCloudDatabaseReady() ? '优先读取和保存到 Supabase' : '当前仍使用本机缓存'}</span>
-          <span>登录状态：仍保存在本机 currentUser</span>
+          <span>登录状态：由 Supabase Auth 安全会话管理</span>
           <span>附件：已预留 attachments 字段，后续接 Supabase Storage</span>
         </div>
       </section>
 
-      {currentUser.employeeId === 'SUPER_ADMIN' && (
+      {isSuperAdmin(currentUser) && (
         <section className="form-card">
           <div className="section-heading">
             <h2>系统恢复账号状态</h2>
@@ -3154,7 +2755,7 @@ function SystemSettingsPage({
           <span>上传前整理</span>
         </div>
         <div className="empty-state cost-note">
-          仅用于测试阶段。会清空本机和 Supabase 中的业务测试数据，员工表只保留隐藏系统恢复账号。
+          仅用于测试阶段。会清空本机和 Supabase 中的旧版业务测试数据；认证账号不受影响。
         </div>
         <div className="form-actions">
           <button
@@ -3178,7 +2779,6 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
   const [nameFilter, setNameFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [agencyFilter, setAgencyFilter] = useState('')
-  const canManagePermissions = isSuperAdmin(currentUser) && editingId !== currentUser.employeeId
   const formSalaryStandard = getSalaryStandard(form)
 
   const agencies = Array.from(
@@ -3195,32 +2795,6 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
     setForm((currentForm) => ({
       ...currentForm,
       position,
-      ...getPermissionDefaults(position),
-    }))
-  }
-
-  const updateRole = (role) => {
-    if (role === 'super_admin') {
-      setForm((currentForm) => ({
-        ...currentForm,
-        role: 'super_admin',
-        accessibleModules: ['all'],
-        canCreateModules: ['all'],
-        canEditModules: ['all'],
-        canDeleteModules: ['all'],
-        sensitivePermissions: ['all'],
-      }))
-      return
-    }
-
-    setForm((currentForm) => ({
-      ...currentForm,
-      role,
-      accessibleModules: role === 'employee' ? [] : currentForm.accessibleModules.filter((item) => item !== 'all'),
-      canCreateModules: role === 'employee' ? [] : currentForm.canCreateModules.filter((item) => item !== 'all'),
-      canEditModules: role === 'employee' ? [] : currentForm.canEditModules.filter((item) => item !== 'all'),
-      canDeleteModules: role === 'employee' ? [] : currentForm.canDeleteModules.filter((item) => item !== 'all'),
-      sensitivePermissions: role === 'employee' ? [] : currentForm.sensitivePermissions.filter((item) => item !== 'all'),
     }))
   }
 
@@ -3256,16 +2830,6 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
       return
     }
 
-    if (form.name.trim() === '超级管理员' && editingId !== 'SUPER_ADMIN') {
-      window.alert('不允许通过普通方式创建或修改系统恢复账号。')
-      return
-    }
-
-    if (editingId === 'SUPER_ADMIN' && form.loginEnabled === false) {
-      window.alert('系统恢复账号不能禁用。')
-      return
-    }
-
     if (
       form.employmentStatus === '离职' &&
       (references.lifelongToolAssignments || []).some(
@@ -3278,25 +2842,8 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
     }
 
     if (editingId) {
-      const existingEmployee = employees.find((employee) => employee.employeeId === editingId)
-      const protectedPermissionFields =
-        existingEmployee && !canManagePermissions
-          ? {
-              role: existingEmployee.role,
-              accessibleModules: existingEmployee.accessibleModules,
-              canCreateModules: existingEmployee.canCreateModules,
-              canEditModules: existingEmployee.canEditModules,
-              canDeleteModules: existingEmployee.canDeleteModules,
-              sensitivePermissions: existingEmployee.sensitivePermissions,
-              username: existingEmployee.username,
-              passwordHash: existingEmployee.passwordHash,
-              loginEnabled: existingEmployee.loginEnabled,
-              mustChangePassword: existingEmployee.mustChangePassword,
-            }
-          : {}
       const payload = normalizeEmployee({
         ...form,
-        ...protectedPermissionFields,
         employeeId: editingId,
         updatedAt: todayValue(),
       })
@@ -3377,90 +2924,6 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
           <div className="empty-state cost-note">
             月薪人员按基本工资 / 24 天换算项目分摊日工费；项目人工成本只是分摊，不额外增加工资支出。
           </div>
-          {canManagePermissions && (
-            <FormGroup title="系统登录设置">
-              <Field
-                label="登录账号"
-                value={form.username}
-                onChange={(value) => setForm({ ...form, username: value })}
-                placeholder="默认使用真实姓名"
-              />
-              <Field
-                label="6位数字密码"
-                type="password"
-                value={form.passwordHash}
-                onChange={(value) => setForm({ ...form, passwordHash: value })}
-                placeholder="测试阶段暂存 6 位数字"
-              />
-              <OptionField
-                label="登录是否启用"
-                value={form.loginEnabled ? '是' : '否'}
-                onChange={(value) => setForm({ ...form, loginEnabled: value === '是' })}
-                options={['否', '是']}
-              />
-              <OptionField
-                label="是否要求改密码"
-                value={form.mustChangePassword ? '是' : '否'}
-                onChange={(value) => setForm({ ...form, mustChangePassword: value === '是' })}
-                options={['否', '是']}
-              />
-            </FormGroup>
-          )}
-          {canManagePermissions ? (
-            <FormGroup title="系统权限设置">
-              <label className="field">
-                <span>权限角色</span>
-                <select
-                  value={form.role}
-                  onChange={(event) => updateRole(event.target.value)}
-                  disabled={['老板', '操作员'].includes(form.position)}
-                >
-                  {roleOptions.map((role) => (
-                    <option value={role.value} key={role.value}>
-                      {role.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <PermissionCheckboxGroup
-                title="可访问模块"
-                options={permissionModuleOptions}
-                value={form.accessibleModules}
-                onChange={(value) => setForm({ ...form, accessibleModules: value })}
-                disabled={form.role === 'super_admin'}
-              />
-              <PermissionCheckboxGroup
-                title="可新增权限"
-                options={permissionModuleOptions}
-                value={form.canCreateModules}
-                onChange={(value) => setForm({ ...form, canCreateModules: value })}
-                disabled={form.role === 'super_admin'}
-              />
-              <PermissionCheckboxGroup
-                title="可编辑权限"
-                options={permissionModuleOptions}
-                value={form.canEditModules}
-                onChange={(value) => setForm({ ...form, canEditModules: value })}
-                disabled={form.role === 'super_admin'}
-              />
-              <PermissionCheckboxGroup
-                title="可删除权限"
-                options={permissionModuleOptions}
-                value={form.canDeleteModules}
-                onChange={(value) => setForm({ ...form, canDeleteModules: value })}
-                disabled={form.role === 'super_admin'}
-              />
-              <PermissionCheckboxGroup
-                title="敏感数据权限"
-                options={sensitivePermissionOptions}
-                value={form.sensitivePermissions}
-                onChange={(value) => setForm({ ...form, sensitivePermissions: value })}
-                disabled={form.role === 'super_admin'}
-              />
-            </FormGroup>
-          ) : (
-            <div className="empty-state cost-note">当前用户不是最高权限，或正在编辑本人档案，不能修改系统权限设置。</div>
-          )}
           <div className="form-actions">
             <button className="primary-button" type="submit">
               {editingId ? '保存修改' : '保存员工'}
@@ -3495,11 +2958,7 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
                 <div><dt>部门</dt><dd>{employee.department}</dd></div>
                 <div><dt>职位</dt><dd>{employee.position}</dd></div>
                 <div><dt>来源</dt><dd>{employee.source || '未填写'}</dd></div>
-                <div><dt>登录启用</dt><dd>{employee.loginEnabled ? '已启用' : '未启用'}</dd></div>
-                <div><dt>权限角色</dt><dd>{getRoleLabel(employee.role)}</dd></div>
-                <div><dt>可访问模块</dt><dd>{formatPermissionCount(employee.accessibleModules)}</dd></div>
-                <div><dt>可编辑模块</dt><dd>{formatPermissionCount(employee.canEditModules)}</dd></div>
-                <div><dt>授权状态</dt><dd>{employee.role === 'employee' && employee.accessibleModules.length === 0 ? '待授权' : '已配置'}</dd></div>
+                <div><dt>权限来源</dt><dd>部门与职位模板</dd></div>
                 <div><dt>星级</dt><dd>{employee.level}</dd></div>
                 <div><dt>入职日期</dt><dd>{employee.hireDate || '未填写'}</dd></div>
                 <div><dt>联系电话</dt><dd>{employee.phone || '未填写'}</dd></div>
@@ -3523,10 +2982,6 @@ function PersonnelPage({ employees, setEmployees, currentUser, references, onBac
                   setIsFormOpen(true)
                 }}
                 onDelete={() => {
-                  if (employee.employeeId === 'SUPER_ADMIN') {
-                    window.alert('系统恢复账号不能删除。')
-                    return
-                  }
                   if (isEmployeeReferenced(employee.employeeId)) {
                     window.alert('该员工已有业务记录，建议改为离职状态，不建议删除。')
                     return
@@ -5051,7 +4506,7 @@ function ToolManagementPage({
   onBack,
 }) {
   const [section, setSection] = useState(initialSection || 'borrow')
-  const canManageTools = isSuperAdmin(currentUser) || currentUser.canEditModules?.includes('工具管理')
+  const canManageTools = isSuperAdmin(currentUser) || canEdit(currentUser, '工具管理')
   const sections = [
     { id: 'tools', title: '工具档案' },
     { id: 'borrow', title: '临时借用' },
@@ -9103,50 +8558,6 @@ function PaymentProgress({ project }) {
   )
 }
 
-function PermissionCheckboxGroup({ title, options, value, onChange, disabled = false }) {
-  const selectedValues = Array.isArray(value) ? value : []
-  const isAll = selectedValues.includes('all')
-
-  const toggleOption = (option) => {
-    if (disabled || isAll) return
-    if (selectedValues.includes(option)) {
-      onChange(selectedValues.filter((item) => item !== option))
-    } else {
-      onChange([...selectedValues, option])
-    }
-  }
-
-  return (
-    <div className="permission-panel">
-      <div className="permission-panel-title">
-        <span>{title}</span>
-        <button className="ghost-button" type="button" onClick={() => onChange([])} disabled={disabled}>
-          清空
-        </button>
-      </div>
-      {isAll ? (
-        <div className="selected-strip"><span>全部权限</span></div>
-      ) : (
-        <div className="employee-option-grid">
-          {options.map((option) => (
-            <label className="employee-option" key={option}>
-              <input
-                type="checkbox"
-                checked={selectedValues.includes(option)}
-                onChange={() => toggleOption(option)}
-                disabled={disabled}
-              />
-              <span>
-                <strong>{option}</strong>
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function SectionTitle({ title, note }) {
   return (
     <div className="subsection-title">
@@ -9237,6 +8648,16 @@ function fieldLabel(fields, fieldName) {
   }
 
   return fields.find((field) => field.name === fieldName)?.label || labels[fieldName] || fieldName
+}
+
+function App() {
+  return (
+    <AuthGate>
+      {({ currentUser, onLogout }) => (
+        <AuthenticatedApp currentUser={currentUser} onLogout={onLogout} />
+      )}
+    </AuthGate>
+  )
 }
 
 export default App

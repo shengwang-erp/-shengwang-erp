@@ -7,8 +7,8 @@ const desktopMenuItems = [
   { view: 'employees', label: '人员管理', code: '人', permissionName: '人员管理' },
   { view: 'accounting', label: '会计成本', code: '财', permissionName: '会计成本' },
   { view: 'labor', label: '人工记录', code: '工', permissionName: '人工记录' },
-  { view: 'stockOut', label: '我要出库', code: '出', permissionName: '材料出入库' },
-  { view: 'stockReturn', label: '我要退回', code: '退', permissionName: '材料出入库' },
+  { view: 'stockOut', label: '我要出库', code: '出', permissionName: '仓库库存' },
+  { view: 'stockReturn', label: '我要退回', code: '退', permissionName: '仓库库存' },
   { view: 'purchase', label: '采购管理', code: '采', permissionName: '采购管理' },
   { view: 'vehicle', label: '车辆管理', code: '车', permissionName: '车辆管理' },
   { view: 'toolBorrow', label: '借工具', code: '借', permissionName: '工具管理' },
@@ -28,14 +28,10 @@ export default function DesktopAdminShell({
   children,
 }) {
   const activeView = getDesktopActiveView(currentView)
-  const hasFullMenu =
-    isSuperAdmin(currentUser) ||
-    currentUser.position === '会计' ||
-    currentUser.department === '会计'
   const visibleMenuItems = desktopMenuItems.filter(
     (item) =>
       item.view === 'home' ||
-      hasFullMenu ||
+      isSuperAdmin(currentUser) ||
       canAccessModule(currentUser, item.permissionName),
   )
   const activeMenuItem =
