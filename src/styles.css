@@ -2813,9 +2813,261 @@ body {
   line-height: 1.4;
 }
 
+.customer-receipt-form {
+  margin-bottom: 22px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #e5eaf2;
+}
+
+.customer-receipt-form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.customer-receipt-remark-field {
+  grid-column: span 2;
+}
+
+.customer-receipt-project-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.customer-receipt-project-summary div {
+  display: grid;
+  gap: 5px;
+  padding: 13px;
+  background: #f7f9fc;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+}
+
+.customer-receipt-project-summary span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.customer-receipt-project-summary strong {
+  color: #172033;
+  font-size: 18px;
+}
+
+.customer-receipt-project-summary .danger-text {
+  color: #b42318;
+}
+
+.customer-receipt-overpayment-alert,
+.customer-receipt-unallocated-note {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.customer-receipt-overpayment-alert {
+  display: grid;
+  gap: 3px;
+  color: #9f2d20;
+  background: #fff1f0;
+  border: 2px solid #e4584b;
+  box-shadow: 0 0 0 3px rgba(228, 88, 75, 0.08);
+}
+
+.customer-receipt-overpayment-alert.stage {
+  color: #8a4b08;
+  background: #fff7e6;
+  border-color: #f0a53b;
+  box-shadow: 0 0 0 3px rgba(240, 165, 59, 0.09);
+}
+
+.customer-receipt-unallocated-note {
+  color: #25578f;
+  background: #edf4ff;
+  border: 1px solid #cfe0f6;
+}
+
+.customer-receipt-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 24px;
+}
+
+.customer-receipt-stage-card {
+  min-width: 0;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+}
+
+.customer-receipt-stage-card.overpaid {
+  background: #fff8f7;
+  border-color: #e4584b;
+}
+
+.customer-receipt-stage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.customer-receipt-stage-heading h3 {
+  margin: 0;
+  color: #172033;
+  font-size: 16px;
+}
+
+.customer-receipt-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  padding: 3px 7px;
+  color: #25578f;
+  background: #edf4ff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.customer-receipt-stage-card.overpaid .customer-receipt-status {
+  color: #b42318;
+  background: #ffe5e2;
+}
+
+.customer-receipt-stage-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.customer-receipt-stage-card dl div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.customer-receipt-stage-card dt {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.customer-receipt-stage-card dd {
+  margin: 0;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.customer-receipt-lock-note,
+.customer-receipt-stage-overpaid {
+  margin-top: 11px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.customer-receipt-lock-note {
+  color: #8a4b08;
+  background: #fff3df;
+}
+
+.customer-receipt-stage-overpaid {
+  color: #b42318;
+  background: #ffe5e2;
+}
+
+.customer-receipt-list-heading {
+  margin-top: 0;
+}
+
+.customer-receipt-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+}
+
+.customer-receipt-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  background: #ffffff;
+}
+
+.customer-receipt-table th,
+.customer-receipt-table td {
+  padding: 12px;
+  border-bottom: 1px solid #e8edf5;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  vertical-align: top;
+}
+
+.customer-receipt-table th {
+  color: #475467;
+  background: #f7f9fc;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.customer-receipt-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.customer-receipt-table td > span,
+.customer-receipt-table td > strong,
+.customer-receipt-table td > small {
+  display: block;
+}
+
+.customer-receipt-table td > small {
+  margin-top: 4px;
+  color: #667085;
+  overflow-wrap: anywhere;
+}
+
+.customer-receipt-table .void-row td {
+  color: #667085;
+  background: #fafafa;
+}
+
+.customer-receipt-stage-label {
+  display: inline-flex !important;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 3px 8px;
+  color: #25578f;
+  background: #edf4ff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 @media (max-width: 900px) {
   .payment-plan-grid {
     grid-template-columns: 1fr;
+  }
+
+  .customer-receipt-form-grid,
+  .customer-receipt-stage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .customer-receipt-project-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2845,5 +3097,15 @@ body {
 
   .payment-plan-summary {
     grid-template-columns: 1fr;
+  }
+
+  .customer-receipt-form-grid,
+  .customer-receipt-stage-grid,
+  .customer-receipt-project-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-receipt-remark-field {
+    grid-column: auto;
   }
 }

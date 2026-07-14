@@ -1,4 +1,5 @@
 import ContractChangesSection from './ContractChangesSection.jsx'
+import CustomerReceiptsSection from './CustomerReceiptsSection.jsx'
 import OriginalContractSection from './OriginalContractSection.jsx'
 import PaymentPlanSection from './PaymentPlanSection.jsx'
 
@@ -18,6 +19,8 @@ export default function ContractRevenuePage({
   onCreateContractChange,
   onVoidContractChange,
   onSavePaymentPlan,
+  onCreateCustomerReceipt,
+  onVoidCustomerReceipt,
   onBack,
 }) {
   if (!project) {
@@ -88,6 +91,16 @@ export default function ContractRevenuePage({
         receipts={receipts}
         currentUser={currentUser}
         onSavePaymentPlan={onSavePaymentPlan}
+      />
+
+      <CustomerReceiptsSection
+        project={project}
+        revenueSnapshot={revenueSnapshot}
+        paymentPlans={paymentPlans}
+        receipts={receipts}
+        currentUser={currentUser}
+        onCreateCustomerReceipt={onCreateCustomerReceipt}
+        onVoidCustomerReceipt={onVoidCustomerReceipt}
       />
     </main>
   )

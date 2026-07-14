@@ -11,9 +11,11 @@ import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   createContractChange as persistContractChange,
   createPaymentPlan as persistCreatePaymentPlan,
+  createProjectReceipt as persistCreateCustomerReceipt,
   sanitizeProjectForPersistence,
   updatePaymentPlan as persistUpdatePaymentPlan,
   voidContractChange as persistVoidContractChange,
+  voidProjectReceipt as persistVoidCustomerReceipt,
 } from './services/contractRevenueService'
 import {
   canAccessModule,
@@ -1791,7 +1793,11 @@ function App() {
     [],
     { cloudPersistence: 'record' },
   )
-  const [projectReceipts] = usePersistentState(STORAGE_KEYS.projectReceipts, [])
+  const [projectReceipts, setProjectReceipts] = usePersistentState(
+    STORAGE_KEYS.projectReceipts,
+    [],
+    { cloudPersistence: 'record' },
+  )
   const [storedEmployees, setStoredEmployees] = usePersistentState(STORAGE_KEYS.employees, [])
   const [stockOutRecords, setStockOutRecords] = usePersistentState(
     STORAGE_KEYS.stockOutRecords,
@@ -2224,6 +2230,27 @@ function App() {
     return saved
   }
 
+  const handleCreateCustomerReceipt = async (input) => {
+    const created = await persistCreateCustomerReceipt(input)
+    setProjectReceipts((currentReceipts) => [
+      created,
+      ...currentReceipts.filter(
+        (receipt) => receipt.receiptId !== created.receiptId,
+      ),
+    ])
+    return created
+  }
+
+  const handleVoidCustomerReceipt = async (record, details) => {
+    const voided = await persistVoidCustomerReceipt(record, details)
+    setProjectReceipts((currentReceipts) =>
+      currentReceipts.map((receipt) =>
+        receipt.receiptId === voided.receiptId ? voided : receipt,
+      ),
+    )
+    return voided
+  }
+
   const handleLogin = ({ name, password }) => {
     const matchedEmployees = employees.filter((employee) => employee.name === name.trim())
 
@@ -2360,6 +2387,8 @@ function App() {
         onCreateContractChange={handleCreateContractChange}
         onVoidContractChange={handleVoidContractChange}
         onSavePaymentPlan={handleSavePaymentPlan}
+        onCreateCustomerReceipt={handleCreateCustomerReceipt}
+        onVoidCustomerReceipt={handleVoidCustomerReceipt}
         onBack={() => setCurrentView('projects')}
       />
     )
