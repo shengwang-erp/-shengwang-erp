@@ -1930,6 +1930,14 @@ button:disabled {
   background: var(--surface-soft);
 }
 
+@media (min-width: 721px) {
+  .owner-dashboard-project-table-wrap {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
 .multi-select-panel {
   background: #f8fbff;
 }

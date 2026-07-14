@@ -8646,7 +8646,7 @@ function DashboardPage({
         </label>
       </div>
 
-      <div className="payment-table-wrap">
+      <div className="payment-table-wrap owner-dashboard-project-table-wrap">
         {detailProjects.length === 0 ? (
           <EmptyState text="暂无符合条件的项目收款明细" />
         ) : (
