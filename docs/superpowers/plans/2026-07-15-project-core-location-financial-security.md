@@ -442,7 +442,6 @@ git commit -m "feat: add secure project domain rules"
 - Modify: src/features/employees/permissionTemplateEditorState.test.js
 - Modify: supabase/functions/permission-templates/handler.js
 - Modify: supabase/functions/permission-templates/handler.test.js
-- Modify: supabase/functions/permission-templates/security-contract.test.js
 
 **Interfaces:**
 - Produces: isProjectFinancialWhitelistEmployee(employee), canViewProjectFinancials(employee), canUpdateProjectFinancials(employee), canTemplateSubjectReceiveProjectFinancials(subjectType, subjectCode), and templateContainsForbiddenProjectFinancialGrant(subjectType, subjectCode, permissionKeys).
@@ -539,7 +538,7 @@ for (const [subjectType, subjectCode] of [
 }
 ~~~
 
-permissionTemplateService.test.js must prove a forbidden replacement rejects locally with PERMISSION_TEMPLATE_INPUT_INVALID and performs zero Edge invocations. permissionTemplateEditorState.test.js must prove toggling either financial key is a no-op for forbidden subjects. permissionTemplateContract.test.js must prove both checkboxes are disabled with aria-disabled=true. handler.test.js must prove a crafted forbidden request returns 400 before authorization/admin-client creation, while 设计部/财务部/社长 reach replaceTemplate. security-contract.test.js must require the SQL guard and cleanup audit in 202607150001_project_core_security.sql.
+permissionTemplateService.test.js must prove a forbidden replacement rejects locally with PERMISSION_TEMPLATE_INPUT_INVALID and performs zero Edge invocations. permissionTemplateEditorState.test.js must prove toggling either financial key is a no-op for forbidden subjects. permissionTemplateContract.test.js must prove both checkboxes are disabled with aria-disabled=true. handler.test.js must prove a crafted forbidden request returns 400 before authorization/admin-client creation, while 设计部/财务部/社长 reach replaceTemplate. The SQL guard and cleanup audit are created and verified in Task 5 together with `202607150001_project_core_security.sql`; Task 2 must not skip a test for a migration that does not yet exist.
 
 - [ ] **Step 2: Run RED**
 
@@ -611,12 +610,12 @@ permissionTemplateService.validateReplacementInput and Edge validateReplacement 
 
 - [ ] **Step 4: Run GREEN and commit**
 
-Run: node --test src/features/projects/projectPermissions.test.js src/services/permissionTemplateService.test.js src/features/employees/permissionTemplateEditorState.test.js src/features/employees/permissionTemplateContract.test.js supabase/functions/permission-templates/handler.test.js supabase/functions/permission-templates/security-contract.test.js
+Run: node --test src/features/projects/projectPermissions.test.js src/services/permissionTemplateService.test.js src/features/employees/permissionTemplateEditorState.test.js src/features/employees/permissionTemplateContract.test.js supabase/functions/permission-templates/handler.test.js
 
 Expected: all focused tests pass.
 
 ~~~bash
-git add src/features/projects/projectPermissions.js src/features/projects/projectPermissions.test.js src/auth/permissionCatalog.js src/services/permissionTemplateService.js src/services/permissionTemplateService.test.js src/features/employees/PermissionTemplateEditor.jsx src/features/employees/permissionTemplateContract.test.js src/features/employees/permissionTemplateEditorState.js src/features/employees/permissionTemplateEditorState.test.js supabase/functions/permission-templates/handler.js supabase/functions/permission-templates/handler.test.js supabase/functions/permission-templates/security-contract.test.js
+git add src/features/projects/projectPermissions.js src/features/projects/projectPermissions.test.js src/auth/permissionCatalog.js src/services/permissionTemplateService.js src/services/permissionTemplateService.test.js src/features/employees/PermissionTemplateEditor.jsx src/features/employees/permissionTemplateContract.test.js src/features/employees/permissionTemplateEditorState.js src/features/employees/permissionTemplateEditorState.test.js supabase/functions/permission-templates/handler.js supabase/functions/permission-templates/handler.test.js
 git commit -m "feat: fix project financial visibility rules"
 ~~~
 
