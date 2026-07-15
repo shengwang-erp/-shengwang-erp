@@ -24,6 +24,7 @@ import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import { projectService } from './services/projectService.js'
+import { canViewProjectFinancials } from './features/projects/projectPermissions.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
 import {
@@ -2346,6 +2347,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   )
 
   if (currentView === 'contractRevenue') {
+    const canViewFinancials = canViewProjectFinancials(currentUser)
     return renderInDesktopShell(
       <ContractRevenuePage
         project={contractRevenueProject}
@@ -2354,6 +2356,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         paymentPlans={projectPaymentPlans}
         receipts={projectReceipts}
         currentUser={currentUser}
+        canViewFinancials={canViewFinancials}
+        canUpdateFinancials={canViewFinancials && canEdit(currentUser, 'projects')}
         onProjectChange={handleContractRevenueProjectChange}
         onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}

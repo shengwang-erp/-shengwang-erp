@@ -15,6 +15,8 @@ export default function ContractRevenuePage({
   paymentPlans,
   receipts,
   currentUser,
+  canViewFinancials = true,
+  canUpdateFinancials = true,
   onProjectChange,
   onHistoricalReview,
   onCreateContractChange,
@@ -24,6 +26,9 @@ export default function ContractRevenuePage({
   onVoidCustomerReceipt,
   onBack,
 }) {
+  if (!canViewFinancials) {
+    return <main className="app-shell page-shell"><div className="empty-state">无权查看项目财务信息。</div></main>
+  }
   if (!project) {
     return (
       <main className="app-shell page-shell">
