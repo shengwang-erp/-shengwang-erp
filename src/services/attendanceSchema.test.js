@@ -14,6 +14,10 @@ const tables = [
   'project_attendance_photos',
 ]
 
+const migrationFunction = (qualifiedName) => sql.match(
+  new RegExp(`create or replace function ${qualifiedName}\\b[\\s\\S]*?\\n\\$\\$;`, 'i'),
+)?.[0] ?? ''
+
 test('attendance schema is normalized, constrained and RPC-only', () => {
   for (const table of tables) {
     assert.match(sql, new RegExp(`create table public\\.${table}`, 'i'))
@@ -45,6 +49,17 @@ test('attendance migration closes helpers and grants only secure entry points', 
 
 test('attendance eligibility requires an exactly active record envelope', () => {
   assert.match(sql, /p_record_status\s+is\s+distinct\s+from\s+'active'/i)
+})
+
+test('attendance viewer assignments require an exactly active project envelope', () => {
+  for (const qualifiedName of [
+    'private\\.current_attendance_viewer_scope',
+    'public\\.can_current_employee_view_attendance_session',
+  ]) {
+    const functionSql = migrationFunction(qualifiedName)
+    assert.match(functionSql, /project\.status\s*=\s*'active'/i)
+    assert.doesNotMatch(functionSql, /project\.status\s*<>\s*'deleted'/i)
+  }
 })
 
 test('attendance abnormal reasons share the POSIX-whitespace canonical rule', () => {
@@ -90,6 +105,20 @@ test('attendance photo RPCs and Storage rules are bucket-scoped', () => {
   assert.match(sql, /attendance_photos_update_deny/i)
   assert.match(sql, /attendance_photos_delete_deny/i)
   assert.doesNotMatch(sql, /delete from pg_policies|drop policy if exists (?!attendance_photos_)/i)
+})
+
+test('attendance Storage predicates revalidate the canonical owner path', () => {
+  for (const qualifiedName of [
+    'public\\.can_current_employee_upload_attendance_photo',
+    'public\\.can_current_employee_view_attendance_photo',
+  ]) {
+    const functionSql = migrationFunction(qualifiedName)
+    assert.match(functionSql, /session\.employee_profile_id::text/)
+    assert.match(functionSql, /session\.session_id::text/)
+    assert.match(functionSql, /point\.work_point_id::text/)
+    assert.match(functionSql, /photo\.photo_id::text/)
+    assert.match(functionSql, /photo\.phase/)
+  }
 })
 
 test('clock-out requires one complete point and uses the session location snapshot', () => {

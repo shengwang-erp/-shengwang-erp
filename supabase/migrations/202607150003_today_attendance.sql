@@ -328,7 +328,7 @@ begin
   if exists (
     select 1
     from public.projects project
-    where project.status <> 'deleted'
+    where project.status = 'active'
       and jsonb_typeof(project.payload) = 'object'
       and project.payload->>'siteAssigneeEmployeeId' = actor.id::text
   ) then
@@ -1494,7 +1494,7 @@ begin
         or actor.position = '社长'
         or actor.employee_number = 'SW-000'
         or (
-          project.status <> 'deleted'
+          project.status = 'active'
           and jsonb_typeof(project.payload) = 'object'
           and project.payload->>'siteAssigneeEmployeeId' = actor.id::text
         )
@@ -1535,6 +1535,9 @@ begin
       on session.session_id = point.session_id
     where photo.bucket_id = p_bucket_id
       and photo.object_path = p_object_path
+      and p_object_path =
+        session.employee_profile_id::text || '/' || session.session_id::text || '/' ||
+        point.work_point_id::text || '/' || photo.photo_id::text || '/' || photo.phase
       and photo.upload_status = 'pending'
       and session.status = 'open'
       and session.employee_profile_id = actor.id
@@ -1566,10 +1569,15 @@ begin
     from public.project_attendance_photos photo
     join public.project_attendance_work_points point
       on point.work_point_id = photo.work_point_id
+    join public.project_attendance_sessions session
+      on session.session_id = point.session_id
     where photo.bucket_id = p_bucket_id
       and photo.object_path = p_object_path
+      and p_object_path =
+        session.employee_profile_id::text || '/' || session.session_id::text || '/' ||
+        point.work_point_id::text || '/' || photo.photo_id::text || '/' || photo.phase
       and photo.upload_status = 'active'
-      and public.can_current_employee_view_attendance_session(point.session_id)
+      and public.can_current_employee_view_attendance_session(session.session_id)
   );
 exception when others then
   return false;

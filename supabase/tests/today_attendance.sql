@@ -128,6 +128,68 @@ select is(
   'Storage predicates are stable security definers with closed EXECUTE grants'
 );
 
+select is(
+  (
+    with expected(signature, default_count, expected_search_path, volatility) as (
+      values
+        (
+          to_regprocedure('private.current_attendance_viewer_scope(uuid)'),
+          0, array['search_path=pg_catalog, public']::text[], 's'::"char"
+        ),
+        (
+          to_regprocedure('private.attendance_photo_json(uuid)'),
+          0, array['search_path=pg_catalog, public']::text[], 's'::"char"
+        ),
+        (
+          to_regprocedure('private.attendance_work_point_json(uuid)'),
+          0, array['search_path=pg_catalog, public, private']::text[], 's'::"char"
+        ),
+        (
+          to_regprocedure('public.upsert_attendance_work_point_secure(uuid,smallint,text,text,text)'),
+          1, array['search_path=pg_catalog, public, private']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.reserve_attendance_photo_secure(uuid,text,text,text,bigint,text,timestamp with time zone)'),
+          2, array['search_path=pg_catalog, public, private']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.finalize_attendance_photo_secure(uuid)'),
+          0, array['search_path=pg_catalog, public, private, storage']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.abandon_attendance_photo_secure(uuid)'),
+          0, array['search_path=pg_catalog, public, private']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.clock_out_project_secure(uuid,uuid,double precision,double precision,numeric,timestamp with time zone,text)'),
+          2, array['search_path=pg_catalog, public, private']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.can_current_employee_view_attendance_session(uuid)'),
+          0, array['search_path=pg_catalog, public, private']::text[], 's'::"char"
+        ),
+        (
+          to_regprocedure('public.can_current_employee_upload_attendance_photo(text,text)'),
+          0, array['search_path=pg_catalog, public, private']::text[], 's'::"char"
+        ),
+        (
+          to_regprocedure('public.can_current_employee_view_attendance_photo(text,text)'),
+          0, array['search_path=pg_catalog, public']::text[], 's'::"char"
+        )
+    )
+    select count(*)::integer
+    from expected contract
+    left join pg_proc procedure on procedure.oid = contract.signature
+    where contract.signature is null
+       or not procedure.prosecdef
+       or procedure.pronargdefaults <> contract.default_count
+       or procedure.proconfig is distinct from contract.expected_search_path
+       or procedure.provolatile <> contract.volatility
+  ),
+  0,
+  'Task 6 functions have exact SECURITY DEFINER search paths and default counts'
+);
+
 select ok(
   exists (
     select 1
@@ -589,7 +651,7 @@ insert into public.employee_profiles(
   ('62000000-0000-4000-8000-000000000006','SW-6106','61000000-0000-4000-8000-000000000006','当前现场担当','工程部','职长','在职','active',false,false),
   ('62000000-0000-4000-8000-000000000007','SW-6107','61000000-0000-4000-8000-000000000007','原现场担当','工程部','职长','在职','active',false,false),
   ('62000000-0000-4000-8000-000000000008','SW-6108','61000000-0000-4000-8000-000000000008','考勤测试社长','总务部','社长','在职','active',false,false),
-  ('62000000-0000-4000-8000-000000000009','SW-000','61000000-0000-4000-8000-000000000009','隐藏系统管理员','总务部','社长','在职','active',false,true);
+  ('62000000-0000-4000-8000-000000000009','SW-000','61000000-0000-4000-8000-000000000009','隐藏系统管理员','总务部','总务部长','在职','active',false,true);
 
 delete from public.permission_grants
 where (subject_type = 'department' and subject_code = '工程部')
@@ -1332,6 +1394,71 @@ create temporary table attendance_photo_results(
 ) on commit drop;
 grant select, insert on attendance_photo_results to authenticated, service_role;
 
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path, original_file_name,
+  content_type, size_bytes, upload_status
+)
+select
+  '74000000-0000-4000-8000-000000000089', point.work_point_id, 'before',
+  'erp-attendance-photos',
+  '62000000-0000-4000-8000-000000000005/' || session.session_id::text || '/' ||
+    point.work_point_id::text || '/74000000-0000-4000-8000-000000000089/after',
+  'malformed-pending.jpg', 'image/jpeg', 1, 'pending'
+from public.project_attendance_work_points point
+join public.project_attendance_sessions session on session.session_id = point.session_id
+where point.session_id = '71000000-0000-4000-8000-000000000098'
+  and point.ordinal = 2;
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path, original_file_name,
+  content_type, size_bytes, upload_status
+)
+select
+  '74000000-0000-4000-8000-000000000090', point.work_point_id, 'after',
+  'erp-attendance-photos',
+  '62000000-0000-4000-8000-000000000001/' || session.session_id::text || '/' ||
+    point.work_point_id::text || '/74000000-0000-4000-8000-000000000090/after',
+  'malformed-active.jpg', 'image/jpeg', 1, 'active'
+from public.project_attendance_work_points point
+join public.project_attendance_sessions session on session.session_id = point.session_id
+where point.session_id = '71000000-0000-4000-8000-000000000098'
+  and point.ordinal = 3;
+insert into attendance_photo_results values
+  (
+    'malformed_pending_path',
+    jsonb_build_object(
+      'objectPath', (select object_path from public.project_attendance_photos
+                     where photo_id = '74000000-0000-4000-8000-000000000089')
+    )
+  ),
+  (
+    'malformed_active_path',
+    jsonb_build_object(
+      'objectPath', (select object_path from public.project_attendance_photos
+                     where photo_id = '74000000-0000-4000-8000-000000000090')
+    )
+  );
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000005', true);
+select is(
+  public.can_current_employee_upload_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath' from attendance_photo_results
+     where result_name = 'malformed_pending_path')
+  ),
+  false,
+  'upload predicate rejects a persisted pending row with a mismatched path segment'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath' from attendance_photo_results
+     where result_name = 'malformed_active_path')
+  ),
+  false,
+  'view predicate rejects a persisted active row with a mismatched path segment'
+);
+reset role;
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000001', true);
 select throws_ok(
@@ -1501,6 +1628,48 @@ select matches(
   '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/before$',
   'reservation path contains only server UUID segments and phase'
 );
+select is(
+  split_part(
+    (select payload->>'objectPath' from attendance_photo_results where result_name = 'before_pending'),
+    '/', 1
+  ),
+  '62000000-0000-4000-8000-000000000001',
+  'reservation path actor segment is the authoritative employee profile ID'
+);
+select is(
+  split_part(
+    (select payload->>'objectPath' from attendance_photo_results where result_name = 'before_pending'),
+    '/', 2
+  ),
+  pg_temp.attendance_session_id('boundary_first')::text,
+  'reservation path session segment is authoritative'
+);
+select is(
+  split_part(
+    (select payload->>'objectPath' from attendance_photo_results where result_name = 'before_pending'),
+    '/', 3
+  ),
+  pg_temp.attendance_work_point_id(
+    pg_temp.attendance_session_id('boundary_first'), 1
+  )::text,
+  'reservation path work-point segment is authoritative'
+);
+select is(
+  split_part(
+    (select payload->>'objectPath' from attendance_photo_results where result_name = 'before_pending'),
+    '/', 4
+  ),
+  (select payload->>'photoId' from attendance_photo_results where result_name = 'before_pending'),
+  'reservation path photo segment is the server-returned photo ID'
+);
+select is(
+  split_part(
+    (select payload->>'objectPath' from attendance_photo_results where result_name = 'before_pending'),
+    '/', 5
+  ),
+  (select payload->>'phase' from attendance_photo_results where result_name = 'before_pending'),
+  'reservation path phase segment is authoritative'
+);
 select ok(
   (select payload->>'objectPath' not like '%原始%'
      and payload->>'objectPath' not like '%零模块普通员工%'
@@ -1559,6 +1728,35 @@ select throws_ok(
      from attendance_photo_results where result_name = 'before_pending')
   ) $$,
   '55000', null, 'finalize fails while the Storage object is absent'
+);
+reset role;
+
+set local role service_role;
+insert into storage.buckets(id, name, public)
+values ('task6-wrong-bucket', 'task6-wrong-bucket', false);
+insert into storage.objects(bucket_id, name, metadata)
+select
+  'task6-wrong-bucket', payload->>'objectPath',
+  jsonb_build_object('size', 1, 'mimetype', 'image/jpeg')
+from attendance_photo_results
+where result_name = 'before_pending';
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000001', true);
+select throws_ok(
+  $$ select public.finalize_attendance_photo_secure(
+    (select (payload->>'photoId')::uuid
+     from attendance_photo_results where result_name = 'before_pending')
+  ) $$,
+  '55000', null, 'finalize rejects a same-path object in the wrong bucket'
+);
+select is(
+  pg_temp.attendance_photo_status(
+    (select (payload->>'photoId')::uuid
+     from attendance_photo_results where result_name = 'before_pending')
+  ),
+  'pending',
+  'wrong-bucket finalize leaves the reservation pending'
 );
 reset role;
 
@@ -1708,6 +1906,15 @@ select is(
   'active',
   'finalize makes the uploaded before photo active'
 );
+select is(
+  public.can_current_employee_upload_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_active')
+  ),
+  false,
+  'active photo path is no longer upload-authorized'
+);
 select throws_ok(
   $$ select public.finalize_attendance_photo_secure(
     (select (payload->>'photoId')::uuid
@@ -1834,6 +2041,15 @@ select is(
   ),
   false,
   'cleanup-pending photo is never viewable'
+);
+select is(
+  public.can_current_employee_upload_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'after_abandon_pending')
+  ),
+  false,
+  'cleanup-pending photo path is no longer upload-authorized'
 );
 select throws_ok(
   $$ select public.abandon_attendance_photo_secure(
@@ -2056,6 +2272,79 @@ update public.project_attendance_sessions
 set work_date = timezone('Asia/Tokyo', statement_timestamp())::date
 where session_id = pg_temp.attendance_session_id('boundary_first');
 
+insert into auth.users(
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '00000000-0000-0000-0000-000000000000',
+  '61000000-0000-4000-8000-000000000010',
+  'authenticated', 'authenticated', 'attendance-incomplete@auth.invalid', '', now(),
+  '{}', '{}', now(), now()
+);
+insert into public.employee_profiles(
+  id, employee_number, auth_user_id, name, department, position,
+  employment_status, account_status, must_change_password, is_hidden_system_account
+) values (
+  '62000000-0000-4000-8000-000000000010', 'SW-6110',
+  '61000000-0000-4000-8000-000000000010', '不完整点位员工', '工程部', '小工',
+  '在职', 'active', false, false
+);
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot, employee_name_snapshot,
+  project_id, project_name_snapshot, project_address_snapshot,
+  project_latitude_snapshot, project_longitude_snapshot,
+  attendance_radius_meters_snapshot, work_date, status, opened_at
+) values (
+  '71000000-0000-4000-8000-000000000096',
+  '62000000-0000-4000-8000-000000000010',
+  'SW-6110', '不完整点位员工', 'ATT-ELIGIBLE-OTHER', '另一个合法现场',
+  '東京都 千代田区 1-1', 35.681236, 139.767125, 300,
+  '2026-07-15', 'open', '2026-07-15T08:00:00Z'
+);
+insert into public.project_attendance_work_points(
+  work_point_id, session_id, ordinal, area_name, work_description, completion_note
+) values
+  (
+    '73000000-0000-4000-8000-000000000081',
+    '71000000-0000-4000-8000-000000000096', 1, '', '区域为空但施工完整', ''
+  ),
+  (
+    '73000000-0000-4000-8000-000000000082',
+    '71000000-0000-4000-8000-000000000096', 2, '说明为空区域', '', ''
+  ),
+  (
+    '73000000-0000-4000-8000-000000000083',
+    '71000000-0000-4000-8000-000000000096', 3, '前照待定区域', '施工完整', ''
+  ),
+  (
+    '73000000-0000-4000-8000-000000000084',
+    '71000000-0000-4000-8000-000000000096', 4, '后照待定区域', '施工完整', ''
+  );
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path, original_file_name,
+  content_type, size_bytes, upload_status
+) values
+  ('74000000-0000-4000-8000-000000000081','73000000-0000-4000-8000-000000000081','before','erp-attendance-photos','fixture/incomplete/blank-area/before','before.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000082','73000000-0000-4000-8000-000000000081','after','erp-attendance-photos','fixture/incomplete/blank-area/after','after.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000083','73000000-0000-4000-8000-000000000082','before','erp-attendance-photos','fixture/incomplete/blank-description/before','before.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000084','73000000-0000-4000-8000-000000000082','after','erp-attendance-photos','fixture/incomplete/blank-description/after','after.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000085','73000000-0000-4000-8000-000000000083','before','erp-attendance-photos','fixture/incomplete/pending-before/before','before.jpg','image/jpeg',1,'pending'),
+  ('74000000-0000-4000-8000-000000000086','73000000-0000-4000-8000-000000000083','after','erp-attendance-photos','fixture/incomplete/pending-before/after','after.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000087','73000000-0000-4000-8000-000000000084','before','erp-attendance-photos','fixture/incomplete/pending-after/before','before.jpg','image/jpeg',1,'active'),
+  ('74000000-0000-4000-8000-000000000088','73000000-0000-4000-8000-000000000084','after','erp-attendance-photos','fixture/incomplete/pending-after/after','after.jpg','image/jpeg',1,'pending');
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000010', true);
+select throws_ok(
+  $$ select public.clock_out_project_secure(
+    '71000000-0000-4000-8000-000000000096',
+    '75000000-0000-4000-8000-000000000006',
+    35.681236, 139.767125, 1, null, null
+  ) $$,
+  '55000', null,
+  'no point is complete when each independently misses one required clause'
+);
+reset role;
+
 insert into public.project_attendance_photos(
   photo_id, work_point_id, phase, bucket_id, object_path, original_file_name,
   content_type, size_bytes, upload_status
@@ -2113,7 +2402,7 @@ insert into attendance_clock_out_results values (
   public.clock_out_project_secure(
     pg_temp.attendance_session_id('boundary_first'),
     '75000000-0000-4000-8000-000000000002',
-    35.681236, 139.767125, 300, null, null
+    35.681236, 139.767125, 300, '2026-07-15T08:30:00Z', null
   )
 );
 insert into attendance_clock_out_results values (
@@ -2135,6 +2424,30 @@ select is(
    from attendance_clock_out_results where result_name = 'first'),
   'normal',
   'clock-out uses the original session snapshot and equality boundary'
+);
+select is(
+  (select (payload#>>'{event,latitude}')::double precision
+   from attendance_clock_out_results where result_name = 'first'),
+  35.681236::double precision,
+  'clock-out event stores the exact submitted latitude'
+);
+select is(
+  (select (payload#>>'{event,longitude}')::double precision
+   from attendance_clock_out_results where result_name = 'first'),
+  139.767125::double precision,
+  'clock-out event stores the exact submitted longitude'
+);
+select is(
+  (select (payload#>>'{event,accuracyMeters}')::numeric
+   from attendance_clock_out_results where result_name = 'first'),
+  300::numeric,
+  'clock-out event stores the exact submitted accuracy'
+);
+select is(
+  (select (payload#>>'{event,deviceRecordedAt}')::timestamptz
+   from attendance_clock_out_results where result_name = 'first'),
+  '2026-07-15T08:30:00Z'::timestamptz,
+  'clock-out event stores the exact submitted device timestamp'
 );
 select is(
   (select payload#>>'{event,eventId}'
@@ -2166,6 +2479,19 @@ select throws_ok(
     35.681236, 139.767125, 1, null, null
   ) $$,
   '55000', null, 'a closed session cannot receive a different second clock-out event'
+);
+reset role;
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000005', true);
+select throws_ok(
+  $$ select public.clock_out_project_secure(
+    pg_temp.attendance_session_id('boundary_first'),
+    '75000000-0000-4000-8000-000000000002',
+    35.681236, 139.767125, 1, null, null
+  ) $$,
+  '22023', null,
+  'another employee cannot replay a successful clock-out request or receive its DTO'
 );
 reset role;
 
@@ -2269,6 +2595,18 @@ insert into public.project_attendance_photos(
     'after.jpg', 'image/jpeg', 1, 'active'
   );
 set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000005', true);
+select throws_ok(
+  $$ select public.clock_out_project_secure(
+    '71000000-0000-4000-8000-000000000097',
+    '75000000-0000-4000-8000-000000000007',
+    35.681236, 139.767125, 1, null, null
+  ) $$,
+  '42501', null,
+  'another employee cannot clock out a complete open session with a fresh request'
+);
+reset role;
+set local role authenticated;
 select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000012', true);
 select throws_ok(
   $$ select public.clock_out_project_secure(
@@ -2286,6 +2624,127 @@ select is(
   )#>>'{event,abnormalReason}',
   '临时封路',
   'out-of-range clock-out stores a trimmed reason'
+);
+reset role;
+
+update public.projects
+set status = 'void'
+where record_key = 'ATT-ELIGIBLE';
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000006', true);
+select is(
+  public.get_my_today_attendance_secure()#>>'{viewerAccess,scope}',
+  'own',
+  'voiding the assigned project removes current-assignee scoped access'
+);
+select is(
+  public.can_current_employee_view_attendance_session(
+    pg_temp.attendance_session_id('boundary_first')
+  ),
+  false,
+  'current assignee cannot view a session through a void project envelope'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_replacement_active')
+  ),
+  false,
+  'current assignee cannot view an active photo through a void project envelope'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000007', true);
+select is(
+  public.get_my_today_attendance_secure()#>>'{viewerAccess,scope}',
+  'own',
+  'former assignee remains limited to own scope after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_session(
+    pg_temp.attendance_session_id('boundary_first')
+  ),
+  false,
+  'former assignee cannot view a session through a void project envelope'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_replacement_active')
+  ),
+  false,
+  'former assignee cannot view an active photo through a void project envelope'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000001', true);
+select is(
+  public.get_my_today_attendance_secure()#>>'{viewerAccess,scope}',
+  'own',
+  'session owner keeps the distinct own-scope branch after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_session(
+    pg_temp.attendance_session_id('boundary_first')
+  ),
+  true,
+  'session owner retains session access after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_replacement_active')
+  ),
+  true,
+  'session owner retains active-photo access after project void'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000008', true);
+select is(
+  public.get_my_today_attendance_secure()#>>'{viewerAccess,scope}',
+  'all',
+  'active president keeps the distinct all-scope branch after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_session(
+    pg_temp.attendance_session_id('boundary_first')
+  ),
+  true,
+  'active president retains session access after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_replacement_active')
+  ),
+  true,
+  'active president retains active-photo access after project void'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000009', true);
+select is(
+  public.get_my_today_attendance_secure()#>>'{viewerAccess,scope}',
+  'all',
+  'SW-000 keeps the distinct all-scope branch after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_session(
+    pg_temp.attendance_session_id('boundary_first')
+  ),
+  true,
+  'SW-000 retains session access after project void'
+);
+select is(
+  public.can_current_employee_view_attendance_photo(
+    'erp-attendance-photos',
+    (select payload->>'objectPath'
+     from attendance_photo_results where result_name = 'before_replacement_active')
+  ),
+  true,
+  'SW-000 retains active-photo access after project void'
 );
 reset role;
 
