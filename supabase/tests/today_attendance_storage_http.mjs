@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 
 const DISPOSABLE_CONFIRMATION = 'shengwang-attendance-task7'
 const DISPOSABLE_API_HOST = '127.0.0.1'
@@ -8,6 +9,7 @@ const DISPOSABLE_API_PORT = '58321'
 const DISPOSABLE_DB_HOST = '127.0.0.1'
 const DISPOSABLE_DB_PORT = '58322'
 const DISPOSABLE_DB_CONTAINER = 'supabase_db_shengwang-attendance-task7'
+const DISPOSABLE_DOCKER_PROJECT = 'shengwang-attendance-task7'
 
 function fail(message) {
   throw new Error(message)
@@ -28,6 +30,12 @@ function requireSecretEnvironment(environment, name) {
 }
 
 function validateDisposableConfiguration(environment) {
+  for (const name of Object.keys(environment)) {
+    if (/^DOCKER_/u.test(name) || name === 'BUILDKIT_HOST') {
+      fail('ambient Docker environment overrides are forbidden')
+    }
+  }
+
   requireExactEnvironment(
     environment,
     'ATTENDANCE_DISPOSABLE_CONFIRM',
@@ -65,6 +73,13 @@ function validateDisposableConfiguration(environment) {
     'ATTENDANCE_DB_CONTAINER',
     DISPOSABLE_DB_CONTAINER,
   )
+  const dockerContext = requireSecretEnvironment(
+    environment,
+    'ATTENDANCE_DOCKER_CONTEXT',
+  )
+  if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/iu.test(dockerContext)) {
+    fail('ATTENDANCE_DOCKER_CONTEXT does not identify the disposable Task 7 stack')
+  }
 
   return Object.freeze({
     apiUrl: apiUrl.origin,
@@ -78,12 +93,105 @@ function validateDisposableConfiguration(environment) {
       'ATTENDANCE_CLEANUP_SECRET',
     ),
     databaseContainer: DISPOSABLE_DB_CONTAINER,
+    dockerContext,
   })
 }
 
-// The safety gate intentionally runs before importing application modules, creating
-// any Supabase client, calling fetch, authenticating, or spawning Docker/psql.
+// The configuration gate intentionally runs before importing application modules,
+// creating a Supabase client, calling fetch, authenticating, or spawning Docker/psql.
 const configuration = validateDisposableConfiguration(process.env)
+
+function runDockerReadOnly(dockerContext, args) {
+  const child = spawn('docker', ['--context', dockerContext, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  child.stderr.resume()
+  return new Promise((resolve, reject) => {
+    child.once('error', () => {
+      reject(new Error('Docker target does not identify the disposable Task 7 stack'))
+    })
+    child.once('close', (code, signal) => {
+      if (code !== 0 || signal !== null) {
+        reject(new Error('Docker target does not identify the disposable Task 7 stack'))
+        return
+      }
+      resolve(stdout)
+    })
+  })
+}
+
+async function validateDisposableDockerTarget(target) {
+  const endpointOutput = await runDockerReadOnly(target.dockerContext, [
+    'context', 'inspect', target.dockerContext,
+    '--format', '{{json .Endpoints.docker.Host}}',
+  ])
+  let endpoint
+  try {
+    endpoint = JSON.parse(endpointOutput.trim())
+  } catch {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+  let endpointUrl
+  try {
+    endpointUrl = new URL(endpoint)
+  } catch {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+  if (
+    typeof endpoint !== 'string' || !endpoint.startsWith('unix:///') ||
+    endpointUrl.protocol !== 'unix:' || endpointUrl.host ||
+    endpointUrl.username || endpointUrl.password || endpointUrl.search ||
+    endpointUrl.hash || endpointUrl.pathname === '/' ||
+    !endpointUrl.pathname.endsWith('.sock')
+  ) {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+  let endpointStats
+  try {
+    endpointStats = await stat(endpointUrl.pathname)
+  } catch {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+  if (!endpointStats.isSocket()) {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+
+  const containerOutput = await runDockerReadOnly(target.dockerContext, [
+    'container', 'inspect', target.databaseContainer,
+  ])
+  let inspected
+  try {
+    inspected = JSON.parse(containerOutput)
+  } catch {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+  const container = Array.isArray(inspected) && inspected.length === 1
+    ? inspected[0]
+    : null
+  const labels = container?.Config?.Labels
+  const ports = container?.NetworkSettings?.Ports
+  const postgresBindings = ports?.['5432/tcp']
+  if (
+    container?.Name !== `/${target.databaseContainer}` ||
+    container?.State?.Running !== true ||
+    labels?.['com.supabase.cli.project'] !== DISPOSABLE_DOCKER_PROJECT ||
+    labels?.['com.docker.compose.project'] !== DISPOSABLE_DOCKER_PROJECT ||
+    !ports || Object.keys(ports).length !== 1 ||
+    !Array.isArray(postgresBindings) || postgresBindings.length === 0 ||
+    postgresBindings.some((binding) =>
+      !binding || binding.HostPort !== DISPOSABLE_DB_PORT
+    )
+  ) {
+    fail('Docker target does not identify the disposable Task 7 stack')
+  }
+}
+
+// This read-only preflight proves that the configured name resolves locally to
+// the exact disposable container before application imports or any data mutation.
+await validateDisposableDockerTarget(configuration)
 
 const [
   { createClient },
@@ -139,6 +247,7 @@ function sqlLiteral(value) {
 
 function spawnPsql(sql) {
   const child = spawn('docker', [
+    '--context', configuration.dockerContext,
     'exec', '-i', configuration.databaseContainer,
     'psql', '-X', '-U', 'postgres', '-d', 'postgres',
   ], { stdio: ['pipe', 'pipe', 'pipe'] })
@@ -167,6 +276,7 @@ function spawnPsql(sql) {
 
 async function psqlScalar(query) {
   const child = spawn('docker', [
+    '--context', configuration.dockerContext,
     'exec', configuration.databaseContainer,
     'psql', '-X', '-A', '-t', '-U', 'postgres', '-d', 'postgres',
     '-c', query,
@@ -383,10 +493,17 @@ async function verifyCleanupEdgeGateway({ admin, candidate }) {
     .eq('photo_id', candidate.photoId)
   requireNoProviderError(metadataAfter, 'failed to verify completed cleanup metadata')
   must(metadataAfter.count === 0, 'cleanup Edge retained completed metadata')
+  const candidateSeparator = candidate.objectPath.lastIndexOf('/')
+  const candidateParent = candidate.objectPath.slice(0, candidateSeparator)
+  const candidateName = candidate.objectPath.slice(candidateSeparator + 1)
   const objectAfter = await admin.storage
     .from(candidate.bucketId)
-    .download(candidate.objectPath)
-  must(Boolean(objectAfter.error), 'cleanup Edge retained the real Storage object')
+    .list(candidateParent, { limit: 10, search: candidateName })
+  must(
+    objectAfter.error === null && Array.isArray(objectAfter.data) &&
+      !objectAfter.data.some((entry) => entry?.name === candidateName),
+    'cleanup Edge did not prove the real Storage object absent',
+  )
 
   return Object.freeze({
     gatewayJwtEnforced: true,
@@ -681,6 +798,14 @@ const pngBytes = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nXQAAAAASUVORK5CYII=',
   'base64',
 )
+const replacementPngBytes = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+)
+must(
+  Buffer.compare(replacementPngBytes, pngBytes) !== 0,
+  'denied-mutation replacement bytes must differ from the original upload',
+)
 
 const oversizeReservation = await service.reservePhoto({
   workPointId: point.workPointId,
@@ -768,7 +893,7 @@ must(Buffer.compare(signedBytes, pngBytes) === 0, 'signed URL bytes did not matc
 
 const ownerUpdateAttempt = await ownerClient.storage.from(before.bucketId).update(
   before.objectPath,
-  pngFile('owner-overwrite.png', pngBytes),
+  pngFile('owner-overwrite.png', replacementPngBytes),
   { contentType: 'image/png', cacheControl: '0', upsert: false },
 )
 const ownerDeleteAttempt = await ownerClient.storage
@@ -789,7 +914,7 @@ try {
 }
 const otherUpdateAttempt = await otherClient.storage.from(before.bucketId).update(
   before.objectPath,
-  pngFile('other-overwrite.png', pngBytes),
+  pngFile('other-overwrite.png', replacementPngBytes),
   { contentType: 'image/png', cacheControl: '0', upsert: false },
 )
 const otherDeleteAttempt = await otherClient.storage
@@ -806,11 +931,16 @@ const publicReadAttempt = await fetch(
 )
 must(!publicReadAttempt.ok, 'private attendance photo had a permanent public read')
 
-const unchangedRead = await fetch(ownerSignedUrl)
-must(unchangedRead.ok, 'signed URL stopped reading after denied mutations')
-const unchangedBytes = Buffer.from(await unchangedRead.arrayBuffer())
+const originRead = await admin.storage
+  .from(before.bucketId)
+  .download(before.objectPath)
+const originBlob = requireNoProviderError(
+  originRead,
+  'service-role origin read failed after denied mutations',
+)
+const originBytes = Buffer.from(await originBlob.arrayBuffer())
 must(
-  Buffer.compare(unchangedBytes, pngBytes) === 0,
+  Buffer.compare(originBytes, pngBytes) === 0,
   'private photo bytes changed after denied mutations',
 )
 
@@ -854,7 +984,7 @@ const result = Object.freeze({
     Boolean(otherUpdateAttempt.error) && otherDeleteDenied,
   publicReadDenied: !publicReadAttempt.ok,
   bytesUnchangedAfterDeniedMutations:
-    Buffer.compare(unchangedBytes, pngBytes) === 0,
+    Buffer.compare(originBytes, pngBytes) === 0,
   clockOutClosed: clockOut.session.status === 'closed',
   cleanupGatewayJwtEnforced: cleanup.gatewayJwtEnforced,
   cleanupIndependentSecretEnforced: cleanup.independentSecretEnforced,

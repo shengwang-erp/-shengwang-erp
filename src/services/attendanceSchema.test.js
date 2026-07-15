@@ -84,6 +84,14 @@ test('record viewer is an authenticated RPC with exact live project-assignee che
     sql,
     /grant execute on function public\.list_attendance_records_secure[^;]+to authenticated, service_role/i,
   )
+  assert.match(
+    functionSql,
+    /project_options\s+as\s*\([\s\S]*select distinct on\s*\(session\.project_id\)[\s\S]*order by\s+session\.project_id,\s*session\.opened_at desc,\s*session\.session_id desc/i,
+  )
+  assert.match(
+    functionSql,
+    /employee_options\s+as\s*\([\s\S]*select distinct on\s*\(session\.employee_profile_id\)[\s\S]*order by\s+session\.employee_profile_id,\s*session\.opened_at desc,\s*session\.session_id desc/i,
+  )
 })
 
 test('photo cleanup RPCs are service-role-only and cannot target active rows', () => {
@@ -172,6 +180,9 @@ test('disposable HTTP verifier gates clients and proves real Storage and DB seri
   const safetyGate = storageHttpVerifier.indexOf(
     'validateDisposableConfiguration(process.env)',
   )
+  const dockerPreflight = storageHttpVerifier.indexOf(
+    'validateDisposableDockerTarget(configuration)',
+  )
   for (const laterAction of [
     "import('@supabase/supabase-js')",
     'const admin = statelessClient',
@@ -180,15 +191,52 @@ test('disposable HTTP verifier gates clients and proves real Storage and DB seri
   ]) {
     assert.ok(safetyGate >= 0 && storageHttpVerifier.indexOf(laterAction) > safetyGate)
   }
+  assert.ok(dockerPreflight > safetyGate)
+  for (const laterAction of [
+    "import('@supabase/supabase-js')",
+    'const admin = statelessClient',
+    'await fetch(',
+  ]) {
+    assert.ok(storageHttpVerifier.indexOf(laterAction) > dockerPreflight)
+  }
   assert.match(storageHttpVerifier, /DISPOSABLE_API_HOST\s*=\s*'127\.0\.0\.1'/)
   assert.match(storageHttpVerifier, /DISPOSABLE_API_PORT\s*=\s*'58321'/)
   assert.match(storageHttpVerifier, /DISPOSABLE_DB_HOST\s*=\s*'127\.0\.0\.1'/)
   assert.match(storageHttpVerifier, /DISPOSABLE_DB_PORT\s*=\s*'58322'/)
+  assert.match(storageHttpVerifier, /ATTENDANCE_DOCKER_CONTEXT/)
+  assert.match(storageHttpVerifier, /\^DOCKER_/)
+  assert.match(storageHttpVerifier, /BUILDKIT_HOST/)
+  assert.match(storageHttpVerifier, /unix:\/\//)
+  assert.match(storageHttpVerifier, /com\.supabase\.cli\.project/)
+  assert.match(storageHttpVerifier, /5432\/tcp/)
+  const dockerSpawns = [...storageHttpVerifier.matchAll(
+    /spawn\('docker', \[([\s\S]*?)\], \{/g,
+  )]
+  assert.equal(dockerSpawns.length, 3)
+  assert.ok(dockerSpawns.every(([, args]) =>
+    /^\s*'--context',\s*(?:dockerContext|configuration\.dockerContext)/.test(args)
+  ))
+  assert.match(
+    storageHttpVerifier,
+    /spawn\('docker', \[\s*'--context', configuration\.dockerContext,\s*'exec'/,
+  )
   assert.match(storageHttpVerifier, /apiUrl\.username\s*\|\|\s*apiUrl\.password/)
   assert.match(storageHttpVerifier, /apiUrl\.search\s*\|\|\s*apiUrl\.hash/)
   assert.match(storageHttpVerifier, /auth\.admin\.createUser/)
   assert.match(storageHttpVerifier, /ownerProfileId[\s\S]+otherProfileId/)
   assert.match(storageHttpVerifier, /Buffer\.compare\(signedBytes, pngBytes\)/)
+  assert.match(
+    storageHttpVerifier,
+    /Buffer\.compare\(replacementPngBytes, pngBytes\)\s*!==\s*0/,
+  )
+  assert.match(
+    storageHttpVerifier,
+    /owner-overwrite\.png', replacementPngBytes[\s\S]+other-overwrite\.png', replacementPngBytes/,
+  )
+  assert.match(
+    storageHttpVerifier,
+    /const originRead = await admin\.storage\s*\.from\(before\.bucketId\)\s*\.download\(before\.objectPath\)[\s\S]+Buffer\.compare\(originBytes, pngBytes\)/,
+  )
   assert.match(storageHttpVerifier, /otherDownloadAttempt[\s\S]+otherSignedDenied/)
   assert.match(storageHttpVerifier, /seedRealCleanupCandidate/)
   assert.match(
@@ -200,7 +248,15 @@ test('disposable HTTP verifier gates clients and proves real Storage and DB seri
     /payload\?\.claimed\s*===\s*1[\s\S]+payload\.deleted\s*===\s*1[\s\S]+payload\.failed\s*===\s*0/,
   )
   assert.match(storageHttpVerifier, /metadataAfter\.count\s*===\s*0/)
-  assert.match(storageHttpVerifier, /Boolean\(objectAfter\.error\)/)
+  assert.match(
+    storageHttpVerifier,
+    /\.list\(candidateParent, \{ limit: 10, search: candidateName \}\)/,
+  )
+  assert.match(
+    storageHttpVerifier,
+    /objectAfter\.error\s*===\s*null\s*&&\s*Array\.isArray\(objectAfter\.data\)[\s\S]+entry\?\.name\s*===\s*candidateName/,
+  )
+  assert.doesNotMatch(storageHttpVerifier, /Boolean\(objectAfter\.error\)/)
   assert.match(storageHttpVerifier, /Timeout:PgSleep/)
   assert.match(storageHttpVerifier, /Lock:advisory/)
   assert.match(storageHttpVerifier, /bCompletedAt\s*=\s*Date\.now\(\)/)
@@ -211,7 +267,7 @@ test('disposable HTTP verifier gates clients and proves real Storage and DB seri
   assert.match(storageHttpVerifier, /requestA[\s\S]+requestB[\s\S]+eventRowsExact/)
 })
 
-test('disposable HTTP verifier rejects unsafe targets before imports, clients or processes', () => {
+test('disposable HTTP verifier rejects unsafe targets before imports, clients or mutations', () => {
   const safeEnvironment = {
     ATTENDANCE_DISPOSABLE_CONFIRM: 'shengwang-attendance-task7',
     SUPABASE_URL: 'http://127.0.0.1:58321',
@@ -221,6 +277,18 @@ test('disposable HTTP verifier rejects unsafe targets before imports, clients or
     ATTENDANCE_DB_HOST: '127.0.0.1',
     ATTENDANCE_DB_PORT: '58322',
     ATTENDANCE_DB_CONTAINER: 'supabase_db_shengwang-attendance-task7',
+    ATTENDANCE_DOCKER_CONTEXT: 'desktop-linux',
+  }
+  const unsafeDockerEnvironment = {
+    DOCKER_HOST: 'tcp://remote.invalid:2375',
+    DOCKER_CONTEXT: 'remote',
+    DOCKER_CONFIG: '/tmp/task7-untrusted-docker-config',
+    DOCKER_TLS_VERIFY: '1',
+    DOCKER_CERT_PATH: '/tmp/task7-untrusted-docker-certs',
+    DOCKER_API_VERSION: '1.99',
+    DOCKER_DEFAULT_PLATFORM: 'linux/amd64',
+    DOCKER_CUSTOM_HEADERS: 'x-task7-unsafe=value',
+    BUILDKIT_HOST: 'tcp://remote.invalid:1234',
   }
   const unsafeCases = [
     { SUPABASE_URL: 'http://example.com:58321' },
@@ -232,6 +300,10 @@ test('disposable HTTP verifier rejects unsafe targets before imports, clients or
     { ATTENDANCE_DISPOSABLE_CONFIRM: 'shengwang-attendance-production' },
     { ATTENDANCE_DB_PORT: '54322' },
     { ATTENDANCE_DB_CONTAINER: 'supabase_db_other-project' },
+    { ATTENDANCE_DOCKER_CONTEXT: 'remote' },
+    ...Object.entries(unsafeDockerEnvironment).map(([name, value]) => ({
+      [name]: value,
+    })),
   ]
 
   for (const overrides of unsafeCases) {
@@ -245,12 +317,20 @@ test('disposable HTTP verifier rejects unsafe targets before imports, clients or
     assert.equal(result.stdout, '')
     assert.match(
       result.stderr,
-      /does not identify the disposable Task 7 stack|exact credential-free disposable loopback API URL/,
+      /does not identify the disposable Task 7 stack|exact credential-free disposable loopback API URL|ambient Docker environment overrides are forbidden/,
     )
     assert.doesNotMatch(
       result.stderr,
-      /ERR_MODULE_NOT_FOUND|failed to fetch|ECONNREFUSED|docker|psql|login|fake-(?:anon|service|cleanup)/i,
+      /ERR_MODULE_NOT_FOUND|failed to fetch|ECONNREFUSED|psql|login|fake-(?:anon|service|cleanup)/i,
     )
+    if (Object.keys(overrides).some((name) =>
+      /^DOCKER_/u.test(name) || name === 'BUILDKIT_HOST'
+    )) {
+      assert.doesNotMatch(
+        result.stderr,
+        /Docker target does not identify the disposable Task 7 stack/,
+      )
+    }
   }
 })
 

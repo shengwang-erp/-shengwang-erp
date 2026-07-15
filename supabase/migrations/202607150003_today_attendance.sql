@@ -648,14 +648,24 @@ begin
       order by session.opened_at desc, session.session_id desc
       limit p_limit
     ), project_options as (
-      select distinct session.project_id, session.project_name_snapshot
+      select distinct on (session.project_id)
+        session.project_id,
+        session.project_name_snapshot
       from authorized session
+      order by
+        session.project_id,
+        session.opened_at desc,
+        session.session_id desc
     ), employee_options as (
-      select distinct
+      select distinct on (session.employee_profile_id)
         session.employee_profile_id,
         session.employee_number_snapshot,
         session.employee_name_snapshot
       from authorized session
+      order by
+        session.employee_profile_id,
+        session.opened_at desc,
+        session.session_id desc
     )
     select jsonb_build_object(
       'access', jsonb_build_object('scope', viewer_scope),

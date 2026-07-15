@@ -447,6 +447,34 @@ test('invalid cleanup limits fail closed before creating an admin client', async
   }
 })
 
+test('the maximum supported claim limit is forwarded to the cleanup RPC', async () => {
+  const calls = []
+  const handler = createAttendancePhotoCleanupHandler({
+    cleanupSecret: 'expected-cleanup-secret',
+    claimLimit: 500,
+    createAdminClient: async () => ({
+      async rpc(name, args) {
+        calls.push([name, args])
+        return { data: [], error: null }
+      },
+      storage: {
+        from() {
+          throw new Error('an empty claim must not reach Storage')
+        },
+      },
+    }),
+  })
+
+  const response = await handler(request())
+  assert.equal(response.status, 200)
+  assertNoStore(response)
+  assert.deepEqual(await response.json(), { claimed: 0, deleted: 0, failed: 0 })
+  assert.deepEqual(calls, [[
+    'claim_attendance_photo_cleanup_secure',
+    { p_limit: 500 },
+  ]])
+})
+
 test('a claim response larger than the configured limit fails closed before Storage', async () => {
   let storageCalls = 0
   const handler = createAttendancePhotoCleanupHandler({

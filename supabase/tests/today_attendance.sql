@@ -3157,6 +3157,30 @@ insert into public.project_attendance_sessions(
     '2026-07-16T14:00:00Z', '2026-07-16T15:00:00Z'
   );
 
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot,
+  employee_name_snapshot, project_id, project_name_snapshot,
+  project_address_snapshot, project_latitude_snapshot,
+  project_longitude_snapshot, attendance_radius_meters_snapshot,
+  work_date, status, opened_at, closed_at
+) values
+  (
+    '77100000-0000-4000-8000-000000000301',
+    '62000000-0000-4000-8000-000000000014',
+    'SW-6214-OLD', '记录所有者旧快照',
+    'ATT-VIEW-A', '记录项目 A 旧快照', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-19', 'closed',
+    '2026-07-19T08:00:00Z', '2026-07-19T09:00:00Z'
+  ),
+  (
+    '77100000-0000-4000-8000-000000000302',
+    '62000000-0000-4000-8000-000000000014',
+    'SW-6214-NEW', '记录所有者新快照',
+    'ATT-VIEW-A', '记录项目 A 新快照', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-19', 'closed',
+    '2026-07-19T08:00:00Z', '2026-07-19T09:00:00Z'
+  );
+
 insert into public.project_attendance_work_points(
   work_point_id, session_id, ordinal, area_name, work_description,
   completion_note
@@ -3434,6 +3458,27 @@ select results_eq(
     ('62000000-0000-4000-8000-000000000014'),
     ('62000000-0000-4000-8000-000000000021') $$,
   'assignee filter employees contain only identities visible through active assignments'
+);
+
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000014', true
+);
+select is(
+  public.list_attendance_records_secure(
+    '2026-07-19',null,null,null,null,50
+  )#>'{filterOptions,projects}',
+  '[{"projectId":"ATT-VIEW-A","projectName":"记录项目 A 新快照"}]'::jsonb,
+  'project filter options emit one ID with the newest visible tied snapshot'
+);
+select is(
+  public.list_attendance_records_secure(
+    '2026-07-19',null,null,null,null,50
+  )#>'{filterOptions,employees}',
+  '[{"employeeProfileId":"62000000-0000-4000-8000-000000000014","employeeNameSnapshot":"记录所有者新快照","employeeNumberSnapshot":"SW-6214-NEW"}]'::jsonb,
+  'employee filter options emit one ID with the newest visible tied snapshot'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000016', true
 );
 
 create temporary table attendance_view_payload(payload jsonb not null)
@@ -4070,6 +4115,10 @@ select is(
    where photo_id = '77400000-0000-4000-8000-000000000705'),
   1,
   'active photo remains after every cleanup completion attempt'
+);
+select lives_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(500) $$,
+  'cleanup claim accepts the maximum supported limit 500'
 );
 reset role;
 
