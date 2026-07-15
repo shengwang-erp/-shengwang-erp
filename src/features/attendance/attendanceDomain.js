@@ -75,7 +75,7 @@ export function classifyAttendanceLocation({ distanceMeters, accuracyMeters, rad
 export function previewAttendanceLocation({ center, location }) {
   const normalized = normalizeAttendanceLocation(location)
   const distanceMeters = surfaceDistanceMeters(center, normalized)
-  const radiusMeters = Number(center.attendanceRadiusMeters)
+  const radiusMeters = center.attendanceRadiusMeters
   return {
     distanceMeters,
     accuracyMeters: normalized.accuracyMeters,

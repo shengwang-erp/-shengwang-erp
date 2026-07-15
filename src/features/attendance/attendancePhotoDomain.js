@@ -28,7 +28,10 @@ export function normalizeAttendancePhotoPhase(value) {
 
 export function validateAttendancePhotoFile(file) {
   const originalFileName = String(file?.name ?? '').trim()
-  const extension = originalFileName.split('.').pop()?.toLowerCase() || ''
+  const extensionSeparatorIndex = originalFileName.lastIndexOf('.')
+  const extension = extensionSeparatorIndex > 0 && extensionSeparatorIndex < originalFileName.length - 1
+    ? originalFileName.slice(extensionSeparatorIndex + 1).toLowerCase()
+    : ''
   const expectedType = MIME_BY_EXTENSION[extension]
   const suppliedType = String(file?.type ?? '').toLowerCase()
   const contentType = !suppliedType && ['heic', 'heif'].includes(extension)
@@ -44,10 +47,11 @@ export function validateAttendancePhotoFile(file) {
     throw new AttendancePhotoValidationError('ATTENDANCE_PHOTO_TYPE_INVALID', '只允许 JPEG、PNG、WEBP、HEIC 或 HEIF 照片')
   }
   const timestamp = Number(file.lastModified)
+  const capturedAt = Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp) : null
   return {
     originalFileName,
     contentType,
     sizeBytes: file.size,
-    capturedAt: Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString() : null,
+    capturedAt: capturedAt && Number.isFinite(capturedAt.getTime()) ? capturedAt.toISOString() : null,
   }
 }
