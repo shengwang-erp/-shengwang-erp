@@ -1,5 +1,7 @@
 # Project Documents Implementation Plan
 
+> **SUPERSEDED — DO NOT EXECUTE.** The `contract / drawing / legal` categories and the Storage access model in this plan no longer match the user-approved requirements. The governing design is `docs/superpowers/specs/2026-07-15-project-file-archive-permanent-storage-design.md`. There is no current executable document plan until that written design is approved and a replacement plan is generated.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add private, permission-filtered contract, drawing, and client-legal document storage with immutable versions, resumable uploads, signed viewing/downloading, and void history to saved projects.

@@ -1,5 +1,7 @@
 # 工程项目页定位、担当、金额权限与文件管理设计
 
+> **文件章节已被取代。** 本文件的定位、担当和金额部分仍保留；项目文件的分类、权限、存储、归档和备份设计以 `docs/superpowers/specs/2026-07-15-project-file-archive-permanent-storage-design.md` 为准。
+
 **日期：** 2026-07-15
 **目标版本：** `/Users/yu/Documents/kaobeierp/employee-auth-worktree`
 **状态：** 用户已确认交互、权限与验收设计
