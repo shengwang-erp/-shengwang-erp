@@ -22,6 +22,13 @@ const [
   readSource('../styles.css'),
 ])
 
+function sliceBetween(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker)
+  if (start < 0) return ''
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  return end < 0 ? '' : source.slice(start, end)
+}
+
 test('login UI accepts only employee number and password without self-registration identities', () => {
   assert.match(loginSource, /员工编号/)
   assert.match(loginSource, /密码/)
@@ -43,17 +50,25 @@ test('AuthGate validates startup and every auth transition before mounting busin
   assert.match(authGateSource, /children\(\{[\s\S]*currentUser:[\s\S]*onLogout:/)
 })
 
-test('AuthGate blocks zero-permission employees outside every business hook', () => {
-  assert.match(authGateSource, /effectivePermissionKeys/)
-  assert.match(authGateSource, /status:\s*'no-permissions'/)
-  assert.match(authGateSource, /gate\.status === 'no-permissions'[\s\S]*?<NoPermissionsPage/)
-  assert.match(
+test('valid zero-module employees still mount business UI for always-available attendance', () => {
+  const validation = sliceBetween(
     authGateSource,
-    /gate\.status === 'no-permissions'[\s\S]*?gate\.status !== 'authenticated'[\s\S]*?children\(/,
+    'const performSessionValidation',
+    '\n\n  const validateSession',
   )
-  assert.match(authGateSource, /尚未配置权限/)
-  assert.match(authGateSource, /修改密码/)
-  assert.match(authGateSource, /退出登录/)
+  assert.match(
+    validation,
+    /status:\s*currentUser\.mustChangePassword\s*\?\s*'password-change'\s*:\s*'authenticated'/,
+  )
+  for (const deadSymbol of [
+    'hasBusinessPermissions',
+    'NoPermissionsPage',
+    'no-permissions',
+    'openOptionalPasswordChange',
+    'closeOptionalPasswordChange',
+  ]) assert.equal(authGateSource.includes(deadSymbol), false, deadSymbol)
+  assert.match(authGateSource, /status !== 'authenticated'/)
+  assert.match(authGateSource, /children\(\{[\s\S]*currentUser:/)
 })
 
 test('forced-password terminal account errors clear the session instead of keeping stale UI', () => {

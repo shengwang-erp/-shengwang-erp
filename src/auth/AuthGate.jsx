@@ -44,39 +44,6 @@ function toBusinessCurrentUser(profile) {
   }
 }
 
-function hasBusinessPermissions(currentUser) {
-  return currentUser.effectivePermissionKeys.length > 0
-}
-
-function NoPermissionsPage({ currentUser, onChangePassword, onLogout }) {
-  return (
-    <main className="auth-shell">
-      <section
-        className="auth-panel auth-status-panel auth-no-permissions-panel"
-        role="status"
-        aria-labelledby="no-permissions-title"
-      >
-        <img
-          className="auth-brand-mark"
-          src="/sw-erp-logo.jpg"
-          alt="生旺株式会社标志"
-        />
-        <p>{currentUser.employeeNumber} · {currentUser.name}</p>
-        <h1 id="no-permissions-title">尚未配置权限</h1>
-        <span>当前账号已登录，但所属部门和职位尚未分配可访问模块，请联系管理员。</span>
-        <div className="auth-account-actions">
-          <button className="auth-primary-button" type="button" onClick={onChangePassword}>
-            修改密码
-          </button>
-          <button className="auth-secondary-button" type="button" onClick={onLogout}>
-            退出登录
-          </button>
-        </div>
-      </section>
-    </main>
-  )
-}
-
 export default function AuthGate({
   children,
   authService = employeeAuthService,
@@ -114,11 +81,7 @@ export default function AuthGate({
         if (validationVersion.current !== currentValidation) return null
         const currentUser = toBusinessCurrentUser(profile)
         setGate({
-          status: currentUser.mustChangePassword
-            ? 'password-change'
-            : hasBusinessPermissions(currentUser)
-              ? 'authenticated'
-              : 'no-permissions',
+          status: currentUser.mustChangePassword ? 'password-change' : 'authenticated',
           currentUser,
           passwordMode: currentUser.mustChangePassword ? 'forced' : null,
         })
@@ -217,22 +180,6 @@ export default function AuthGate({
     [authService, moveToLogin, validateSession],
   )
 
-  const openOptionalPasswordChange = useCallback(() => {
-    setGate((current) =>
-      current.currentUser
-        ? { ...current, status: 'password-change', passwordMode: 'optional' }
-        : current,
-    )
-  }, [])
-
-  const closeOptionalPasswordChange = useCallback(() => {
-    setGate((current) =>
-      current.currentUser
-        ? { ...current, status: 'no-permissions', passwordMode: null }
-        : current,
-    )
-  }, [])
-
   if (gate.status === 'configuration-error') {
     return (
       <AuthStatusPage
@@ -255,21 +202,8 @@ export default function AuthGate({
     return (
       <ChangeTemporaryPasswordPage
         currentUser={gate.currentUser}
-        isForced={gate.passwordMode !== 'optional'}
+        isForced
         onChangePassword={handlePasswordChange}
-        onCancel={
-          gate.passwordMode === 'optional' ? closeOptionalPasswordChange : undefined
-        }
-        onLogout={moveToLogin}
-      />
-    )
-  }
-
-  if (gate.status === 'no-permissions') {
-    return (
-      <NoPermissionsPage
-        currentUser={gate.currentUser}
-        onChangePassword={openOptionalPasswordChange}
         onLogout={moveToLogin}
       />
     )

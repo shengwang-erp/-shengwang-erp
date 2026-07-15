@@ -13,6 +13,7 @@ import {
   normalizeProject as normalizeProjectDomain,
 } from './features/projects/projectDomain'
 import PersonnelPage from './features/employees/PersonnelPage'
+import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import {
   combinePersonnelProtectionSources,
   shouldBlockPersonnelExit,
@@ -1663,13 +1664,18 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   const [projectContractChanges, setProjectContractChanges] = useState([])
   const [projectPaymentPlans, setProjectPaymentPlans] = useState([])
   const [projectReceipts, setProjectReceipts] = useState([])
+  const canViewProjects = canAccessModule(currentUser, '工程项目')
   useEffect(() => {
     let active = true
+    if (!canViewProjects) {
+      setStoredProjects([])
+      return () => { active = false }
+    }
     projectService.listProjects().then((rows) => { if (active) setStoredProjects(rows) }).catch((error) => {
       if (active) setPersistenceFailure(error)
     })
     return () => { active = false }
-  }, [])
+  }, [canViewProjects])
   const canViewFinancials = canViewProjectFinancials(currentUser)
   useEffect(() => {
     let active = true
@@ -2420,6 +2426,16 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     )
   }
 
+  if (currentView === 'todayAttendance') {
+    return renderInDesktopShell(
+      <TodayAttendancePage
+        currentUser={currentUser}
+        onAuthInvalid={onLogout}
+        onBack={() => setCurrentView('home')}
+      />,
+    )
+  }
+
   if (currentView === 'employees') {
     return renderInDesktopShell(
       <PersonnelPage
@@ -2515,10 +2531,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     )
   }
 
-  if (currentView === 'toolBorrow' || currentView === 'toolReturn') {
+  if (currentView === 'toolBorrow') {
     return renderInDesktopShell(
       <ToolManagementPage
-        initialSection={currentView === 'toolReturn' ? 'returns' : 'borrow'}
+        initialSection="borrow"
         projects={projects}
         employees={employees}
         currentUser={currentUser}
@@ -2705,13 +2721,13 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       view: 'toolBorrow',
     },
     {
-      title: '还工具',
-      permissionName: '工具管理',
-      code: '还',
+      title: '今日打卡',
+      code: '勤',
       color: 'green',
-      count: records.toolReturn.length,
-      label: '工具归还',
-      view: 'toolReturn',
+      count: '进入',
+      label: '定位打卡・现场日志',
+      view: 'todayAttendance',
+      alwaysAvailable: true,
     },
     {
       title: '会计成本',
@@ -2747,6 +2763,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
     },
   ]
   const visibleModules = modules.filter((module) =>
+    module.alwaysAvailable === true ||
     canAccessModule(currentUser, module.permissionName || module.title),
   )
   const isPendingAuthorization =

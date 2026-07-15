@@ -12,7 +12,7 @@ const desktopMenuItems = [
   { view: 'purchase', label: '采购管理', code: '采', permissionName: '采购管理' },
   { view: 'vehicle', label: '车辆管理', code: '车', permissionName: '车辆管理' },
   { view: 'toolBorrow', label: '借工具', code: '借', permissionName: '工具管理' },
-  { view: 'toolReturn', label: '还工具', code: '还', permissionName: '工具管理' },
+  { view: 'todayAttendance', label: '今日打卡', code: '勤', alwaysAvailable: true },
   { view: 'settings', label: '系统设置', code: '设', permissionName: '系统设置' },
 ]
 
@@ -31,6 +31,7 @@ export default function DesktopAdminShell({
   const visibleMenuItems = desktopMenuItems.filter(
     (item) =>
       item.view === 'home' ||
+      item.alwaysAvailable === true ||
       isSuperAdmin(currentUser) ||
       canAccessModule(currentUser, item.permissionName),
   )
