@@ -2627,6 +2627,197 @@ select is(
 );
 reset role;
 
+insert into auth.users(
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '00000000-0000-0000-0000-000000000000',
+  '61000000-0000-4000-8000-000000000013',
+  'authenticated', 'authenticated', 'attendance-distinct-facts@auth.invalid', '', now(),
+  '{}', '{}', now(), now()
+);
+insert into public.employee_profiles(
+  id, employee_number, auth_user_id, name, department, position,
+  employment_status, account_status, must_change_password, is_hidden_system_account
+) values (
+  '62000000-0000-4000-8000-000000000013', 'SW-6113',
+  '61000000-0000-4000-8000-000000000013', '独立事实员工', '工程部', '小工',
+  '在职', 'active', false, false
+);
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot, employee_name_snapshot,
+  project_id, project_name_snapshot, project_address_snapshot,
+  project_latitude_snapshot, project_longitude_snapshot,
+  attendance_radius_meters_snapshot, work_date, status, opened_at
+) values (
+  '71000000-0000-4000-8000-000000000095',
+  '62000000-0000-4000-8000-000000000013',
+  'SW-6113', '独立事实员工', 'ATT-ELIGIBLE-OTHER', '另一个合法现场',
+  '東京都 千代田区 1-1', 35.681236, 139.767125, 300,
+  '2026-07-15', 'open', '2026-07-15T08:00:00Z'
+);
+insert into public.project_attendance_events(
+  event_id, session_id, event_type, request_id, server_recorded_at,
+  device_recorded_at, latitude, longitude, accuracy_meters, distance_meters,
+  radius_meters, result, abnormal_reason
+) values (
+  '72000000-0000-4000-8000-000000000095',
+  '71000000-0000-4000-8000-000000000095',
+  'clock_in', '63000000-0000-4000-8000-000000000099',
+  '2026-07-15T08:00:00Z', '2026-07-15T07:59:30Z',
+  35.681100, 139.767000, 22.25,
+  private.attendance_distance_meters(35.681236, 139.767125, 35.681100, 139.767000),
+  300, 'normal', null
+);
+insert into public.project_attendance_work_points(
+  work_point_id, session_id, ordinal, area_name, work_description, completion_note
+) values (
+  '73000000-0000-4000-8000-000000000095',
+  '71000000-0000-4000-8000-000000000095', 1,
+  '独立事实区域', '独立事实施工', ''
+);
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path, original_file_name,
+  content_type, size_bytes, upload_status
+) values
+  (
+    '74000000-0000-4000-8000-000000000095',
+    '73000000-0000-4000-8000-000000000095', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000013/71000000-0000-4000-8000-000000000095/73000000-0000-4000-8000-000000000095/74000000-0000-4000-8000-000000000095/before',
+    'before.jpg', 'image/jpeg', 1, 'active'
+  ),
+  (
+    '74000000-0000-4000-8000-000000000096',
+    '73000000-0000-4000-8000-000000000095', 'after',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000013/71000000-0000-4000-8000-000000000095/73000000-0000-4000-8000-000000000095/74000000-0000-4000-8000-000000000096/after',
+    'after.jpg', 'image/jpeg', 1, 'active'
+  );
+select is(
+  (select status from public.project_attendance_sessions
+   where session_id = '71000000-0000-4000-8000-000000000095'),
+  'open',
+  'distinct-facts clock-out fixture starts open'
+);
+select is(
+  (select employee_profile_id from public.project_attendance_sessions
+   where session_id = '71000000-0000-4000-8000-000000000095'),
+  '62000000-0000-4000-8000-000000000013'::uuid,
+  'distinct-facts clock-out fixture has the expected owner'
+);
+select ok(
+  exists (
+    select 1
+    from public.project_attendance_work_points point
+    where point.session_id = '71000000-0000-4000-8000-000000000095'
+      and btrim(point.area_name) <> ''
+      and btrim(point.work_description) <> ''
+      and exists (
+        select 1 from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'before' and photo.upload_status = 'active'
+      )
+      and exists (
+        select 1 from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'after' and photo.upload_status = 'active'
+      )
+  ),
+  'distinct-facts clock-out fixture has one complete point'
+);
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000013', true);
+insert into attendance_clock_out_results values (
+  'distinct_facts',
+  public.clock_out_project_secure(
+    '71000000-0000-4000-8000-000000000095',
+    '75000000-0000-4000-8000-000000000009',
+    35.700321, 139.799876, 47.75, '2026-07-15T12:34:56Z',
+    ' 独立事实验证 '
+  )
+);
+select is(
+  (select payload#>>'{event,result}'
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  'abnormal',
+  'distinct submitted clock-out facts follow the valid abnormal path'
+);
+select is(
+  (select payload#>>'{event,abnormalReason}'
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  '独立事实验证',
+  'distinct submitted clock-out reason is canonicalized'
+);
+select is(
+  (select (payload#>>'{event,latitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  35.700321::double precision,
+  'distinct clock-out event stores the newly submitted latitude'
+);
+select is(
+  (select (payload#>>'{event,longitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  139.799876::double precision,
+  'distinct clock-out event stores the newly submitted longitude'
+);
+select is(
+  (select (payload#>>'{event,accuracyMeters}')::numeric
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  47.75::numeric,
+  'distinct clock-out event stores the newly submitted accuracy'
+);
+select is(
+  (select (payload#>>'{event,deviceRecordedAt}')::timestamptz
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  '2026-07-15T12:34:56Z'::timestamptz,
+  'distinct clock-out event stores the newly submitted device timestamp'
+);
+select isnt(
+  (select (payload#>>'{event,latitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  35.681236::double precision,
+  'distinct clock-out latitude is not copied from the session snapshot'
+);
+select isnt(
+  (select (payload#>>'{event,longitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  139.767125::double precision,
+  'distinct clock-out longitude is not copied from the session snapshot'
+);
+select isnt(
+  (select (payload#>>'{event,latitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  35.681100::double precision,
+  'distinct clock-out latitude is not copied from the clock-in event'
+);
+select isnt(
+  (select (payload#>>'{event,longitude}')::double precision
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  139.767000::double precision,
+  'distinct clock-out longitude is not copied from the clock-in event'
+);
+select isnt(
+  (select (payload#>>'{event,accuracyMeters}')::numeric
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  22.25::numeric,
+  'distinct clock-out accuracy is not copied from the clock-in event'
+);
+select isnt(
+  (select (payload#>>'{event,deviceRecordedAt}')::timestamptz
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  '2026-07-15T07:59:30Z'::timestamptz,
+  'distinct clock-out device timestamp is not copied from the clock-in event'
+);
+select is(
+  (select payload#>>'{session,closedAt}'
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  (select payload#>>'{event,serverRecordedAt}'
+   from attendance_clock_out_results where result_name = 'distinct_facts'),
+  'distinct-facts session closes at the new server event timestamp'
+);
+reset role;
+
 update public.projects
 set status = 'void'
 where record_key = 'ATT-ELIGIBLE';
