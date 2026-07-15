@@ -15,6 +15,10 @@ function actionMatchesReservation(action, reservation) {
     action.photoId === reservation.photoId
 }
 
+function actionMatchesAttempt(action, state) {
+  return isNonBlankString(state?.attemptId) && action?.attemptId === state.attemptId
+}
+
 function photoMatchesReservation(photo, reservation, uploadStatus) {
   return isPendingReservation(reservation) &&
     photo?.uploadStatus === uploadStatus &&
@@ -29,7 +33,8 @@ function isInitialState(state) {
     state.reservation === null &&
     state.activePhoto === null &&
     state.failedStage === null &&
-    state.errorCode === null
+    state.errorCode === null &&
+    state.attemptId === null
 }
 
 function canSelect(state) {
@@ -52,7 +57,7 @@ function canReset(state) {
 export function createAttendancePhotoUploadState() {
   return {
     phase: 'idle', file: null, reservation: null, activePhoto: null,
-    failedStage: null, errorCode: null,
+    failedStage: null, errorCode: null, attemptId: null,
   }
 }
 
@@ -62,21 +67,31 @@ export function attendancePhotoUploadReducer(state, action) {
       if (!isInitialState(state) || !isPendingReservation(action.reservation)) return state
       return {
         ...createAttendancePhotoUploadState(), phase: 'failed',
-        reservation: action.reservation, failedStage: 'finalize',
+        reservation: action.reservation, failedStage: 'recovered',
         errorCode: 'ATTENDANCE_PHOTO_CONFIRMATION_PENDING',
       }
     case 'select':
       if (!canSelect(state)) return state
       return { ...createAttendancePhotoUploadState(), phase: 'selected', file: action.file }
     case 'reserve-start':
-      if (state.phase !== 'selected' || !state.file || state.reservation !== null) return state
-      return { ...state, phase: 'reserving', failedStage: null, errorCode: null }
+      if (state.phase !== 'selected' || !state.file || state.reservation !== null ||
+          state.attemptId !== null || !isNonBlankString(action.attemptId)) return state
+      return {
+        ...state, phase: 'reserving', attemptId: action.attemptId,
+        failedStage: null, errorCode: null,
+      }
     case 'reserve-success':
-      if (state.phase !== 'reserving' || !isPendingReservation(action.reservation)) return state
-      return { ...state, phase: 'uploading', reservation: action.reservation }
+      if (state.phase !== 'reserving' || !actionMatchesAttempt(action, state) ||
+          !isPendingReservation(action.reservation)) return state
+      return {
+        ...state, phase: 'uploading', reservation: action.reservation, attemptId: null,
+      }
     case 'reserve-failure':
-      if (state.phase !== 'reserving') return state
-      return { ...state, phase: 'failed', failedStage: 'reserve', errorCode: action.errorCode }
+      if (state.phase !== 'reserving' || !actionMatchesAttempt(action, state)) return state
+      return {
+        ...state, phase: 'failed', failedStage: 'reserve',
+        errorCode: action.errorCode, attemptId: null,
+      }
     case 'upload-success':
       if (state.phase !== 'uploading' || !actionMatchesReservation(action, state.reservation)) return state
       return { ...state, phase: 'confirming' }
@@ -84,7 +99,7 @@ export function attendancePhotoUploadReducer(state, action) {
       if (state.phase !== 'uploading' || !actionMatchesReservation(action, state.reservation)) return state
       return { ...state, phase: 'failed', failedStage: 'upload', errorCode: action.errorCode }
     case 'finalize-retry':
-      if (state.phase !== 'failed' || state.failedStage !== 'finalize' ||
+      if (state.phase !== 'failed' || !['finalize', 'recovered'].includes(state.failedStage) ||
           !isPendingReservation(state.reservation)) return state
       return { ...state, phase: 'confirming', failedStage: null, errorCode: null }
     case 'finalize-success':
@@ -100,7 +115,7 @@ export function attendancePhotoUploadReducer(state, action) {
       return { ...state, phase: 'failed', failedStage: 'finalize', errorCode: action.errorCode }
     case 'abandon-start':
       if (state.phase !== 'failed' ||
-          !['upload', 'abandon'].includes(state.failedStage) ||
+          !['upload', 'recovered', 'abandon'].includes(state.failedStage) ||
           !actionMatchesReservation(action, state.reservation)) return state
       return { ...state, failedStage: 'abandon', errorCode: null }
     case 'abandon-success':
@@ -121,6 +136,6 @@ export function attendancePhotoUploadReducer(state, action) {
 
 export function canRetryAttendancePhotoUpload(state) {
   return state?.phase === 'failed' &&
-    state.failedStage === 'finalize' &&
+    ['finalize', 'recovered'].includes(state.failedStage) &&
     isPendingReservation(state.reservation)
 }

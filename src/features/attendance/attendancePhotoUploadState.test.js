@@ -23,12 +23,16 @@ const otherReservation = Object.freeze({
 })
 const activePhoto = Object.freeze({ ...reservation, uploadStatus: 'active' })
 const cleanupPhoto = Object.freeze({ ...reservation, uploadStatus: 'cleanup_pending' })
+const ATTEMPT_A = 'attempt-a'
+const ATTEMPT_B = 'attempt-b'
 
 function stateAtUploading() {
   let state = createAttendancePhotoUploadState()
   state = attendancePhotoUploadReducer(state, { type: 'select', file })
-  state = attendancePhotoUploadReducer(state, { type: 'reserve-start' })
-  state = attendancePhotoUploadReducer(state, { type: 'reserve-success', reservation })
+  state = attendancePhotoUploadReducer(state, { type: 'reserve-start', attemptId: ATTEMPT_A })
+  state = attendancePhotoUploadReducer(state, {
+    type: 'reserve-success', attemptId: ATTEMPT_A, reservation,
+  })
   return state
 }
 
@@ -81,6 +85,12 @@ test('retry helper advertises only finalize with a valid pending reservation', (
       reservation: failedStage === 'reserve' ? null : reservation,
     }), false)
   }
+  assert.equal(canRetryAttendancePhotoUpload({
+    ...createAttendancePhotoUploadState(),
+    phase: 'failed',
+    failedStage: 'recovered',
+    reservation,
+  }), true)
   for (const invalidReservation of [
     null,
     { ...reservation, uploadStatus: 'active' },
@@ -103,7 +113,7 @@ test('hydrate accepts only a valid pending reservation in an initial state', () 
   const initial = createAttendancePhotoUploadState()
   const hydrated = attendancePhotoUploadReducer(initial, { type: 'hydrate-pending', reservation })
   assert.equal(hydrated.phase, 'failed')
-  assert.equal(hydrated.failedStage, 'finalize')
+  assert.equal(hydrated.failedStage, 'recovered')
   assert.equal(hydrated.reservation, reservation)
   assert.equal(canRetryAttendancePhotoUpload(hydrated), true)
 
@@ -126,13 +136,62 @@ test('hydrate accepts only a valid pending reservation in an initial state', () 
     selected,
     { type: 'hydrate-pending', reservation: otherReservation },
   ), selected)
+
+  const staleAttempt = { ...initial, attemptId: ATTEMPT_A }
+  assert.equal(attendancePhotoUploadReducer(
+    staleAttempt,
+    { type: 'hydrate-pending', reservation },
+  ), staleAttempt)
+})
+
+test('recovered pending reservation stays locked and can finalize', () => {
+  const recovered = attendancePhotoUploadReducer(
+    createAttendancePhotoUploadState(),
+    { type: 'hydrate-pending', reservation },
+  )
+  assert.equal(recovered.failedStage, 'recovered')
+  assert.equal(canRetryAttendancePhotoUpload(recovered), true)
+  assert.equal(attendancePhotoUploadReducer(recovered, { type: 'select', file }), recovered)
+  assert.equal(attendancePhotoUploadReducer(recovered, { type: 'reset' }), recovered)
+
+  const confirming = attendancePhotoUploadReducer(recovered, { type: 'finalize-retry' })
+  assert.equal(confirming.phase, 'confirming')
+  assert.equal(confirming.reservation, reservation)
+  const active = attendancePhotoUploadReducer(confirming, {
+    type: 'finalize-success', photo: activePhoto,
+  })
+  assert.equal(active.phase, 'active')
+  assert.equal(active.activePhoto, activePhoto)
+})
+
+test('recovered pending reservation can abandon only through correlated cleanup', () => {
+  const recovered = attendancePhotoUploadReducer(
+    createAttendancePhotoUploadState(),
+    { type: 'hydrate-pending', reservation },
+  )
+  assert.equal(attendancePhotoUploadReducer(recovered, {
+    type: 'abandon-start', photoId: otherReservation.photoId,
+  }), recovered)
+  const abandoning = attendancePhotoUploadReducer(recovered, {
+    type: 'abandon-start', photoId: reservation.photoId,
+  })
+  assert.equal(abandoning.failedStage, 'abandon')
+  assert.equal(abandoning.reservation, reservation)
+  assert.equal(attendancePhotoUploadReducer(abandoning, {
+    type: 'abandon-success', photo: { ...cleanupPhoto, phase: 'after' },
+  }), abandoning)
+  const cleaned = attendancePhotoUploadReducer(abandoning, {
+    type: 'abandon-success', photo: cleanupPhoto,
+  })
+  assert.equal(cleaned.phase, 'cleanup_pending')
+  assert.equal(cleaned.reservation, null)
 })
 
 test('every async success and failure is phase-guarded and photo-correlated', () => {
   const idle = createAttendancePhotoUploadState()
   for (const action of [
-    { type: 'reserve-success', reservation },
-    { type: 'reserve-failure', errorCode: 'STALE' },
+    { type: 'reserve-success', attemptId: ATTEMPT_A, reservation },
+    { type: 'reserve-failure', attemptId: ATTEMPT_A, errorCode: 'STALE' },
     { type: 'upload-success', photoId: reservation.photoId },
     { type: 'upload-failure', photoId: reservation.photoId, errorCode: 'STALE' },
     { type: 'finalize-success', photo: activePhoto },
@@ -143,17 +202,18 @@ test('every async success and failure is phase-guarded and photo-correlated', ()
 
   const reserving = attendancePhotoUploadReducer(
     attendancePhotoUploadReducer(idle, { type: 'select', file }),
-    { type: 'reserve-start' },
+    { type: 'reserve-start', attemptId: ATTEMPT_A },
   )
   const badReservation = { ...reservation, uploadStatus: 'active' }
   assert.equal(attendancePhotoUploadReducer(
     reserving,
-    { type: 'reserve-success', reservation: badReservation },
+    { type: 'reserve-success', attemptId: ATTEMPT_A, reservation: badReservation },
   ), reserving)
   const reserveFailed = attendancePhotoUploadReducer(reserving, {
-    type: 'reserve-failure', errorCode: 'RESERVE_FAILED',
+    type: 'reserve-failure', attemptId: ATTEMPT_A, errorCode: 'RESERVE_FAILED',
   })
   assert.equal(reserveFailed.failedStage, 'reserve')
+  assert.equal(reserveFailed.attemptId, null)
 
   const uploading = stateAtUploading()
   for (const action of [
@@ -206,7 +266,9 @@ test('finalize success rejects stale, mismatched, non-active and null photos', (
 test('unresolved async phases and pending reservations lock select reset and hydrate', () => {
   const initial = createAttendancePhotoUploadState()
   const selected = attendancePhotoUploadReducer(initial, { type: 'select', file })
-  const reserving = attendancePhotoUploadReducer(selected, { type: 'reserve-start' })
+  const reserving = attendancePhotoUploadReducer(selected, {
+    type: 'reserve-start', attemptId: ATTEMPT_A,
+  })
   const uploading = stateAtUploading()
   const confirming = stateAtConfirming()
   const uploadFailed = attendancePhotoUploadReducer(uploading, {
@@ -230,16 +292,65 @@ test('unresolved async phases and pending reservations lock select reset and hyd
 
 test('reserve failures restart only through a fresh select and reserve flow', () => {
   const selected = attendancePhotoUploadReducer(createAttendancePhotoUploadState(), { type: 'select', file })
-  const reserving = attendancePhotoUploadReducer(selected, { type: 'reserve-start' })
+  const reserving = attendancePhotoUploadReducer(selected, {
+    type: 'reserve-start', attemptId: ATTEMPT_A,
+  })
   const failed = attendancePhotoUploadReducer(reserving, {
-    type: 'reserve-failure', errorCode: 'RESERVE_FAILED',
+    type: 'reserve-failure', attemptId: ATTEMPT_A, errorCode: 'RESERVE_FAILED',
   })
   assert.equal(canRetryAttendancePhotoUpload(failed), false)
 
   const reselected = attendancePhotoUploadReducer(failed, { type: 'select', file: replacementFile })
   assert.equal(reselected.phase, 'selected')
   assert.equal(reselected.file, replacementFile)
-  assert.equal(attendancePhotoUploadReducer(reselected, { type: 'reserve-start' }).phase, 'reserving')
+  assert.equal(attendancePhotoUploadReducer(
+    reselected,
+    { type: 'reserve-start', attemptId: ATTEMPT_B },
+  ).phase, 'reserving')
+})
+
+test('reserve completions require a nonblank matching attempt and reject stale attempt A during B', () => {
+  const selectedA = attendancePhotoUploadReducer(
+    createAttendancePhotoUploadState(),
+    { type: 'select', file },
+  )
+  for (const attemptId of [undefined, '', '   ']) {
+    assert.equal(attendancePhotoUploadReducer(
+      selectedA,
+      { type: 'reserve-start', attemptId },
+    ), selectedA)
+  }
+
+  const reservingA = attendancePhotoUploadReducer(selectedA, {
+    type: 'reserve-start', attemptId: ATTEMPT_A,
+  })
+  assert.equal(reservingA.phase, 'reserving')
+  assert.equal(reservingA.attemptId, ATTEMPT_A)
+  const failedA = attendancePhotoUploadReducer(reservingA, {
+    type: 'reserve-failure', attemptId: ATTEMPT_A, errorCode: 'A_FAILED',
+  })
+  assert.equal(failedA.phase, 'failed')
+  assert.equal(failedA.failedStage, 'reserve')
+  assert.equal(failedA.attemptId, null)
+
+  const selectedB = attendancePhotoUploadReducer(failedA, {
+    type: 'select', file: replacementFile,
+  })
+  const reservingB = attendancePhotoUploadReducer(selectedB, {
+    type: 'reserve-start', attemptId: ATTEMPT_B,
+  })
+  assert.equal(reservingB.attemptId, ATTEMPT_B)
+  for (const staleAction of [
+    { type: 'reserve-success', attemptId: ATTEMPT_A, reservation },
+    { type: 'reserve-failure', attemptId: ATTEMPT_A, errorCode: 'STALE_A' },
+  ]) assert.equal(attendancePhotoUploadReducer(reservingB, staleAction), reservingB)
+
+  const uploadingB = attendancePhotoUploadReducer(reservingB, {
+    type: 'reserve-success', attemptId: ATTEMPT_B, reservation: otherReservation,
+  })
+  assert.equal(uploadingB.phase, 'uploading')
+  assert.equal(uploadingB.reservation, otherReservation)
+  assert.equal(uploadingB.attemptId, null)
 })
 
 test('upload failures require correlated abandon cleanup before a new attempt', () => {
@@ -289,7 +400,9 @@ test('successful transitions return distinct state without mutating frozen input
     file,
   })
   const snapshot = { ...selected }
-  const reserving = attendancePhotoUploadReducer(selected, { type: 'reserve-start' })
+  const reserving = attendancePhotoUploadReducer(selected, {
+    type: 'reserve-start', attemptId: ATTEMPT_A,
+  })
   assert.notEqual(reserving, selected)
   assert.deepEqual(selected, snapshot)
 
