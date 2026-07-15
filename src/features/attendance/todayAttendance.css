@@ -1,17 +1,22 @@
 .attendance-page {
+  --attendance-gold: #cfa85b;
+  --attendance-gold-soft: #f3d18b;
+  --attendance-ink: #15130f;
+  --attendance-panel: #fffdf7;
   display: grid;
-  gap: 1.25rem;
-  color: #172033;
+  gap: 20px;
+  color: var(--attendance-ink);
 }
 
 .attendance-page .attendance-page-heading {
   display: flex;
   align-items: flex-start;
-  gap: 1rem;
-  padding: 1.25rem;
-  border: 1px solid #d9e1ec;
-  border-radius: 1rem;
-  background: linear-gradient(135deg, #f8fbff 0%, #edf5ff 100%);
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid rgb(207 168 91 / 48%);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #15130f 0%, #292218 100%);
+  color: #fffdf7;
 }
 
 .attendance-page .attendance-page-heading h1,
@@ -22,7 +27,7 @@
 .attendance-page .attendance-page-eyebrow,
 .attendance-page .attendance-session-eyebrow,
 .attendance-page .attendance-history-eyebrow {
-  color: #45617f;
+  color: var(--attendance-gold-soft);
   font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -41,63 +46,68 @@
 .attendance-page .attendance-photo-abandon,
 .attendance-page .attendance-record-more,
 .attendance-page .attendance-retry-refresh,
-.attendance-page .attendance-photo-modal-close {
-  min-height: 2.75rem;
-  border: 1px solid #b8c7d9;
-  border-radius: 0.7rem;
-  padding: 0.65rem 1rem;
-  background: #ffffff;
-  color: #173a63;
+.attendance-page .attendance-photo-modal-close,
+.attendance-page .attendance-action-row button,
+.attendance-page .attendance-photo-action,
+.attendance-page .attendance-project-select {
+  min-height: 44px;
+  border: 1px solid rgb(139 101 35 / 52%);
+  border-radius: 11px;
+  padding: 10px 16px;
+  background: var(--attendance-panel);
+  color: var(--attendance-ink);
   font: inherit;
   font-weight: 700;
   cursor: pointer;
 }
 
-.attendance-page .attendance-view-tabs {
+.attendance-page .attendance-view-tabs,
+.attendance-page .attendance-action-row {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.35rem;
-  border-radius: 0.85rem;
-  background: #edf1f6;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.attendance-page .attendance-view-tabs {
+  padding: 6px;
+  border-radius: 14px;
+  background: #211c15;
 }
 
 .attendance-page .attendance-view-tabs button[aria-selected="true"] {
-  border-color: #326fae;
-  background: #326fae;
-  color: #ffffff;
+  border-color: var(--attendance-gold);
+  background: var(--attendance-gold);
+  color: #15130f;
 }
 
 .attendance-page .attendance-view-panel {
   display: grid;
-  gap: 1.25rem;
+  gap: 20px;
 }
 
 .attendance-page .attendance-session-card,
+.attendance-page .attendance-work-point-card,
+.attendance-page .attendance-record-card,
 .attendance-page .attendance-active-session,
 .attendance-page .attendance-history,
 .attendance-page .attendance-record-viewer {
   display: grid;
-  gap: 1rem;
-  padding: 1.15rem;
-  border: 1px solid #d9e1ec;
-  border-radius: 1rem;
-  background: #ffffff;
-  box-shadow: 0 0.5rem 1.5rem rgb(44 70 100 / 8%);
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgb(139 101 35 / 32%);
+  border-radius: 16px;
+  background: var(--attendance-panel);
+  box-shadow: 0 10px 28px rgb(36 27 13 / 8%);
 }
 
 .attendance-page .attendance-work-point-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
 }
 
 .attendance-page .attendance-work-point-card {
-  display: grid;
-  gap: 0.85rem;
-  padding: 1rem;
-  border: 1px solid #dce4ef;
-  border-radius: 0.85rem;
-  background: #f9fbfd;
+  align-content: start;
 }
 
 .attendance-page .attendance-work-point-fields,
@@ -105,7 +115,7 @@
   display: grid;
   grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
   align-items: center;
-  gap: 0.65rem 0.85rem;
+  gap: 12px;
 }
 
 .attendance-page .attendance-work-point-input,
@@ -116,9 +126,9 @@
 .attendance-page .attendance-location-reason textarea,
 .attendance-page .attendance-photo-input {
   width: 100%;
-  border: 1px solid #b8c7d9;
-  border-radius: 0.6rem;
-  padding: 0.7rem;
+  border: 1px solid rgb(139 101 35 / 42%);
+  border-radius: 10px;
+  padding: 11px;
   background: #ffffff;
   color: inherit;
   font: inherit;
@@ -126,40 +136,69 @@
 
 .attendance-page .attendance-work-point-textarea,
 .attendance-page .attendance-location-reason textarea {
-  min-height: 5.5rem;
+  min-height: 88px;
   resize: vertical;
 }
 
 .attendance-page .attendance-photo-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 12px;
 }
 
 .attendance-page .attendance-photo-control {
   display: grid;
   align-content: start;
-  gap: 0.55rem;
-  padding: 0.8rem;
-  border: 1px solid #dce4ef;
-  border-radius: 0.75rem;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid rgb(139 101 35 / 26%);
+  border-radius: 12px;
   background: #ffffff;
 }
 
 .attendance-page .attendance-location-action,
 .attendance-page .attendance-location-reason,
-.attendance-page .attendance-location-recovery {
+.attendance-page .attendance-location-recovery,
+.attendance-page .attendance-project-picker {
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
 }
 
 .attendance-page .attendance-location-result {
   display: grid;
-  gap: 0.3rem;
-  padding: 0.85rem;
-  border-left: 0.3rem solid #326fae;
-  border-radius: 0.5rem;
-  background: #eef6ff;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--attendance-gold);
+  border-radius: 12px;
+  background: #fff8e8;
+}
+
+.attendance-page .attendance-location-result strong {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #f3e2bd;
+  color: #654a1c;
+}
+
+.attendance-page .attendance-location-result[data-result='normal'] {
+  border-color: #3b7a57;
+  background: #f4fbf6;
+}
+
+.attendance-page .attendance-location-result[data-result='normal'] strong {
+  background: #dff2e6;
+  color: #285b3e;
+}
+
+.attendance-page .attendance-location-result[data-result='abnormal'] {
+  border-color: #b85b3a;
+  background: #fff7f3;
+}
+
+.attendance-page .attendance-location-result[data-result='abnormal'] strong {
+  background: #f7e0d7;
+  color: #8d3f27;
 }
 
 .attendance-page .attendance-error,
@@ -167,24 +206,24 @@
 .attendance-page .attendance-photo-error,
 .attendance-page .attendance-work-point-error {
   margin: 0;
-  padding: 0.75rem;
-  border-radius: 0.55rem;
-  background: #fff0f0;
-  color: #9d2222;
+  padding: 12px;
+  border-radius: 9px;
+  background: #fff0ed;
+  color: #9c2f26;
   font-weight: 700;
 }
 
 .attendance-page .attendance-error-panel {
   display: grid;
   justify-items: start;
-  gap: 0.65rem;
+  gap: 10px;
 }
 
 .attendance-page .attendance-record-list,
 .attendance-page .attendance-history-events,
 .attendance-page .attendance-record-events {
   display: grid;
-  gap: 0.85rem;
+  gap: 14px;
 }
 
 .attendance-page .attendance-photo-modal {
@@ -193,29 +232,32 @@
   z-index: 1000;
   display: grid;
   place-items: center;
-  padding: 1rem;
-  background: rgb(10 18 30 / 76%);
+  padding: 24px;
+  background: rgb(0 0 0 / 82%);
 }
 
 .attendance-page .attendance-photo-modal-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
-  width: min(56rem, 100%);
-  max-height: calc(100vh - 2rem);
+  gap: 16px;
+  width: min(1100px, 100%);
+  max-height: calc(100vh - 48px);
   overflow: auto;
-  padding: 1rem;
-  border-radius: 1rem;
-  background: #ffffff;
+  padding: 16px;
+  border: 1px solid rgb(207 168 91 / 58%);
+  border-radius: 16px;
+  background: #17130e;
+  color: #fffdf7;
 }
 
 .attendance-page .attendance-photo-modal-image {
   grid-column: 1 / -1;
   width: 100%;
-  max-height: 70vh;
+  max-width: min(94vw, 1100px);
+  max-height: 82vh;
   object-fit: contain;
-  border-radius: 0.75rem;
-  background: #111827;
+  border-radius: 12px;
+  background: #080706;
 }
 
 .attendance-page button:disabled,
@@ -223,22 +265,73 @@
 .attendance-page textarea:disabled,
 .attendance-page select:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
+  opacity: 0.55;
 }
 
-.attendance-page button:focus-visible,
-.attendance-page input:focus-visible,
-.attendance-page textarea:focus-visible,
-.attendance-page select:focus-visible {
-  outline: 0.2rem solid #ffb000;
-  outline-offset: 0.15rem;
+.attendance-page :focus-visible {
+  outline: 3px solid #6b4c12;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px var(--attendance-gold-soft);
 }
 
-.attendance-page .attendance-loading,
 .attendance-page .attendance-record-status,
 .attendance-page .attendance-location-status,
 .attendance-page .attendance-photo-status,
-.attendance-page .attendance-work-point-save-status {
+.attendance-page .attendance-work-point-save-status,
+.attendance-page .attendance-loading {
   margin: 0;
-  color: #52657b;
+  color: #645744;
+}
+
+.attendance-page .attendance-loading,
+.attendance-page [aria-busy='true'] .attendance-location-status,
+.attendance-page .attendance-record-viewer:has(.attendance-record-filters input:disabled) .attendance-record-status,
+.attendance-page .attendance-work-point-card:has(.attendance-work-point-save:disabled) .attendance-work-point-save-status {
+  animation: attendance-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes attendance-loading-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.52;
+  }
+}
+
+@media (max-width: 680px) {
+  .attendance-page .attendance-work-point-grid,
+  .attendance-page .attendance-photo-grid,
+  .attendance-page .attendance-record-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .attendance-page .attendance-action-row,
+  .attendance-page .attendance-action-row button,
+  .attendance-page .attendance-view-tabs button {
+    width: 100%;
+  }
+
+  .attendance-page .attendance-page-heading {
+    flex-direction: column;
+  }
+
+  .attendance-page .attendance-photo-modal {
+    padding: 12px;
+  }
+
+  .attendance-page .attendance-photo-modal-panel {
+    max-height: calc(100vh - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attendance-page .attendance-loading,
+  .attendance-page [aria-busy='true'] .attendance-location-status,
+  .attendance-page .attendance-record-viewer:has(.attendance-record-filters input:disabled) .attendance-record-status,
+  .attendance-page .attendance-work-point-card:has(.attendance-work-point-save:disabled) .attendance-work-point-save-status {
+    animation: none;
+  }
 }

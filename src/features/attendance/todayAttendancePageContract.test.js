@@ -5,6 +5,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer, transformWithEsbuild } from 'vite'
 
+import {
+  attendanceLocationAttemptReducer,
+  createAttendanceLocationAttempt,
+} from './attendanceLocationAttempt.js'
+
 const COMPONENT_FILES = Object.freeze({
   picker: 'AttendanceProjectPicker.jsx',
   location: 'AttendanceLocationAction.jsx',
@@ -33,6 +38,10 @@ const task9SourceEntries = await Promise.all(
 const task9Sources = Object.fromEntries(task9SourceEntries)
 const task9Css = await readFile(
   new URL('./todayAttendance.css', import.meta.url),
+  'utf8',
+).catch(() => '')
+const task11Operations = await readFile(
+  new URL('../../../docs/today-attendance-operations.md', import.meta.url),
   'utf8',
 ).catch(() => '')
 
@@ -96,6 +105,29 @@ function task9Module(name) {
 
 function render(Component, props) {
   return renderToStaticMarkup(createElement(Component, props))
+}
+
+function cssBlockAfter(source, marker) {
+  const markerIndex = source.indexOf(marker)
+  assert.notEqual(markerIndex, -1, `missing CSS marker: ${marker}`)
+  const openIndex = source.indexOf('{', markerIndex)
+  assert.notEqual(openIndex, -1, `missing CSS block for: ${marker}`)
+  let depth = 0
+  for (let index = openIndex; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1
+    if (source[index] === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(openIndex + 1, index)
+    }
+  }
+  assert.fail(`unterminated CSS block for: ${marker}`)
+}
+
+function cssRuleAfter(source, marker) {
+  const markerIndex = source.indexOf(marker)
+  const body = cssBlockAfter(source, marker)
+  const openIndex = source.indexOf('{', markerIndex)
+  return `${source.slice(markerIndex, openIndex + 1)}${body}}`
 }
 
 function deferred() {
@@ -321,6 +353,52 @@ test('location action exposes fresh clock labels, live status, and the server-au
   assert.match(sources.location, /异常原因/u)
   assert.match(sources.location, /useId\(/u)
   assert.match(sources.location, /\.focus\(\)/u)
+})
+
+test('location preview renders its exact result marker through abnormal submission', () => {
+  const LocationResult = componentModule('location').AttendanceLocationResult
+  assert.equal(typeof LocationResult, 'function')
+
+  const located = (result) => attendanceLocationAttemptReducer(
+    attendanceLocationAttemptReducer(
+      createAttendanceLocationAttempt(),
+      { type: 'locate-start', generation: 1 },
+    ),
+    {
+      type: 'locate-success',
+      generation: 1,
+      requestId: `request-${result}`,
+      location: {
+        latitude: 35.681236,
+        longitude: 139.767125,
+        accuracyMeters: 10,
+      },
+      preview: {
+        result,
+        distanceMeters: result === 'normal' ? 20 : 400,
+        accuracyMeters: 10,
+        radiusMeters: 300,
+      },
+    },
+  )
+
+  const normalMarkup = render(LocationResult, { attempt: located('normal') })
+  assert.match(normalMarkup, /class="attendance-location-result" data-result="normal"/u)
+  assert.match(normalMarkup, /预览结果：范围内/u)
+
+  const abnormalReady = attendanceLocationAttemptReducer(
+    located('abnormal'),
+    { type: 'reason-change', value: '现场入口封闭' },
+  )
+  const abnormalSubmitting = attendanceLocationAttemptReducer(
+    abnormalReady,
+    { type: 'submit-start', generation: 1 },
+  )
+  assert.equal(abnormalSubmitting.phase, 'submitting')
+  assert.equal(abnormalSubmitting.preview.result, 'abnormal')
+  const abnormalMarkup = render(LocationResult, { attempt: abnormalSubmitting })
+  assert.match(abnormalMarkup, /class="attendance-location-result" data-result="abnormal"/u)
+  assert.match(abnormalMarkup, /预览结果：范围外或精度不足/u)
 })
 
 test('location action fails closed with an explained disabled control when target geometry is absent or malformed', () => {
@@ -1774,6 +1852,8 @@ test('attendance stylesheet exists, stays page-scoped, and visibly focuses contr
   assert.match(task9Css, /:focus-visible/u)
   const selectors = task9Css
     .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/@keyframes\s+[\w-]+\s*\{(?:[^{}]|\{[^{}]*\})*\}/gu, '')
+    .replace(/@media\s*\([^{}]+\)\s*\{/gu, '')
     .split('{')
     .slice(0, -1)
     .map((block) => block.split('}').at(-1).trim())
@@ -1781,6 +1861,101 @@ test('attendance stylesheet exists, stays page-scoped, and visibly focuses contr
   assert.ok(selectors.every((selector) => selector.split(',').every(
     (part) => part.trim().startsWith('.attendance-page'),
   )))
+})
+
+test('attendance styles are scoped, responsive and touch accessible', () => {
+  const touchControlRule = cssBlockAfter(task9Css, '.attendance-page .attendance-back,')
+  assert.match(touchControlRule, /min-height:\s*44px/u)
+
+  const mobileRules = cssBlockAfter(task9Css, '@media (max-width: 680px)')
+  const mobileGridRule = cssRuleAfter(
+    mobileRules,
+    '.attendance-page .attendance-work-point-grid,',
+  )
+  assert.match(mobileGridRule, /\.attendance-page \.attendance-photo-grid/u)
+  assert.match(mobileGridRule, /\.attendance-page \.attendance-record-filters/u)
+  assert.match(mobileGridRule, /grid-template-columns:\s*1fr/u)
+  const mobileActionsRule = cssRuleAfter(
+    mobileRules,
+    '.attendance-page .attendance-action-row,',
+  )
+  assert.match(mobileActionsRule, /\.attendance-page \.attendance-view-tabs button/u)
+  assert.match(mobileActionsRule, /width:\s*100%/u)
+
+  assert.match(task9Css, /\.attendance-page \.attendance-photo-modal\s*\{/u)
+  assert.match(task9Css, /\.attendance-page :focus-visible\s*\{/u)
+  assert.doesNotMatch(task9Css, /资料未完整/u)
+})
+
+test('attendance result colors bind to rendered normal and abnormal state markers', () => {
+  assert.match(sources.location, /data-result=\{attempt\.preview\.result\}/u)
+  assert.doesNotMatch(task9Css, /:has\(\.attendance-location-reason\)/u)
+
+  const normalSelector = ".attendance-page .attendance-location-result[data-result='normal']"
+  const normalResultRule = cssBlockAfter(task9Css, normalSelector)
+  assert.match(normalResultRule, /border-color:\s*#3b7a57/u)
+  const normalChipRule = cssBlockAfter(task9Css, `${normalSelector} strong`)
+  assert.match(normalChipRule, /background:\s*#dff2e6/u)
+  assert.match(normalChipRule, /color:\s*#285b3e/u)
+
+  const abnormalSelector = ".attendance-page .attendance-location-result[data-result='abnormal']"
+  const abnormalResultRule = cssBlockAfter(task9Css, abnormalSelector)
+  assert.match(abnormalResultRule, /border-color:\s*#b85b3a/u)
+  const abnormalChipRule = cssBlockAfter(task9Css, `${abnormalSelector} strong`)
+  assert.match(abnormalChipRule, /background:\s*#f7e0d7/u)
+  assert.match(abnormalChipRule, /color:\s*#8d3f27/u)
+})
+
+test('attendance pulse only follows truthful loading-state hooks and respects reduced motion', () => {
+  const pulseRule = cssRuleAfter(task9Css, '.attendance-page .attendance-loading,')
+  assert.match(
+    pulseRule,
+    /\.attendance-page \[aria-busy='true'\] \.attendance-location-status/u,
+  )
+  assert.match(
+    pulseRule,
+    /\.attendance-page \.attendance-record-viewer:has\(\.attendance-record-filters input:disabled\) \.attendance-record-status/u,
+  )
+  assert.match(
+    pulseRule,
+    /\.attendance-page \.attendance-work-point-card:has\(\.attendance-work-point-save:disabled\) \.attendance-work-point-save-status/u,
+  )
+  assert.match(pulseRule, /animation:\s*attendance-loading-pulse/u)
+  assert.doesNotMatch(
+    pulseRule,
+    /\[aria-busy='true'\] \.(?:attendance-loading|attendance-record-status|attendance-photo-status|attendance-work-point-save-status)/u,
+  )
+
+  const reducedMotionRules = cssBlockAfter(
+    task9Css,
+    '@media (prefers-reduced-motion: reduce)',
+  )
+  const reducedPulseRule = cssBlockAfter(
+    reducedMotionRules,
+    '.attendance-page .attendance-loading,',
+  )
+  assert.match(reducedPulseRule, /animation:\s*none/u)
+})
+
+test('attendance focus treatment has a dark outline and a light gold halo', () => {
+  const focusRule = cssBlockAfter(task9Css, '.attendance-page :focus-visible')
+  assert.match(focusRule, /outline:\s*3px solid #6b4c12/u)
+  assert.match(focusRule, /box-shadow:\s*0 0 0 6px var\(--attendance-gold-soft\)/u)
+})
+
+test('attendance operations freeze pending uploads and use a copy-safe local status command', () => {
+  assert.match(
+    task11Operations,
+    /npx supabase status --workdir \/private\/tmp\/kaobeierp-task7-db -o env/u,
+  )
+  assert.match(
+    task11Operations,
+    /revoke execute on function public\.can_current_employee_upload_attendance_photo\(text, text\)\s+from authenticated;/u,
+  )
+  assert.match(
+    task11Operations,
+    /grant execute on function public\.can_current_employee_upload_attendance_photo\(text, text\)\s+to authenticated;/u,
+  )
 })
 
 test('accepted server active photo resets terminal local presentation so the slot can be replaced', async () => {

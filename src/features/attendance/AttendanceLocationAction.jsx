@@ -40,6 +40,24 @@ function phaseStatus(phase) {
   }[phase] || ''
 }
 
+export function AttendanceLocationResult({ attempt }) {
+  if (!attempt?.preview) return null
+  return (
+    <div
+      className="attendance-location-result"
+      data-result={attempt.preview.result}
+    >
+      <p>定位预览，服务器结果为准</p>
+      <strong>
+        {attempt.preview.result === 'normal' ? '预览结果：范围内' : '预览结果：范围外或精度不足'}
+      </strong>
+      <span>
+        距离 {Math.round(attempt.preview.distanceMeters)} 米・精度 ±{Math.round(attempt.preview.accuracyMeters)} 米・半径 {attempt.preview.radiusMeters} 米
+      </span>
+    </div>
+  )
+}
+
 export default function AttendanceLocationAction({
   action,
   targetLocation,
@@ -294,17 +312,7 @@ export default function AttendanceLocationAction({
       aria-label={actionLabel(action)}
       aria-busy={busy}
     >
-      {attempt.preview ? (
-        <div className="attendance-location-result">
-          <p>定位预览，服务器结果为准</p>
-          <strong>
-            {attempt.preview.result === 'normal' ? '预览结果：范围内' : '预览结果：范围外或精度不足'}
-          </strong>
-          <span>
-            距离 {Math.round(attempt.preview.distanceMeters)} 米・精度 ±{Math.round(attempt.preview.accuracyMeters)} 米・半径 {attempt.preview.radiusMeters} 米
-          </span>
-        </div>
-      ) : null}
+      <AttendanceLocationResult attempt={attempt} />
 
       {attempt.phase === 'reason_required' ? (
         <div className="attendance-location-reason">
