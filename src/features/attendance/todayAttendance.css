@@ -1,0 +1,244 @@
+.attendance-page {
+  display: grid;
+  gap: 1.25rem;
+  color: #172033;
+}
+
+.attendance-page .attendance-page-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.25rem;
+  border: 1px solid #d9e1ec;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, #f8fbff 0%, #edf5ff 100%);
+}
+
+.attendance-page .attendance-page-heading h1,
+.attendance-page .attendance-page-heading p {
+  margin: 0;
+}
+
+.attendance-page .attendance-page-eyebrow,
+.attendance-page .attendance-session-eyebrow,
+.attendance-page .attendance-history-eyebrow {
+  color: #45617f;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.attendance-page .attendance-back,
+.attendance-page .attendance-view-tabs button,
+.attendance-page .attendance-work-point-add,
+.attendance-page .attendance-work-point-save,
+.attendance-page .attendance-location-start,
+.attendance-page .attendance-location-submit,
+.attendance-page .attendance-location-retry,
+.attendance-page .attendance-location-relocate,
+.attendance-page .attendance-photo-open,
+.attendance-page .attendance-photo-retry,
+.attendance-page .attendance-photo-abandon,
+.attendance-page .attendance-record-more,
+.attendance-page .attendance-retry-refresh,
+.attendance-page .attendance-photo-modal-close {
+  min-height: 2.75rem;
+  border: 1px solid #b8c7d9;
+  border-radius: 0.7rem;
+  padding: 0.65rem 1rem;
+  background: #ffffff;
+  color: #173a63;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.attendance-page .attendance-view-tabs {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem;
+  border-radius: 0.85rem;
+  background: #edf1f6;
+}
+
+.attendance-page .attendance-view-tabs button[aria-selected="true"] {
+  border-color: #326fae;
+  background: #326fae;
+  color: #ffffff;
+}
+
+.attendance-page .attendance-view-panel {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.attendance-page .attendance-session-card,
+.attendance-page .attendance-active-session,
+.attendance-page .attendance-history,
+.attendance-page .attendance-record-viewer {
+  display: grid;
+  gap: 1rem;
+  padding: 1.15rem;
+  border: 1px solid #d9e1ec;
+  border-radius: 1rem;
+  background: #ffffff;
+  box-shadow: 0 0.5rem 1.5rem rgb(44 70 100 / 8%);
+}
+
+.attendance-page .attendance-work-point-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 1rem;
+}
+
+.attendance-page .attendance-work-point-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid #dce4ef;
+  border-radius: 0.85rem;
+  background: #f9fbfd;
+}
+
+.attendance-page .attendance-work-point-fields,
+.attendance-page .attendance-record-filters {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.65rem 0.85rem;
+}
+
+.attendance-page .attendance-work-point-input,
+.attendance-page .attendance-work-point-textarea,
+.attendance-page .attendance-project-select,
+.attendance-page .attendance-record-filters input,
+.attendance-page .attendance-record-filters select,
+.attendance-page .attendance-location-reason textarea,
+.attendance-page .attendance-photo-input {
+  width: 100%;
+  border: 1px solid #b8c7d9;
+  border-radius: 0.6rem;
+  padding: 0.7rem;
+  background: #ffffff;
+  color: inherit;
+  font: inherit;
+}
+
+.attendance-page .attendance-work-point-textarea,
+.attendance-page .attendance-location-reason textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+}
+
+.attendance-page .attendance-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.attendance-page .attendance-photo-control {
+  display: grid;
+  align-content: start;
+  gap: 0.55rem;
+  padding: 0.8rem;
+  border: 1px solid #dce4ef;
+  border-radius: 0.75rem;
+  background: #ffffff;
+}
+
+.attendance-page .attendance-location-action,
+.attendance-page .attendance-location-reason,
+.attendance-page .attendance-location-recovery {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.attendance-page .attendance-location-result {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.85rem;
+  border-left: 0.3rem solid #326fae;
+  border-radius: 0.5rem;
+  background: #eef6ff;
+}
+
+.attendance-page .attendance-error,
+.attendance-page .attendance-location-error,
+.attendance-page .attendance-photo-error,
+.attendance-page .attendance-work-point-error {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 0.55rem;
+  background: #fff0f0;
+  color: #9d2222;
+  font-weight: 700;
+}
+
+.attendance-page .attendance-error-panel {
+  display: grid;
+  justify-items: start;
+  gap: 0.65rem;
+}
+
+.attendance-page .attendance-record-list,
+.attendance-page .attendance-history-events,
+.attendance-page .attendance-record-events {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.attendance-page .attendance-photo-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(10 18 30 / 76%);
+}
+
+.attendance-page .attendance-photo-modal-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  width: min(56rem, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #ffffff;
+}
+
+.attendance-page .attendance-photo-modal-image {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: 0.75rem;
+  background: #111827;
+}
+
+.attendance-page button:disabled,
+.attendance-page input:disabled,
+.attendance-page textarea:disabled,
+.attendance-page select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.attendance-page button:focus-visible,
+.attendance-page input:focus-visible,
+.attendance-page textarea:focus-visible,
+.attendance-page select:focus-visible {
+  outline: 0.2rem solid #ffb000;
+  outline-offset: 0.15rem;
+}
+
+.attendance-page .attendance-loading,
+.attendance-page .attendance-record-status,
+.attendance-page .attendance-location-status,
+.attendance-page .attendance-photo-status,
+.attendance-page .attendance-work-point-save-status {
+  margin: 0;
+  color: #52657b;
+}
