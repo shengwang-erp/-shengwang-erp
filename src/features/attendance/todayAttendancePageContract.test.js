@@ -374,6 +374,31 @@ test('location action consumes guarded helpers and isolates retry from geolocati
   assert.match(relocateBody, /beginLocation/u)
 })
 
+test('location action reactivates its guard before generation restart and tears down only in cleanup', () => {
+  const lifecycle = sources.location.match(
+    /useEffect\(\(\) => \{[\s\S]*?guardRef\.current\.unmount\(\)[\s\S]*?\n\s*\}, \[\]\)/u,
+  )?.[0] || ''
+  assert.ok(lifecycle)
+
+  const mountIndex = lifecycle.indexOf('guardRef.current.mount()')
+  const restartIndex = lifecycle.indexOf("dispatch({ type: 'restart', generation })")
+  const cleanupIndex = lifecycle.indexOf('return () => {')
+  const abortIndex = lifecycle.indexOf('controllerRef.current?.abort()')
+  const clearTargetIndex = lifecycle.indexOf('attemptTargetSignatureRef.current = null')
+  const unmountIndex = lifecycle.indexOf('guardRef.current.unmount()')
+
+  assert.ok(mountIndex >= 0)
+  assert.ok(restartIndex > mountIndex)
+  assert.ok(cleanupIndex > restartIndex)
+  assert.ok(abortIndex > cleanupIndex)
+  assert.ok(clearTargetIndex > abortIndex)
+  assert.ok(unmountIndex > clearTargetIndex)
+  assert.doesNotMatch(
+    lifecycle.slice(0, cleanupIndex),
+    /beginLocation|submitCurrentAttempt|guardRef\.current\.begin\(/u,
+  )
+})
+
 test('every disabled location recovery control references its rendered explanation', () => {
   for (const className of [
     'attendance-location-submit',

@@ -295,6 +295,143 @@ test('operation guard synchronously rejects double clicks and invalidates old ge
   assert.equal(guard.begin(), null)
 })
 
+test('operation guard remount advances its epoch without invalidating a live mounted operation', () => {
+  const guard = createAttendanceLocationOperationGuard()
+  const idle = createAttendanceLocationAttempt()
+
+  const initialGeneration = guard.mount()
+  assert.equal(initialGeneration, 0)
+  assert.equal(attendanceLocationAttemptReducer(idle, {
+    type: 'restart',
+    generation: initialGeneration,
+  }), idle)
+
+  const oldGeneration = guard.begin()
+
+  assert.equal(guard.mount(), oldGeneration)
+  assert.equal(guard.isCurrent(oldGeneration), true)
+  assert.equal(guard.begin(), null)
+
+  const unmountedGeneration = guard.unmount()
+  assert.equal(guard.isCurrent(oldGeneration), false)
+  assert.equal(guard.begin(), null)
+
+  const remountedGeneration = guard.mount()
+  assert.ok(remountedGeneration > unmountedGeneration)
+  assert.equal(guard.isCurrent(oldGeneration), false)
+
+  const freshGeneration = guard.begin()
+  assert.ok(freshGeneration > remountedGeneration)
+  assert.equal(guard.isCurrent(freshGeneration), true)
+  assert.equal(guard.begin(), null)
+})
+
+test('remount makes old geolocation stale and a new click acquires fresh GPS and request identity', async () => {
+  const guard = createAttendanceLocationOperationGuard()
+  const oldLocation = deferred()
+  const locationCalls = []
+  const requestIds = []
+  const targetLocation = { latitude: 35, longitude: 139, attendanceRadiusMeters: 300 }
+  const oldGeneration = guard.begin()
+  const oldPending = acquireAttendanceLocationAttempt({
+    guard,
+    generation: oldGeneration,
+    signal: new AbortController().signal,
+    locationService: {
+      getCurrentLocation() {
+        locationCalls.push('old')
+        return oldLocation.promise
+      },
+    },
+    createRequestId() {
+      requestIds.push('old-request')
+      return 'old-request'
+    },
+    targetLocation,
+  })
+
+  guard.unmount()
+  guard.mount()
+  const freshGeneration = guard.begin()
+  assert.notEqual(freshGeneration, null)
+  assert.equal(guard.begin(), null)
+
+  oldLocation.resolve(location)
+  assert.deepEqual(await oldPending, { status: 'stale' })
+
+  const freshResult = await acquireAttendanceLocationAttempt({
+    guard,
+    generation: freshGeneration,
+    signal: new AbortController().signal,
+    locationService: {
+      async getCurrentLocation() {
+        locationCalls.push('fresh')
+        return location
+      },
+    },
+    createRequestId() {
+      requestIds.push('fresh-request')
+      return 'fresh-request'
+    },
+    targetLocation,
+  })
+
+  assert.equal(freshResult.status, 'located')
+  assert.equal(freshResult.requestId, 'fresh-request')
+  assert.deepEqual(locationCalls, ['old', 'fresh'])
+  assert.deepEqual(requestIds, ['fresh-request'])
+})
+
+test('remount makes old RPC and refresh completions stale without starting another submit', async () => {
+  const rpcGuard = createAttendanceLocationOperationGuard()
+  const rpcDeferred = deferred()
+  const rpcGeneration = rpcGuard.begin()
+  let submittedCalls = 0
+  let refreshCalls = 0
+  const rpcPending = submitAttendanceLocationAttempt({
+    guard: rpcGuard,
+    generation: rpcGeneration,
+    submission: { requestId: 'old-rpc', location, abnormalReason: null },
+    onSubmit: () => rpcDeferred.promise,
+    onSubmitted: () => { submittedCalls += 1 },
+    onSuccess: async () => { refreshCalls += 1 },
+  })
+
+  rpcGuard.unmount()
+  rpcGuard.mount()
+  const freshRpcGeneration = rpcGuard.begin()
+  assert.notEqual(freshRpcGeneration, null)
+  assert.equal(rpcGuard.begin(), null)
+  rpcDeferred.resolve({ ok: true })
+  assert.deepEqual(await rpcPending, { status: 'stale' })
+  assert.equal(submittedCalls, 0)
+  assert.equal(refreshCalls, 0)
+
+  const refreshGuard = createAttendanceLocationOperationGuard()
+  const refreshDeferred = deferred()
+  const refreshStarted = deferred()
+  const refreshGeneration = refreshGuard.begin()
+  const refreshPending = submitAttendanceLocationAttempt({
+    guard: refreshGuard,
+    generation: refreshGeneration,
+    submission: { requestId: 'old-refresh', location, abnormalReason: null },
+    onSubmit: async () => ({ ok: true }),
+    onSuccess() {
+      refreshStarted.resolve()
+      return refreshDeferred.promise
+    },
+  })
+
+  await refreshStarted.promise
+  refreshGuard.unmount()
+  refreshGuard.mount()
+  const freshRefreshGeneration = refreshGuard.begin()
+  assert.notEqual(freshRefreshGeneration, null)
+  assert.equal(refreshGuard.begin(), null)
+  refreshDeferred.resolve()
+  assert.deepEqual(await refreshPending, { status: 'stale' })
+})
+
 test('location acquisition creates the request id only after fresh GPS resolves', async () => {
   const calls = []
   const guard = createAttendanceLocationOperationGuard()

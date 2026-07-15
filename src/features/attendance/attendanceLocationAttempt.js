@@ -206,6 +206,13 @@ export function createAttendanceLocationOperationGuard() {
   let generation = 0
 
   return Object.freeze({
+    mount() {
+      if (mounted) return generation
+      mounted = true
+      locked = false
+      generation += 1
+      return generation
+    },
     begin() {
       if (!mounted || locked) return null
       locked = true

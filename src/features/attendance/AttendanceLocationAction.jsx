@@ -101,11 +101,15 @@ export default function AttendanceLocationAction({
     return generation
   }
 
-  useEffect(() => () => {
-    controllerRef.current?.abort()
-    controllerRef.current = null
-    attemptTargetSignatureRef.current = null
-    guardRef.current.unmount()
+  useEffect(() => {
+    const generation = guardRef.current.mount()
+    dispatch({ type: 'restart', generation })
+    return () => {
+      controllerRef.current?.abort()
+      controllerRef.current = null
+      attemptTargetSignatureRef.current = null
+      guardRef.current.unmount()
+    }
   }, [])
 
   useLayoutEffect(() => {
