@@ -1660,7 +1660,9 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   const [projectReceipts, setProjectReceipts] = useState([])
   useEffect(() => {
     let active = true
-    projectService.listProjects().then((rows) => { if (active) setStoredProjects(rows) }).catch(() => {})
+    projectService.listProjects().then((rows) => { if (active) setStoredProjects(rows) }).catch((error) => {
+      if (active) setPersistenceFailure(error)
+    })
     return () => { active = false }
   }, [])
   const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {

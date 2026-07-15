@@ -88,8 +88,8 @@ export default function ContractRevenuePage({
         project={project}
         contractChanges={contractChanges}
         currentUser={currentUser}
-        onCreateContractChange={onCreateContractChange}
-        onVoidContractChange={onVoidContractChange}
+        onCreateContractChange={canUpdateFinancials ? onCreateContractChange : undefined}
+        onVoidContractChange={canUpdateFinancials ? onVoidContractChange : undefined}
       />
 
       <PaymentPlanSection
@@ -98,7 +98,7 @@ export default function ContractRevenuePage({
         paymentPlans={paymentPlans}
         receipts={receipts}
         currentUser={currentUser}
-        onSavePaymentPlan={onSavePaymentPlan}
+        onSavePaymentPlan={canUpdateFinancials ? onSavePaymentPlan : undefined}
       />
 
       <CustomerReceiptsSection
@@ -107,8 +107,8 @@ export default function ContractRevenuePage({
         paymentPlans={paymentPlans}
         receipts={receipts}
         currentUser={currentUser}
-        onCreateCustomerReceipt={onCreateCustomerReceipt}
-        onVoidCustomerReceipt={onVoidCustomerReceipt}
+        onCreateCustomerReceipt={canUpdateFinancials ? onCreateCustomerReceipt : undefined}
+        onVoidCustomerReceipt={canUpdateFinancials ? onVoidCustomerReceipt : undefined}
       />
     </main>
   )
