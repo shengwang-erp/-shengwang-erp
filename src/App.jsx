@@ -7,6 +7,11 @@ import {
 } from './features/contract-revenue/contractRevenueCalculations'
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
+import ProjectPage from './features/projects/ProjectPage'
+import {
+  PROJECT_STATUS_OPTIONS,
+  normalizeProject as normalizeProjectDomain,
+} from './features/projects/projectDomain'
 import PersonnelPage from './features/employees/PersonnelPage'
 import {
   combinePersonnelProtectionSources,
@@ -18,6 +23,9 @@ import { employeeAdminService } from './services/employeeAdminService'
 import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
+import { projectService } from './services/projectService.js'
+
+const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
 import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   createContractChange as persistContractChange,
@@ -67,7 +75,7 @@ const MIGRATABLE_STORAGE_KEYS = Object.values(STORAGE_KEYS).filter(
   (storageKey) => storageKey !== STORAGE_KEYS.employees,
 )
 
-const statusOptions = ['进行中', '已完工', '暂停']
+const statusOptions = PROJECT_STATUS_OPTIONS
 const paymentStatusOptions = ['未付款', '部分付款', '已付清', '超额收款']
 const genderOptions = ['男', '女', '其他']
 const employmentStatusOptions = ['在职', '离职', '休假', '停工']
@@ -276,25 +284,17 @@ function getPaymentInfo(contractAmount, paidAmount) {
 }
 
 function normalizeProject(project) {
+  const projectMaster = normalizeProjectDomain(project)
   const contractAmount = toAmount(project.contractAmount)
   const paidAmount = toAmount(project.paidAmount)
   const paymentInfo = getPaymentInfo(contractAmount, paidAmount)
 
   return {
-    ...project,
-    projectId: project.projectId,
-    projectName: project.projectName || '',
-    customerName: project.customerName || '',
-    address: project.address || '',
-    status: project.status || '进行中',
-    manager: project.manager || '',
-    startDate: project.startDate || '',
-    endDate: project.endDate || '',
+    ...projectMaster,
     contractAmount,
     paidAmount,
     paymentProgress: paymentInfo.paymentProgress,
     paymentStatus: paymentInfo.paymentStatus,
-    remark: project.remark || '',
   }
 }
 
@@ -348,20 +348,6 @@ function normalizeEmployee(employee) {
     remark: employee.remark || '',
     createdAt: employee.createdAt || now,
     updatedAt: employee.updatedAt || now,
-  }
-}
-
-function buildProjectPayload(form) {
-  return {
-    projectId: form.projectId || '',
-    projectName: form.projectName || '',
-    customerName: form.customerName || '',
-    address: form.address || '',
-    status: form.status || '进行中',
-    manager: form.manager || '',
-    startDate: form.startDate || '',
-    endDate: form.endDate || '',
-    remark: form.remark || '',
   }
 }
 
@@ -1269,8 +1255,8 @@ function normalizeOperatingExpenseRecord(record) {
 }
 
 function usePersistentState(key, fallback, options = {}) {
-  const cloudPersistence = options.cloudPersistence || 'list'
-  const cloudRead = options.cloudRead !== false
+  const cloudPersistence = localDemoMode ? 'none' : options.cloudPersistence || 'list'
+  const cloudRead = localDemoMode ? false : options.cloudRead !== false
   const localCompatibility = options.localCompatibility === true
   const readOnly = options.readOnly === true
   const [value, setValue] = useState(() =>
@@ -1378,19 +1364,6 @@ function nextId(prefix, records, field = 'id') {
   }, 0)
 
   return `${prefix}${String(maxNumber + 1).padStart(3, '0')}`
-}
-
-function createEmptyProject() {
-  return {
-    projectName: '',
-    customerName: '',
-    address: '',
-    status: '进行中',
-    manager: '',
-    startDate: todayValue(),
-    endDate: '',
-    remark: '',
-  }
 }
 
 function createEmptyBusinessForm(fields) {
@@ -1667,33 +1640,28 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   })
   const [employeeCritical, setEmployeeCritical] = useState(false)
   const employeeCriticalRef = useRef(false)
+  const [projectEmployeeDirectory, setProjectEmployeeDirectory] = useState([])
+  const [projectDirectoryState, setProjectDirectoryState] = useState({
+    loading: false,
+    error: '',
+  })
   const [templateCritical, setTemplateCritical] = useState(false)
   const templateCriticalRef = useRef(false)
   const personnelProtectedStateRef = useRef(false)
   const personnelRequestVersion = useRef(0)
+  const projectDirectoryRequestVersion = useRef(0)
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
   const [persistenceFailure, setPersistenceFailure] = useState(null)
   const persistenceOptions = { onError: setPersistenceFailure }
-  const [storedProjects, setStoredProjects] = usePersistentState(
-    STORAGE_KEYS.projects,
-    [],
-    persistenceOptions,
-  )
-  const [projectContractChanges, setProjectContractChanges] = usePersistentState(
-    STORAGE_KEYS.projectContractChanges,
-    [],
-    { ...persistenceOptions, cloudPersistence: 'record' },
-  )
-  const [projectPaymentPlans, setProjectPaymentPlans] = usePersistentState(
-    STORAGE_KEYS.projectPaymentPlans,
-    [],
-    { ...persistenceOptions, cloudPersistence: 'record' },
-  )
-  const [projectReceipts, setProjectReceipts] = usePersistentState(
-    STORAGE_KEYS.projectReceipts,
-    [],
-    { ...persistenceOptions, cloudPersistence: 'record' },
-  )
+  const [storedProjects, setStoredProjects] = useState([])
+  const [projectContractChanges, setProjectContractChanges] = useState([])
+  const [projectPaymentPlans, setProjectPaymentPlans] = useState([])
+  const [projectReceipts, setProjectReceipts] = useState([])
+  useEffect(() => {
+    let active = true
+    projectService.listProjects().then((rows) => { if (active) setStoredProjects(rows) }).catch(() => {})
+    return () => { active = false }
+  }, [])
   const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {
     cloudRead: false,
     cloudPersistence: 'none',
@@ -1825,6 +1793,31 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     }
   }, [])
 
+  const refreshProjectEmployeeDirectory = useCallback(async () => {
+    const requestVersion = projectDirectoryRequestVersion.current + 1
+    projectDirectoryRequestVersion.current = requestVersion
+    setProjectDirectoryState({ loading: true, error: '' })
+    try {
+      const directory = await employeeAdminService.listEmployeeDirectory()
+      if (projectDirectoryRequestVersion.current !== requestVersion) return directory
+      setProjectEmployeeDirectory(directory)
+      setProjectDirectoryState({ loading: false, error: '' })
+      return directory
+    } catch (error) {
+      if (projectDirectoryRequestVersion.current !== requestVersion) return []
+      setProjectEmployeeDirectory([])
+      setProjectDirectoryState({
+        loading: false,
+        error:
+          error?.name === 'EmployeeAdminError'
+            ? error.message
+            : '规范员工目录暂时无法读取，请稍后重试',
+      })
+      if (error?.authInvalid) onLogout()
+      throw error
+    }
+  }, [onLogout])
+
   const personnelProtectedState = combinePersonnelProtectionSources({
     employeeCritical,
     templateCritical,
@@ -1904,6 +1897,20 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       personnelRequestVersion.current += 1
     }
   }, [currentView, onLogout, refreshPersonnelEmployees])
+
+  useEffect(() => {
+    if (currentView !== 'projects') {
+      projectDirectoryRequestVersion.current += 1
+      setProjectEmployeeDirectory([])
+      setProjectDirectoryState({ loading: false, error: '' })
+      return undefined
+    }
+
+    refreshProjectEmployeeDirectory().catch(() => {})
+    return () => {
+      projectDirectoryRequestVersion.current += 1
+    }
+  }, [currentView, refreshProjectEmployeeDirectory])
 
   const refreshStoredProjectsFromLocal = () => {
     setStoredProjects(readStorage(STORAGE_KEYS.projects, []), { stateOnly: true })
@@ -2068,6 +2075,32 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         typeof nextProjects === 'function' ? nextProjects(normalizedCurrent) : nextProjects
       return resolvedProjects.map((project) => prepareProjectForPersistence(project))
     })
+  }
+  const handleCreateProject = async (payload) => {
+    const created = normalizeProject(initializeOriginalContractProject({
+      ...payload,
+      projectId: nextId('P', projects, 'projectId'),
+    }))
+    setProjects((currentProjects) => [
+      created,
+      ...currentProjects.filter((project) => project.projectId !== created.projectId),
+    ])
+    return created
+  }
+  const handleUpdateProject = async (projectId, patch) => {
+    const existing = projects.find((project) => project.projectId === projectId)
+    if (!existing) throw new Error('Project not found')
+    const updated = normalizeProject({ ...existing, ...patch, projectId })
+    setProjects((currentProjects) => currentProjects.map((project) =>
+      project.projectId === projectId ? updated : project,
+    ))
+    return updated
+  }
+  const handleDeleteProject = async (projectId) => {
+    setProjects((currentProjects) => currentProjects.filter(
+      (project) => project.projectId !== projectId,
+    ))
+    return projectId
   }
   const setVehicles = (nextVehicles) => {
     setVehicleRecords((currentRecords) => {
@@ -2342,7 +2375,13 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       <ProjectPage
         projects={projects}
         projectRevenueSnapshots={projectRevenueSnapshots}
-        setProjects={setProjects}
+        currentUser={currentUser}
+        employeeDirectory={projectEmployeeDirectory}
+        directoryState={projectDirectoryState}
+        onRetryDirectory={refreshProjectEmployeeDirectory}
+        onCreateProject={handleCreateProject}
+        onUpdateProject={handleUpdateProject}
+        onDeleteProject={handleDeleteProject}
         onOpenContractRevenue={openContractRevenue}
         onBack={() => setCurrentView('home')}
       />
@@ -2932,268 +2971,6 @@ function LegacyEmployeeCompatibilityPage({ employees, onBack }) {
               </dl>
             </article>
           ))
-        )}
-      </div>
-    </PageShell>
-  )
-}
-
-function ProjectPage({
-  projects,
-  projectRevenueSnapshots,
-  setProjects,
-  onOpenContractRevenue,
-  onBack,
-}) {
-  const [isFormOpen, setIsFormOpen] = useState(false)
-  const [editingProjectId, setEditingProjectId] = useState('')
-  const [form, setForm] = useState(createEmptyProject)
-
-  const resetForm = () => {
-    setForm(createEmptyProject())
-    setEditingProjectId('')
-    setIsFormOpen(false)
-  }
-
-  const handleSubmit = (event) => {
-    event.preventDefault()
-
-    if (!form.projectName.trim()) {
-      window.alert('请填写项目名称')
-      return
-    }
-
-    if (editingProjectId) {
-      const projectPayload = buildProjectPayload({ ...form, projectId: editingProjectId })
-      setProjects((currentProjects) =>
-        currentProjects.map((project) =>
-          project.projectId === editingProjectId
-            ? { ...project, ...projectPayload, projectId: editingProjectId }
-            : project,
-        ),
-      )
-    } else {
-      const project = initializeOriginalContractProject(
-        buildProjectPayload({
-          ...form,
-          projectId: nextId('P', projects, 'projectId'),
-        }),
-      )
-      setProjects((currentProjects) => [project, ...currentProjects])
-      resetForm()
-      onOpenContractRevenue(project.projectId)
-      return
-    }
-
-    resetForm()
-  }
-
-  const handleEdit = (project) => {
-    setEditingProjectId(project.projectId)
-    setForm({
-      projectName: project.projectName,
-      customerName: project.customerName,
-      address: project.address,
-      status: project.status,
-      manager: project.manager,
-      startDate: project.startDate,
-      endDate: project.endDate,
-      remark: project.remark,
-    })
-    setIsFormOpen(true)
-  }
-
-  const handleDelete = (projectId) => {
-    if (window.confirm('确定删除这个工程项目吗？')) {
-      setProjects((currentProjects) =>
-        currentProjects.filter((project) => project.projectId !== projectId),
-      )
-    }
-  }
-
-  return (
-    <PageShell
-      title="工程项目"
-      subtitle="项目主数据"
-      onBack={onBack}
-      action={
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => {
-            setForm(createEmptyProject())
-            setEditingProjectId('')
-            setIsFormOpen(true)
-          }}
-        >
-          新增项目
-        </button>
-      }
-    >
-      {isFormOpen && (
-        <form className="form-panel" onSubmit={handleSubmit}>
-          <div className="form-grid">
-            <Field
-              label="项目名称"
-              value={form.projectName}
-              onChange={(value) => setForm({ ...form, projectName: value })}
-              placeholder="例如 森下702空调安装"
-              required
-            />
-            <Field
-              label="客户名称"
-              value={form.customerName}
-              onChange={(value) => setForm({ ...form, customerName: value })}
-              placeholder="例如 客户A"
-            />
-            <Field
-              label="地址"
-              value={form.address}
-              onChange={(value) => setForm({ ...form, address: value })}
-              placeholder="例如 東京都江東区森下4-17-5"
-            />
-            <label className="field">
-              <span>项目状态</span>
-              <select
-                value={form.status}
-                onChange={(event) => setForm({ ...form, status: event.target.value })}
-              >
-                {statusOptions.map((status) => (
-                  <option value={status} key={status}>
-                    {status}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Field
-              label="负责人"
-              value={form.manager}
-              onChange={(value) => setForm({ ...form, manager: value })}
-              placeholder="例如 张三"
-            />
-            <Field
-              label="开始日期"
-              type="date"
-              value={form.startDate}
-              onChange={(value) => setForm({ ...form, startDate: value })}
-            />
-            <Field
-              label="工程结束日期"
-              type="date"
-              value={form.endDate}
-              onChange={(value) => setForm({ ...form, endDate: value })}
-            />
-            <Field
-              label="备注"
-              type="textarea"
-              value={form.remark}
-              onChange={(value) => setForm({ ...form, remark: value })}
-              placeholder="可填写施工范围、注意事项等"
-            />
-          </div>
-
-          <div className="form-actions">
-            <button className="primary-button" type="submit">
-              {editingProjectId ? '保存修改' : '保存项目'}
-            </button>
-            <button className="ghost-button" type="button" onClick={resetForm}>
-              取消
-            </button>
-          </div>
-        </form>
-      )}
-
-      <div className="record-list">
-        {projects.length === 0 ? (
-          <EmptyState text="暂无工程项目，请先新增项目" />
-        ) : (
-          projects.map((project) => {
-            const displayProject = buildProjectRevenueReadModel(
-              project,
-              projectRevenueSnapshots.get(project.projectId),
-            )
-
-            return (
-              <article className="record-card" key={project.projectId}>
-                <div className="record-header">
-                  <div>
-                    <strong>{project.projectName}</strong>
-                    <span>{project.projectId}</span>
-                  </div>
-                  <span className={`status-badge ${project.status}`}>{project.status}</span>
-                </div>
-                <dl className="detail-list">
-                  <div>
-                    <dt>客户</dt>
-                    <dd>{project.customerName || '未填写'}</dd>
-                  </div>
-                  <div>
-                    <dt>地址</dt>
-                    <dd>{project.address || '未填写'}</dd>
-                  </div>
-                  <div>
-                    <dt>负责人</dt>
-                    <dd>{project.manager || '未填写'}</dd>
-                  </div>
-                  <div>
-                    <dt>开始日期</dt>
-                    <dd>{project.startDate || '未填写'}</dd>
-                  </div>
-                  <div>
-                    <dt>工程结束日期</dt>
-                    <dd>{project.endDate || '未结束'}</dd>
-                  </div>
-                  <div>
-                    <dt>合同金额</dt>
-                    <dd>{formatYen(displayProject.adjustedTaxInclusiveAmount)}</dd>
-                  </div>
-                  <div>
-                    <dt>已收款</dt>
-                    <dd>{formatYen(displayProject.totalReceivedTaxInclusiveAmount)}</dd>
-                  </div>
-                  <div>
-                    <dt>付款进度</dt>
-                    <dd>
-                      <PaymentProgress project={displayProject} />
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>付款状态</dt>
-                    <dd>
-                      <span className={`payment-badge ${displayProject.paymentStatus}`}>
-                        {displayProject.paymentStatus}
-                      </span>
-                    </dd>
-                  </div>
-                  {project.remark && (
-                    <div>
-                      <dt>备注</dt>
-                      <dd>{project.remark}</dd>
-                    </div>
-                  )}
-                </dl>
-                <div className="record-actions">
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={() => onOpenContractRevenue(project.projectId)}
-                  >
-                    合同收入
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
-                    编辑
-                  </button>
-                  <button
-                    className="danger-button"
-                    type="button"
-                    onClick={() => handleDelete(project.projectId)}
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            )
-          })
         )}
       </div>
     </PageShell>
