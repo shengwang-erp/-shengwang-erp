@@ -23,6 +23,9 @@ import { employeeAdminService } from './services/employeeAdminService'
 import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
 import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
+import { previewLocalContractRevenueMigration } from './services/contractRevenueLocalMigration'
+import { persistLegacyContractRevenueMigration } from './services/contractRevenueMigration.js'
+import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
 import { canViewProjectFinancials } from './features/projects/projectPermissions.js'
 
@@ -36,6 +39,9 @@ import {
   updatePaymentPlan as persistUpdatePaymentPlan,
   voidContractChange as persistVoidContractChange,
   voidProjectReceipt as persistVoidCustomerReceipt,
+  loadContractChanges,
+  loadPaymentPlans,
+  loadProjectReceipts,
 } from './services/contractRevenueService'
 import {
   canAccessModule,
@@ -1665,6 +1671,25 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     })
     return () => { active = false }
   }, [])
+  const canViewFinancials = canViewProjectFinancials(currentUser)
+  useEffect(() => {
+    let active = true
+    if (!canViewFinancials) {
+      setProjectContractChanges([])
+      setProjectPaymentPlans([])
+      setProjectReceipts([])
+      return () => { active = false }
+    }
+    Promise.all([loadContractChanges(), loadPaymentPlans(), loadProjectReceipts()])
+      .then(([changes, plans, receipts]) => {
+        if (!active) return
+        setProjectContractChanges(Array.isArray(changes) ? changes : [])
+        setProjectPaymentPlans(Array.isArray(plans) ? plans : [])
+        setProjectReceipts(Array.isArray(receipts) ? receipts : [])
+      })
+      .catch((error) => { if (active) { setProjectContractChanges([]); setProjectPaymentPlans([]); setProjectReceipts([]); setPersistenceFailure(error) } })
+    return () => { active = false }
+  }, [canViewFinancials])
   const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {
     cloudRead: false,
     cloudPersistence: 'none',
@@ -1917,11 +1942,6 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   const refreshStoredProjectsFromLocal = () => {
     setStoredProjects(readStorage(STORAGE_KEYS.projects, []), { stateOnly: true })
-  }
-  const refreshProjectReceiptsFromLocal = () => {
-    setProjectReceipts(readStorage(STORAGE_KEYS.projectReceipts, []), {
-      stateOnly: true,
-    })
   }
 
   const recordGroups = {
@@ -2274,10 +2294,19 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return persistedProject
   }
 
-  const handleLocalContractRevenueMigrationComplete = () => {
-    refreshStoredProjectsFromLocal()
-    refreshProjectReceiptsFromLocal()
-  }
+  const loadContractMigrationPreview = () => previewLocalContractRevenueMigration(window.localStorage)
+  const executeContractMigration = (preview) => persistLegacyContractRevenueMigration(preview, {
+    migrateLegacyProjectContractSecure: async (projectId, project, openingReceipt) => {
+      const result = await supabase.rpc('migrate_legacy_project_contract_secure', {
+        p_project_id: projectId,
+        p_project: project,
+        p_opening_receipt: openingReceipt,
+      })
+      if (result?.error) throw result.error
+      return result?.data
+    },
+  })
+  const handleLocalContractRevenueMigrationComplete = () => {}
 
   const handleCreateContractChange = async (input) => {
     const created = await persistContractChange(input)
@@ -2349,7 +2378,6 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   )
 
   if (currentView === 'contractRevenue') {
-    const canViewFinancials = canViewProjectFinancials(currentUser)
     return renderInDesktopShell(
       <ContractRevenuePage
         project={contractRevenueProject}
@@ -2872,6 +2900,8 @@ function SystemSettingsPage({
       <ContractRevenueMigrationPanel
         canExecute={canMigrate}
         onMigrationComplete={handleLocalContractRevenueMigrationComplete}
+        loadPreview={loadContractMigrationPreview}
+        executeMigration={executeContractMigration}
       />
 
       <section className="form-card">

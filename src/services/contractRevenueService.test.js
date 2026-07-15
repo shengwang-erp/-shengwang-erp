@@ -243,7 +243,7 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
   }
 })
 
-test('persistProject sanitizes snapshot fields before one erp.projects upsert', async () => {
+test('persistProject sanitizes snapshot fields before one secure projects seam update', async () => {
   const { calls, dependencies } = createFakeDependencies()
   const service = createContractRevenueService(dependencies)
   const persisted = await service.persistProject({
@@ -263,7 +263,7 @@ test('persistProject sanitizes snapshot fields before one erp.projects upsert', 
   assert.deepEqual(calls, [
     {
       operation: 'upsertRecord',
-      storageKey: 'erp.projects',
+      storageKey: 'projects',
       record: persisted,
     },
   ])

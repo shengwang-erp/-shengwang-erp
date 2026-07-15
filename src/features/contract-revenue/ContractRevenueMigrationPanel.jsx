@@ -1,10 +1,5 @@
 import { useState } from 'react'
 
-import {
-  executeLocalContractRevenueMigration,
-  previewLocalContractRevenueMigration,
-} from '../../services/contractRevenueLocalMigration.js'
-
 function ProjectIssueList({ title, items, tone = '' }) {
   if (!items?.length) return null
 
@@ -24,6 +19,8 @@ function ProjectIssueList({ title, items, tone = '' }) {
 export default function ContractRevenueMigrationPanel({
   canExecute,
   onMigrationComplete,
+  loadPreview,
+  executeMigration,
 }) {
   const [preview, setPreview] = useState(null)
   const [execution, setExecution] = useState(null)
@@ -32,7 +29,7 @@ export default function ContractRevenueMigrationPanel({
 
   const handlePreview = () => {
     try {
-      setPreview(previewLocalContractRevenueMigration(window.localStorage))
+      setPreview(loadPreview ? loadPreview() : null)
       setExecution(null)
       setError('')
     } catch (previewError) {
@@ -45,7 +42,7 @@ export default function ContractRevenueMigrationPanel({
   const handleExecute = async () => {
     if (!canExecute || !preview || preview.migrationProjectCount < 1) return
     const confirmed = window.confirm(
-      `即将仅在本机迁移 ${preview.migrationProjectCount} 个项目。执行前会完整备份原始项目和收款JSON，确定继续吗？`,
+      `即将通过云端安全事务迁移 ${preview.migrationProjectCount} 个项目，确定继续吗？`,
     )
     if (!confirmed) return
 
@@ -53,12 +50,10 @@ export default function ContractRevenueMigrationPanel({
     setExecution(null)
     setError('')
     try {
-      const result = await executeLocalContractRevenueMigration({
-        storage: window.localStorage,
-        preview,
-      })
+      if (typeof executeMigration !== 'function') throw new Error('云端迁移安全RPC未配置')
+      const result = await executeMigration(preview)
       setExecution(result)
-      setPreview(previewLocalContractRevenueMigration(window.localStorage))
+      setPreview(loadPreview ? loadPreview() : preview)
       onMigrationComplete?.(result)
     } catch (migrationError) {
       setError(migrationError?.message || '本地合同数据迁移失败')
@@ -75,11 +70,10 @@ export default function ContractRevenueMigrationPanel({
       </div>
 
       <div className="warning-note contract-warning" role="alert">
-        云端表结构尚未执行，当前仅处理本地数据
+        迁移通过服务端安全事务执行，结果以服务器返回为准
       </div>
       <div className="empty-state cost-note">
-        本工具与下方 localStorage → Supabase 上传功能相互独立。打开设置页不会自动迁移，
-        必须先执行只读预览，再由用户明确确认。
+        仅管理员可执行；预览不会写入，执行后支持幂等重试。
       </div>
 
       <div className="form-actions">
@@ -132,7 +126,7 @@ export default function ContractRevenueMigrationPanel({
                 !canExecute || isExecuting || preview.migrationProjectCount < 1
               }
             >
-              {isExecuting ? '迁移中...' : '执行本地迁移'}
+              {isExecuting ? '迁移中...' : '执行云端迁移'}
             </button>
           </div>
         </div>
@@ -141,9 +135,9 @@ export default function ContractRevenueMigrationPanel({
       {execution && (
         <div className="contract-migration-result">
           <div className="contract-success contract-message">
-            本地迁移结束：成功 {execution.migratedProjectCount} 个，失败{' '}
+            云端迁移结束：成功 {execution.migratedProjectCount} 个，失败{' '}
             {execution.failedProjectCount} 个。备份版本{' '}
-            {execution.backup.backupFormatVersion}，时间 {execution.backup.createdAt}。
+              {execution.serverReceipt || execution.idempotencyKey || '已生成服务器回执'}。
           </div>
           <div className="record-list">
             {execution.projectResults.map((result) => (

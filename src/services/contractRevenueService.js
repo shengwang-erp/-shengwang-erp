@@ -4,6 +4,8 @@ export const CONTRACT_REVENUE_STORAGE_KEYS = Object.freeze({
   projectReceipts: 'erp.projectReceipts',
 })
 
+import { isSupabaseConfigured, supabase } from '../lib/supabaseClient.js'
+
 export const PROJECT_REVENUE_SNAPSHOT_FIELDS = Object.freeze([
   'contractAmount',
   'paidAmount',
@@ -27,16 +29,6 @@ export const PROJECT_REVENUE_SNAPSHOT_FIELDS = Object.freeze([
   'lockedAmountExcess',
 ])
 
-async function defaultGetList(storageKey) {
-  const { getList } = await import('./baseRecordService.js')
-  return getList(storageKey)
-}
-
-async function defaultUpsertRecord(storageKey, record) {
-  const { upsertRecord } = await import('./baseRecordService.js')
-  return upsertRecord(storageKey, record)
-}
-
 function defaultRandomUUID() {
   return globalThis.crypto.randomUUID()
 }
@@ -58,21 +50,32 @@ export function sanitizeProjectForPersistence(project = {}) {
 }
 
 export function createContractRevenueService(overrides = {}) {
-  const getList = overrides.getList || defaultGetList
-  const upsertRecord = overrides.upsertRecord || defaultUpsertRecord
+  const rpc = overrides.rpc
+  const getList = overrides.getList
+  const upsertRecord = overrides.upsertRecord
+  const requireHook = (hook, name) => {
+    if (typeof hook !== 'function') throw new Error(`${name}未配置，拒绝使用通用持久化适配器`)
+    return hook
+  }
+  const explicitRpc = async (name, args) => {
+    if (!isSupabaseConfigured || !supabase?.rpc) throw new Error('云端财务服务未配置')
+    const result = await supabase.rpc(name, args)
+    if (result?.error) throw result.error
+    return result?.data
+  }
   // These hooks are the sole authorized persistence boundary for financial rows.
   // The generic hooks remain only as a backwards-compatible test seam.
-  const readContractChanges = overrides.readContractChanges || (( ) => getList(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges))
-  const readPaymentPlans = overrides.readPaymentPlans || (() => getList(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans))
-  const readProjectReceipts = overrides.readProjectReceipts || (() => getList(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts))
-  const writeContractChange = overrides.writeContractChange || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, record))
-  const writePaymentPlan = overrides.writePaymentPlan || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans, record))
-  const writeProjectReceipt = overrides.writeProjectReceipt || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts, record))
+  const readContractChanges = overrides.readContractChanges || (() => getList ? getList(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges) : rpc ? rpc('list_project_contract_changes_secure', {}) : explicitRpc('list_project_contract_changes_secure', {}))
+  const readPaymentPlans = overrides.readPaymentPlans || (() => getList ? getList(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans) : rpc ? rpc('list_project_payment_plans_secure', {}) : explicitRpc('list_project_payment_plans_secure', {}))
+  const readProjectReceipts = overrides.readProjectReceipts || (() => getList ? getList(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts) : rpc ? rpc('list_project_receipts_secure', {}) : explicitRpc('list_project_receipts_secure', {}))
+  const writeContractChange = overrides.writeContractChange || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, record) : rpc ? rpc('upsert_project_contract_change_secure', { p_payload: record }) : explicitRpc('upsert_project_contract_change_secure', { p_payload: record }))
+  const writePaymentPlan = overrides.writePaymentPlan || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans, record) : rpc ? rpc('upsert_project_payment_plan_secure', { p_payload: record }) : explicitRpc('upsert_project_payment_plan_secure', { p_payload: record }))
+  const writeProjectReceipt = overrides.writeProjectReceipt || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts, record) : rpc ? rpc('upsert_project_receipt_secure', { p_payload: record }) : explicitRpc('upsert_project_receipt_secure', { p_payload: record }))
   const now = overrides.now || (() => new Date().toISOString())
   const randomUUID = overrides.randomUUID || defaultRandomUUID
 
   const loadRecords = async (storageKey) => {
-    const records = await getList(storageKey)
+    const records = await (storageKey === CONTRACT_REVENUE_STORAGE_KEYS.contractChanges ? readContractChanges() : storageKey === CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans ? readPaymentPlans() : readProjectReceipts())
     return Array.isArray(records) ? records : []
   }
 
@@ -171,7 +174,8 @@ export function createContractRevenueService(overrides = {}) {
     persistProject: async (project) => {
       const sanitized = sanitizeProjectForPersistence(project)
       requireRecordId(sanitized, 'projectId')
-      await upsertRecord('erp.projects', sanitized)
+      const writer = requireHook(overrides.persistProject || (upsertRecord ? (payload) => upsertRecord('projects', payload) : rpc ? (payload) => rpc('update_project_secure', { p_project_id: payload.projectId, p_patch: payload }) : null), '项目安全更新')
+      await writer(sanitized)
       return sanitized
     },
   }

@@ -22,16 +22,16 @@ test('system settings contains an independent local contract migration panel bef
   const panelIndex = appSource.indexOf('<ContractRevenueMigrationPanel')
   const cloudMigrationIndex = appSource.indexOf('localStorage → Supabase 数据迁移')
   assert.ok(panelIndex >= 0 && cloudMigrationIndex > panelIndex)
-  assert.match(panelSource, /云端表结构尚未执行，当前仅处理本地数据/)
+  assert.match(panelSource, /迁移通过服务端安全事务执行/)
   assert.doesNotMatch(localMigrationSource, /from ['"].*baseRecordService/)
   assert.doesNotMatch(localMigrationSource, /supabase/i)
 })
 
 test('the panel only previews on demand and requires an explicit confirmation before execution', () => {
-  assert.match(panelSource, /previewLocalContractRevenueMigration\(/)
-  assert.match(panelSource, /executeLocalContractRevenueMigration\(/)
+  assert.match(panelSource, /loadPreview/)
+  assert.match(panelSource, /executeMigration/)
   assert.match(panelSource, /只读预览/)
-  assert.match(panelSource, /执行本地迁移/)
+  assert.match(panelSource, /执行云端迁移/)
   assert.match(panelSource, /window\.confirm\(/)
   assert.doesNotMatch(panelSource, /useEffect/)
   assert.match(panelSource, /migrationProjectCount/)
@@ -43,11 +43,11 @@ test('the panel only previews on demand and requires an explicit confirmation be
 
 test('migration and historical review refresh local project and receipt state without cloud persistence', () => {
   assert.match(appSource, /refreshStoredProjectsFromLocal/)
-  assert.match(appSource, /refreshProjectReceiptsFromLocal/)
-  assert.match(appSource, /handleLocalContractRevenueMigrationComplete/)
+  assert.match(appSource, /executeContractMigration/)
   assert.match(appSource, /handleHistoricalContractReview/)
   assert.match(appSource, /createLocalStorageUpsertRecord/)
-  assert.match(appSource, /onMigrationComplete=\{handleLocalContractRevenueMigrationComplete\}/)
+  assert.match(appSource, /executeMigration=\{executeContractMigration\}/)
+  assert.match(appSource, /loadPreview=\{loadContractMigrationPreview\}/)
   assert.match(appSource, /onHistoricalReview=\{handleHistoricalContractReview\}/)
   assert.match(
     appSource,

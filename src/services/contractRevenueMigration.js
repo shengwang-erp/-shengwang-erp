@@ -37,11 +37,6 @@ function manualReviewWarning(projectId) {
   }
 }
 
-async function defaultUpsertRecord(storageKey, record) {
-  const { upsertRecord } = await import('./baseRecordService.js')
-  return upsertRecord(storageKey, record)
-}
-
 function assertUpsertSucceeded(result, label) {
   if (
     !result ||
@@ -199,10 +194,14 @@ export async function persistLegacyContractRevenueMigration(preview, overrides =
     }
     return { migratedProjectCount, upsertedOpeningReceiptCount }
   }
-  const upsertRecord = overrides.upsertRecord || defaultUpsertRecord
+  const upsertRecord = overrides.upsertRecord
   const items = Array.isArray(preview?.items) ? preview.items : []
   let migratedProjectCount = 0
   let upsertedOpeningReceiptCount = 0
+
+  if (typeof upsertRecord !== 'function') {
+    throw new Error('必须配置迁移安全RPC，拒绝本地或通用持久化')
+  }
 
   for (const item of items) {
     if (item?.openingReceipt) {
