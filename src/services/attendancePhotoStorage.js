@@ -14,6 +14,7 @@ export class AttendancePhotoStorageError extends Error {
 }
 
 const fail = (code, message) => new AttendancePhotoStorageError(code, message)
+const isNonBlankString = (value) => typeof value === 'string' && Boolean(value.trim())
 
 export function createAttendancePhotoStorage(client = supabase, { configured = isSupabaseConfigured } = {}) {
   const ensureStorage = () => {
@@ -27,7 +28,7 @@ export function createAttendancePhotoStorage(client = supabase, { configured = i
       const metadata = validateAttendancePhotoFile(file)
       if (reservation?.bucketId !== ATTENDANCE_PHOTO_BUCKET ||
           reservation?.uploadStatus !== 'pending' ||
-          typeof reservation?.objectPath !== 'string' || !reservation.objectPath ||
+          !isNonBlankString(reservation?.objectPath) ||
           reservation.originalFileName !== metadata.originalFileName ||
           reservation.contentType !== metadata.contentType ||
           reservation.sizeBytes !== metadata.sizeBytes) {
@@ -43,12 +44,16 @@ export function createAttendancePhotoStorage(client = supabase, { configured = i
       } catch {
         throw fail('ATTENDANCE_STORAGE_UPLOAD_FAILED', '照片上传失败，请重试')
       }
-      if (result?.error) throw fail('ATTENDANCE_STORAGE_UPLOAD_FAILED', '照片上传失败，请重试')
+      if (result?.error || !isNonBlankString(result?.data?.path) || result.data.path !== reservation.objectPath) {
+        throw fail('ATTENDANCE_STORAGE_UPLOAD_FAILED', '照片上传失败，请重试')
+      }
       return { bucketId: reservation.bucketId, objectPath: reservation.objectPath, uploaded: true }
     },
     async createAttendancePhotoSignedUrl({ photo }) {
       ensureStorage()
-      if (photo?.bucketId !== ATTENDANCE_PHOTO_BUCKET || photo?.uploadStatus !== 'active' || !photo?.objectPath) {
+      if (photo?.bucketId !== ATTENDANCE_PHOTO_BUCKET ||
+          photo?.uploadStatus !== 'active' ||
+          !isNonBlankString(photo?.objectPath)) {
         throw fail('ATTENDANCE_STORAGE_PHOTO_NOT_ACTIVE', '该照片尚不可查看')
       }
       let result
@@ -58,7 +63,7 @@ export function createAttendancePhotoStorage(client = supabase, { configured = i
       } catch {
         throw fail('ATTENDANCE_STORAGE_SIGN_FAILED', '暂时无法打开照片')
       }
-      if (result?.error || typeof result?.data?.signedUrl !== 'string') {
+      if (result?.error || !isNonBlankString(result?.data?.signedUrl)) {
         throw fail('ATTENDANCE_STORAGE_SIGN_FAILED', '暂时无法打开照片')
       }
       return result.data.signedUrl
