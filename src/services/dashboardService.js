@@ -1,6 +1,8 @@
-import { getList } from './baseRecordService'
+import { getList } from './baseRecordService.js'
 
-export async function getDashboardSourceData() {
+export async function getDashboardSourceData(inputs = {}) {
+  const load = inputs.load || getList
+  const projectLoader = inputs.projectLoader || (() => load('erp.projects'))
   const [
     employees,
     projects,
@@ -11,14 +13,14 @@ export async function getDashboardSourceData() {
     lifelongToolAssignments,
     toolResponsibilityRecords,
   ] = await Promise.all([
-    getList('erp.employees'),
-    getList('erp.projects'),
-    getList('erp.laborRecords'),
-    getList('erp.purchaseRecords'),
-    getList('erp.inventoryItems'),
-    getList('erp.vehicleUsageRecords'),
-    getList('erp.lifelongToolAssignments'),
-    getList('erp.toolResponsibilityRecords'),
+    inputs.employees || load('erp.employees'),
+    inputs.projects || projectLoader(),
+    inputs.laborRecords || load('erp.laborRecords'),
+    inputs.purchaseRecords || load('erp.purchaseRecords'),
+    inputs.inventoryItems || load('erp.inventoryItems'),
+    inputs.vehicleUsageRecords || load('erp.vehicleUsageRecords'),
+    inputs.lifelongToolAssignments || load('erp.lifelongToolAssignments'),
+    inputs.toolResponsibilityRecords || load('erp.toolResponsibilityRecords'),
   ])
 
   return {
