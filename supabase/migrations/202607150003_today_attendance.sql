@@ -364,6 +364,71 @@ as $$
   where event.event_id = p_event_id;
 $$;
 
+create or replace function private.attendance_photo_json(p_photo_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'photoId', photo.photo_id,
+    'workPointId', photo.work_point_id,
+    'phase', photo.phase,
+    'bucketId', photo.bucket_id,
+    'objectPath', photo.object_path,
+    'originalFileName', photo.original_file_name,
+    'contentType', photo.content_type,
+    'sizeBytes', photo.size_bytes,
+    'uploadStatus', photo.upload_status,
+    'capturedAt', photo.captured_at,
+    'createdAt', photo.created_at
+  )
+  from public.project_attendance_photos photo
+  where photo.photo_id = p_photo_id;
+$$;
+
+create or replace function private.attendance_work_point_json(p_work_point_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+  select jsonb_build_object(
+    'workPointId', point.work_point_id,
+    'sessionId', point.session_id,
+    'ordinal', point.ordinal,
+    'areaName', point.area_name,
+    'workDescription', point.work_description,
+    'completionNote', point.completion_note,
+    'createdAt', point.created_at,
+    'updatedAt', point.updated_at,
+    'photos', jsonb_build_object(
+      'before', (
+        select private.attendance_photo_json(photo.photo_id)
+        from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'before'
+          and photo.upload_status = 'active'
+        order by photo.photo_id
+        limit 1
+      ),
+      'after', (
+        select private.attendance_photo_json(photo.photo_id)
+        from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'after'
+          and photo.upload_status = 'active'
+        order by photo.photo_id
+        limit 1
+      )
+    )
+  )
+  from public.project_attendance_work_points point
+  where point.work_point_id = p_work_point_id;
+$$;
+
 create or replace function private.attendance_session_json(p_session_id uuid)
 returns jsonb
 language sql
@@ -403,67 +468,12 @@ as $$
       limit 1
     ),
     'workPoints', coalesce((
-      select jsonb_agg(point.projected_value order by point.ordinal)
-      from (
-        select
-          work_point.ordinal,
-          jsonb_build_object(
-            'workPointId', work_point.work_point_id,
-            'sessionId', work_point.session_id,
-            'ordinal', work_point.ordinal,
-            'areaName', work_point.area_name,
-            'workDescription', work_point.work_description,
-            'completionNote', work_point.completion_note,
-            'createdAt', work_point.created_at,
-            'updatedAt', work_point.updated_at,
-            'photos', jsonb_build_object(
-              'before', (
-                select jsonb_build_object(
-                  'photoId', photo.photo_id,
-                  'workPointId', photo.work_point_id,
-                  'phase', photo.phase,
-                  'bucketId', photo.bucket_id,
-                  'objectPath', photo.object_path,
-                  'originalFileName', photo.original_file_name,
-                  'contentType', photo.content_type,
-                  'sizeBytes', photo.size_bytes,
-                  'uploadStatus', photo.upload_status,
-                  'capturedAt', photo.captured_at,
-                  'createdAt', photo.created_at
-                )
-                from public.project_attendance_photos photo
-                where photo.work_point_id = work_point.work_point_id
-                  and photo.phase = 'before'
-                  and photo.upload_status = 'active'
-                order by photo.phase, photo.photo_id
-                limit 1
-              ),
-              'after', (
-                select jsonb_build_object(
-                  'photoId', photo.photo_id,
-                  'workPointId', photo.work_point_id,
-                  'phase', photo.phase,
-                  'bucketId', photo.bucket_id,
-                  'objectPath', photo.object_path,
-                  'originalFileName', photo.original_file_name,
-                  'contentType', photo.content_type,
-                  'sizeBytes', photo.size_bytes,
-                  'uploadStatus', photo.upload_status,
-                  'capturedAt', photo.captured_at,
-                  'createdAt', photo.created_at
-                )
-                from public.project_attendance_photos photo
-                where photo.work_point_id = work_point.work_point_id
-                  and photo.phase = 'after'
-                  and photo.upload_status = 'active'
-                order by photo.phase, photo.photo_id
-                limit 1
-              )
-            )
-          ) as projected_value
-        from public.project_attendance_work_points work_point
-        where work_point.session_id = session.session_id
-      ) point
+      select jsonb_agg(
+        private.attendance_work_point_json(point.work_point_id)
+        order by point.ordinal
+      )
+      from public.project_attendance_work_points point
+      where point.session_id = session.session_id
     ), '[]'::jsonb)
   )
   from public.project_attendance_sessions session
@@ -542,19 +552,8 @@ begin
     ), '[]'::jsonb),
     'pendingPhotoReservations', coalesce((
       select jsonb_agg(
-        jsonb_build_object(
-          'photoId', photo.photo_id,
-          'workPointId', photo.work_point_id,
-          'phase', photo.phase,
-          'bucketId', photo.bucket_id,
-          'objectPath', photo.object_path,
-          'originalFileName', photo.original_file_name,
-          'contentType', photo.content_type,
-          'sizeBytes', photo.size_bytes,
-          'uploadStatus', photo.upload_status,
-          'capturedAt', photo.captured_at,
-          'createdAt', photo.created_at
-        ) order by photo.created_at, photo.photo_id
+        private.attendance_photo_json(photo.photo_id)
+        order by photo.created_at, photo.photo_id
       )
       from public.project_attendance_sessions session
       join public.project_attendance_work_points work_point
@@ -782,6 +781,834 @@ begin
 end;
 $$;
 
+insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'erp-attendance-photos',
+  'erp-attendance-photos',
+  false,
+  20971520,
+  array['image/jpeg','image/png','image/webp','image/heic','image/heif']::text[]
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+create or replace function public.upsert_attendance_work_point_secure(
+  p_session_id uuid,
+  p_ordinal smallint,
+  p_area_name text,
+  p_work_description text,
+  p_completion_note text default ''
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  session_row public.project_attendance_sessions%rowtype;
+  point_id uuid;
+  area_value text := btrim(coalesce(p_area_name, ''));
+  description_value text := btrim(coalesce(p_work_description, ''));
+  completion_value text := btrim(coalesce(p_completion_note, ''));
+begin
+  actor := private.current_attendance_employee();
+
+  if p_ordinal is null
+    or p_ordinal not between 1 and 7
+    or char_length(area_value) > 100
+    or char_length(description_value) > 1000
+    or char_length(completion_value) > 1000
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance work point';
+  end if;
+
+  select session.*
+    into session_row
+    from public.project_attendance_sessions session
+    where session.session_id = p_session_id
+    for update;
+
+  if not found or session_row.employee_profile_id <> actor.id then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance session owner required';
+  end if;
+
+  if session_row.status <> 'open' then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance session closed',
+      hint = 'ATTENDANCE_SESSION_CLOSED';
+  end if;
+
+  insert into public.project_attendance_work_points(
+    session_id,
+    ordinal,
+    area_name,
+    work_description,
+    completion_note
+  ) values (
+    p_session_id,
+    p_ordinal,
+    area_value,
+    description_value,
+    completion_value
+  )
+  on conflict (session_id, ordinal) do update set
+    area_name = excluded.area_name,
+    work_description = excluded.work_description,
+    completion_note = excluded.completion_note
+  returning work_point_id into point_id;
+
+  return private.attendance_work_point_json(point_id);
+end;
+$$;
+
+create or replace function public.reserve_attendance_photo_secure(
+  p_work_point_id uuid,
+  p_phase text,
+  p_original_file_name text,
+  p_content_type text,
+  p_size_bytes bigint,
+  p_checksum_sha256 text default null,
+  p_captured_at timestamptz default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  parent_session_id uuid;
+  session_row public.project_attendance_sessions%rowtype;
+  point_row public.project_attendance_work_points%rowtype;
+  photo_id_value uuid := gen_random_uuid();
+  object_path_value text;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_work_point_id is null
+    or p_phase is null
+    or p_phase not in ('before', 'after')
+    or p_original_file_name is null
+    or p_original_file_name <> btrim(p_original_file_name)
+    or char_length(p_original_file_name) not between 1 and 255
+    or p_original_file_name ~ '[[:cntrl:]]'
+    or p_content_type is null
+    or p_content_type not in (
+      'image/jpeg','image/png','image/webp','image/heic','image/heif'
+    )
+    or p_size_bytes is null
+    or p_size_bytes not between 1 and 20971520
+    or (
+      p_checksum_sha256 is not null
+      and p_checksum_sha256 !~ '^[0-9a-f]{64}$'
+    )
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance photo reservation';
+  end if;
+
+  select point.session_id
+    into parent_session_id
+    from public.project_attendance_work_points point
+    where point.work_point_id = p_work_point_id;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance work point owner required';
+  end if;
+
+  select session.*
+    into session_row
+    from public.project_attendance_sessions session
+    where session.session_id = parent_session_id
+    for update;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance work point owner required';
+  end if;
+
+  select point.*
+    into point_row
+    from public.project_attendance_work_points point
+    where point.work_point_id = p_work_point_id
+      and point.session_id = session_row.session_id
+    for update;
+
+  if not found or session_row.employee_profile_id <> actor.id then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance work point owner required';
+  end if;
+
+  if session_row.status <> 'open' then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance session closed',
+      hint = 'ATTENDANCE_SESSION_CLOSED';
+  end if;
+
+  if p_phase = 'after' and not exists (
+    select 1
+    from public.project_attendance_photos photo
+    where photo.work_point_id = point_row.work_point_id
+      and photo.phase = 'before'
+      and photo.upload_status = 'active'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'active before photo required',
+      hint = 'ATTENDANCE_BEFORE_PHOTO_REQUIRED';
+  end if;
+
+  if exists (
+    select 1
+    from public.project_attendance_photos photo
+    where photo.work_point_id = point_row.work_point_id
+      and photo.phase = p_phase
+      and photo.upload_status = 'pending'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo reservation already pending',
+      hint = 'ATTENDANCE_PHOTO_PENDING';
+  end if;
+
+  object_path_value := actor.id::text || '/' || session_row.session_id::text || '/' ||
+    point_row.work_point_id::text || '/' || photo_id_value::text || '/' || p_phase;
+
+  insert into public.project_attendance_photos(
+    photo_id,
+    work_point_id,
+    phase,
+    bucket_id,
+    object_path,
+    original_file_name,
+    content_type,
+    size_bytes,
+    checksum_sha256,
+    upload_status,
+    captured_at
+  ) values (
+    photo_id_value,
+    point_row.work_point_id,
+    p_phase,
+    'erp-attendance-photos',
+    object_path_value,
+    p_original_file_name,
+    p_content_type,
+    p_size_bytes,
+    p_checksum_sha256,
+    'pending',
+    p_captured_at
+  );
+
+  return private.attendance_photo_json(photo_id_value);
+end;
+$$;
+
+create or replace function public.finalize_attendance_photo_secure(p_photo_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  parent_work_point_id uuid;
+  parent_session_id uuid;
+  session_row public.project_attendance_sessions%rowtype;
+  point_row public.project_attendance_work_points%rowtype;
+  photo_row public.project_attendance_photos%rowtype;
+  pending_photo_found boolean;
+  storage_metadata jsonb;
+  storage_size bigint;
+  storage_content_type text;
+  old_active_photo_id uuid;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_photo_id is null then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance photo identifier';
+  end if;
+
+  select photo.work_point_id, point.session_id
+    into parent_work_point_id, parent_session_id
+    from public.project_attendance_photos photo
+    join public.project_attendance_work_points point
+      on point.work_point_id = photo.work_point_id
+    where photo.photo_id = p_photo_id;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select session.*
+    into session_row
+    from public.project_attendance_sessions session
+    where session.session_id = parent_session_id
+    for update;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select point.*
+    into point_row
+    from public.project_attendance_work_points point
+    where point.work_point_id = parent_work_point_id
+      and point.session_id = session_row.session_id
+    for update;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select photo.*
+    into photo_row
+    from public.project_attendance_photos photo
+    where photo.photo_id = p_photo_id
+      and photo.work_point_id = point_row.work_point_id
+      and photo.upload_status = 'pending'
+    for update;
+  pending_photo_found := found;
+
+  if session_row.employee_profile_id <> actor.id then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  if session_row.status <> 'open' then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance session closed',
+      hint = 'ATTENDANCE_SESSION_CLOSED';
+  end if;
+
+  if not pending_photo_found then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo is not pending',
+      hint = 'ATTENDANCE_PHOTO_NOT_PENDING';
+  end if;
+
+  select object.metadata
+    into storage_metadata
+    from storage.objects object
+    where object.bucket_id = photo_row.bucket_id
+      and object.name = photo_row.object_path;
+
+  if not found then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo object is unavailable',
+      hint = 'ATTENDANCE_PHOTO_OBJECT_UNAVAILABLE';
+  end if;
+
+  begin
+    storage_size := (storage_metadata->>'size')::bigint;
+  exception when others then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo object metadata mismatch',
+      hint = 'ATTENDANCE_PHOTO_METADATA_MISMATCH';
+  end;
+  storage_content_type := coalesce(
+    storage_metadata->>'mimetype',
+    storage_metadata->>'contentType'
+  );
+
+  if storage_size is distinct from photo_row.size_bytes
+    or storage_content_type is distinct from photo_row.content_type
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo object metadata mismatch',
+      hint = 'ATTENDANCE_PHOTO_METADATA_MISMATCH';
+  end if;
+
+  select photo.photo_id
+    into old_active_photo_id
+    from public.project_attendance_photos photo
+    where photo.work_point_id = photo_row.work_point_id
+      and photo.phase = photo_row.phase
+      and photo.upload_status = 'active'
+      and photo.photo_id <> photo_row.photo_id
+    for update;
+
+  if old_active_photo_id is not null then
+    update public.project_attendance_photos
+    set upload_status = 'superseded'
+    where photo_id = old_active_photo_id;
+  end if;
+
+  update public.project_attendance_photos
+  set upload_status = 'active'
+  where photo_id = photo_row.photo_id;
+
+  return private.attendance_photo_json(photo_row.photo_id);
+end;
+$$;
+
+create or replace function public.abandon_attendance_photo_secure(p_photo_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  parent_work_point_id uuid;
+  parent_session_id uuid;
+  session_row public.project_attendance_sessions%rowtype;
+  point_row public.project_attendance_work_points%rowtype;
+  photo_row public.project_attendance_photos%rowtype;
+  pending_photo_found boolean;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_photo_id is null then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance photo identifier';
+  end if;
+
+  select photo.work_point_id, point.session_id
+    into parent_work_point_id, parent_session_id
+    from public.project_attendance_photos photo
+    join public.project_attendance_work_points point
+      on point.work_point_id = photo.work_point_id
+    where photo.photo_id = p_photo_id;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select session.*
+    into session_row
+    from public.project_attendance_sessions session
+    where session.session_id = parent_session_id
+    for update;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select point.*
+    into point_row
+    from public.project_attendance_work_points point
+    where point.work_point_id = parent_work_point_id
+      and point.session_id = session_row.session_id
+    for update;
+
+  if not found then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  select photo.*
+    into photo_row
+    from public.project_attendance_photos photo
+    where photo.photo_id = p_photo_id
+      and photo.work_point_id = point_row.work_point_id
+      and photo.upload_status = 'pending'
+    for update;
+  pending_photo_found := found;
+
+  if session_row.employee_profile_id <> actor.id then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance photo owner required';
+  end if;
+
+  if session_row.status <> 'open' then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance session closed',
+      hint = 'ATTENDANCE_SESSION_CLOSED';
+  end if;
+
+  if not pending_photo_found then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance photo is not pending',
+      hint = 'ATTENDANCE_PHOTO_NOT_PENDING';
+  end if;
+
+  update public.project_attendance_photos
+  set upload_status = 'cleanup_pending'
+  where photo_id = photo_row.photo_id;
+
+  return private.attendance_photo_json(photo_row.photo_id);
+end;
+$$;
+
+create or replace function public.clock_out_project_secure(
+  p_session_id uuid,
+  p_request_id uuid,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_accuracy_meters numeric,
+  p_device_recorded_at timestamptz default null,
+  p_abnormal_reason text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  session_row public.project_attendance_sessions%rowtype;
+  existing_event_id uuid;
+  existing_session_id uuid;
+  existing_event_type text;
+  existing_employee_profile_id uuid;
+  new_event_id uuid;
+  server_recorded_at timestamptz;
+  distance_meters double precision;
+  event_result text;
+  normalized_reason text;
+  has_complete_point boolean;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_session_id is null
+    or p_request_id is null
+    or p_latitude is null
+    or p_latitude not between -90 and 90
+    or p_latitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_longitude is null
+    or p_longitude not between -180 and 180
+    or p_longitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_accuracy_meters is null
+    or p_accuracy_meters <= 0
+    or p_accuracy_meters::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance clock-out request';
+  end if;
+
+  normalized_reason := nullif(regexp_replace(
+    p_abnormal_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+  ), '');
+  if normalized_reason is not null and char_length(normalized_reason) > 500 then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid attendance abnormal reason';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_request_id::text, 0));
+
+  select
+    event.event_id,
+    event.session_id,
+    event.event_type,
+    session.employee_profile_id
+  into
+    existing_event_id,
+    existing_session_id,
+    existing_event_type,
+    existing_employee_profile_id
+  from public.project_attendance_events event
+  join public.project_attendance_sessions session
+    on session.session_id = event.session_id
+  where event.request_id = p_request_id;
+
+  if found then
+    if existing_employee_profile_id = actor.id
+      and existing_event_type = 'clock_out'
+      and existing_session_id = p_session_id
+    then
+      return jsonb_build_object(
+        'session', private.attendance_session_json(existing_session_id),
+        'event', private.attendance_event_json(existing_event_id)
+      );
+    end if;
+
+    raise exception using
+      errcode = '22023',
+      message = 'attendance request identifier conflict',
+      hint = 'ATTENDANCE_REQUEST_CONFLICT';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
+
+  select session.*
+    into session_row
+    from public.project_attendance_sessions session
+    where session.session_id = p_session_id
+    for update;
+
+  if not found or session_row.employee_profile_id <> actor.id then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance session owner required';
+  end if;
+
+  if session_row.status <> 'open' then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance session closed',
+      hint = 'ATTENDANCE_SESSION_CLOSED';
+  end if;
+
+  select exists (
+    select 1
+    from public.project_attendance_work_points point
+    where point.session_id = session_row.session_id
+      and btrim(point.area_name) <> ''
+      and btrim(point.work_description) <> ''
+      and exists (
+        select 1
+        from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'before'
+          and photo.upload_status = 'active'
+      )
+      and exists (
+        select 1
+        from public.project_attendance_photos photo
+        where photo.work_point_id = point.work_point_id
+          and photo.phase = 'after'
+          and photo.upload_status = 'active'
+      )
+  ) into has_complete_point;
+
+  if not has_complete_point then
+    raise exception using
+      errcode = '55000',
+      message = 'complete attendance work point required',
+      hint = 'ATTENDANCE_COMPLETE_WORK_POINT_REQUIRED';
+  end if;
+
+  distance_meters := private.attendance_distance_meters(
+    session_row.project_latitude_snapshot,
+    session_row.project_longitude_snapshot,
+    p_latitude,
+    p_longitude
+  );
+
+  if distance_meters::numeric + p_accuracy_meters
+    <= session_row.attendance_radius_meters_snapshot
+  then
+    event_result := 'normal';
+    normalized_reason := null;
+  else
+    if normalized_reason is null then
+      raise exception using
+        errcode = '22023',
+        message = 'attendance abnormal reason required',
+        hint = 'ATTENDANCE_ABNORMAL_REASON_REQUIRED';
+    end if;
+    event_result := 'abnormal';
+  end if;
+
+  server_recorded_at := statement_timestamp();
+
+  insert into public.project_attendance_events(
+    session_id,
+    event_type,
+    request_id,
+    server_recorded_at,
+    device_recorded_at,
+    latitude,
+    longitude,
+    accuracy_meters,
+    distance_meters,
+    radius_meters,
+    result,
+    abnormal_reason
+  ) values (
+    session_row.session_id,
+    'clock_out',
+    p_request_id,
+    server_recorded_at,
+    p_device_recorded_at,
+    p_latitude,
+    p_longitude,
+    p_accuracy_meters,
+    distance_meters,
+    session_row.attendance_radius_meters_snapshot,
+    event_result,
+    normalized_reason
+  )
+  returning event_id into new_event_id;
+
+  update public.project_attendance_sessions
+  set status = 'closed',
+      closed_at = server_recorded_at
+  where session_id = session_row.session_id;
+
+  return jsonb_build_object(
+    'session', private.attendance_session_json(session_row.session_id),
+    'event', private.attendance_event_json(new_event_id)
+  );
+end;
+$$;
+
+create or replace function public.can_current_employee_view_attendance_session(
+  p_session_id uuid
+) returns boolean
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+begin
+  actor := private.current_attendance_employee();
+
+  return exists (
+    select 1
+    from public.project_attendance_sessions session
+    left join public.projects project
+      on project.record_key = session.project_id
+    where session.session_id = p_session_id
+      and (
+        session.employee_profile_id = actor.id
+        or actor.position = '社长'
+        or actor.employee_number = 'SW-000'
+        or (
+          project.status <> 'deleted'
+          and jsonb_typeof(project.payload) = 'object'
+          and project.payload->>'siteAssigneeEmployeeId' = actor.id::text
+        )
+      )
+  );
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.can_current_employee_upload_attendance_photo(
+  p_bucket_id text,
+  p_object_path text
+) returns boolean
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+begin
+  if p_bucket_id is distinct from 'erp-attendance-photos'
+    or p_object_path is null
+    or p_object_path = ''
+  then
+    return false;
+  end if;
+
+  actor := private.current_attendance_employee();
+
+  return exists (
+    select 1
+    from public.project_attendance_photos photo
+    join public.project_attendance_work_points point
+      on point.work_point_id = photo.work_point_id
+    join public.project_attendance_sessions session
+      on session.session_id = point.session_id
+    where photo.bucket_id = p_bucket_id
+      and photo.object_path = p_object_path
+      and photo.upload_status = 'pending'
+      and session.status = 'open'
+      and session.employee_profile_id = actor.id
+  );
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.can_current_employee_view_attendance_photo(
+  p_bucket_id text,
+  p_object_path text
+) returns boolean
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if p_bucket_id is distinct from 'erp-attendance-photos'
+    or p_object_path is null
+    or p_object_path = ''
+  then
+    return false;
+  end if;
+
+  return exists (
+    select 1
+    from public.project_attendance_photos photo
+    join public.project_attendance_work_points point
+      on point.work_point_id = photo.work_point_id
+    where photo.bucket_id = p_bucket_id
+      and photo.object_path = p_object_path
+      and photo.upload_status = 'active'
+      and public.can_current_employee_view_attendance_session(point.session_id)
+  );
+exception when others then
+  return false;
+end;
+$$;
+
+drop policy if exists attendance_photos_insert on storage.objects;
+drop policy if exists attendance_photos_insert_guard on storage.objects;
+drop policy if exists attendance_photos_select on storage.objects;
+drop policy if exists attendance_photos_select_guard on storage.objects;
+drop policy if exists attendance_photos_update_deny on storage.objects;
+drop policy if exists attendance_photos_delete_deny on storage.objects;
+
+create policy attendance_photos_insert on storage.objects
+  for insert to authenticated
+  with check (public.can_current_employee_upload_attendance_photo(bucket_id, name));
+create policy attendance_photos_insert_guard on storage.objects as restrictive
+  for insert to authenticated
+  with check (
+    bucket_id <> 'erp-attendance-photos'
+    or public.can_current_employee_upload_attendance_photo(bucket_id, name)
+  );
+create policy attendance_photos_select on storage.objects
+  for select to authenticated
+  using (public.can_current_employee_view_attendance_photo(bucket_id, name));
+create policy attendance_photos_select_guard on storage.objects as restrictive
+  for select to authenticated
+  using (
+    bucket_id <> 'erp-attendance-photos'
+    or public.can_current_employee_view_attendance_photo(bucket_id, name)
+  );
+create policy attendance_photos_update_deny on storage.objects as restrictive
+  for update to authenticated
+  using (bucket_id <> 'erp-attendance-photos')
+  with check (bucket_id <> 'erp-attendance-photos');
+create policy attendance_photos_delete_deny on storage.objects as restrictive
+  for delete to authenticated
+  using (bucket_id <> 'erp-attendance-photos');
+
 revoke all on function private.current_attendance_employee()
   from public, anon, authenticated, service_role;
 revoke all on function private.is_attendance_project_eligible(text, jsonb)
@@ -789,6 +1616,10 @@ revoke all on function private.is_attendance_project_eligible(text, jsonb)
 revoke all on function private.attendance_distance_meters(double precision, double precision, double precision, double precision)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_event_json(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.attendance_photo_json(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.attendance_work_point_json(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_session_json(uuid)
   from public, anon, authenticated, service_role;
@@ -802,6 +1633,25 @@ revoke all on function public.get_my_today_attendance_secure()
 revoke all on function public.clock_in_project_secure(
   text, uuid, double precision, double precision, numeric, timestamptz, text
 ) from public, anon, authenticated, service_role;
+revoke all on function public.upsert_attendance_work_point_secure(
+  uuid, smallint, text, text, text
+) from public, anon, authenticated, service_role;
+revoke all on function public.reserve_attendance_photo_secure(
+  uuid, text, text, text, bigint, text, timestamptz
+) from public, anon, authenticated, service_role;
+revoke all on function public.finalize_attendance_photo_secure(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.abandon_attendance_photo_secure(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.clock_out_project_secure(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) from public, anon, authenticated, service_role;
+revoke all on function public.can_current_employee_view_attendance_session(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.can_current_employee_upload_attendance_photo(text, text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.can_current_employee_view_attendance_photo(text, text)
+  from public, anon, authenticated, service_role;
 
 grant execute on function public.list_attendance_projects_secure()
   to authenticated, service_role;
@@ -810,5 +1660,24 @@ grant execute on function public.get_my_today_attendance_secure()
 grant execute on function public.clock_in_project_secure(
   text, uuid, double precision, double precision, numeric, timestamptz, text
 ) to authenticated, service_role;
+grant execute on function public.upsert_attendance_work_point_secure(
+  uuid, smallint, text, text, text
+) to authenticated, service_role;
+grant execute on function public.reserve_attendance_photo_secure(
+  uuid, text, text, text, bigint, text, timestamptz
+) to authenticated, service_role;
+grant execute on function public.finalize_attendance_photo_secure(uuid)
+  to authenticated, service_role;
+grant execute on function public.abandon_attendance_photo_secure(uuid)
+  to authenticated, service_role;
+grant execute on function public.clock_out_project_secure(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) to authenticated, service_role;
+grant execute on function public.can_current_employee_view_attendance_session(uuid)
+  to authenticated, service_role;
+grant execute on function public.can_current_employee_upload_attendance_photo(text, text)
+  to authenticated, service_role;
+grant execute on function public.can_current_employee_view_attendance_photo(text, text)
+  to authenticated, service_role;
 
 commit;

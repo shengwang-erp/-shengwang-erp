@@ -57,3 +57,48 @@ test('attendance abnormal reasons share the POSIX-whitespace canonical rule', ()
     /result\s*=\s*'abnormal'\s+and\s+abnormal_reason\s+is\s+not\s+null\s+and\s+abnormal_reason\s*=\s*regexp_replace\(\s*abnormal_reason\s*,\s*'\^\[\[:space:\]\]\+\|\[\[:space:\]\]\+\$'\s*,\s*''\s*,\s*'g'\s*\)/i,
   )
 })
+
+test('attendance photo RPCs and Storage rules are bucket-scoped', () => {
+  for (const rpc of [
+    'upsert_attendance_work_point_secure',
+    'reserve_attendance_photo_secure',
+    'finalize_attendance_photo_secure',
+    'abandon_attendance_photo_secure',
+    'clock_out_project_secure',
+  ]) {
+    assert.match(sql, new RegExp(`revoke all on function public\\.${rpc}`, 'i'))
+    assert.match(
+      sql,
+      new RegExp(`grant execute on function public\\.${rpc}[^;]+to authenticated, service_role`, 'i'),
+    )
+  }
+
+  for (const predicate of [
+    'can_current_employee_view_attendance_session',
+    'can_current_employee_upload_attendance_photo',
+    'can_current_employee_view_attendance_photo',
+  ]) {
+    assert.match(sql, new RegExp(`create or replace function public\\.${predicate}`, 'i'))
+    assert.match(sql, new RegExp(`revoke all on function public\\.${predicate}`, 'i'))
+  }
+
+  assert.match(sql, /insert into storage\.buckets/i)
+  assert.match(sql, /'erp-attendance-photos'/)
+  assert.match(sql, /20971520/)
+  assert.match(sql, /attendance_photos_insert_guard/i)
+  assert.match(sql, /attendance_photos_select_guard/i)
+  assert.match(sql, /attendance_photos_update_deny/i)
+  assert.match(sql, /attendance_photos_delete_deny/i)
+  assert.doesNotMatch(sql, /delete from pg_policies|drop policy if exists (?!attendance_photos_)/i)
+})
+
+test('clock-out requires one complete point and uses the session location snapshot', () => {
+  assert.match(
+    sql,
+    /create or replace function public\.clock_out_project_secure\(\s*p_session_id uuid,\s*p_request_id uuid,\s*p_latitude double precision,\s*p_longitude double precision,\s*p_accuracy_meters numeric,\s*p_device_recorded_at timestamptz default null,\s*p_abnormal_reason text default null\s*\)/i,
+  )
+  assert.match(sql, /select exists\s*\([\s\S]+photo\.phase = 'before'[\s\S]+photo\.phase = 'after'[\s\S]+\) into has_complete_point/i)
+  assert.match(sql, /session_row\.project_latitude_snapshot[\s\S]+session_row\.project_longitude_snapshot/i)
+  assert.match(sql, /ATTENDANCE_COMPLETE_WORK_POINT_REQUIRED/)
+  assert.doesNotMatch(sql, /count\([^)]*project_attendance_work_points[^;]+has_complete_point/is)
+})
