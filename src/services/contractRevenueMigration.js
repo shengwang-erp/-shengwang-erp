@@ -184,6 +184,21 @@ export function previewLegacyContractRevenueMigration({
 }
 
 export async function persistLegacyContractRevenueMigration(preview, overrides = {}) {
+  if (typeof overrides.migrateLegacyProjectContractSecure === 'function') {
+    let migratedProjectCount = 0
+    let upsertedOpeningReceiptCount = 0
+    for (const item of Array.isArray(preview?.items) ? preview.items : []) {
+      const result = await overrides.migrateLegacyProjectContractSecure(
+        item?.project?.projectId,
+        sanitizeProjectForPersistence(item?.project),
+        item?.openingReceipt || null,
+      )
+      if (result?.error) throw result.error
+      migratedProjectCount += 1
+      if (item?.openingReceipt) upsertedOpeningReceiptCount += 1
+    }
+    return { migratedProjectCount, upsertedOpeningReceiptCount }
+  }
   const upsertRecord = overrides.upsertRecord || defaultUpsertRecord
   const items = Array.isArray(preview?.items) ? preview.items : []
   let migratedProjectCount = 0

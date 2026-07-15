@@ -14,10 +14,6 @@ const CLIENT_AUDIT_FIELDS = Object.freeze([
 ])
 
 export const LEGACY_MIGRATION_ALLOWED_STORAGE_KEYS = Object.freeze([
-  'erp.projects',
-  'erp.projectContractChanges',
-  'erp.projectPaymentPlans',
-  'erp.projectReceipts',
   'erp.laborRecords',
   'erp.purchaseRecords',
   'erp.purchasePaymentRecords',

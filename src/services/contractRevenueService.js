@@ -60,6 +60,14 @@ export function sanitizeProjectForPersistence(project = {}) {
 export function createContractRevenueService(overrides = {}) {
   const getList = overrides.getList || defaultGetList
   const upsertRecord = overrides.upsertRecord || defaultUpsertRecord
+  // These hooks are the sole authorized persistence boundary for financial rows.
+  // The generic hooks remain only as a backwards-compatible test seam.
+  const readContractChanges = overrides.readContractChanges || (( ) => getList(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges))
+  const readPaymentPlans = overrides.readPaymentPlans || (() => getList(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans))
+  const readProjectReceipts = overrides.readProjectReceipts || (() => getList(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts))
+  const writeContractChange = overrides.writeContractChange || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, record))
+  const writePaymentPlan = overrides.writePaymentPlan || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans, record))
+  const writeProjectReceipt = overrides.writeProjectReceipt || ((record) => upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts, record))
   const now = overrides.now || (() => new Date().toISOString())
   const randomUUID = overrides.randomUUID || defaultRandomUUID
 
@@ -77,7 +85,12 @@ export function createContractRevenueService(overrides = {}) {
       createdAt: timestamp,
       updatedAt: timestamp,
     }
-    await upsertRecord(storageKey, record)
+    const writer = storageKey === CONTRACT_REVENUE_STORAGE_KEYS.contractChanges
+      ? writeContractChange
+      : storageKey === CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans
+        ? writePaymentPlan
+        : writeProjectReceipt
+    await writer(record)
     return record
   }
 
@@ -89,7 +102,12 @@ export function createContractRevenueService(overrides = {}) {
       statusCode: input.statusCode || 'active',
       updatedAt: now(),
     }
-    await upsertRecord(storageKey, record)
+    const writer = storageKey === CONTRACT_REVENUE_STORAGE_KEYS.contractChanges
+      ? writeContractChange
+      : storageKey === CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans
+        ? writePaymentPlan
+        : writeProjectReceipt
+    await writer(record)
     return record
   }
 
@@ -105,14 +123,19 @@ export function createContractRevenueService(overrides = {}) {
       voidedAt: timestamp,
       updatedAt: timestamp,
     }
-    await upsertRecord(storageKey, record)
+    const writer = storageKey === CONTRACT_REVENUE_STORAGE_KEYS.contractChanges
+      ? writeContractChange
+      : storageKey === CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans
+        ? writePaymentPlan
+        : writeProjectReceipt
+    await writer(record)
     return record
   }
 
   return {
-    loadContractChanges: () => loadRecords(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges),
-    loadPaymentPlans: () => loadRecords(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans),
-    loadProjectReceipts: () => loadRecords(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts),
+    loadContractChanges: async () => { const rows = await readContractChanges(); return Array.isArray(rows) ? rows : [] },
+    loadPaymentPlans: async () => { const rows = await readPaymentPlans(); return Array.isArray(rows) ? rows : [] },
+    loadProjectReceipts: async () => { const rows = await readProjectReceipts(); return Array.isArray(rows) ? rows : [] },
 
     createContractChange: (input) =>
       createRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, 'changeId', input),

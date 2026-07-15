@@ -130,6 +130,7 @@ export async function executeLocalContractRevenueMigration({
   preview,
   now = () => new Date().toISOString(),
   upsertRecord,
+  migrateLegacyProjectContractSecure,
 } = {}) {
   const localStorage = resolveStorage(storage)
   const resolvedPreview = preview || previewLocalContractRevenueMigration(localStorage)
@@ -147,7 +148,9 @@ export async function executeLocalContractRevenueMigration({
     try {
       const result = await persistLegacyContractRevenueMigration(
         { items: [item] },
-        { upsertRecord: persistLocalRecord },
+        migrateLegacyProjectContractSecure
+          ? { migrateLegacyProjectContractSecure }
+          : { upsertRecord: persistLocalRecord },
       )
       migratedProjectCount += result.migratedProjectCount
       upsertedOpeningReceiptCount += result.upsertedOpeningReceiptCount
