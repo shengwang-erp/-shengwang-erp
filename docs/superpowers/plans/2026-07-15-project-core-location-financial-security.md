@@ -31,7 +31,7 @@
 - Deleting the old migration UI, wiring the five-key purge, and deploying the new frontend are blocked until a human checkpoint records the backup path, server counts/samples, idempotent replay, and explicit user approval.
 - Project/revenue record loading, snapshot construction, HomePage/DashboardPage inputs, financial dashboard cards, and the contract-revenue route all fail closed unless canViewProjectFinancials(currentUser) is true.
 - public.can_current_employee_view_project_financials() is the single SQL financial helper shared by the core and document plans.
-- This plan does not implement project document metadata, upload, TUS, signed URLs, Storage buckets/policies, document panels, or document cleanup. The old project-documents plan is superseded; the governing file design is `docs/superpowers/specs/2026-07-15-project-file-archive-permanent-storage-design.md`, and no executable replacement plan exists until that written design is approved.
+- This plan does not implement project document metadata, upload, TUS, signed URLs, Storage buckets/policies, document panels, or document cleanup. The old project-documents plan is superseded; the governing file design is `docs/superpowers/specs/2026-07-15-project-file-archive-permanent-storage-design.md`, and its executable replacement is `docs/superpowers/plans/2026-07-15-project-file-archive.md`.
 - Preserve and exclude from every commit the pre-existing uncommitted files supabase/functions/employee-bootstrap-admin/handler.js and supabase/functions/employee-bootstrap-admin/handler.test.js.
 
 ---

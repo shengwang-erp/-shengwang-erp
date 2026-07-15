@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-15
 **目标工作区：** `/Users/yu/Documents/kaobeierp/employee-auth-worktree`
-**状态：** 四部分设计已获用户确认，待本文件最终书面复核
+**状态：** 已获用户确认，是本地实施与验收依据
 
 ## 1. 文档定位
 
@@ -223,7 +223,7 @@ failure_code text
 - 只允许受控状态迁移：`pending -> queued/cleanup_pending`、`queued -> finalizing/cleanup_pending`、`finalizing -> active/queued/cleanup_pending`、`active -> void`、`cleanup_pending -> failed`。`queued -> cleanup_pending` 只允许在 job 的总重试截止时间已过时发生。
 - 完成请求只幂等创建唯一 job 并把 `pending` 转为 `queued`，不生成处理 token。worker 在同一数据库事务中把 job 与文档一起认领为 processing/finalizing，并只在版本行生成唯一权威的随机 `processing_token` 和 lease；job 表不保存第二份 token 或 lease。
 - worker 只续租版本行。所有激活、重排队和失败更新必须同时匹配文档 ID、`finalizing`、token，并要求 `processing_lease_until > clock_timestamp()`。
-- 瞬时 Storage/网络错误把 `finalizing` 原子退回 `queued`，按 5 秒、30 秒、2 分钟、10 分钟、30 分钟退避，最多尝试 5 次且总重试窗口不超过 2 小时。worker 崩溃后，reaper 对过期 lease 执行相同的重排队；只有确定性格式/校验失败、最终鉴权失败或重试耗尽才进入 `cleanup_pending`。
+- 瞬时 Storage/网络错误把 `finalizing` 原子退回 `queued`。`retry_count=0` 表示初次认领，之后最多重试 5 次，退避依次为 5 秒、30 秒、2 分钟、10 分钟、30 分钟，因此单个版本最多被认领 6 次；无论次数是否用完，总重试截止时间 2 小时始终优先。worker 崩溃后，reaper 对过期 lease 执行相同的重排队；只有确定性格式/校验失败、最终鉴权失败或重试耗尽才进入 `cleanup_pending`。
 - 清理器只认领 `cleanup_pending`，并以新 token/lease 原子替换旧处理权；不得直接清理刚过期的 `finalizing`。超过 `cleanup_not_before` 仍未提交完成请求的 abandoned `pending` 才可转为 `cleanup_pending`。
 - processing token、lease 和内部任务 ID 只对 worker 可见，任何浏览器投影、日志或错误响应都不得返回这些值。
 - 重复完成请求必须幂等：已经 `active` 时返回同一版本，`queued/finalizing` 时返回处理中，其他终态不得重复激活。
@@ -257,21 +257,22 @@ failure_code text
 
 项目文件使用专用 RPC、队列 worker 和最小权限 Edge Function，不复用通用 JSONB CRUD：
 
-- `list_project_documents_secure(project_id)`：按项目状态、模块权限和固定分类权限过滤元数据。
+- `list_project_documents_secure(project_id, cursor, limit)`：按项目状态、模块权限和固定分类权限过滤元数据，并以服务端校验的 keyset 游标分页；任何永久增长的列表都不得依赖 PostgREST 默认行数上限。
 - `reserve_project_document_secure(...)`：服务端验证项目、分类、权限和资源限额；新版本锁住逻辑文件父行，再分配文档 UUID、版本、对象路径、5 分钟票据签发截止时间和保守的 `cleanup_not_before`。
 - `project-document-upload-ticket`：只在票据签发窗口内、文档仍为本人 pending 且实时权限仍满足时，用服务端凭据为数据库路径创建 `upsert: false` 的两小时签名上传 token；token 不落库。
 - `request_project_document_finalize_secure(document_id)`：幂等地重新鉴权，在一个事务内把 `pending` 转为 `queued` 并创建唯一校验 job；不生成处理 token/lease。
-- `list_my_incomplete_project_documents_secure(project_id)`：只返回当前员工本人未结束上传的安全摘要，不返回内部路径、token、lease 或错误细节。
+- `list_my_incomplete_project_documents_secure(project_id, cursor, limit)`：只返回当前员工本人未结束上传的安全摘要，使用同样的 keyset 分页，不返回内部路径、token、lease 或错误细节。
 - `abandon_project_document_upload_secure(document_id)`：仅原上传人可在实时权限仍满足时把自己的 pending 转为 cleanup_pending；queued/finalizing 不能由浏览器取消。
 - `project-document-verifier`：在同一数据库事务中认领 queued job 与文档，在版本行生成唯一 token/lease，再使用服务端凭据流式读取对象，计算 SHA-256，并核对大小和真实格式。
 - `finalize_project_document_internal(...)`：仅校验 worker 可调用；在最终激活事务内再次检查上传员工当前仍有效、仍具备该分类查看资格和项目更新权限、项目未删除，并以状态 + token + lease 条件更新为 `active`。
 - `void_project_document_secure(document_id, reason)`：只允许当前有效项目中具备更新权限的用户作废有效版本。
 - `project-document-access`：重新检查实时权限，记录审计，再生成固定 300 秒的预览或下载链接；有效项目按普通权限矩阵处理，软删除项目只接受服务端判定的 `SW-000` archive 模式，客户端不能自行声明 archive 绕过。
-- `list_deleted_project_archive_secure()`：只向 `SW-000` 返回软删除项目快照。
-- `list_deleted_project_documents_secure(project_id)`：只向 `SW-000` 返回档案文件。
+- `list_deleted_project_archive_secure(cursor, limit)`：只向 `SW-000` 分页返回软删除项目快照。
+- `list_deleted_project_documents_secure(project_id, cursor, limit)`：只向 `SW-000` 分页返回档案文件。
+- `list_project_document_operational_alerts_secure(cursor, limit)`：只向 `SW-000` 分页返回去敏的持久化运维告警；浏览器无直接表权限和写入/确认能力。
 - `get_project_document_backup_status_secure()`：只向 `SW-000` 返回最近一次备份与完整盘点状态，不返回密钥或目标凭据。
 - `project-document-reaper`：作为独立于 verifier 的定时任务，把 lease 过期的 finalizing 按尝试次数与两小时重试截止时间原子退回 queued；对从未被认领或重排后一直未处理且已超过重试截止时间的 queued，原子转为 cleanup_pending；不删除对象。
-- `project-document-cleanup`：把超过 `cleanup_not_before` 的 abandoned pending 转为 cleanup_pending，再只认领 cleanup_pending 并删除失败对象；绝不直接接收 queued/finalizing/active/void 作为清理目标。
+- `project-document-cleanup`：把超过 `cleanup_not_before` 的 abandoned pending 转为 cleanup_pending，再只认领 cleanup_pending 并删除失败对象；绝不直接接收 queued/finalizing/active/void 作为清理目标。删除失败后的第 1、2、3、4、5 至 9 次分别等待 1 分钟、5 分钟、15 分钟、1 小时、4 小时；第 10 次失败后保持 cleanup_pending、写持久化告警并停止自动认领，直到带原因的服务端人工重置。
 
 所有接口均从当前认证会话解析员工身份，忽略客户端传入的上传人、部门、职位、敏感级别、对象路径和版本号。
 
@@ -302,14 +303,15 @@ failure_code text
 
 为防止误操作或失陷账号耗尽永久存储和校验队列，默认限额由服务端事务执行，而不是只靠界面：
 
-- 每名员工同时最多 5 个 `pending/queued/finalizing/cleanup_pending` 版本；
-- 每个项目同时最多 20 个未结束版本；
+- 每名员工同时最多 5 个、每个项目同时最多 20 个交互处理中版本；该交互并发计数只包含 `pending/queued/finalizing`，转入 `cleanup_pending` 后立即释放交互槽位；
 - 每名员工每小时最多预留 120 个版本，滚动 24 小时最多预留 5 GiB；
 - 每个项目 active/void 对象默认累计上限 20 GiB，接近 80% 时向 `SW-000` 告警；
 - 全局待校验/校验中队列最多 200 个任务，达到上限时预留失败关闭并返回可重试时间；
 - 前端同时最多传输 3 个文件，其余在当前页面内排队。
 
-限额保存在只有服务端可写的配置中。预留事务在项目级锁下把 active/void 实际字节与所有未结束版本的预期字节一起计入容量，防止并发预留绕过上限；员工速率与并发计数也在同一事务内判断。`SW-000` 可通过受控管理操作提高单项目容量或临时批量导入额度，每次调整记录旧值、新值、原因和操作者；不能通过提高额度触发任何历史文件删除。全局 Storage 账户容量也必须监控，容量或队列告警未配置前不得启用生产上传。
+限额保存在只有服务端可写的配置中。预留事务在项目级锁下把 active/void 实际字节与所有未结束版本（包括 `cleanup_pending`）的预期字节一起计入容量，防止并发预留绕过上限。每小时次数、滚动 24 小时字节和滥用计数按预留时创建的不可变版本记录计算，不因后续变为 active、void、failed 或 cleanup_pending 而扣除；只有交互并发槽位在进入 cleanup_pending 时释放。`SW-000` 可通过受控管理操作提高单项目容量或临时批量导入额度，每次调整记录旧值、新值、原因和操作者；不能通过提高额度触发任何历史文件删除。
+
+容量达到项目上限 80%、全局队列达到 160/200、清理连续失败 10 次、备份/完整盘点/恢复演练失败时，都必须写入浏览器无直接写权限的持久化运维告警表，并按“告警类型 + 资源 + 小时窗口”去重。`SW-000` 通过只读安全投影查看这些告警；连接生产通知渠道的转发器、目标地址和凭据不属于本地实施授权，须在生产启用时单独确认。全局 Storage 账户容量也必须监控，容量或队列告警及其生产投递渠道未配置前不得启用生产上传。
 
 ## 8. 项目基础安全前置条件
 
@@ -341,7 +343,7 @@ failure_code text
 
 备份对象按 SHA-256 写入不可变内容库；日常增量只复制尚不存在的内容，但每次 UTC run 前缀都保存一份完整自包含的 archive schema、项目/人员快照、逻辑父表、版本表、事件快照和完整对象引用清单。verification job 是临时执行状态，不作为可重放任务备份。因此任一成功 run 都是独立可选择的恢复点，不依赖原员工表、原项目表或拼接一串增量清单。
 
-所有对象与元数据复核完成后，脚本最后写入不可变 `COMPLETED.json`，其中包含 schema 版本、cutoff、manifest SHA-256、对象数量、总字节数及每个目标 version ID，并使用与 Storage 凭据分离的 KMS 非对称密钥签名。源库 `backup_runs` 只有在回读并验证该 marker 后才能转为成功。备份目标中没有 marker、marker 验签失败或 manifest 不匹配的 run 一律视为未完成，不能恢复。
+所有对象与元数据复核完成后，脚本最后写入不可变 `COMPLETED.json`，其中包含 schema 版本、cutoff、manifest SHA-256、对象数量、总字节数及每个目标 version ID。脚本先生成确定性的 canonical marker payload 字节，再计算 SHA-256，并用与 Storage 凭据分离的 KMS 非对称密钥以 `MessageType=DIGEST` 签名该摘要；marker 记录 KMS key ID、签名算法和摘要算法。这样即使 payload 超过 KMS RAW 消息大小上限，签名仍覆盖完整 canonical 内容。源库 `backup_runs` 只有在按相同 canonical 规则回读、重新计算摘要并验签后才能转为成功。备份目标中没有 marker、marker 验签失败或 manifest 不匹配的 run 一律视为未完成，不能恢复。
 
 备份 writer 使用只能列出、读取和新增版本、不能删除或缩短保留期的最小权限凭据；恢复读取凭据单独保存，不进入日常运行环境。目标启用版本化和经验证的 Object Lock/删除保护，清单固定每个备份对象的目标 version ID、ETag 和 SHA-256，防止后写的同名版本改变既有恢复点。凭据定期轮换，连续失败、对象缺失、校验不符或凭据异常均告警。版本化、删除保护、加密、独立凭据、首次完整 run 和恢复抽查全部通过前，“灾难恢复已启用”状态必须保持关闭。建议生产环境每天执行一次增量复制、每周执行一次完整盘点、每季度执行一次隔离恢复演练；具体目标和定时任务在生产确认时启用。
 
@@ -383,14 +385,14 @@ failure_code text
 - 标准或 TUS 上传中断：保留旧当前版本，页面内允许重试或继续。
 - 上传票据过期或错过 5 分钟签发窗口：不延长旧 reservation，提示用户重新预留新版本；旧 pending 按 `cleanup_not_before` 清理。
 - 重复完成请求：返回同一 active 版本或当前 queued/finalizing 状态，不创建重复任务、不重复激活。
-- 校验遇到瞬时 Storage/网络错误：在两小时/五次上限内退避重排队，不立即删除对象；确定性失败或重试耗尽才进入清理。
+- 校验遇到瞬时 Storage/网络错误：按初次认领加最多五次重试、且总计不超过两小时的规则退避重排队，不立即删除对象；确定性失败或重试耗尽才进入清理。
 - verifier 从未认领 queued job：独立 reaper 在两小时截止时间后转入受控清理，释放员工、项目和全局队列额度。
 - 文件内容校验失败：显示安全错误，不向用户暴露内部对象路径。
 - 完成成功但界面刷新失败：重新调用安全列表，禁止重复上传同一路径。
 - 作废失败：保留原状态，不做乐观移除。
 - 临时链接过期：重新检查权限并申请新链接，不自动延长旧链接。
 - 项目已删除：普通接口立即返回统一的不可用结果，不泄露档案存在性；删除前已经签发的链接最多继续有效 5 分钟。
-- 清理任务失败：保持 `cleanup_pending` 并重试；不得扩大到 queued/finalizing/active/void 对象。
+- 清理任务失败：保持 `cleanup_pending` 并按固定延迟重试；第十次失败写入持久化告警并停止自动认领，等待带审计原因的服务端人工重置；不得扩大到 queued/finalizing/active/void 对象。
 - 异地备份未配置或最近一次失败：管理状态明确显示，不能用“永久安全”掩盖。
 
 ## 12. 实施顺序
