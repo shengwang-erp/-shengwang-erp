@@ -10,11 +10,17 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1083.0",
+    "@aws-sdk/client-s3": "3.1083.0",
     "@supabase/supabase-js": "^2.110.0",
     "@vitejs/plugin-react": "^4.3.4",
     "leaflet": "1.9.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tus-js-client": "4.3.1",
     "vite": "^6.0.7"
+  },
+  "devDependencies": {
+    "supabase": "2.109.1"
   }
 }

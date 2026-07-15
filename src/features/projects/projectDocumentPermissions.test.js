@@ -1,0 +1,6 @@
+import test from 'node:test'; import assert from 'node:assert/strict'
+import {canViewProjectDocumentKind,canUpdateProjectDocumentKind,canViewDeletedProjectArchive} from './projectDocumentPermissions.js'
+const base={status:'active',employment_status:'employed',has_changed_password:true}
+test('requires active employed changed-password',()=>{ assert.equal(canViewProjectDocumentKind(base,'rendering'),true); for(const k of ['status','employment_status','has_changed_password']) { const x={...base,[k]:k==='status'?'disabled':k==='employment_status'?'terminated':false}; assert.equal(canViewProjectDocumentKind(x,'rendering'),false) } })
+test('rendering is broadly viewable, sensitive kinds use fixed whitelist',()=>{ assert.equal(canUpdateProjectDocumentKind({...base,role:'project_manager'},'rendering'),true); assert.equal(canViewProjectDocumentKind({...base,employee_no:'SW-000'},'project_contract'),true); assert.equal(canViewProjectDocumentKind({...base,employee_no:'SW-123',role:'admin'},'project_contract'),false); assert.equal(canUpdateProjectDocumentKind({...base,employee_no:'SW-000'},'project_contract'),true) })
+test('only SW-000 may view deleted archive',()=>{ assert.equal(canViewDeletedProjectArchive({...base,employee_no:'SW-000'}),true); assert.equal(canViewDeletedProjectArchive({...base,employee_no:'SW-001'}),false) })
