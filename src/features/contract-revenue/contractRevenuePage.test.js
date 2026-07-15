@@ -6,10 +6,11 @@ async function readSource(relativePath) {
   return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '')
 }
 
-const [appSource, pageSource, sectionSource] = await Promise.all([
+const [appSource, pageSource, sectionSource, projectPageSource] = await Promise.all([
   readSource('../../App.jsx'),
   readSource('./ContractRevenuePage.jsx'),
   readSource('./OriginalContractSection.jsx'),
+  readSource('../projects/ProjectPage.jsx'),
 ])
 
 test('contract revenue page and original contract section are independent components', () => {
@@ -24,17 +25,14 @@ test('App routes from project details to contract revenue while retaining raw pr
   assert.match(appSource, /currentView === 'contractRevenue'/)
   assert.match(appSource, /onOpenContractRevenue=\{openContractRevenue\}/)
   assert.match(appSource, /onProjectChange=\{handleContractRevenueProjectChange\}/)
-  assert.match(appSource, /initializeOriginalContractProject\(/)
-  assert.match(appSource, /onOpenContractRevenue\(project\.projectId\)/)
-  assert.match(appSource, />\s*合同收入\s*</)
+  assert.match(appSource, /projectService\.createProject/)
+  assert.match(projectPageSource, /onOpenContractRevenue\(project\.projectId\)/)
+  assert.match(projectPageSource, />\s*合同收入\s*</)
 })
 
 test('project base editor no longer contains direct contract or receipt amount inputs', () => {
-  const start = appSource.indexOf('function ProjectPage')
-  const end = appSource.indexOf('function BusinessPage')
-  const projectPageSource = appSource.slice(start, end)
-
-  assert.ok(start >= 0 && end > start)
+  assert.match(appSource, /import ProjectPage from/)
+  assert.match(projectPageSource, /export function ProjectPage/)
   assert.doesNotMatch(projectPageSource, /label="合同金额（日元）"/)
   assert.doesNotMatch(projectPageSource, /label="已收款金额（日元）"/)
   assert.doesNotMatch(projectPageSource, /form\.contractAmount/)
