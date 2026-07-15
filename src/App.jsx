@@ -2077,10 +2077,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     })
   }
   const handleCreateProject = async (payload) => {
-    const created = normalizeProject(initializeOriginalContractProject({
-      ...payload,
-      projectId: nextId('P', projects, 'projectId'),
-    }))
+    const created = normalizeProject(await projectService.createProject(payload))
     setProjects((currentProjects) => [
       created,
       ...currentProjects.filter((project) => project.projectId !== created.projectId),
@@ -2090,13 +2087,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   const handleUpdateProject = async (projectId, patch) => {
     const existing = projects.find((project) => project.projectId === projectId)
     if (!existing) throw new Error('Project not found')
-    const updated = normalizeProject({ ...existing, ...patch, projectId })
-    setProjects((currentProjects) => currentProjects.map((project) =>
-      project.projectId === projectId ? updated : project,
-    ))
-    return updated
+    const saved = normalizeProject(await projectService.updateProject(projectId, patch))
+    setStoredProjects((currentProjects) => currentProjects.map((project) => project.projectId === projectId ? saved : project))
+    return saved
   }
   const handleDeleteProject = async (projectId) => {
+    await projectService.softDeleteProject(projectId)
     setProjects((currentProjects) => currentProjects.filter(
       (project) => project.projectId !== projectId,
     ))
