@@ -43,3 +43,6 @@ verify_jwt = true
 
 [functions.permission-templates]
 verify_jwt = true
+
+[functions.attendance-photo-cleanup]
+verify_jwt = true

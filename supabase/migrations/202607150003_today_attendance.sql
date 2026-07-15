@@ -127,7 +127,7 @@ create unique index project_attendance_photo_active_phase_idx
 create unique index project_attendance_photo_pending_phase_idx
   on public.project_attendance_photos(work_point_id, phase) where upload_status = 'pending';
 create index project_attendance_photo_cleanup_idx
-  on public.project_attendance_photos(upload_status, updated_at)
+  on public.project_attendance_photos(updated_at, photo_id)
   where upload_status in ('pending','superseded','cleanup_pending');
 
 create trigger set_project_attendance_sessions_updated_at
@@ -565,6 +565,219 @@ begin
         and photo.upload_status = 'pending'
     ), '[]'::jsonb)
   );
+end;
+$$;
+
+create or replace function public.list_attendance_records_secure(
+  p_work_date date default null,
+  p_project_id text default null,
+  p_employee_profile_id uuid default null,
+  p_before_opened_at timestamptz default null,
+  p_before_session_id uuid default null,
+  p_limit integer default 50
+) returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  selected_date date;
+  viewer_scope text;
+begin
+  actor := private.current_attendance_employee();
+  viewer_scope := private.current_attendance_viewer_scope(actor.id);
+
+  if p_limit is null or p_limit not between 1 and 100 then
+    raise exception using
+      errcode = '22023',
+      message = 'record limit out of range';
+  end if;
+
+  if (p_before_opened_at is null) <> (p_before_session_id is null) then
+    raise exception using
+      errcode = '22023',
+      message = 'record cursor is incomplete';
+  end if;
+
+  selected_date := coalesce(
+    p_work_date,
+    timezone('Asia/Tokyo', statement_timestamp())::date
+  );
+
+  return (
+    with authorized as materialized (
+      select session.*
+      from public.project_attendance_sessions session
+      where session.work_date = selected_date
+        and (
+          session.employee_profile_id = actor.id
+          or actor.position = '社长'
+          or actor.employee_number = 'SW-000'
+          or exists (
+            select 1
+            from public.projects project
+            where project.record_key = session.project_id
+              and project.status = 'active'
+              and jsonb_typeof(project.payload) = 'object'
+              and project.payload->>'siteAssigneeEmployeeId' = actor.id::text
+          )
+        )
+    ), filtered as (
+      select session.*
+      from authorized session
+      where (p_project_id is null or session.project_id = p_project_id)
+        and (
+          p_employee_profile_id is null
+          or session.employee_profile_id = p_employee_profile_id
+        )
+        and (
+          p_before_opened_at is null
+          or (session.opened_at, session.session_id) <
+             (p_before_opened_at, p_before_session_id)
+        )
+    ), windowed as materialized (
+      select session.*
+      from filtered session
+      order by session.opened_at desc, session.session_id desc
+      limit p_limit + 1
+    ), page as materialized (
+      select session.*
+      from windowed session
+      order by session.opened_at desc, session.session_id desc
+      limit p_limit
+    ), project_options as (
+      select distinct session.project_id, session.project_name_snapshot
+      from authorized session
+    ), employee_options as (
+      select distinct
+        session.employee_profile_id,
+        session.employee_number_snapshot,
+        session.employee_name_snapshot
+      from authorized session
+    )
+    select jsonb_build_object(
+      'access', jsonb_build_object('scope', viewer_scope),
+      'filterOptions', jsonb_build_object(
+        'projects', coalesce((
+          select jsonb_agg(
+            jsonb_build_object(
+              'projectId', option.project_id,
+              'projectName', option.project_name_snapshot
+            )
+            order by option.project_name_snapshot, option.project_id
+          )
+          from project_options option
+        ), '[]'::jsonb),
+        'employees', coalesce((
+          select jsonb_agg(
+            jsonb_build_object(
+              'employeeProfileId', option.employee_profile_id,
+              'employeeNumberSnapshot', option.employee_number_snapshot,
+              'employeeNameSnapshot', option.employee_name_snapshot
+            )
+            order by
+              option.employee_number_snapshot,
+              option.employee_name_snapshot,
+              option.employee_profile_id
+          )
+          from employee_options option
+        ), '[]'::jsonb)
+      ),
+      'items', coalesce((
+        select jsonb_agg(
+          private.attendance_session_json(session.session_id)
+          order by session.opened_at desc, session.session_id desc
+        )
+        from page session
+      ), '[]'::jsonb),
+      'nextCursor', case
+        when (select count(*) from windowed) > p_limit then (
+          select jsonb_build_object(
+            'openedAt', session.opened_at,
+            'sessionId', session.session_id
+          )
+          from page session
+          order by session.opened_at, session.session_id
+          limit 1
+        )
+        else null
+      end
+    )
+  );
+end;
+$$;
+
+create or replace function public.claim_attendance_photo_cleanup_secure(
+  p_limit integer default 100
+) returns setof jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception using
+      errcode = '42501',
+      message = 'service role required';
+  end if;
+
+  if p_limit is null or p_limit not between 1 and 500 then
+    raise exception using
+      errcode = '22023',
+      message = 'cleanup limit out of range';
+  end if;
+
+  return query
+  with candidates as materialized (
+    select photo.photo_id
+    from public.project_attendance_photos photo
+    where photo.upload_status in ('pending','superseded','cleanup_pending')
+      and photo.updated_at < statement_timestamp() - interval '24 hours'
+    order by photo.updated_at, photo.photo_id
+    for update skip locked
+    limit p_limit
+  ), claimed as (
+    update public.project_attendance_photos photo
+    set upload_status = 'cleanup_pending',
+        updated_at = statement_timestamp()
+    from candidates
+    where photo.photo_id = candidates.photo_id
+      and photo.upload_status in ('pending','superseded','cleanup_pending')
+    returning photo.photo_id, photo.bucket_id, photo.object_path
+  )
+  select jsonb_build_object(
+    'photoId', claimed.photo_id,
+    'bucketId', claimed.bucket_id,
+    'objectPath', claimed.object_path
+  )
+  from claimed;
+end;
+$$;
+
+create or replace function public.complete_attendance_photo_cleanup_secure(
+  p_photo_id uuid
+) returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  deleted_id uuid;
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception using
+      errcode = '42501',
+      message = 'service role required';
+  end if;
+
+  delete from public.project_attendance_photos
+  where photo_id = p_photo_id
+    and upload_status = 'cleanup_pending'
+  returning photo_id into deleted_id;
+
+  return deleted_id is not null;
 end;
 $$;
 
@@ -1638,6 +1851,13 @@ revoke all on function public.list_attendance_projects_secure()
   from public, anon, authenticated, service_role;
 revoke all on function public.get_my_today_attendance_secure()
   from public, anon, authenticated, service_role;
+revoke all on function public.list_attendance_records_secure(
+  date, text, uuid, timestamptz, uuid, integer
+) from public, anon, authenticated, service_role;
+revoke all on function public.claim_attendance_photo_cleanup_secure(integer)
+  from public, anon, authenticated, service_role;
+revoke all on function public.complete_attendance_photo_cleanup_secure(uuid)
+  from public, anon, authenticated, service_role;
 revoke all on function public.clock_in_project_secure(
   text, uuid, double precision, double precision, numeric, timestamptz, text
 ) from public, anon, authenticated, service_role;
@@ -1665,6 +1885,13 @@ grant execute on function public.list_attendance_projects_secure()
   to authenticated, service_role;
 grant execute on function public.get_my_today_attendance_secure()
   to authenticated, service_role;
+grant execute on function public.list_attendance_records_secure(
+  date, text, uuid, timestamptz, uuid, integer
+) to authenticated, service_role;
+grant execute on function public.claim_attendance_photo_cleanup_secure(integer)
+  to service_role;
+grant execute on function public.complete_attendance_photo_cleanup_secure(uuid)
+  to service_role;
 grant execute on function public.clock_in_project_secure(
   text, uuid, double precision, double precision, numeric, timestamptz, text
 ) to authenticated, service_role;

@@ -2939,5 +2939,1139 @@ select is(
 );
 reset role;
 
+select has_function(
+  'public', 'list_attendance_records_secure',
+  array['date','text','uuid','timestamp with time zone','uuid','integer']
+);
+
+select is(
+  (
+    with contract(signature) as (
+      values (to_regprocedure(
+        'public.list_attendance_records_secure(date,text,uuid,timestamp with time zone,uuid,integer)'
+      ))
+    )
+    select count(*)::integer
+    from contract
+    left join pg_proc procedure on procedure.oid = contract.signature
+    where contract.signature is null
+       or not procedure.prosecdef
+       or procedure.provolatile <> 's'
+       or procedure.proconfig is distinct from
+          array['search_path=pg_catalog, public, private']::text[]
+       or procedure.pronargdefaults <> 6
+  ),
+  0,
+  'record viewer has exact SECURITY DEFINER, STABLE, search_path and defaults'
+);
+
+select is(
+  (
+    with contract(signature) as (
+      values (to_regprocedure(
+        'public.list_attendance_records_secure(date,text,uuid,timestamp with time zone,uuid,integer)'
+      ))
+    )
+    select count(*)::integer
+    from contract
+    left join pg_proc procedure on procedure.oid = contract.signature
+    where contract.signature is null
+       or not has_function_privilege('authenticated', contract.signature, 'EXECUTE')
+       or not has_function_privilege('service_role', contract.signature, 'EXECUTE')
+       or has_function_privilege('anon', contract.signature, 'EXECUTE')
+       or exists (
+         select 1
+         from aclexplode(coalesce(
+           procedure.proacl, acldefault('f', procedure.proowner)
+         )) privilege
+         where privilege.privilege_type = 'EXECUTE'
+           and (
+             privilege.grantee = 0
+             or privilege.grantee not in (
+               procedure.proowner,
+               'authenticated'::regrole::oid,
+               'service_role'::regrole::oid
+             )
+             or (
+               privilege.grantee in (
+                 'authenticated'::regrole::oid,
+                 'service_role'::regrole::oid
+               ) and privilege.is_grantable
+             )
+           )
+       )
+  ),
+  0,
+  'record viewer ACL is exactly owner plus non-grantable authenticated and service_role'
+);
+
+create or replace function pg_temp.add_attendance_viewer_actor(
+  p_user_id uuid,
+  p_employee_id uuid,
+  p_number text,
+  p_name text,
+  p_position text,
+  p_account_status text default 'active'
+) returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+begin
+  insert into auth.users(
+    instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+    raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+  ) values (
+    '00000000-0000-0000-0000-000000000000', p_user_id,
+    'authenticated', 'authenticated', p_number || '@attendance-view.invalid',
+    '', now(), '{}', '{}', now(), now()
+  );
+
+  insert into public.employee_profiles(
+    id, employee_number, auth_user_id, name, department, position,
+    employment_status, account_status, must_change_password,
+    is_hidden_system_account
+  ) values (
+    p_employee_id, p_number, p_user_id, p_name, '工程部', p_position,
+    '在职', p_account_status, false, false
+  );
+end;
+$$;
+
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000014',
+  '62000000-0000-4000-8000-000000000014',
+  'SW-6214', '记录所有者', '小工'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000015',
+  '62000000-0000-4000-8000-000000000015',
+  'SW-6215', '记录担当一', '职长'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000016',
+  '62000000-0000-4000-8000-000000000016',
+  'SW-6216', '记录担当二', '职长'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000017',
+  '62000000-0000-4000-8000-000000000017',
+  'SW-6217', '记录社长', '社长'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000018',
+  '62000000-0000-4000-8000-000000000018',
+  'SW-6218', '停用记录社长', '社长', 'disabled'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000019',
+  '62000000-0000-4000-8000-000000000019',
+  'SW-6219', '无关记录员工', '小工'
+);
+select pg_temp.add_attendance_viewer_actor(
+  '61000000-0000-4000-8000-000000000021',
+  '62000000-0000-4000-8000-000000000021',
+  'SW-6221', '第二记录员工', '小工'
+);
+
+insert into auth.users(
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '00000000-0000-0000-0000-000000000000',
+  '61000000-0000-4000-8000-000000000020',
+  'authenticated', 'authenticated', 'attendance-view-sw000@auth.invalid',
+  '', now(), '{}', '{}', now(), now()
+);
+update public.employee_profiles
+set auth_user_id = '61000000-0000-4000-8000-000000000020',
+    employment_status = '在职',
+    account_status = 'active',
+    must_change_password = false,
+    deleted_at = null
+where employee_number = 'SW-000';
+
+insert into public.projects(record_key, payload, status) values
+  (
+    'ATT-VIEW-A',
+    pg_temp.attendance_project_payload(
+      'ATT-VIEW-A', '记录项目 A', '进行中', 300,
+      '2026-07-15T00:00:00Z', '東京都 千代田区 1-1'
+    ) || jsonb_build_object(
+      'siteAssigneeEmployeeId', '62000000-0000-4000-8000-000000000015'
+    ),
+    'active'
+  ),
+  (
+    'ATT-VIEW-B',
+    pg_temp.attendance_project_payload(
+      'ATT-VIEW-B', '记录项目 B', '进行中', 300,
+      '2026-07-15T00:00:00Z', '東京都 千代田区 1-1'
+    ),
+    'active'
+  ),
+  (
+    'ATT-VIEW-VOID',
+    pg_temp.attendance_project_payload(
+      'ATT-VIEW-VOID', '作废记录项目', '进行中', 300,
+      '2026-07-15T00:00:00Z', '東京都 千代田区 1-1'
+    ) || jsonb_build_object(
+      'siteAssigneeEmployeeId', '62000000-0000-4000-8000-000000000016'
+    ),
+    'void'
+  );
+
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot,
+  employee_name_snapshot, project_id, project_name_snapshot,
+  project_address_snapshot, project_latitude_snapshot,
+  project_longitude_snapshot, attendance_radius_meters_snapshot,
+  work_date, status, opened_at, closed_at
+) values
+  (
+    '77100000-0000-4000-8000-000000000201',
+    '62000000-0000-4000-8000-000000000014', 'SW-6214', '记录所有者',
+    'ATT-VIEW-A', '记录项目 A', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-16', 'closed',
+    '2026-07-16T08:00:00Z', '2026-07-16T09:00:00Z'
+  ),
+  (
+    '77100000-0000-4000-8000-000000000202',
+    '62000000-0000-4000-8000-000000000014', 'SW-6214', '记录所有者',
+    'ATT-VIEW-B', '记录项目 B', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-16', 'closed',
+    '2026-07-16T10:00:00Z', '2026-07-16T11:00:00Z'
+  ),
+  (
+    '77100000-0000-4000-8000-000000000203',
+    '62000000-0000-4000-8000-000000000021', 'SW-6221', '第二记录员工',
+    'ATT-VIEW-A', '记录项目 A', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-16', 'closed',
+    '2026-07-16T12:00:00Z', '2026-07-16T13:00:00Z'
+  ),
+  (
+    '77100000-0000-4000-8000-000000000204',
+    '62000000-0000-4000-8000-000000000021', 'SW-6221', '第二记录员工',
+    'ATT-VIEW-VOID', '作废记录项目', '東京都 千代田区 1-1',
+    35.681236, 139.767125, 300, '2026-07-16', 'closed',
+    '2026-07-16T14:00:00Z', '2026-07-16T15:00:00Z'
+  );
+
+insert into public.project_attendance_work_points(
+  work_point_id, session_id, ordinal, area_name, work_description,
+  completion_note
+) values (
+  '77300000-0000-4000-8000-000000000203',
+  '77100000-0000-4000-8000-000000000203', 1,
+  '记录点位', '记录 DTO 验证', ''
+);
+
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path,
+  original_file_name, content_type, size_bytes, upload_status
+) values
+  (
+    '77400000-0000-4000-8000-000000000201',
+    '77300000-0000-4000-8000-000000000203', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000203/77400000-0000-4000-8000-000000000201/before',
+    'active-before.jpg', 'image/jpeg', 1, 'active'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000202',
+    '77300000-0000-4000-8000-000000000203', 'after',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000203/77400000-0000-4000-8000-000000000202/after',
+    'pending-after.jpg', 'image/jpeg', 1, 'pending'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000203',
+    '77300000-0000-4000-8000-000000000203', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000203/77400000-0000-4000-8000-000000000203/before',
+    'superseded-before.jpg', 'image/jpeg', 1, 'superseded'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000204',
+    '77300000-0000-4000-8000-000000000203', 'after',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000203/77400000-0000-4000-8000-000000000204/after',
+    'cleanup-after.jpg', 'image/jpeg', 1, 'cleanup_pending'
+  );
+
+create or replace function pg_temp.visible_attendance_view_session_ids(
+  p_user_id uuid,
+  p_work_date date default '2026-07-16'
+) returns setof text
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  perform set_config('request.jwt.claim.sub', p_user_id::text, true);
+  return query
+  select item->>'sessionId'
+  from jsonb_array_elements(
+    public.list_attendance_records_secure(
+      p_work_date, null, null, null, null, 100
+    )->'items'
+  ) item
+  where item->>'projectId' in ('ATT-VIEW-A','ATT-VIEW-B','ATT-VIEW-VOID')
+  order by item->>'sessionId';
+end;
+$$;
+grant execute on function pg_temp.visible_attendance_view_session_ids(uuid,date)
+  to authenticated;
+
+set local role authenticated;
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000014'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000202') $$,
+  'record owner sees own sessions across active projects only'
+);
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000015'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000203') $$,
+  'current live site assignee sees all project-A sessions only'
+);
+reset role;
+
+update public.projects
+set payload = jsonb_set(
+  payload, '{siteAssigneeEmployeeId}',
+  '"62000000-0000-4000-8000-000000000016"'::jsonb
+)
+where record_key = 'ATT-VIEW-A';
+
+set local role authenticated;
+select is_empty(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000015'
+  ) $$,
+  'former assignee loses project history immediately'
+);
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000016'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000203') $$,
+  'new assignee gains only active project history immediately'
+);
+select is_empty(
+  $$ select item->>'sessionId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-VOID',null,null,null,50
+     )->'items') item $$,
+  'live-assignee branch directly rejects a void project'
+);
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000021'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000203'),
+    ('77100000-0000-4000-8000-000000000204') $$,
+  'owner branch remains independent of project status and assignment'
+);
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000017'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000202'),
+    ('77100000-0000-4000-8000-000000000203'),
+    ('77100000-0000-4000-8000-000000000204') $$,
+  'active president branch sees all records including void project history'
+);
+select results_eq(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000020'
+  ) $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000202'),
+    ('77100000-0000-4000-8000-000000000203'),
+    ('77100000-0000-4000-8000-000000000204') $$,
+  'SW-000 branch sees all records independently of project status'
+);
+select is_empty(
+  $$ select * from pg_temp.visible_attendance_view_session_ids(
+    '61000000-0000-4000-8000-000000000019'
+  ) $$,
+  'unrelated ordinary employee sees no foreign records'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000018', true
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-16',null,null,null,null,50
+  ) $$,
+  '42501', null, 'disabled president is denied before all-scope evaluation'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000016', true
+);
+select is(
+  public.list_attendance_records_secure(
+    '2026-07-16',null,null,null,null,50
+  )->'access',
+  '{"scope":"assigned_projects"}'::jsonb,
+  'record viewer returns exact assigned-project access DTO'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000014', true
+);
+select is(
+  public.list_attendance_records_secure(
+    '2026-07-16',null,null,null,null,50
+  )->'access',
+  '{"scope":"own"}'::jsonb,
+  'record viewer returns exact owner access DTO'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000017', true
+);
+select is(
+  public.list_attendance_records_secure(
+    '2026-07-16',null,null,null,null,50
+  )->'access',
+  '{"scope":"all"}'::jsonb,
+  'record viewer returns exact all access DTO'
+);
+
+select results_eq(
+  $$ select item->>'sessionId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-A',null,null,null,50
+     )->'items') item
+     order by 1 $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000203') $$,
+  'project filter narrows the already authorized president set'
+);
+select results_eq(
+  $$ select item->>'sessionId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16',null,
+       '62000000-0000-4000-8000-000000000014',null,null,50
+     )->'items') item
+     order by 1 $$,
+  $$ values
+    ('77100000-0000-4000-8000-000000000201'),
+    ('77100000-0000-4000-8000-000000000202') $$,
+  'employee filter narrows the already authorized president set'
+);
+select is_empty(
+  $$ select item
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-18',null,null,null,null,50
+     )->'items') item $$,
+  'date filter cannot broaden into another date'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000014', true
+);
+select is_empty(
+  $$ select item
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16',null,
+       '62000000-0000-4000-8000-000000000021',null,null,50
+     )->'items') item $$,
+  'employee filter cannot reveal a foreign record to owner scope'
+);
+
+select results_eq(
+  $$ select option->>'projectId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-A',null,null,null,50
+     )#>'{filterOptions,projects}') option
+     order by 1 $$,
+  $$ values ('ATT-VIEW-A'), ('ATT-VIEW-B') $$,
+  'owner filter projects contain every and only authorized date project independent of selection'
+);
+select results_eq(
+  $$ select option->>'employeeProfileId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-A',null,null,null,50
+     )#>'{filterOptions,employees}') option
+     order by 1 $$,
+  $$ values ('62000000-0000-4000-8000-000000000014') $$,
+  'owner filter employees do not reveal foreign identities'
+);
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000016', true
+);
+select results_eq(
+  $$ select option->>'projectId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-B',null,null,null,50
+     )#>'{filterOptions,projects}') option
+     order by 1 $$,
+  $$ values ('ATT-VIEW-A') $$,
+  'assignee filter projects exclude unassigned and void projects independent of selection'
+);
+select results_eq(
+  $$ select option->>'employeeProfileId'
+     from jsonb_array_elements(public.list_attendance_records_secure(
+       '2026-07-16','ATT-VIEW-B',null,null,null,50
+     )#>'{filterOptions,employees}') option
+     order by 1 $$,
+  $$ values
+    ('62000000-0000-4000-8000-000000000014'),
+    ('62000000-0000-4000-8000-000000000021') $$,
+  'assignee filter employees contain only identities visible through active assignments'
+);
+
+create temporary table attendance_view_payload(payload jsonb not null)
+on commit drop;
+grant select, insert on attendance_view_payload to authenticated;
+insert into attendance_view_payload
+select public.list_attendance_records_secure(
+  '2026-07-16','ATT-VIEW-A',null,null,null,50
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_object_keys(response.payload) key),
+  array['access','filterOptions','items','nextCursor']::text[],
+  'record viewer returns the exact top-level DTO keys'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_object_keys(response.payload->'access') key),
+  array['scope']::text[],
+  'record viewer returns the exact access DTO keys'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_object_keys(response.payload->'filterOptions') key),
+  array['employees','projects']::text[],
+  'record viewer returns the exact filter-options DTO keys'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_object_keys(response.payload#>'{filterOptions,projects,0}') key),
+  array['projectId','projectName']::text[],
+  'record viewer returns exact project option keys'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_object_keys(response.payload#>'{filterOptions,employees,0}') key),
+  array['employeeNameSnapshot','employeeNumberSnapshot','employeeProfileId']::text[],
+  'record viewer returns exact employee option keys'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_array_elements(response.payload->'items') item
+   cross join lateral jsonb_object_keys(item) key
+   where item->>'sessionId' = '77100000-0000-4000-8000-000000000203'),
+  array[
+    'attendanceRadiusMetersSnapshot','clockInEvent','clockOutEvent','closedAt',
+    'employeeNameSnapshot','employeeNumberSnapshot','employeeProfileId','openedAt',
+    'projectAddressSnapshot','projectId','projectLatitudeSnapshot',
+    'projectLongitudeSnapshot','projectNameSnapshot','sessionId','status',
+    'workDate','workPoints'
+  ]::text[],
+  'record viewer item preserves the exact canonical session DTO keys'
+);
+select is(
+  (select count(*)::integer
+   from attendance_view_payload response
+   cross join lateral jsonb_array_elements(response.payload->'items') item
+   cross join lateral jsonb_array_elements(item->'workPoints') point
+   cross join lateral jsonb_each(point->'photos') photo(phase, payload)
+   where photo.payload <> 'null'::jsonb),
+  1,
+  'record DTO projects exactly one active photo and no non-active photo'
+);
+select is(
+  (select photo.payload->>'photoId'
+   from attendance_view_payload response
+   cross join lateral jsonb_array_elements(response.payload->'items') item
+   cross join lateral jsonb_array_elements(item->'workPoints') point
+   cross join lateral jsonb_each(point->'photos') photo(phase, payload)
+   where photo.payload <> 'null'::jsonb),
+  '77400000-0000-4000-8000-000000000201',
+  'record DTO retains the active photo bucket/path projection'
+);
+select is(
+  (select array_agg(key order by key)
+   from attendance_view_payload response
+   cross join lateral jsonb_array_elements(response.payload->'items') item
+   cross join lateral jsonb_array_elements(item->'workPoints') point
+   cross join lateral jsonb_each(point->'photos') photo(phase, payload)
+   cross join lateral jsonb_object_keys(photo.payload) key
+   where photo.payload <> 'null'::jsonb),
+  array[
+    'bucketId','capturedAt','contentType','createdAt','objectPath',
+    'originalFileName','phase','photoId','sizeBytes','uploadStatus','workPointId'
+  ]::text[],
+  'active photo DTO has the exact browser contract and no database Storage metadata'
+);
+select ok(
+  (select payload::text !~* '(77400000-0000-4000-8000-000000000202|77400000-0000-4000-8000-000000000203|77400000-0000-4000-8000-000000000204|signed[_-]?url|access[_-]?token|storage[_-]?metadata|checksum[_-]?sha256)'
+   from attendance_view_payload),
+  'record response leaks no non-active photo, signed URL, token, checksum or Storage metadata'
+);
+select is(
+  (select jsonb_path_query_array(payload, '$.items[*].workPoints[*].photos.*.uploadStatus')
+   from attendance_view_payload),
+  '["active"]'::jsonb,
+  'record response exposes no non-active database photo status'
+);
+reset role;
+
+insert into public.projects(record_key, payload, status) values (
+  'ATT-PAGE',
+  pg_temp.attendance_project_payload(
+    'ATT-PAGE', '记录分页项目', '进行中', 300,
+    '2026-07-15T00:00:00Z', '東京都 千代田区 1-1'
+  ),
+  'active'
+);
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot,
+  employee_name_snapshot, project_id, project_name_snapshot,
+  project_address_snapshot, project_latitude_snapshot,
+  project_longitude_snapshot, attendance_radius_meters_snapshot,
+  work_date, status, opened_at, closed_at
+)
+select
+  ('76000000-0000-4000-8000-' || lpad(number::text, 12, '0'))::uuid,
+  '62000000-0000-4000-8000-000000000014', 'SW-6214', '记录所有者',
+  'ATT-PAGE', '记录分页项目', '東京都 千代田区 1-1',
+  35.681236, 139.767125, 300, '2026-07-17', 'closed',
+  '2026-07-17T06:00:00Z'::timestamptz
+    + (((number - 1) / 2)::text || ' seconds')::interval,
+  '2026-07-17T06:30:00Z'::timestamptz
+    + (((number - 1) / 2)::text || ' seconds')::interval
+from generate_series(1, 103) number;
+
+create temporary table attendance_page_payloads(
+  page_name text primary key,
+  payload jsonb not null
+) on commit drop;
+grant select, insert on attendance_page_payloads to authenticated;
+create temporary table attendance_page_items(
+  sequence integer primary key,
+  session_id uuid not null,
+  opened_at timestamptz not null
+) on commit drop;
+grant select, insert on attendance_page_items to authenticated;
+create temporary table attendance_page_expected(
+  sequence integer primary key,
+  session_id uuid not null,
+  opened_at timestamptz not null
+) on commit drop;
+insert into attendance_page_expected(sequence, session_id, opened_at)
+select row_number() over (
+         order by session.opened_at desc, session.session_id desc
+       )::integer,
+       session.session_id,
+       session.opened_at
+from public.project_attendance_sessions session
+where session.project_id = 'ATT-PAGE';
+grant select on attendance_page_expected to authenticated;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000014', true
+);
+insert into attendance_page_payloads values (
+  'default',
+  public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,null
+  )
+);
+insert into attendance_page_payloads values (
+  'first',
+  public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,null,100
+  )
+);
+insert into attendance_page_payloads values (
+  'second',
+  public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,
+    (select (payload#>>'{nextCursor,openedAt}')::timestamptz
+     from attendance_page_payloads where page_name = 'first'),
+    (select (payload#>>'{nextCursor,sessionId}')::uuid
+     from attendance_page_payloads where page_name = 'first'),
+    100
+  )
+);
+insert into attendance_page_items(sequence, session_id, opened_at)
+select ordinal::integer, (item->>'sessionId')::uuid,
+       (item->>'openedAt')::timestamptz
+from attendance_page_payloads page
+cross join lateral jsonb_array_elements(page.payload->'items')
+  with ordinality result(item, ordinal)
+where page.page_name = 'first';
+insert into attendance_page_items(sequence, session_id, opened_at)
+select 100 + ordinal::integer, (item->>'sessionId')::uuid,
+       (item->>'openedAt')::timestamptz
+from attendance_page_payloads page
+cross join lateral jsonb_array_elements(page.payload->'items')
+  with ordinality result(item, ordinal)
+where page.page_name = 'second';
+
+select is(
+  (select jsonb_array_length(payload->'items')
+   from attendance_page_payloads where page_name = 'default'),
+  50,
+  'record viewer default limit is exactly 50'
+);
+select is(
+  (select jsonb_array_length(payload->'items')
+   from attendance_page_payloads where page_name = 'first'),
+  100,
+  'record viewer accepts maximum limit 100'
+);
+select is(
+  (select jsonb_array_length(payload->'items')
+   from attendance_page_payloads where page_name = 'second'),
+  3,
+  'strict keyset second page returns the final three records'
+);
+select is(
+  (select payload->'nextCursor'
+   from attendance_page_payloads where page_name = 'second'),
+  'null'::jsonb,
+  'final keyset page has no cursor'
+);
+select is(
+  (select payload#>>'{nextCursor,sessionId}'
+   from attendance_page_payloads where page_name = 'first'),
+  (select session_id::text from attendance_page_items where sequence = 100),
+  'next cursor comes from the last returned item only when an extra row exists'
+);
+select is(
+  (select (payload#>>'{nextCursor,openedAt}')::timestamptz
+   from attendance_page_payloads where page_name = 'first'),
+  (select opened_at from attendance_page_items where sequence = 100),
+  'next cursor openedAt comes from the last returned item'
+);
+select is(
+  (select opened_at from attendance_page_items where sequence = 100),
+  (select opened_at from attendance_page_expected where sequence = 101),
+  'pagination boundary rows 100 and 101 intentionally share opened_at'
+);
+select is(
+  (select count(*)::integer from attendance_page_items),
+  103,
+  'keyset walk returns every authorized row'
+);
+select is(
+  (select count(distinct session_id)::integer from attendance_page_items),
+  103,
+  'keyset walk has no duplicates or omissions'
+);
+select results_eq(
+  $$ select session_id::text
+     from attendance_page_items
+     order by sequence $$,
+  $$ select session_id::text
+     from attendance_page_expected
+     order by sequence $$,
+  'keyset walk preserves the exact global opened_at desc, session_id desc order'
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,null,0
+  ) $$,
+  '22023', null, 'record viewer rejects limit zero'
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,null,101
+  ) $$,
+  '22023', null, 'record viewer rejects limit 101'
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,null,null
+  ) $$,
+  '22023', null, 'record viewer rejects an explicit null limit'
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,'2026-07-17T06:00:00Z',null,50
+  ) $$,
+  '22023', null, 'record viewer rejects an opened-at-only cursor'
+);
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-17','ATT-PAGE',null,null,
+    '76000000-0000-4000-8000-000000000001',50
+  ) $$,
+  '22023', null, 'record viewer rejects a session-id-only cursor'
+);
+reset role;
+
+set local role anon;
+select throws_ok(
+  $$ select public.list_attendance_records_secure(
+    '2026-07-16',null,null,null,null,50
+  ) $$,
+  '42501', null, 'anonymous record viewer access is denied'
+);
+reset role;
+
+select has_function(
+  'public', 'claim_attendance_photo_cleanup_secure', array['integer']
+);
+select has_function(
+  'public', 'complete_attendance_photo_cleanup_secure', array['uuid']
+);
+
+select is(
+  (
+    with expected(
+      signature, default_count, return_type, returns_set,
+      expected_search_path, volatility
+    ) as (
+      values
+        (
+          to_regprocedure('public.claim_attendance_photo_cleanup_secure(integer)'),
+          1, 'jsonb', true,
+          array['search_path=pg_catalog, public']::text[], 'v'::"char"
+        ),
+        (
+          to_regprocedure('public.complete_attendance_photo_cleanup_secure(uuid)'),
+          0, 'boolean', false,
+          array['search_path=pg_catalog, public']::text[], 'v'::"char"
+        )
+    )
+    select count(*)::integer
+    from expected contract
+    left join pg_proc procedure on procedure.oid = contract.signature
+    where contract.signature is null
+       or not procedure.prosecdef
+       or procedure.provolatile <> contract.volatility
+       or procedure.proconfig is distinct from contract.expected_search_path
+       or procedure.pronargdefaults <> contract.default_count
+       or format_type(procedure.prorettype, null) <> contract.return_type
+       or procedure.proretset <> contract.returns_set
+  ),
+  0,
+  'cleanup RPCs have exact return, SECURITY DEFINER, volatility, search_path and defaults'
+);
+
+select is(
+  (
+    with expected(signature) as (
+      values
+        (to_regprocedure('public.claim_attendance_photo_cleanup_secure(integer)')),
+        (to_regprocedure('public.complete_attendance_photo_cleanup_secure(uuid)'))
+    )
+    select count(*)::integer
+    from expected contract
+    left join pg_proc procedure on procedure.oid = contract.signature
+    where contract.signature is null
+       or not has_function_privilege('service_role', contract.signature, 'EXECUTE')
+       or has_function_privilege('authenticated', contract.signature, 'EXECUTE')
+       or has_function_privilege('anon', contract.signature, 'EXECUTE')
+       or exists (
+         select 1
+         from aclexplode(coalesce(
+           procedure.proacl, acldefault('f', procedure.proowner)
+         )) privilege
+         where privilege.privilege_type = 'EXECUTE'
+           and (
+             privilege.grantee = 0
+             or privilege.grantee not in (
+               procedure.proowner,
+               'service_role'::regrole::oid
+             )
+             or (
+               privilege.grantee = 'service_role'::regrole::oid
+               and privilege.is_grantable
+             )
+           )
+       )
+  ),
+  0,
+  'cleanup RPC ACLs are exactly owner plus non-grantable service_role'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_index index_definition
+    where index_definition.indexrelid =
+          'public.project_attendance_photo_cleanup_idx'::regclass
+      and index_definition.indrelid =
+          'public.project_attendance_photos'::regclass
+      and not index_definition.indisunique
+      and index_definition.indisvalid
+      and index_definition.indisready
+      and index_definition.indnkeyatts = 2
+      and pg_get_indexdef(index_definition.indexrelid, 1, true) = 'updated_at'
+      and pg_get_indexdef(index_definition.indexrelid, 2, true) = 'photo_id'
+      and pg_get_expr(
+            index_definition.indpred, index_definition.indrelid, true
+          ) ~* 'pending.*superseded.*cleanup_pending'
+      and pg_get_expr(
+            index_definition.indpred, index_definition.indrelid, true
+          ) !~* 'active'
+  ),
+  1,
+  'cleanup claim uses the exact globally ordered non-active partial index'
+);
+
+insert into public.project_attendance_work_points(
+  work_point_id, session_id, ordinal, area_name, work_description,
+  completion_note
+) values
+  (
+    '77300000-0000-4000-8000-000000000702',
+    '77100000-0000-4000-8000-000000000203', 2, '清理2', '测试', ''
+  ),
+  (
+    '77300000-0000-4000-8000-000000000703',
+    '77100000-0000-4000-8000-000000000203', 3, '清理3', '测试', ''
+  ),
+  (
+    '77300000-0000-4000-8000-000000000704',
+    '77100000-0000-4000-8000-000000000203', 4, '清理4', '测试', ''
+  ),
+  (
+    '77300000-0000-4000-8000-000000000705',
+    '77100000-0000-4000-8000-000000000203', 5, '清理5', '测试', ''
+  ),
+  (
+    '77300000-0000-4000-8000-000000000706',
+    '77100000-0000-4000-8000-000000000203', 6, '清理6', '测试', ''
+  );
+
+insert into public.project_attendance_photos(
+  photo_id, work_point_id, phase, bucket_id, object_path,
+  original_file_name, content_type, size_bytes, upload_status, updated_at
+) values
+  (
+    '77400000-0000-4000-8000-000000000702',
+    '77300000-0000-4000-8000-000000000702', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000702/77400000-0000-4000-8000-000000000702/before',
+    'old-pending.jpg', 'image/jpeg', 1, 'pending',
+    statement_timestamp() - interval '2 days'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000703',
+    '77300000-0000-4000-8000-000000000703', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000703/77400000-0000-4000-8000-000000000703/before',
+    'old-superseded.jpg', 'image/jpeg', 1, 'superseded',
+    statement_timestamp() - interval '2 days'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000704',
+    '77300000-0000-4000-8000-000000000704', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000704/77400000-0000-4000-8000-000000000704/before',
+    'old-cleanup.jpg', 'image/jpeg', 1, 'cleanup_pending',
+    statement_timestamp() - interval '2 days'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000705',
+    '77300000-0000-4000-8000-000000000705', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000705/77400000-0000-4000-8000-000000000705/before',
+    'old-active.jpg', 'image/jpeg', 1, 'active',
+    statement_timestamp() - interval '2 days'
+  ),
+  (
+    '77400000-0000-4000-8000-000000000706',
+    '77300000-0000-4000-8000-000000000706', 'before',
+    'erp-attendance-photos',
+    '62000000-0000-4000-8000-000000000021/77100000-0000-4000-8000-000000000203/77300000-0000-4000-8000-000000000706/77400000-0000-4000-8000-000000000706/before',
+    'recent-pending.jpg', 'image/jpeg', 1, 'pending', statement_timestamp()
+  );
+
+set local role anon;
+select throws_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(100) $$,
+  '42501', null, 'anonymous cannot claim cleanup work'
+);
+select throws_ok(
+  $$ select public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000702'
+  ) $$,
+  '42501', null, 'anonymous cannot complete cleanup work'
+);
+reset role;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '61000000-0000-4000-8000-000000000014', true
+);
+select throws_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(100) $$,
+  '42501', null, 'authenticated browser cannot claim cleanup work'
+);
+select throws_ok(
+  $$ select public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000702'
+  ) $$,
+  '42501', null, 'authenticated browser cannot complete cleanup work'
+);
+reset role;
+
+create temporary table attendance_cleanup_claims(payload jsonb not null)
+on commit drop;
+grant select, insert on attendance_cleanup_claims to service_role;
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select throws_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(0) $$,
+  '22023', null, 'cleanup claim rejects limit zero'
+);
+select throws_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(501) $$,
+  '22023', null, 'cleanup claim rejects limit 501'
+);
+select throws_ok(
+  $$ select * from public.claim_attendance_photo_cleanup_secure(null) $$,
+  '22023', null, 'cleanup claim rejects an explicit null limit'
+);
+insert into attendance_cleanup_claims
+select * from public.claim_attendance_photo_cleanup_secure(1);
+select is(
+  (select count(*)::integer from attendance_cleanup_claims),
+  1,
+  'cleanup claim honors the minimum positive limit exactly'
+);
+insert into attendance_cleanup_claims
+select * from public.claim_attendance_photo_cleanup_secure(100);
+select results_eq(
+  $$ select payload->>'photoId'
+     from attendance_cleanup_claims
+     order by 1 $$,
+  $$ values
+    ('77400000-0000-4000-8000-000000000702'),
+    ('77400000-0000-4000-8000-000000000703'),
+    ('77400000-0000-4000-8000-000000000704') $$,
+  'claim returns every stale non-active photo and no active or recent row'
+);
+select is(
+  (select count(*)::integer
+   from attendance_cleanup_claims
+   where payload->>'photoId' = '77400000-0000-4000-8000-000000000704'),
+  1,
+  'a stale cleanup_pending row is claimed for provider retry'
+);
+select is(
+  (select count(*)::integer
+   from attendance_cleanup_claims claim
+   where (
+     select array_agg(key order by key)
+     from jsonb_object_keys(claim.payload) key
+   ) is distinct from array['bucketId','objectPath','photoId']::text[]),
+  0,
+  'cleanup candidates expose exactly the required safe fields'
+);
+select is(
+  (select count(*)::integer
+   from attendance_cleanup_claims
+   where payload->>'bucketId' <> 'erp-attendance-photos'
+      or payload->>'photoId' !~
+         '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      or split_part(payload->>'objectPath', '/', 1) !~
+         '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      or split_part(payload->>'objectPath', '/', 2) !~
+         '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      or split_part(payload->>'objectPath', '/', 3) !~
+         '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      or split_part(payload->>'objectPath', '/', 4) !~
+         '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      or split_part(payload->>'objectPath', '/', 4) <> payload->>'photoId'
+      or split_part(payload->>'objectPath', '/', 5) not in ('before','after')
+      or split_part(payload->>'objectPath', '/', 6) <> ''
+      or array_length(string_to_array(payload->>'objectPath', '/'), 1) <> 5),
+  0,
+  'cleanup candidates use the expected bucket, UUID and canonical five-segment paths'
+);
+select is(
+  (select count(*)::integer
+   from public.project_attendance_photos
+   where photo_id in (
+     '77400000-0000-4000-8000-000000000702',
+     '77400000-0000-4000-8000-000000000703',
+     '77400000-0000-4000-8000-000000000704'
+   ) and upload_status = 'cleanup_pending'),
+  3,
+  'claim atomically marks every returned metadata row cleanup_pending'
+);
+select is(
+  (select upload_status
+   from public.project_attendance_photos
+   where photo_id = '77400000-0000-4000-8000-000000000705'),
+  'active',
+  'claim never changes an active photo'
+);
+select is(
+  (select upload_status
+   from public.project_attendance_photos
+   where photo_id = '77400000-0000-4000-8000-000000000706'),
+  'pending',
+  'claim leaves a recent pending photo untouched'
+);
+select is(
+  public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000702'
+  ),
+  true,
+  'complete deletes one claimed cleanup metadata row'
+);
+select is(
+  public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000705'
+  ),
+  false,
+  'complete cannot delete active metadata'
+);
+select is(
+  public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000706'
+  ),
+  false,
+  'complete cannot delete an unclaimed pending row'
+);
+select is(
+  public.complete_attendance_photo_cleanup_secure(
+    '77400000-0000-4000-8000-000000000704'
+  ),
+  true,
+  'retried cleanup metadata completes after provider success'
+);
+select is(
+  (select count(*)::integer
+   from public.project_attendance_photos
+   where photo_id = '77400000-0000-4000-8000-000000000705'),
+  1,
+  'active photo remains after every cleanup completion attempt'
+);
+reset role;
+
 select * from finish();
 rollback;
