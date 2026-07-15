@@ -99,14 +99,14 @@ test('every persistence operation rejects a missing session before table or stor
     },
   }
   const actions = [
-    (service) => service.getList('erp.projects'),
-    (service) => service.getById('erp.projects', 'P001'),
-    (service) => service.saveList('erp.projects', []),
-    (service) => service.upsertRecord('erp.projects', { projectId: 'P001' }),
-    (service) => service.create('erp.projects', { projectId: 'P001' }),
-    (service) => service.update('erp.projects', 'P001', { projectName: '更新' }),
-    (service) => service.softDelete('erp.projects', 'P001'),
-    (service) => service.migrateLocalStorageToSupabase(['erp.projects']),
+    (service) => service.getList('erp.laborRecords'),
+    (service) => service.getById('erp.laborRecords', 'P001'),
+    (service) => service.saveList('erp.laborRecords', []),
+    (service) => service.upsertRecord('erp.laborRecords', { projectId: 'P001' }),
+    (service) => service.create('erp.laborRecords', { projectId: 'P001' }),
+    (service) => service.update('erp.laborRecords', 'P001', { projectName: '更新' }),
+    (service) => service.softDelete('erp.laborRecords', 'P001'),
+    (service) => service.migrateLocalStorageToSupabase(['erp.laborRecords']),
   ]
 
   for (const action of actions) {
@@ -125,7 +125,7 @@ test('invalid configuration fails closed before Auth or table access', async () 
   const service = createBaseRecordService(client, { configured: false })
 
   await assert.rejects(
-    service.getList('erp.projects'),
+    service.getList('erp.laborRecords'),
     assertSafeError('CONFIGURATION_ERROR', 503),
   )
   assert.deepEqual(calls, [])
@@ -141,7 +141,7 @@ test('expired sessions are rejected before table access', async () => {
   })
 
   await assert.rejects(
-    service.getList('erp.projects'),
+    service.getList('erp.laborRecords'),
     assertSafeError('AUTH_SESSION_INVALID', 401),
   )
   assert.equal(calls.some(({ operation }) => operation === 'from'), false)
@@ -165,7 +165,7 @@ test('single-record upsert ignores browser identity and omits all client audit f
       configured: true,
       now: () => new Date('2026-07-14T01:02:03.000Z'),
     })
-    await service.upsertRecord('erp.projects', {
+    await service.upsertRecord('erp.laborRecords', {
       projectId: 'P001',
       projectName: '安全写入',
       created_by_employee_id: 'payload-forgery',
@@ -221,7 +221,7 @@ test('saveList performs one authenticated batch upsert without reads, implicit d
   const { client, calls } = createClient()
   const service = createBaseRecordService(client, { configured: true })
 
-  const result = await service.saveList('erp.projects', [
+  const result = await service.saveList('erp.laborRecords', [
     { projectId: 'P001', projectName: '旧值' },
     { projectId: 'P001', projectName: '最终值' },
     { projectId: 'P002', projectName: '第二项' },
@@ -250,7 +250,7 @@ test('a batch policy failure is sanitized and never retried row by row', async (
   const service = createBaseRecordService(client, { configured: true })
 
   await assert.rejects(
-    service.saveList('erp.projects', [
+    service.saveList('erp.laborRecords', [
       { projectId: 'P001' },
       { projectId: 'P002' },
     ]),
@@ -262,7 +262,7 @@ test('a batch policy failure is sanitized and never retried row by row', async (
 test('create, update, and softDelete target one record without rewriting a collection', async () => {
   const createdClient = createClient()
   const createService = createBaseRecordService(createdClient.client, { configured: true })
-  await createService.create('erp.projects', { projectId: 'P001', projectName: '新增' })
+  await createService.create('erp.laborRecords', { projectId: 'P001', projectName: '新增' })
   assert.deepEqual(
     createdClient.calls.map(({ operation }) => operation),
     ['auth.getSession', 'from', 'insert'],
@@ -283,7 +283,7 @@ test('create, update, and softDelete target one record without rewriting a colle
     },
   })
   const updateService = createBaseRecordService(updatedClient.client, { configured: true })
-  await updateService.update('erp.projects', 'P001', { projectName: '新值' })
+  await updateService.update('erp.laborRecords', 'P001', { projectName: '新值' })
   assert.deepEqual(
     updatedClient.calls.map(({ operation }) => operation),
     ['auth.getSession', 'from', 'select', 'from', 'update'],
@@ -293,6 +293,7 @@ test('create, update, and softDelete target one record without rewriting a colle
     projectId: 'P001',
     projectName: '新值',
     keep: true,
+    laborRecordId: 'P001',
   })
   assert.deepEqual(updateCall.filters, [
     { operator: 'eq', field: 'record_key', value: 'P001' },
@@ -303,7 +304,7 @@ test('create, update, and softDelete target one record without rewriting a colle
     results: { update: { data: [{ record_key: 'P001' }], error: null } },
   })
   const deleteService = createBaseRecordService(deletedClient.client, { configured: true })
-  await deleteService.softDelete('erp.projects', 'P001')
+  await deleteService.softDelete('erp.laborRecords', 'P001')
   assert.deepEqual(
     deletedClient.calls.map(({ operation }) => operation),
     ['auth.getSession', 'from', 'update'],
@@ -332,7 +333,7 @@ test('update and softDelete fail closed when RLS turns the mutation into a zero-
   const updateService = createBaseRecordService(updateClient.client, { configured: true })
 
   await assert.rejects(
-    updateService.update('erp.projects', 'P001', { projectName: '不可写' }),
+    updateService.update('erp.laborRecords', 'P001', { projectName: '不可写' }),
     assertSafeError('ACCESS_DENIED', 403),
   )
 
@@ -342,7 +343,7 @@ test('update and softDelete fail closed when RLS turns the mutation into a zero-
   const deleteService = createBaseRecordService(deleteClient.client, { configured: true })
 
   await assert.rejects(
-    deleteService.softDelete('erp.projects', 'P001'),
+    deleteService.softDelete('erp.laborRecords', 'P001'),
     assertSafeError('ACCESS_DENIED', 403),
   )
 })
@@ -359,7 +360,7 @@ test('authenticated reads return cloud data and expose only stable safe authoriz
     },
   })
   const successService = createBaseRecordService(successClient.client, { configured: true })
-  assert.deepEqual(await successService.getList('erp.projects'), [{ projectId: 'P001' }])
+  assert.deepEqual(await successService.getList('erp.laborRecords'), [{ projectId: 'P001' }])
 
   const deniedClient = createClient({
     results: {
@@ -371,7 +372,7 @@ test('authenticated reads return cloud data and expose only stable safe authoriz
   })
   const deniedService = createBaseRecordService(deniedClient.client, { configured: true })
   await assert.rejects(
-    deniedService.getList('erp.projects'),
+    deniedService.getList('erp.laborRecords'),
     assertSafeError('AUTH_SESSION_INVALID', 401),
   )
 })
@@ -391,7 +392,7 @@ test('list reads reject null data and malformed row envelopes instead of reporti
     const service = createBaseRecordService(client, { configured: true })
 
     await assert.rejects(
-      service.getList('erp.projects'),
+      service.getList('erp.laborRecords'),
       assertSafeError('DATA_OPERATION_FAILED', 503),
     )
   }
@@ -404,7 +405,7 @@ test('single-record reads allow a missing row but reject malformed returned payl
   const missingService = createBaseRecordService(missingClient.client, {
     configured: true,
   })
-  assert.equal(await missingService.getById('erp.projects', 'P001'), undefined)
+  assert.equal(await missingService.getById('erp.laborRecords', 'P001'), undefined)
 
   for (const data of [
     {},
@@ -418,7 +419,7 @@ test('single-record reads allow a missing row but reject malformed returned payl
     const service = createBaseRecordService(client, { configured: true })
 
     await assert.rejects(
-      service.getById('erp.projects', 'P001'),
+      service.getById('erp.laborRecords', 'P001'),
       assertSafeError('DATA_OPERATION_FAILED', 503),
     )
   }
@@ -445,13 +446,13 @@ test('explicit local migration excludes employees and reports only sanitized fai
   const results = await service.migrateLocalStorageToSupabase([
     'erp.employees',
     'unknown.storage',
-    'erp.projects',
+    'erp.laborRecords',
     'erp.laborRecords',
   ])
 
-  assert.deepEqual(storageReads, ['erp.projects'])
+  assert.deepEqual(storageReads, ['erp.laborRecords'])
   assert.equal(results.length, 1)
-  assert.equal(results[0].storageKey, 'erp.projects')
+  assert.equal(results[0].storageKey, 'erp.laborRecords')
   assert.equal(results[0].errorCode, 'ACCESS_DENIED')
   assert.equal(results[0].errors.some((message) => message.includes('private')), false)
   assert.equal(calls.filter(({ operation }) => operation === 'upsert').length, 1)

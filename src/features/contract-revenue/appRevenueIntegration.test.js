@@ -7,18 +7,22 @@ const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf
 test('App loads all contract revenue records and memoizes the project snapshot collection', () => {
   assert.match(
     appSource,
-    /const \[projectContractChanges, setProjectContractChanges\] = usePersistentState\(\s*STORAGE_KEYS\.projectContractChanges/,
+    /const \[projectContractChanges, setProjectContractChanges\] = useState\(\[\]\)/,
   )
   assert.match(
     appSource,
-    /const \[projectPaymentPlans, setProjectPaymentPlans\] = usePersistentState\(\s*STORAGE_KEYS\.projectPaymentPlans/,
+    /const \[projectPaymentPlans, setProjectPaymentPlans\] = useState\(\[\]\)/,
   )
   assert.match(
     appSource,
-    /const \[projectReceipts, setProjectReceipts\] = usePersistentState\(\s*STORAGE_KEYS\.projectReceipts/,
+    /const \[projectReceipts, setProjectReceipts\] = useState\(\[\]\)/,
   )
   assert.match(appSource, /const projectRevenueSnapshots = useMemo\(/)
   assert.match(appSource, /buildProjectRevenueSnapshotCollection\(/)
+  assert.match(appSource, /getList\(key\)/)
+  assert.match(appSource, /projectContractChanges: CONTRACT_REVENUE_STORAGE_KEYS\.contractChanges/)
+  assert.match(appSource, /projectPaymentPlans: CONTRACT_REVENUE_STORAGE_KEYS\.paymentPlans/)
+  assert.match(appSource, /projectReceipts: CONTRACT_REVENUE_STORAGE_KEYS\.projectReceipts/)
 })
 
 test('read-only revenue models reach display pages while project editing keeps raw projects', () => {

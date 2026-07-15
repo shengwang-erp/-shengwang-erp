@@ -7,7 +7,6 @@ import {
   createContractRevenueService,
   sanitizeProjectForPersistence,
 } from './contractRevenueService.js'
-import { recordTableConfigs } from './recordTableConfig.js'
 
 const FIXED_NOW = '2026-07-14T06:00:00.000Z'
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -30,25 +29,29 @@ function createFakeDependencies(lists = {}) {
   }
 }
 
-test('contract revenue storage keys map to dedicated Supabase tables', () => {
+test('contract revenue storage keys use explicit service APIs instead of generic table mappings', async () => {
   assert.deepEqual(CONTRACT_REVENUE_STORAGE_KEYS, {
     contractChanges: 'erp.projectContractChanges',
     paymentPlans: 'erp.projectPaymentPlans',
     projectReceipts: 'erp.projectReceipts',
   })
 
-  assert.deepEqual(recordTableConfigs[CONTRACT_REVENUE_STORAGE_KEYS.contractChanges], {
-    tableName: 'project_contract_changes',
-    recordKeyField: 'changeId',
+  const calls = []
+  const service = createContractRevenueService({
+    readContractChanges: async () => { calls.push('read:changes'); return [] },
+    readPaymentPlans: async () => { calls.push('read:plans'); return [] },
+    readProjectReceipts: async () => { calls.push('read:receipts'); return [] },
+    writeContractChange: async (record) => { calls.push(['write:changes', record]); return { saved: 1 } },
+    writePaymentPlan: async (record) => { calls.push(['write:plans', record]); return { saved: 1 } },
+    writeProjectReceipt: async (record) => { calls.push(['write:receipts', record]); return { saved: 1 } },
+    randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    now: () => FIXED_NOW,
   })
-  assert.deepEqual(recordTableConfigs[CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans], {
-    tableName: 'project_payment_plans',
-    recordKeyField: 'planId',
-  })
-  assert.deepEqual(recordTableConfigs[CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts], {
-    tableName: 'project_receipts',
-    recordKeyField: 'receiptId',
-  })
+  await service.loadContractChanges(); await service.loadPaymentPlans(); await service.loadProjectReceipts()
+  await service.createContractChange({ projectId: 'P001' })
+  assert.deepEqual(calls.slice(0, 4).map((entry) => Array.isArray(entry) ? entry[0] : entry), [
+    'read:changes', 'read:plans', 'read:receipts', 'write:changes',
+  ])
 })
 
 test('load methods read each contract revenue collection and normalize missing lists to empty arrays', async () => {
