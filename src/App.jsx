@@ -22,7 +22,6 @@ import AuthGate from './auth/AuthGate'
 import { employeeAdminService } from './services/employeeAdminService'
 import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
-import { createLocalStorageUpsertRecord } from './services/contractRevenueLocalMigration'
 import { previewLocalContractRevenueMigration } from './services/contractRevenueLocalMigration'
 import { persistLegacyContractRevenueMigration } from './services/contractRevenueMigration.js'
 import { supabase } from './lib/supabaseClient.js'
@@ -1940,8 +1939,9 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     }
   }, [currentView, refreshProjectEmployeeDirectory])
 
-  const refreshStoredProjectsFromLocal = () => {
-    setStoredProjects(readStorage(STORAGE_KEYS.projects, []), { stateOnly: true })
+  const refreshStoredProjectsFromLocal = async () => {
+    const rows = await projectService.listProjects()
+    setStoredProjects(rows)
   }
 
   const recordGroups = {
@@ -2287,11 +2287,13 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   }
 
   const handleHistoricalContractReview = async (nextProject) => {
-    const upsertLocalRecord = createLocalStorageUpsertRecord(window.localStorage)
     const persistedProject = prepareProjectForPersistence(nextProject)
-    await upsertLocalRecord(STORAGE_KEYS.projects, persistedProject)
-    refreshStoredProjectsFromLocal()
-    return persistedProject
+    const serverProject = await projectService.updateProject(
+      persistedProject.projectId,
+      persistedProject,
+    )
+    await refreshStoredProjectsFromLocal()
+    return serverProject
   }
 
   const loadContractMigrationPreview = () => previewLocalContractRevenueMigration(window.localStorage)

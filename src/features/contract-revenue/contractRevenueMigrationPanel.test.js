@@ -45,7 +45,6 @@ test('migration and historical review refresh local project and receipt state wi
   assert.match(appSource, /refreshStoredProjectsFromLocal/)
   assert.match(appSource, /executeContractMigration/)
   assert.match(appSource, /handleHistoricalContractReview/)
-  assert.match(appSource, /createLocalStorageUpsertRecord/)
   assert.match(appSource, /executeMigration=\{executeContractMigration\}/)
   assert.match(appSource, /loadPreview=\{loadContractMigrationPreview\}/)
   assert.match(appSource, /onHistoricalReview=\{handleHistoricalContractReview\}/)
