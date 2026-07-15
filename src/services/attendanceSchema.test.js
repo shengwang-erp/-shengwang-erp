@@ -42,3 +42,18 @@ test('attendance migration closes helpers and grants only secure entry points', 
   }
   assert.doesNotMatch(sql, /module\.projects|module\.labor|labor_records|baseRecordService/i)
 })
+
+test('attendance eligibility requires an exactly active record envelope', () => {
+  assert.match(sql, /p_record_status\s+is\s+distinct\s+from\s+'active'/i)
+})
+
+test('attendance abnormal reasons share the POSIX-whitespace canonical rule', () => {
+  assert.match(
+    sql,
+    /normalized_reason\s*:=\s*nullif\(\s*regexp_replace\(\s*p_abnormal_reason\s*,\s*'\^\[\[:space:\]\]\+\|\[\[:space:\]\]\+\$'\s*,\s*''\s*,\s*'g'\s*\)\s*,\s*''\s*\)/i,
+  )
+  assert.match(
+    sql,
+    /result\s*=\s*'abnormal'\s+and\s+abnormal_reason\s+is\s+not\s+null\s+and\s+abnormal_reason\s*=\s*regexp_replace\(\s*abnormal_reason\s*,\s*'\^\[\[:space:\]\]\+\|\[\[:space:\]\]\+\$'\s*,\s*''\s*,\s*'g'\s*\)/i,
+  )
+})

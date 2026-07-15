@@ -68,7 +68,11 @@ create table public.project_attendance_events (
   constraint attendance_event_result_check check (result in ('normal', 'abnormal')),
   constraint attendance_event_reason_check check (
     (result = 'normal' and abnormal_reason is null) or
-    (result = 'abnormal' and abnormal_reason = btrim(abnormal_reason)
+    (result = 'abnormal'
+      and abnormal_reason is not null
+      and abnormal_reason = regexp_replace(
+        abnormal_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+      )
       and char_length(abnormal_reason) between 1 and 500)
   )
 );
@@ -215,8 +219,7 @@ declare
   normalized_address text;
   normalized_snapshot text;
 begin
-  if p_record_status is null
-    or p_record_status = 'deleted'
+  if p_record_status is distinct from 'active'
     or jsonb_typeof(p_payload) is distinct from 'object'
     or jsonb_typeof(p_payload->'projectName') is distinct from 'string'
     or jsonb_typeof(p_payload->'status') is distinct from 'string'
@@ -619,7 +622,9 @@ begin
       message = 'invalid attendance clock-in request';
   end if;
 
-  normalized_reason := nullif(btrim(p_abnormal_reason), '');
+  normalized_reason := nullif(regexp_replace(
+    p_abnormal_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+  ), '');
   if normalized_reason is not null and char_length(normalized_reason) > 500 then
     raise exception using
       errcode = '22023',

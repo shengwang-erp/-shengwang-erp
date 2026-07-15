@@ -15,6 +15,332 @@ select has_function(
   array['text','uuid','double precision','double precision','numeric','timestamp with time zone','text']
 );
 
+select ok(
+  has_function_privilege(
+    'authenticated', 'public.list_attendance_projects_secure()', 'EXECUTE'
+  )
+  and has_function_privilege(
+    'service_role', 'public.list_attendance_projects_secure()', 'EXECUTE'
+  )
+  and not has_function_privilege(
+    'anon', 'public.list_attendance_projects_secure()', 'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.list_attendance_projects_secure()'::regprocedure
+      and privilege.grantee = 0
+      and privilege.privilege_type = 'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.list_attendance_projects_secure()'::regprocedure
+      and privilege.privilege_type = 'EXECUTE'
+      and (
+        privilege.grantee not in (
+          procedure.proowner,
+          'authenticated'::regrole::oid,
+          'service_role'::regrole::oid
+        )
+        or (
+          privilege.grantee in (
+            'authenticated'::regrole::oid,
+            'service_role'::regrole::oid
+          )
+          and privilege.is_grantable
+        )
+      )
+  ),
+  'attendance project-list RPC is executable only by authenticated and service_role'
+);
+select ok(
+  has_function_privilege(
+    'authenticated', 'public.get_my_today_attendance_secure()', 'EXECUTE'
+  )
+  and has_function_privilege(
+    'service_role', 'public.get_my_today_attendance_secure()', 'EXECUTE'
+  )
+  and not has_function_privilege(
+    'anon', 'public.get_my_today_attendance_secure()', 'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.get_my_today_attendance_secure()'::regprocedure
+      and privilege.grantee = 0
+      and privilege.privilege_type = 'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.get_my_today_attendance_secure()'::regprocedure
+      and privilege.privilege_type = 'EXECUTE'
+      and (
+        privilege.grantee not in (
+          procedure.proowner,
+          'authenticated'::regrole::oid,
+          'service_role'::regrole::oid
+        )
+        or (
+          privilege.grantee in (
+            'authenticated'::regrole::oid,
+            'service_role'::regrole::oid
+          )
+          and privilege.is_grantable
+        )
+      )
+  ),
+  'today-attendance RPC is executable only by authenticated and service_role'
+);
+select ok(
+  has_function_privilege(
+    'authenticated',
+    'public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)',
+    'EXECUTE'
+  )
+  and has_function_privilege(
+    'service_role',
+    'public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)',
+    'EXECUTE'
+  )
+  and not has_function_privilege(
+    'anon',
+    'public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)',
+    'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)'::regprocedure
+      and privilege.grantee = 0
+      and privilege.privilege_type = 'EXECUTE'
+  )
+  and not exists (
+    select 1
+    from pg_proc procedure
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl, acldefault('f', procedure.proowner)
+    )) privilege
+    where procedure.oid = 'public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)'::regprocedure
+      and privilege.privilege_type = 'EXECUTE'
+      and (
+        privilege.grantee not in (
+          procedure.proowner,
+          'authenticated'::regrole::oid,
+          'service_role'::regrole::oid
+        )
+        or (
+          privilege.grantee in (
+            'authenticated'::regrole::oid,
+            'service_role'::regrole::oid
+          )
+          and privilege.is_grantable
+        )
+      )
+  ),
+  'clock-in RPC is executable only by authenticated and service_role'
+);
+
+select is(
+  (
+    with helper(signature) as (
+      values
+        ('private.current_attendance_employee()'::regprocedure),
+        ('private.is_attendance_project_eligible(text,jsonb)'::regprocedure),
+        ('private.attendance_distance_meters(double precision,double precision,double precision,double precision)'::regprocedure),
+        ('private.reject_attendance_event_mutation()'::regprocedure),
+        ('private.attendance_event_json(uuid)'::regprocedure),
+        ('private.attendance_session_json(uuid)'::regprocedure),
+        ('private.current_attendance_viewer_scope(uuid)'::regprocedure)
+    )
+    select count(*)::integer
+    from helper
+    where has_function_privilege('anon', signature, 'EXECUTE')
+       or has_function_privilege('authenticated', signature, 'EXECUTE')
+       or has_function_privilege('service_role', signature, 'EXECUTE')
+       or exists (
+         select 1
+         from pg_proc procedure
+         cross join lateral aclexplode(coalesce(
+           procedure.proacl, acldefault('f', procedure.proowner)
+         )) privilege
+         where procedure.oid = helper.signature
+           and privilege.grantee = 0
+           and privilege.privilege_type = 'EXECUTE'
+       )
+  ),
+  0,
+  'all seven attendance helpers deny PUBLIC, anon, authenticated, and service_role'
+);
+
+select ok(
+  (
+    with attendance_table(table_name) as (
+      values
+        ('project_attendance_sessions'),
+        ('project_attendance_events'),
+        ('project_attendance_work_points'),
+        ('project_attendance_photos')
+    ), table_privilege(privilege_name) as (
+      values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
+             ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')
+    )
+    select bool_and(
+      not has_table_privilege(
+        'anon', format('public.%I', table_name), privilege_name
+      )
+      and not has_table_privilege(
+        'authenticated', format('public.%I', table_name), privilege_name
+      )
+      and has_table_privilege(
+        'service_role', format('public.%I', table_name), privilege_name
+      )
+    )
+    from attendance_table
+    cross join table_privilege
+  )
+  and not exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    cross join lateral aclexplode(coalesce(
+      relation.relacl, acldefault('r', relation.relowner)
+    )) privilege
+    where namespace.nspname = 'public'
+      and relation.relname in (
+        'project_attendance_sessions', 'project_attendance_events',
+        'project_attendance_work_points', 'project_attendance_photos'
+      )
+      and privilege.grantee = 0
+  ),
+  'attendance tables deny PUBLIC, anon, and authenticated while service_role has all table privileges'
+);
+select is(
+  (
+    select count(*)::integer
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public'
+      and relation.relname in (
+        'project_attendance_sessions', 'project_attendance_events',
+        'project_attendance_work_points', 'project_attendance_photos'
+      )
+      and relation.relkind = 'r'
+      and relation.relrowsecurity
+  ),
+  4,
+  'row-level security is enabled on all four attendance tables'
+);
+select is(
+  (select count(*)::integer from pg_policies
+   where schemaname = 'public' and tablename in (
+     'project_attendance_sessions', 'project_attendance_events',
+     'project_attendance_work_points', 'project_attendance_photos'
+   )),
+  0,
+  'attendance tables expose zero row-level security policies'
+);
+select ok(
+  exists (
+    select 1
+    from pg_trigger trigger
+    where trigger.tgrelid = 'public.project_attendance_events'::regclass
+      and trigger.tgname = 'reject_attendance_event_mutation'
+      and not trigger.tgisinternal
+      and trigger.tgenabled = 'O'
+      and trigger.tgfoid = 'private.reject_attendance_event_mutation()'::regprocedure
+      and trigger.tgtype = 27
+      and trigger.tgattr::text = ''
+      and trigger.tgqual is null
+  ),
+  'immutable attendance-event trigger is enabled before row updates and deletes'
+);
+
+select ok(
+  exists (
+    select 1
+    from pg_index index_definition
+    where index_definition.indexrelid = 'public.project_attendance_one_open_session_idx'::regclass
+      and index_definition.indrelid = 'public.project_attendance_sessions'::regclass
+      and index_definition.indisunique
+      and index_definition.indnkeyatts = 1
+      and pg_get_indexdef(index_definition.indexrelid, 1, false) = 'employee_profile_id'
+      and pg_get_expr(index_definition.indpred, index_definition.indrelid) = $$(status = 'open'::text)$$
+  ),
+  'one-open-session index is unique on employee with an open-status predicate'
+);
+select ok(
+  exists (
+    select 1
+    from pg_constraint constraint_definition
+    where constraint_definition.conrelid = 'public.project_attendance_events'::regclass
+      and constraint_definition.conname = 'project_attendance_events_request_id_key'
+      and constraint_definition.contype = 'u'
+      and pg_get_constraintdef(constraint_definition.oid) = 'UNIQUE (request_id)'
+  ),
+  'attendance request UUID has a catalog-backed uniqueness constraint'
+);
+select ok(
+  exists (
+    select 1
+    from pg_constraint constraint_definition
+    where constraint_definition.conrelid = 'public.project_attendance_events'::regclass
+      and constraint_definition.conname = 'attendance_event_session_type_unique'
+      and constraint_definition.contype = 'u'
+      and pg_get_constraintdef(constraint_definition.oid) = 'UNIQUE (session_id, event_type)'
+  ),
+  'attendance session and event type have a catalog-backed uniqueness constraint'
+);
+select ok(
+  exists (
+    select 1
+    from pg_index index_definition
+    where index_definition.indexrelid = 'public.project_attendance_photo_active_phase_idx'::regclass
+      and index_definition.indrelid = 'public.project_attendance_photos'::regclass
+      and index_definition.indisunique
+      and index_definition.indnkeyatts = 2
+      and pg_get_indexdef(index_definition.indexrelid, 1, false) = 'work_point_id'
+      and pg_get_indexdef(index_definition.indexrelid, 2, false) = 'phase'
+      and pg_get_expr(index_definition.indpred, index_definition.indrelid) = $$(upload_status = 'active'::text)$$
+  ),
+  'active photo phase index is unique on work point and phase with the active predicate'
+);
+select ok(
+  exists (
+    select 1
+    from pg_index index_definition
+    where index_definition.indexrelid = 'public.project_attendance_photo_pending_phase_idx'::regclass
+      and index_definition.indrelid = 'public.project_attendance_photos'::regclass
+      and index_definition.indisunique
+      and index_definition.indnkeyatts = 2
+      and pg_get_indexdef(index_definition.indexrelid, 1, false) = 'work_point_id'
+      and pg_get_indexdef(index_definition.indexrelid, 2, false) = 'phase'
+      and pg_get_expr(index_definition.indpred, index_definition.indrelid) = $$(upload_status = 'pending'::text)$$
+  ),
+  'pending photo phase index is unique on work point and phase with the pending predicate'
+);
+select is(
+  round(private.attendance_distance_meters(0, 0, 0, 1))::bigint,
+  111195::bigint,
+  'Haversine distance is nonzero and known for one degree at the equator'
+);
+
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
   raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -67,6 +393,7 @@ grant execute on function pg_temp.attendance_project_payload(text,text,text,nume
 set local role service_role;
 insert into public.projects(record_key, payload, status) values
   ('ATT-ELIGIBLE', pg_temp.attendance_project_payload('ATT-ELIGIBLE','合法现场','进行中',300,'2026-07-15T00:00:00Z','東京都 千代田区 1-1') || jsonb_build_object('siteAssigneeEmployeeId','62000000-0000-4000-8000-000000000006'), 'active'),
+  ('ATT-ELIGIBLE-OTHER', pg_temp.attendance_project_payload('ATT-ELIGIBLE-OTHER','另一个合法现场','待开工',300,'2026-07-15T00:00:00Z','東京都 千代田区 1-1'), 'active'),
   ('ATT-UNCONFIRMED', pg_temp.attendance_project_payload('ATT-UNCONFIRMED','未确认现场','进行中',300,'','東京都 千代田区 1-1'), 'active'),
   ('ATT-WRONG-STATUS', pg_temp.attendance_project_payload('ATT-WRONG-STATUS','报价现场','报价中',300,'2026-07-15T00:00:00Z','東京都 千代田区 1-1'), 'active'),
   ('ATT-BAD-RADIUS', pg_temp.attendance_project_payload('ATT-BAD-RADIUS','错误半径','进行中',0,'2026-07-15T00:00:00Z','東京都 千代田区 1-1'), 'active'),
@@ -76,15 +403,16 @@ insert into public.projects(record_key, payload, status) values
   ('ATT-MISMATCH', pg_temp.attendance_project_payload('ATT-MISMATCH','地址不一致','进行中',300,'2026-07-15T00:00:00Z','大阪府 大阪市 1-1'), 'active'),
   ('ATT-WHITESPACE-NAME', pg_temp.attendance_project_payload('ATT-WHITESPACE-NAME',E'\t\n','进行中',300,'2026-07-15T00:00:00Z','東京都 千代田区 1-1'), 'active'),
   ('ATT-WHITESPACE-CONFIRM', pg_temp.attendance_project_payload('ATT-WHITESPACE-CONFIRM','空白确认','进行中',300,E'\t\n','東京都 千代田区 1-1'), 'active'),
-  ('ATT-WHITESPACE-ADDRESS', pg_temp.attendance_project_payload('ATT-WHITESPACE-ADDRESS','空白地址','进行中',300,'2026-07-15T00:00:00Z',E'\t\n') || jsonb_build_object('address',E'\t\n'), 'active');
+  ('ATT-WHITESPACE-ADDRESS', pg_temp.attendance_project_payload('ATT-WHITESPACE-ADDRESS','空白地址','进行中',300,'2026-07-15T00:00:00Z',E'\t\n') || jsonb_build_object('address',E'\t\n'), 'active'),
+  ('ATT-VOID', pg_temp.attendance_project_payload('ATT-VOID','作废记录现场','进行中',300,'2026-07-15T00:00:00Z','東京都 千代田区 1-1'), 'void');
 reset role;
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000001', true);
 select is(public.has_current_permission('module.projects.view'), false, 'ordinary fixture has zero project view permission');
 select results_eq(
-  $$ select project->>'projectId' from public.list_attendance_projects_secure() project $$,
-  $$ values ('ATT-ELIGIBLE'::text) $$,
+  $$ select project->>'projectId' from public.list_attendance_projects_secure() project order by 1 $$,
+  $$ values ('ATT-ELIGIBLE'::text), ('ATT-ELIGIBLE-OTHER'::text) $$,
   'attendance list ignores project-module permission but hides every ineligible project'
 );
 reset role;
@@ -246,6 +574,10 @@ select throws_ok(
   $$ select public.clock_in_project_secure('ATT-WHITESPACE-ADDRESS','63100000-0000-4000-8000-000000000010',35.681236,139.767125,10,null,null) $$,
   '22023',null,'clock-in rejects matching control-whitespace-only addresses'
 );
+select throws_ok(
+  $$ select public.clock_in_project_secure('ATT-VOID','63100000-0000-4000-8000-000000000011',35.681236,139.767125,10,null,null) $$,
+  '22023',null,'clock-in rejects a valid payload in a void project envelope'
+);
 reset role;
 select is(
   (select count(*)::integer from public.project_attendance_sessions
@@ -262,20 +594,86 @@ select is(
   'ineligible project attempts leave no attendance event'
 );
 
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot, employee_name_snapshot,
+  project_id, project_name_snapshot, project_address_snapshot,
+  project_latitude_snapshot, project_longitude_snapshot,
+  attendance_radius_meters_snapshot, work_date, status, opened_at, closed_at
+) values
+  (
+    '66000000-0000-4000-8000-000000000003',
+    '62000000-0000-4000-8000-000000000001','SW-6101','零模块普通员工',
+    'ATT-ELIGIBLE','合法现场','東京都 千代田区 1-1',
+    35.681236,139.767125,300,
+    timezone('Asia/Tokyo',statement_timestamp())::date - 3,
+    'closed',statement_timestamp() - interval '72 hours',statement_timestamp() - interval '71 hours'
+  ),
+  (
+    '66000000-0000-4000-8000-000000000004',
+    '62000000-0000-4000-8000-000000000002','SW-6102','停用员工',
+    'ATT-ELIGIBLE','合法现场','東京都 千代田区 1-1',
+    35.681236,139.767125,300,
+    timezone('Asia/Tokyo',statement_timestamp())::date - 3,
+    'closed',statement_timestamp() - interval '72 hours',statement_timestamp() - interval '71 hours'
+  ),
+  (
+    '66000000-0000-4000-8000-000000000005',
+    '62000000-0000-4000-8000-000000000003','SW-6103','离职员工',
+    'ATT-ELIGIBLE','合法现场','東京都 千代田区 1-1',
+    35.681236,139.767125,300,
+    timezone('Asia/Tokyo',statement_timestamp())::date - 3,
+    'closed',statement_timestamp() - interval '72 hours',statement_timestamp() - interval '71 hours'
+  );
+
+insert into public.project_attendance_events(
+  session_id, event_type, request_id, server_recorded_at,
+  latitude, longitude, accuracy_meters, distance_meters, radius_meters,
+  result, abnormal_reason
+) values (
+  '66000000-0000-4000-8000-000000000003','clock_out',
+  '63200000-0000-4000-8000-000000000001',statement_timestamp() - interval '71 hours',
+  35.681236,139.767125,10,0,300,'normal',null
+);
+
+select throws_ok(
+  $$ insert into public.project_attendance_events(
+       session_id, event_type, request_id, server_recorded_at,
+       latitude, longitude, accuracy_meters, distance_meters, radius_meters,
+       result, abnormal_reason
+     ) values (
+       '66000000-0000-4000-8000-000000000004','clock_in',
+       '63200000-0000-4000-8000-000000000002',statement_timestamp(),
+       35.681236,139.767125,301,301,300,'abnormal',null
+     ) $$,
+  '23514', null, 'event constraint rejects an abnormal event with a null reason'
+);
+select throws_ok(
+  $$ insert into public.project_attendance_events(
+       session_id, event_type, request_id, server_recorded_at,
+       latitude, longitude, accuracy_meters, distance_meters, radius_meters,
+       result, abnormal_reason
+     ) values (
+       '66000000-0000-4000-8000-000000000005','clock_in',
+       '63200000-0000-4000-8000-000000000003',statement_timestamp(),
+       35.681236,139.767125,301,301,300,'abnormal',E'\t入口封闭\n'
+     ) $$,
+  '23514', null, 'event constraint rejects a noncanonical control-whitespace-padded reason'
+);
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000001', true);
 insert into attendance_clock_results values (
   'boundary_first',
   public.clock_in_project_secure(
     'ATT-ELIGIBLE', '63000000-0000-4000-8000-000000000001',
-    35.681236, 139.767125, 300, '2026-01-01T00:00:00Z', null
+    35.681236, 139.767125, 300, '2026-01-01T00:00:00Z', E'\tignored normal reason\n'
   )
 );
 insert into attendance_clock_results values (
   'boundary_retry',
   public.clock_in_project_secure(
     'ATT-ELIGIBLE', '63000000-0000-4000-8000-000000000001',
-    35.681236, 139.767125, 300, '2026-01-01T00:00:00Z', null
+    35.681236, 139.767125, 300, '2026-01-01T00:00:00Z', E'\tignored normal reason\n'
   )
 );
 select is(
@@ -319,6 +717,36 @@ select is(
   (select timezone('Asia/Tokyo', (payload#>>'{event,serverRecordedAt}')::timestamptz)::date
    from attendance_clock_results where result_name = 'boundary_first'),
   'work date comes from server time in Tokyo'
+);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'ATT-ELIGIBLE-OTHER','63000000-0000-4000-8000-000000000001',
+    35.681236,139.767125,10,null,null
+  ) $$,
+  '22023',null,'same-employee request reuse against another project conflicts'
+);
+select is(
+  pg_temp.attendance_clock_hint(
+    'ATT-ELIGIBLE-OTHER','63000000-0000-4000-8000-000000000001',
+    35.681236,139.767125,10,null,null
+  ),
+  'ATTENDANCE_REQUEST_CONFLICT',
+  'same-employee cross-project request reuse has a stable safe hint'
+);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'ATT-ELIGIBLE','63200000-0000-4000-8000-000000000001',
+    35.681236,139.767125,10,null,null
+  ) $$,
+  '22023',null,'same-employee clock-out request reuse is rejected by clock-in'
+);
+select is(
+  pg_temp.attendance_clock_hint(
+    'ATT-ELIGIBLE','63200000-0000-4000-8000-000000000001',
+    35.681236,139.767125,10,null,null
+  ),
+  'ATTENDANCE_REQUEST_CONFLICT',
+  'clock-out request reuse through clock-in has a stable safe hint'
 );
 select throws_ok(
   $$ select public.clock_in_project_secure(
@@ -388,13 +816,60 @@ select is(
   'ATTENDANCE_REQUEST_CONFLICT',
   'cross-employee request reuse has a stable safe hint'
 );
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000006', true);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'ATT-ELIGIBLE','63000000-0000-4000-8000-000000000005',
+    35.681236,139.767125,300.001,null,E'\t\n\r '
+  ) $$,
+  '22023',null,'control-whitespace-only abnormal reason is rejected'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000008', true);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'ATT-ELIGIBLE','63000000-0000-4000-8000-000000000006',
+    35.681236,139.767125,300.001,null,repeat('界',501)
+  ) $$,
+  '22023',null,'an abnormal reason of 501 Unicode code points is rejected'
+);
+insert into attendance_clock_results values (
+  'abnormal_500_code_points',
+  public.clock_in_project_secure(
+    'ATT-ELIGIBLE','63000000-0000-4000-8000-000000000007',
+    35.681236,139.767125,300.001,null,repeat('界',500)
+  )
+);
+select is(
+  (select char_length(payload#>>'{event,abnormalReason}')::integer
+   from attendance_clock_results where result_name = 'abnormal_500_code_points'),
+  500,
+  'an abnormal reason of exactly 500 Unicode code points is stored intact'
+);
+
+select set_config('request.jwt.claim.sub', '61000000-0000-4000-8000-000000000009', true);
+insert into attendance_clock_results values (
+  'abnormal_control_padding',
+  public.clock_in_project_secure(
+    'ATT-ELIGIBLE','63000000-0000-4000-8000-000000000008',
+    35.681236,139.767125,300.001,null,E'\t\n 入口\t封闭 \r\n'
+  )
+);
+select is(
+  (select payload#>>'{event,abnormalReason}'
+   from attendance_clock_results where result_name = 'abnormal_control_padding'),
+  E'入口\t封闭',
+  'abnormal reason removes control-whitespace padding while preserving internal content'
+);
 reset role;
 
 select is(
   (select count(*)::integer from public.project_attendance_sessions
-   where employee_profile_id = '62000000-0000-4000-8000-000000000001'),
+   where employee_profile_id = '62000000-0000-4000-8000-000000000001'
+     and status = 'open'),
   1,
-  'idempotent retry creates one session'
+  'idempotent retry creates one open session'
 );
 
 select set_config('request.jwt.claim.role', 'service_role', true);
