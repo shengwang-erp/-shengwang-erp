@@ -240,9 +240,9 @@ function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
     halfDays: legacy ? 0 : 1,
     excusedDays: 0,
     absenceDays: 0,
-    pendingDays: 0,
+    pendingDays: legacy ? 0 : 1,
     issueCounts: { late: 0, early: 0, abnormalLocation: 0, overtimePending: 0 },
-    status: legacy ? 'confirmed' : 'ready',
+    status: legacy ? 'confirmed' : 'incomplete',
     payrollId: null,
     version: 0,
   }
@@ -268,9 +268,8 @@ function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
 function monthlyPayroll({ canViewSalary = true } = {}) {
   const summary = {
     employeeCount: 2,
-    confirmedFullDays: 20,
-    confirmedHalfDays: 1,
-    absenceDays: 0,
+    scheduledAttendanceUnits: 22,
+    confirmedAttendanceUnits: 20.5,
     pendingCount: 1,
   }
   if (canViewSalary) {
@@ -289,6 +288,44 @@ function monthlyPayroll({ canViewSalary = true } = {}) {
       monthlyEmployee({ legacy: true, canViewSalary }),
     ],
     reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
+  }
+}
+
+function employeeMonthCalendar() {
+  const days = []
+  for (let day = 1; day <= 31; day += 1) {
+    const workDate = `2026-07-${String(day).padStart(2, '0')}`
+    const eligible = day >= 16
+    const isoWeekday = new Date(`${workDate}T00:00:00Z`).getUTCDay() || 7
+    const scheduleRequired = eligible && isoWeekday <= 6
+    days.push(eligible ? {
+      workDate,
+      eligible: true,
+      scheduleRequired,
+      dayStatus: day === 18
+        ? 'full_day'
+        : scheduleRequired ? 'not_started' : 'optional_not_worked',
+      issueCodes: [],
+      accountingStatus: day === 18 ? 'confirmed' : null,
+    } : {
+      workDate,
+      eligible: false,
+      scheduleRequired: false,
+      dayStatus: 'not_eligible',
+      issueCodes: [],
+      accountingStatus: null,
+    })
+  }
+  return {
+    salaryMonth: '2026-07',
+    employee: {
+      employeeProfileId: EMPLOYEE_ID,
+      employeeNumber: 'SW-001',
+      employeeName: '山田太郎',
+      department: '工程部',
+      position: '大工',
+    },
+    days,
   }
 }
 
@@ -419,6 +456,8 @@ function bridgeSummary() {
     salaryTotal: 546000,
     projectLaborTotal: 12000,
     projectLaborById: { P001: 12000 },
+    projectLaborLifetimeTotal: 15000,
+    projectLaborLifetimeById: { P001: 12000, P002: 3000 },
     pendingCount: 1,
     effectiveFrom: '2026-07-16',
   }
@@ -431,6 +470,7 @@ function responseFor(name, args = {}) {
   if (name === 'list_daily_attendance_dashboard_secure') return dailyDashboard()
   if (name.includes('attendance_resolution')) return resolutionDetail()
   if (name === 'list_monthly_payroll_secure') return monthlyPayroll()
+  if (name === 'list_employee_attendance_calendar_secure') return employeeMonthCalendar()
   if (name.includes('monthly_payroll')) return payrollResult()
   if (name === 'list_project_labor_costs_secure') {
     return projectReport({ status: args.p_status })
@@ -475,7 +515,7 @@ const payrollPayload = () => ({
   version: 1,
 })
 
-test('all fourteen methods use exact secure RPC names and arguments', async () => {
+test('all fifteen methods use exact secure RPC names and arguments', async () => {
   const { service, calls } = serviceWithResponder()
   await service.getAlertCount()
   await service.listDailyDashboard({ workDate: WORK_DATE })
@@ -485,6 +525,7 @@ test('all fourteen methods use exact secure RPC names and arguments', async () =
   await service.listMonthlyPayroll({
     month: MONTH, department: ' 工程部 ', employeeProfileId: EMPLOYEE_ID, onlyPending: true,
   })
+  await service.listEmployeeMonthCalendar({ employeeProfileId: EMPLOYEE_ID, month: MONTH })
   await service.saveMonthlyPayrollDraft(payrollPayload())
   await service.confirmMonthlyPayroll(payrollPayload())
   await service.reopenMonthlyPayroll({ payrollId: PAYROLL_ID, reason: '\t 修正理由 \n', version: 1 })
@@ -525,6 +566,9 @@ test('all fourteen methods use exact secure RPC names and arguments', async () =
     ['list_monthly_payroll_secure', {
       p_month: '2026-07-01', p_search: '工程部',
       p_employee_profile_id: EMPLOYEE_ID, p_only_pending: true,
+    }],
+    ['list_employee_attendance_calendar_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_month: '2026-07-01',
     }],
     ['save_monthly_payroll_draft_secure', {
       p_employee_profile_id: EMPLOYEE_ID, p_month: '2026-07-01',
@@ -734,10 +778,53 @@ test('monthly payroll validates canonical and legacy rows with salary-redacted a
       })
       return row
     })(),
+    (() => { const row = monthlyPayroll(); row.summary.pendingCount = 0; return row })(),
+    (() => { const row = monthlyPayroll(); row.summary.confirmedAttendanceUnits = 20; return row })(),
+    (() => { const row = monthlyPayroll(); row.summary.scheduledAttendanceUnits = 2.5; return row })(),
+    (() => { const row = monthlyPayroll(); row.summary.confirmedFullDays = 20; return row })(),
   ]) {
     const { service } = serviceWithResponder(() => malformed)
     await assert.rejects(
       () => service.listMonthlyPayroll({ month: MONTH, department: '', employeeProfileId: null, onlyPending: false }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('employee month calendar validates exact identity, month coverage, order, and safe day facts', async () => {
+  const { service } = serviceWithResponder(() => employeeMonthCalendar())
+  const result = await service.listEmployeeMonthCalendar({
+    employeeProfileId: EMPLOYEE_ID,
+    month: MONTH,
+  })
+  assert.equal(result.salaryMonth, MONTH)
+  assert.equal(result.days.length, 31)
+  assert.equal(result.days[0].dayStatus, 'not_eligible')
+  assert.equal(result.days[17].accountingStatus, 'confirmed')
+  assert.equal(result.days[18].scheduleRequired, false)
+
+  const malformedRows = [
+    (() => { const row = employeeMonthCalendar(); row.salaryMonth = '2026-08'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.employee.employeeProfileId = EMPLOYEE_ID_2; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days.pop(); return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[1].workDate = row.days[0].workDate; return row })(),
+    (() => { const row = employeeMonthCalendar(); [row.days[0], row.days[1]] = [row.days[1], row.days[0]]; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[0].scheduleRequired = true; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[0].dayStatus = 'before_activation'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[0].issueCodes = ['late']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[0].accountingStatus = 'draft'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'not_eligible'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].accountingStatus = 'approved'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].issueCodes = ['late', 'abnormal_location']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].unexpected = true; return row })(),
+  ]
+  for (const data of malformedRows) {
+    const malformedService = serviceWithResponder(() => data).service
+    await assert.rejects(
+      () => malformedService.listEmployeeMonthCalendar({
+        employeeProfileId: EMPLOYEE_ID,
+        month: MONTH,
+      }),
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
@@ -840,6 +927,13 @@ test('settings, exports, alerts, and bridge DTOs reject malformed nested values 
     }]],
     ['getAlertCount', undefined, { workDate: WORK_DATE, count: 0, refreshedAt: '2026-07-18T17:06:00+09:00' }],
     ['getBridgeSummary', { month: MONTH }, bridgeSummary()],
+    ['getBridgeSummary', { month: MONTH }, {
+      ...bridgeSummary(),
+      projectLaborTotal: 0,
+      projectLaborById: {},
+      projectLaborLifetimeTotal: 0,
+      projectLaborLifetimeById: {},
+    }],
   ]
   for (const [method, input, data] of successCases) {
     const { service } = serviceWithResponder(() => data)
@@ -854,6 +948,26 @@ test('settings, exports, alerts, and bridge DTOs reject malformed nested values 
     ['getAlertCount', undefined, { workDate: WORK_DATE, count: -0, refreshedAt: '2026-07-18T17:06:00+09:00' }],
     ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborById: poisonedMap }],
     ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborById: { P001: Number.NaN } }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), salaryMonth: '2026-08-01' }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborTotal: 12001 }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborLifetimeTotal: 15001 }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborLifetimeById: { P001: 15000, P002: 1 } }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), isAuthoritative: false }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), effectiveFrom: null }],
+    ['getBridgeSummary', { month: MONTH }, {
+      ...bridgeSummary(),
+      effectiveFrom: '2026-08-01',
+      isAuthoritative: false,
+      pendingCount: 1,
+    }],
+    ['getBridgeSummary', { month: MONTH }, {
+      ...bridgeSummary(),
+      projectLaborLifetimeById: { P002: 15000 },
+    }],
+    ['getBridgeSummary', { month: MONTH }, {
+      ...bridgeSummary(),
+      projectLaborLifetimeById: { P001: 11000, P002: 4000 },
+    }],
   ]) {
     const { service } = serviceWithResponder(() => data)
     await assert.rejects(
@@ -871,6 +985,7 @@ test('every method rejects null, missing data/error wrappers, and extra top-leve
     ['saveResolutionDraft', resolutionPayload()],
     ['confirmResolution', resolutionPayload()],
     ['listMonthlyPayroll', { month: MONTH, department: '', employeeProfileId: null, onlyPending: false }],
+    ['listEmployeeMonthCalendar', { employeeProfileId: EMPLOYEE_ID, month: MONTH }],
     ['saveMonthlyPayrollDraft', payrollPayload()],
     ['confirmMonthlyPayroll', payrollPayload()],
     ['reopenMonthlyPayroll', { payrollId: PAYROLL_ID, reason: '修正', version: 1 }],
@@ -902,6 +1017,7 @@ test('every method rejects null, missing data/error wrappers, and extra top-leve
           ['getResolutionDetail', 'saveResolutionDraft', 'confirmResolution'].includes(method)
             ? 'get_attendance_resolution_detail_secure'
             : method === 'listMonthlyPayroll' ? 'list_monthly_payroll_secure'
+              : method === 'listEmployeeMonthCalendar' ? 'list_employee_attendance_calendar_secure'
               : ['saveMonthlyPayrollDraft', 'confirmMonthlyPayroll', 'reopenMonthlyPayroll'].includes(method)
                 ? 'save_monthly_payroll_draft_secure'
                 : method === 'listProjectLaborCosts' ? 'list_project_labor_costs_secure'
@@ -966,6 +1082,8 @@ test('dates, months, UUIDs, enums, units, yen, versions, and bounded text reject
     () => service.listDailyDashboard({ workDate: '1899-12-31' }),
     () => service.listDailyDashboard({ workDate: '2101-01-01' }),
     () => service.getResolutionDetail({ employeeProfileId: 'not-a-uuid', workDate: WORK_DATE }),
+    () => service.listEmployeeMonthCalendar({ employeeProfileId: 'not-a-uuid', month: MONTH }),
+    () => service.listEmployeeMonthCalendar({ employeeProfileId: EMPLOYEE_ID, month: '2026-13' }),
     () => service.listMonthlyPayroll({ month: '2026-13', department: '', employeeProfileId: null, onlyPending: false }),
     () => service.listMonthlyPayroll({ month: '1899-12', department: '', employeeProfileId: null, onlyPending: false }),
     () => service.listMonthlyPayroll({ month: MONTH, department: 'x'.repeat(201), employeeProfileId: null, onlyPending: false }),
@@ -1266,7 +1384,8 @@ test('service source is RPC-only, has no browser cache or logging seam, and sing
   assert.deepEqual(Object.keys(laborAccountingService).sort(), [
     'confirmMonthlyPayroll', 'confirmResolution', 'exportProjectLaborCosts',
     'getAlertCount', 'getBridgeSummary', 'getResolutionDetail', 'getSettings',
-    'listDailyDashboard', 'listMonthlyPayroll', 'listProjectLaborCosts',
+    'listDailyDashboard', 'listEmployeeMonthCalendar', 'listMonthlyPayroll',
+    'listProjectLaborCosts',
     'reopenMonthlyPayroll', 'saveMonthlyPayrollDraft', 'saveResolutionDraft',
     'updateSettings',
   ])

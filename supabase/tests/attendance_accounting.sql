@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(217);
+select plan(230);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -2002,6 +2002,7 @@ select is(
           ('save_attendance_resolution_draft_secure', 'uuid, date, text, numeric, numeric, jsonb, text, integer'),
           ('confirm_attendance_resolution_secure', 'uuid, date, text, numeric, numeric, jsonb, text, integer'),
           ('list_monthly_payroll_secure', 'date, text, uuid, boolean'),
+          ('list_employee_attendance_calendar_secure', 'uuid, date'),
           ('save_monthly_payroll_draft_secure', 'uuid, date, numeric, numeric, numeric, text, integer'),
           ('confirm_monthly_payroll_secure', 'uuid, date, numeric, numeric, numeric, text, integer'),
           ('reopen_monthly_payroll_secure', 'uuid, text, integer'),
@@ -2012,8 +2013,8 @@ select is(
           ('get_attendance_accounting_bridge_secure', 'date')
       )
   ),
-  12::bigint,
-  'all twelve Task 4 public RPCs have the exact approved input signatures'
+  13::bigint,
+  'all thirteen accounting public RPCs have the exact approved input signatures'
 );
 
 select is(
@@ -2029,7 +2030,7 @@ select is(
 
 select ok(
   (
-    select count(*) = 12
+    select count(*) = 13
       and bool_and(procedure.prosecdef)
       and bool_and(pg_get_function_result(procedure.oid) = 'jsonb')
       and bool_and(
@@ -2064,6 +2065,7 @@ select ok(
         'save_attendance_resolution_draft_secure',
         'confirm_attendance_resolution_secure',
         'list_monthly_payroll_secure',
+        'list_employee_attendance_calendar_secure',
         'save_monthly_payroll_draft_secure',
         'confirm_monthly_payroll_secure',
         'reopen_monthly_payroll_secure',
@@ -2074,12 +2076,12 @@ select ok(
         'get_attendance_accounting_bridge_secure'
       )
   ),
-  'Task 4 RPCs are exact jsonb SECURITY DEFINER surfaces with closed ACLs'
+  'accounting RPCs are exact jsonb SECURITY DEFINER surfaces with closed ACLs'
 );
 
 select ok(
   (
-    select count(*) = 12
+    select count(*) = 13
       and bool_and(
         case
           when procedure.proname in (
@@ -2101,6 +2103,7 @@ select ok(
         'save_attendance_resolution_draft_secure',
         'confirm_attendance_resolution_secure',
         'list_monthly_payroll_secure',
+        'list_employee_attendance_calendar_secure',
         'save_monthly_payroll_draft_secure',
         'confirm_monthly_payroll_secure',
         'reopen_monthly_payroll_secure',
@@ -4523,6 +4526,233 @@ begin
   );
 end;
 $$;
+
+select ok(
+  (
+    with calendar as (
+      select public.list_employee_attendance_calendar_secure(
+        '75000000-0000-4000-8000-000000000008', '2026-07-01'
+      ) result
+    )
+    select
+      (select array_agg(key order by key) from jsonb_object_keys(result) key)
+        = array['days', 'employee', 'salaryMonth']::text[]
+      and (select array_agg(key order by key)
+        from jsonb_object_keys(result->'employee') key)
+        = array[
+          'department', 'employeeName', 'employeeNumber',
+          'employeeProfileId', 'position'
+        ]::text[]
+      and result->>'salaryMonth' = '2026-07'
+      and jsonb_array_length(result->'days') = 31
+      and result#>>'{days,0,workDate}' = '2026-07-01'
+      and result#>>'{days,30,workDate}' = '2026-07-31'
+      and not exists (
+        select 1
+        from jsonb_array_elements(result->'days') with ordinality day(value, ordinal)
+        where value->>'workDate' <>
+          to_char('2026-07-01'::date + (ordinal - 1)::integer, 'YYYY-MM-DD')
+          or (select array_agg(key order by key)
+              from jsonb_object_keys(value) key) <> array[
+                'accountingStatus', 'dayStatus', 'eligible', 'issueCodes',
+                'scheduleRequired', 'workDate'
+              ]::text[]
+      )
+    from calendar
+  ),
+  'employee calendar returns an exact, ordered, complete month DTO'
+);
+
+select ok(
+  (
+    with calendar as (
+      select public.list_employee_attendance_calendar_secure(
+        '75000000-0000-4000-8000-000000000008', '2026-07-01'
+      ) result
+    )
+    select result#>>'{days,0,eligible}' = 'false'
+      and result#>>'{days,0,scheduleRequired}' = 'false'
+      and result#>>'{days,0,dayStatus}' = 'not_eligible'
+      and result#>'{days,0,issueCodes}' = '[]'::jsonb
+      and result#>'{days,0,accountingStatus}' = 'null'::jsonb
+      and result#>>'{days,15,eligible}' = 'true'
+      and result#>>'{days,15,dayStatus}' = 'full_day'
+      and result#>>'{days,15,accountingStatus}' = 'month_locked'
+    from calendar
+  ),
+  'calendar marks pre-activation and out-of-employment days ineligible and keeps confirmed facts'
+);
+
+select ok(
+  (
+    with calendar as (
+      select public.list_employee_attendance_calendar_secure(
+        '75000000-0000-4000-8000-000000000010', '2026-08-01'
+      ) result
+    )
+    select result#>>'{days,8,workDate}' = '2026-08-09'
+      and result#>>'{days,8,eligible}' = 'true'
+      and result#>>'{days,8,scheduleRequired}' = 'false'
+      and result#>>'{days,8,dayStatus}' = 'completed'
+    from calendar
+  ),
+  'eligible Sunday attendance remains optional while preserving its clock-derived status'
+);
+
+select throws_ok(
+  $$select public.list_employee_attendance_calendar_secure(
+    null, '2026-07-01'
+  )$$,
+  '22023', 'valid employee and salary month required',
+  'employee calendar rejects a null employee identifier'
+);
+
+select throws_ok(
+  $$select public.list_employee_attendance_calendar_secure(
+    '79999999-0000-4000-8000-000000000099', '2026-07-01'
+  )$$,
+  '22023', 'employee not found',
+  'employee calendar rejects unknown employee identifiers'
+);
+
+select throws_ok(
+  $$select public.list_employee_attendance_calendar_secure(
+    '75000000-0000-4000-8000-000000000008', '2026-07-02'
+  )$$,
+  '22023', 'salary month must be a finite month-first date',
+  'employee calendar rejects non-month-first dates'
+);
+
+select throws_ok(
+  $$select public.list_employee_attendance_calendar_secure(
+    '75000000-0000-4000-8000-000000000008', '2101-01-01'
+  )$$,
+  '22023', 'salary month must be between 1900-01-01 and 2100-12-31',
+  'employee calendar rejects unsupported finite months before interval arithmetic'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-07-01', '', '75000000-0000-4000-8000-000000000008', false
+      ) result
+    )
+    select (select array_agg(key order by key)
+        from jsonb_object_keys(result->'summary') key) = array[
+          'confirmedAttendanceUnits', 'employeeCount', 'pendingCount',
+          'projectAllocatedTotal', 'projectUnallocatedTotal',
+          'salaryPreviewTotal', 'scheduledAttendanceUnits'
+        ]::text[]
+      and result#>>'{summary,employeeCount}' = '1'
+      and result#>>'{summary,scheduledAttendanceUnits}' = '1'
+      and (result#>>'{summary,confirmedAttendanceUnits}')::numeric = 1
+      and result#>>'{summary,pendingCount}' = '0'
+    from report
+  ),
+  'monthly summary reports scheduled, confirmed, and pending attendance units from filtered facts'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-08-01', '', '75000000-0000-4000-8000-000000000002', false
+      ) result
+    )
+    select result#>>'{summary,scheduledAttendanceUnits}' = '1'
+      and result#>>'{summary,confirmedAttendanceUnits}' = '0.5'
+      and result#>>'{summary,pendingCount}' = '0'
+    from report
+  ),
+  'monthly confirmed attendance units retain exact half-day precision'
+);
+
+reset role;
+create or replace function pg_temp.task_calendar_schedule_snapshot_probe()
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  locked_report jsonb;
+  unconfirmed_report jsonb;
+  result_text text;
+  caught_message text;
+begin
+  begin
+    update public.attendance_accounting_settings
+    set work_weekdays = array[7]::smallint[]
+    where settings_key = 'default';
+    update public.employee_profiles
+    set deleted_at = statement_timestamp()
+    where id = '75000000-0000-4000-8000-000000000008';
+    locked_report := public.list_monthly_payroll_secure(
+      '2026-07-01', '', '75000000-0000-4000-8000-000000000008', false
+    );
+    unconfirmed_report := public.list_monthly_payroll_secure(
+      '2026-08-01', '', '75000000-0000-4000-8000-000000000005', false
+    );
+    result_text := (locked_report#>>'{summary,scheduledAttendanceUnits}') || ':'
+      || (locked_report#>>'{summary,confirmedAttendanceUnits}') || ':'
+      || (unconfirmed_report#>>'{summary,scheduledAttendanceUnits}');
+    raise exception using errcode = 'PT418', message = result_text;
+  exception when sqlstate 'PT418' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message;
+  end;
+end;
+$$;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+select is(
+  pg_temp.task_calendar_schedule_snapshot_probe(),
+  '1:1.0:0',
+  'locked historical schedule snapshots survive rule and deletion drift while unresolved days use current rules'
+);
+
+select set_config(
+  'request.jwt.claim.sub', '74000000-0000-4000-8000-000000000003', true
+);
+select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-08-01', '', null, false
+      ) result
+    )
+    select (select array_agg(key order by key)
+        from jsonb_object_keys(result->'summary') key) = array[
+          'confirmedAttendanceUnits', 'employeeCount', 'pendingCount',
+          'scheduledAttendanceUnits'
+        ]::text[]
+      and (result#>>'{summary,pendingCount}')::integer = (
+        select coalesce(sum((employee->>'pendingDays')::integer), 0)::integer
+        from jsonb_array_elements(result->'employees') employee
+      )
+    from report
+  ),
+  'redacted monthly summary keeps exact non-money keys and counts pending employee-days'
+);
+
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000003', true
+);
+select throws_ok(
+  $$select public.list_employee_attendance_calendar_secure(
+    '75000000-0000-4000-8000-000000000008', '2026-07-01'
+  )$$,
+  '42501', 'labor accountant required',
+  'employee calendar propagates accountant authorization failure'
+);
+
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
 select is(
   public.save_attendance_resolution_draft_secure(
     '75000000-0000-4000-8000-000000000009', '2026-07-17',
@@ -4887,13 +5117,19 @@ select ok(
       (select array_agg(key order by key) from jsonb_object_keys(result) key)
         = array[
           'effectiveFrom', 'isAuthoritative', 'pendingCount',
-          'projectLaborById', 'projectLaborTotal', 'salaryMonth', 'salaryTotal'
+          'projectLaborById', 'projectLaborLifetimeById',
+          'projectLaborLifetimeTotal', 'projectLaborTotal',
+          'salaryMonth', 'salaryTotal'
         ]::text[]
       and result->>'salaryMonth' = '2026-06'
       and (result->>'isAuthoritative')::boolean = false
       and (result->>'salaryTotal')::numeric = 10500
       and (result->>'projectLaborTotal')::numeric = 500
       and (result#>>'{projectLaborById,P-T4-A}')::numeric = 500
+      and (result->>'projectLaborLifetimeTotal')::numeric = 18801
+      and (result#>>'{projectLaborLifetimeById,P-T4-A}')::numeric = 10500
+      and (result#>>'{projectLaborLifetimeById,P-T4-B}')::numeric = 8001
+      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 300
     from bridge
   ),
   'pre-activation bridge uses only valid legacy rows and recomputes legacy net salary'
@@ -4909,6 +5145,10 @@ select ok(
       and (result->>'projectLaborTotal')::numeric = 6000
       and (result#>>'{projectLaborById,P-T4-A}')::numeric = 4000
       and (result#>>'{projectLaborById,P-T4-B}')::numeric = 2000
+      and (result->>'projectLaborLifetimeTotal')::numeric = 18801
+      and (result#>>'{projectLaborLifetimeById,P-T4-A}')::numeric = 10500
+      and (result#>>'{projectLaborLifetimeById,P-T4-B}')::numeric = 8001
+      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 300
       and (result->>'pendingCount')::integer >= 1
       and result::text !~ '9999|99999|7777|8888'
     from bridge
@@ -4968,6 +5208,12 @@ select throws_ok(
   )$$,
   '22003', 'attendance accounting aggregate exceeds safe integer range',
   'project report aggregates fail closed before JSON number precision is lost'
+);
+
+select throws_ok(
+  $$select public.get_attendance_accounting_bridge_secure('2026-07-01')$$,
+  '22003', 'attendance accounting aggregate exceeds safe integer range',
+  'bridge lifetime aggregates fail closed before JSON number precision is lost'
 );
 
 select set_config(

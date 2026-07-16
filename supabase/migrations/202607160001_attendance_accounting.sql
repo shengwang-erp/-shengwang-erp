@@ -2365,6 +2365,8 @@ declare
   half_days numeric := 0;
   absence_days numeric := 0;
   excused_days numeric := 0;
+  scheduled_attendance_units integer := 0;
+  confirmed_attendance_units numeric := 0;
   pending_days integer := 0;
   allocated_amount numeric := 0;
   final_cost numeric := 0;
@@ -2376,13 +2378,41 @@ begin
     count(*) filter (
       where resolution.resolution_type in ('rest', 'leave', 'comp_time')
     ),
+    coalesce(sum(resolution.attendance_units), 0),
     coalesce(sum(resolution.final_project_cost), 0)
-    into full_days, half_days, absence_days, excused_days, final_cost
+    into full_days, half_days, absence_days, excused_days,
+      confirmed_attendance_units, final_cost
     from public.attendance_day_resolutions resolution
     where resolution.employee_profile_id = p_employee_profile_id
       and resolution.work_date >= p_month
       and resolution.work_date < (p_month + interval '1 month')::date
       and resolution.accounting_status in ('confirmed', 'month_locked');
+
+  select count(*)::integer
+    into scheduled_attendance_units
+    from generate_series(
+      p_month::timestamp,
+      (p_month + interval '1 month - 1 day')::timestamp,
+      interval '1 day'
+    ) generated(day_value)
+    where case
+      when exists (
+        select 1
+        from public.attendance_day_resolutions resolution
+        where resolution.employee_profile_id = p_employee_profile_id
+          and resolution.work_date = generated.day_value::date
+          and resolution.accounting_status in ('confirmed', 'month_locked')
+      ) then coalesce((
+        select resolution.schedule_required
+        from public.attendance_day_resolutions resolution
+        where resolution.employee_profile_id = p_employee_profile_id
+          and resolution.work_date = generated.day_value::date
+          and resolution.accounting_status in ('confirmed', 'month_locked')
+      ), false)
+      else private.attendance_employee_is_eligible(
+          p_employee_profile_id, generated.day_value::date
+        ) and private.attendance_schedule_required(generated.day_value::date)
+    end;
 
   select coalesce(sum(allocation.amount), 0)
     into allocated_amount
@@ -2447,6 +2477,8 @@ begin
     'halfDays', half_days,
     'absenceDays', absence_days,
     'excusedDays', excused_days,
+    'scheduledAttendanceUnits', scheduled_attendance_units,
+    'confirmedAttendanceUnits', confirmed_attendance_units,
     'pendingDays', pending_days,
     'projectAllocatedAmount', allocated_amount,
     'projectFinalCost', final_cost,
@@ -3042,9 +3074,8 @@ declare
   row_half_days numeric;
   row_absence_days numeric;
   row_pending_days integer;
-  total_full numeric := 0;
-  total_half numeric := 0;
-  total_absence numeric := 0;
+  total_scheduled_attendance_units numeric := 0;
+  total_confirmed_attendance_units numeric := 0;
   total_pending integer := 0;
   total_salary numeric := 0;
   total_allocated numeric := 0;
@@ -3155,9 +3186,8 @@ begin
     end if;
     row_result := jsonb_build_object(
       'employeeCount', jsonb_array_length(employees_result),
-      'confirmedFullDays', 0,
-      'confirmedHalfDays', 0,
-      'absenceDays', 0,
+      'scheduledAttendanceUnits', 0,
+      'confirmedAttendanceUnits', 0,
       'pendingCount', 0
     );
     if can_view_salary then
@@ -3344,12 +3374,11 @@ begin
       total_unallocated := total_unallocated
         + (counts->>'projectUnallocatedAmount')::numeric;
     end if;
-    total_full := total_full + row_full_days;
-    total_half := total_half + row_half_days;
-    total_absence := total_absence + row_absence_days;
-    if row_status <> 'confirmed' then
-      total_pending := total_pending + 1;
-    end if;
+    total_scheduled_attendance_units := total_scheduled_attendance_units
+      + (counts->>'scheduledAttendanceUnits')::numeric;
+    total_confirmed_attendance_units := total_confirmed_attendance_units
+      + (counts->>'confirmedAttendanceUnits')::numeric;
+    total_pending := total_pending + row_pending_days;
     employees_result := employees_result || jsonb_build_array(row_result);
   end loop;
 
@@ -3390,9 +3419,12 @@ begin
 
   row_result := jsonb_build_object(
     'employeeCount', jsonb_array_length(employees_result),
-    'confirmedFullDays', total_full,
-    'confirmedHalfDays', total_half,
-    'absenceDays', total_absence,
+    'scheduledAttendanceUnits', private.attendance_require_safe_aggregate(
+      total_scheduled_attendance_units
+    ),
+    'confirmedAttendanceUnits', private.attendance_require_safe_aggregate(
+      total_confirmed_attendance_units
+    ),
     'pendingCount', total_pending
   );
   if can_view_salary then
@@ -3426,6 +3458,116 @@ revoke all on function public.list_monthly_payroll_secure(
 ) from public, anon, authenticated, service_role;
 grant execute on function public.list_monthly_payroll_secure(
   date, text, uuid, boolean
+) to authenticated, service_role;
+
+create or replace function public.list_employee_attendance_calendar_secure(
+  p_employee_profile_id uuid,
+  p_month date
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  employee public.employee_profiles%rowtype;
+  generated record;
+  eligible boolean;
+  dashboard_employee jsonb;
+  days_result jsonb := '[]'::jsonb;
+begin
+  actor := private.current_attendance_accountant();
+  if p_employee_profile_id is null then
+    raise exception using
+      errcode = '22023', message = 'valid employee and salary month required';
+  end if;
+  if p_month is null or not isfinite(p_month) then
+    raise exception using
+      errcode = '22023', message = 'salary month must be a finite month-first date';
+  end if;
+  if not private.attendance_valid_business_date(p_month) then
+    raise exception using
+      errcode = '22023',
+      message = 'salary month must be between 1900-01-01 and 2100-12-31';
+  end if;
+  if p_month <> date_trunc('month', p_month)::date then
+    raise exception using
+      errcode = '22023', message = 'salary month must be a finite month-first date';
+  end if;
+
+  select profile.*
+    into employee
+    from public.employee_profiles profile
+    where profile.id = p_employee_profile_id
+      and not profile.is_hidden_system_account
+      and profile.employee_number <> 'SW-000';
+  if not found then
+    raise exception using errcode = '22023', message = 'employee not found';
+  end if;
+
+  for generated in
+    select day_value::date work_date
+    from generate_series(
+      p_month::timestamp,
+      (p_month + interval '1 month - 1 day')::timestamp,
+      interval '1 day'
+    ) day_value
+    order by day_value
+  loop
+    eligible := private.attendance_employee_is_eligible(
+      employee.id, generated.work_date
+    );
+    if not eligible then
+      days_result := days_result || jsonb_build_array(jsonb_build_object(
+        'workDate', generated.work_date,
+        'eligible', false,
+        'scheduleRequired', false,
+        'dayStatus', 'not_eligible',
+        'issueCodes', jsonb_build_array(),
+        'accountingStatus', null
+      ));
+    else
+      dashboard_employee := private.attendance_dashboard_employee_json(
+        employee.id, generated.work_date, false
+      );
+      if dashboard_employee is null then
+        raise exception using
+          errcode = '22000', message = 'attendance calendar employee unavailable';
+      end if;
+      days_result := days_result || jsonb_build_array(jsonb_build_object(
+        'workDate', generated.work_date,
+        'eligible', true,
+        'scheduleRequired',
+          (dashboard_employee->>'scheduleRequired')::boolean,
+        'dayStatus', dashboard_employee->>'dayStatus',
+        'issueCodes', dashboard_employee->'issueCodes',
+        'accountingStatus',
+          dashboard_employee#>>'{resolution,accountingStatus}'
+      ));
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'salaryMonth', to_char(p_month, 'YYYY-MM'),
+    'employee', jsonb_build_object(
+      'employeeProfileId', employee.id,
+      'employeeNumber', employee.employee_number,
+      'employeeName', employee.name,
+      'department', employee.department,
+      'position', employee.position
+    ),
+    'days', days_result
+  );
+end;
+$$;
+
+revoke all on function public.list_employee_attendance_calendar_secure(
+  uuid, date
+) from public, anon, authenticated, service_role;
+grant execute on function public.list_employee_attendance_calendar_secure(
+  uuid, date
 ) to authenticated, service_role;
 
 create or replace function public.get_attendance_accounting_settings_secure()
@@ -4193,6 +4335,8 @@ declare
   salary_total numeric := 0;
   project_labor_total numeric := 0;
   project_labor_by_id jsonb := '{}'::jsonb;
+  project_labor_lifetime_total numeric := 0;
+  project_labor_lifetime_by_id jsonb := '{}'::jsonb;
   pending_count integer := 0;
   month_end date;
 begin
@@ -4260,6 +4404,20 @@ begin
       group by row.project_id
     ) project;
 
+  select private.attendance_require_safe_aggregate(
+        coalesce(sum(project.amount), 0)
+      ),
+      coalesce(jsonb_object_agg(
+        project.project_id, project.amount order by project.project_id
+      ), '{}'::jsonb)
+    into project_labor_lifetime_total, project_labor_lifetime_by_id
+    from (
+      select row.project_id,
+        private.attendance_require_safe_aggregate(sum(row.amount)) amount
+      from private.attendance_official_project_rows() row
+      group by row.project_id
+    ) project;
+
   if is_authoritative then
     select coalesce(sum(
         (private.attendance_month_counts(employee.id, p_month)
@@ -4287,6 +4445,8 @@ begin
     'salaryTotal', salary_total,
     'projectLaborTotal', project_labor_total,
     'projectLaborById', project_labor_by_id,
+    'projectLaborLifetimeTotal', project_labor_lifetime_total,
+    'projectLaborLifetimeById', project_labor_lifetime_by_id,
     'pendingCount', pending_count,
     'effectiveFrom', effective_from
   );

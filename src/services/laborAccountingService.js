@@ -47,6 +47,7 @@ const DAY_STATUS_SET = new Set([
   'leave', 'comp_time', 'absence', 'optional_not_worked',
   'missing_clock_in', 'not_started', 'working', 'completed',
 ])
+const CALENDAR_DAY_STATUS_SET = new Set([...DAY_STATUS_SET, 'not_eligible'])
 const DAILY_UNITS = new Set([0, 0.5, 1])
 const RESOLUTION_STATUS_SET = new Set(['draft', 'confirmed', 'month_locked'])
 const PAYROLL_STATUS_SET = new Set(['draft', 'reopened', 'confirmed'])
@@ -826,8 +827,8 @@ function validateMonthlyPayroll(value) {
   }
   if (permissions.canUpdateSalary && !permissions.canViewSalary) throw invalidResponse()
   const summaryKeys = [
-    'employeeCount', 'confirmedFullDays', 'confirmedHalfDays',
-    'absenceDays', 'pendingCount',
+    'employeeCount', 'scheduledAttendanceUnits',
+    'confirmedAttendanceUnits', 'pendingCount',
   ]
   const moneyKeys = [
     'salaryPreviewTotal', 'projectAllocatedTotal', 'projectUnallocatedTotal',
@@ -837,9 +838,8 @@ function validateMonthlyPayroll(value) {
     : summaryKeys)
   const summary = {
     employeeCount: safeInteger(summaryRow.employeeCount),
-    confirmedFullDays: safeInteger(summaryRow.confirmedFullDays),
-    confirmedHalfDays: safeInteger(summaryRow.confirmedHalfDays),
-    absenceDays: safeInteger(summaryRow.absenceDays),
+    scheduledAttendanceUnits: safeInteger(summaryRow.scheduledAttendanceUnits),
+    confirmedAttendanceUnits: halfUnits(summaryRow.confirmedAttendanceUnits),
     pendingCount: safeInteger(summaryRow.pendingCount),
     ...(permissions.canViewSalary ? {
       salaryPreviewTotal: yenValue(summaryRow.salaryPreviewTotal),
@@ -850,12 +850,94 @@ function validateMonthlyPayroll(value) {
   const employees = arrayShape(row.employees).map((employee) =>
     validateMonthlyEmployee(employee, permissions.canViewSalary))
   if (summary.employeeCount !== employees.length) throw invalidResponse()
+  let pendingCount = 0
+  let confirmedAttendanceUnits = 0
+  for (const employee of employees) {
+    pendingCount += employee.pendingDays
+    confirmedAttendanceUnits += employee.fullDays + employee.halfDays * 0.5
+    if (!Number.isSafeInteger(pendingCount) ||
+        !Number.isSafeInteger(confirmedAttendanceUnits * 2)) throw invalidResponse()
+  }
+  if (summary.pendingCount !== pendingCount ||
+      summary.confirmedAttendanceUnits !== confirmedAttendanceUnits) throw invalidResponse()
   return {
     salaryMonth: dtoMonth(row.salaryMonth),
     permissions,
     summary,
     employees,
     reconciliation: validateReconciliation(row.reconciliation),
+  }
+}
+
+function expectedMonthDates(month) {
+  const match = MONTH_PATTERN.exec(month)
+  if (!match) throw invalidResponse()
+  const year = Number(match[1])
+  const monthNumber = Number(match[2])
+  const dayCount = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()
+  const dates = []
+  for (let day = 1; day <= dayCount; day += 1) {
+    dates.push(`${month}-${String(day).padStart(2, '0')}`)
+  }
+  return dates
+}
+
+function validateEmployeeMonthCalendar(value, employeeProfileId, month) {
+  const row = objectShape(value, ['salaryMonth', 'employee', 'days'])
+  const salaryMonth = monthValue(row.salaryMonth)
+  if (salaryMonth !== month) throw invalidResponse()
+  const employeeRow = objectShape(row.employee, [
+    'employeeProfileId', 'employeeNumber', 'employeeName', 'department', 'position',
+  ])
+  const returnedEmployeeProfileId = uuidValue(employeeRow.employeeProfileId)
+  if (returnedEmployeeProfileId !== employeeProfileId) throw invalidResponse()
+  const expectedDates = expectedMonthDates(month)
+  const dayRows = arrayShape(row.days)
+  if (dayRows.length !== expectedDates.length) throw invalidResponse()
+  const days = dayRows.map((valueForDay, index) => {
+    const day = objectShape(valueForDay, [
+      'workDate', 'eligible', 'scheduleRequired', 'dayStatus',
+      'issueCodes', 'accountingStatus',
+    ])
+    const workDate = dateValue(day.workDate)
+    if (workDate !== expectedDates[index]) throw invalidResponse()
+    const eligible = booleanValue(day.eligible)
+    const scheduleRequired = booleanValue(day.scheduleRequired)
+    const dayStatus = enumValue(day.dayStatus, CALENDAR_DAY_STATUS_SET)
+    const issueCodes = validateIssueCodes(day.issueCodes)
+    const accountingStatus = day.accountingStatus === null
+      ? null
+      : enumValue(day.accountingStatus, RESOLUTION_STATUS_SET)
+    if (!eligible && (scheduleRequired || dayStatus !== 'not_eligible' ||
+        issueCodes.length !== 0 || accountingStatus !== null)) throw invalidResponse()
+    if (eligible && dayStatus === 'not_eligible') throw invalidResponse()
+    return {
+      workDate,
+      eligible,
+      scheduleRequired,
+      dayStatus,
+      issueCodes,
+      accountingStatus,
+    }
+  })
+  return {
+    salaryMonth,
+    employee: {
+      employeeProfileId: returnedEmployeeProfileId,
+      employeeNumber: textValue(employeeRow.employeeNumber, {
+        min: 1, max: MAX_IDENTIFIER_LENGTH,
+      }),
+      employeeName: textValue(employeeRow.employeeName, {
+        min: 1, max: MAX_IDENTIFIER_LENGTH,
+      }),
+      department: textValue(employeeRow.department, {
+        min: 1, max: MAX_IDENTIFIER_LENGTH,
+      }),
+      position: textValue(employeeRow.position, {
+        min: 1, max: MAX_IDENTIFIER_LENGTH,
+      }),
+    },
+    days,
   }
 }
 
@@ -1083,19 +1165,53 @@ function validateProjectMap(value) {
   }
 }
 
-function validateBridgeSummary(value) {
+function sumProjectMap(projectMap) {
+  let total = 0
+  for (const amount of Object.values(projectMap)) {
+    total += amount
+    if (!Number.isSafeInteger(total) || Object.is(total, -0)) throw invalidResponse()
+  }
+  return total
+}
+
+function validateBridgeSummary(value, expectedMonth) {
   const row = objectShape(value, [
     'salaryMonth', 'isAuthoritative', 'salaryTotal', 'projectLaborTotal',
-    'projectLaborById', 'pendingCount', 'effectiveFrom',
+    'projectLaborById', 'projectLaborLifetimeTotal',
+    'projectLaborLifetimeById', 'pendingCount', 'effectiveFrom',
   ])
+  const salaryMonth = dtoMonth(row.salaryMonth)
+  if (salaryMonth !== expectedMonth) throw invalidResponse()
+  const projectLaborTotal = yenValue(row.projectLaborTotal)
+  const projectLaborById = validateProjectMap(row.projectLaborById)
+  const projectLaborLifetimeTotal = yenValue(row.projectLaborLifetimeTotal)
+  const projectLaborLifetimeById = validateProjectMap(row.projectLaborLifetimeById)
+  if (sumProjectMap(projectLaborById) !== projectLaborTotal ||
+      sumProjectMap(projectLaborLifetimeById) !== projectLaborLifetimeTotal) {
+    throw invalidResponse()
+  }
+  const effectiveFrom = dateValue(row.effectiveFrom, { nullable: true })
+  const isAuthoritative = booleanValue(row.isAuthoritative)
+  const expectedAuthoritative = effectiveFrom !== null &&
+    expectedMonth >= effectiveFrom.slice(0, 7)
+  const pendingCount = safeInteger(row.pendingCount)
+  if (isAuthoritative !== expectedAuthoritative ||
+      (!isAuthoritative && pendingCount !== 0) ||
+      projectLaborLifetimeTotal < projectLaborTotal) throw invalidResponse()
+  for (const [projectId, amount] of Object.entries(projectLaborById)) {
+    if (!Object.hasOwn(projectLaborLifetimeById, projectId) ||
+        projectLaborLifetimeById[projectId] < amount) throw invalidResponse()
+  }
   return {
-    salaryMonth: dtoMonth(row.salaryMonth),
-    isAuthoritative: booleanValue(row.isAuthoritative),
+    salaryMonth,
+    isAuthoritative,
     salaryTotal: yenValue(row.salaryTotal),
-    projectLaborTotal: yenValue(row.projectLaborTotal),
-    projectLaborById: validateProjectMap(row.projectLaborById),
-    pendingCount: safeInteger(row.pendingCount),
-    effectiveFrom: dateValue(row.effectiveFrom, { nullable: true }),
+    projectLaborTotal,
+    projectLaborById,
+    projectLaborLifetimeTotal,
+    projectLaborLifetimeById,
+    pendingCount,
+    effectiveFrom,
   }
 }
 
@@ -1384,6 +1500,18 @@ export function createLaborAccountingService(client = supabase, options) {
         p_only_pending: booleanValue(row.onlyPending, invalidInput),
       }))
     },
+    async listEmployeeMonthCalendar(input) {
+      exactArguments(arguments, 1)
+      const row = inputObject(input, ['employeeProfileId', 'month'])
+      const employeeProfileId = inputUuid(row.employeeProfileId)
+      const month = inputMonth(row.month)
+      return validateEmployeeMonthCalendar(await call(
+        'list_employee_attendance_calendar_secure', {
+          p_employee_profile_id: employeeProfileId,
+          p_month: `${month}-01`,
+        },
+      ), employeeProfileId, month)
+    },
     async saveMonthlyPayrollDraft(input) {
       exactArguments(arguments, 1)
       const row = validatePayrollInput(input)
@@ -1468,7 +1596,7 @@ export function createLaborAccountingService(client = supabase, options) {
       const month = inputMonth(row.month)
       return validateBridgeSummary(await call('get_attendance_accounting_bridge_secure', {
         p_month: `${month}-01`,
-      }))
+      }), month)
     },
   })
 }

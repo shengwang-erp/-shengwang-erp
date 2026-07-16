@@ -71,6 +71,7 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     String.raw`public\.save_attendance_resolution_draft_secure\(\s*p_employee_profile_id\s+uuid,\s*p_work_date\s+date,\s*p_resolution_type\s+text,\s*p_attendance_units\s+numeric,\s*p_final_project_cost\s+numeric,\s*p_allocations\s+jsonb,\s*p_resolution_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.confirm_attendance_resolution_secure\(\s*p_employee_profile_id\s+uuid,\s*p_work_date\s+date,\s*p_resolution_type\s+text,\s*p_attendance_units\s+numeric,\s*p_final_project_cost\s+numeric,\s*p_allocations\s+jsonb,\s*p_resolution_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.list_monthly_payroll_secure\(\s*p_month\s+date,\s*p_search\s+text,\s*p_employee_profile_id\s+uuid,\s*p_only_pending\s+boolean\s*\)`,
+    String.raw`public\.list_employee_attendance_calendar_secure\(\s*p_employee_profile_id\s+uuid,\s*p_month\s+date\s*\)`,
     String.raw`public\.save_monthly_payroll_draft_secure\(\s*p_employee_profile_id\s+uuid,\s*p_month\s+date,\s*p_overtime_pay\s+numeric,\s*p_bonus\s+numeric,\s*p_deduction\s+numeric,\s*p_confirmation_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.confirm_monthly_payroll_secure\(\s*p_employee_profile_id\s+uuid,\s*p_month\s+date,\s*p_overtime_pay\s+numeric,\s*p_bonus\s+numeric,\s*p_deduction\s+numeric,\s*p_confirmation_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.reopen_monthly_payroll_secure\(\s*p_payroll_id\s+uuid,\s*p_reason\s+text,\s*p_version\s+integer\s*\)`,
@@ -90,6 +91,7 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     'public.save_attendance_resolution_draft_secure(uuid, date, text, numeric, numeric, jsonb, text, integer)',
     'public.confirm_attendance_resolution_secure(uuid, date, text, numeric, numeric, jsonb, text, integer)',
     'public.list_monthly_payroll_secure(date, text, uuid, boolean)',
+    'public.list_employee_attendance_calendar_secure(uuid, date)',
     'public.save_monthly_payroll_draft_secure(uuid, date, numeric, numeric, numeric, text, integer)',
     'public.confirm_monthly_payroll_secure(uuid, date, numeric, numeric, numeric, text, integer)',
     'public.reopen_monthly_payroll_secure(uuid, text, integer)',
@@ -118,9 +120,9 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
   }
 
   const definitions = migration.match(
-    /create or replace function public\.(?:get_attendance_resolution_detail_secure|save_attendance_resolution_draft_secure|confirm_attendance_resolution_secure|list_monthly_payroll_secure|save_monthly_payroll_draft_secure|confirm_monthly_payroll_secure|reopen_monthly_payroll_secure|list_project_labor_costs_secure|export_project_labor_costs_secure|get_attendance_accounting_settings_secure|update_attendance_accounting_settings_secure|get_attendance_accounting_bridge_secure)[\s\S]*?\$\$;/giu,
+    /create or replace function public\.(?:get_attendance_resolution_detail_secure|save_attendance_resolution_draft_secure|confirm_attendance_resolution_secure|list_monthly_payroll_secure|list_employee_attendance_calendar_secure|save_monthly_payroll_draft_secure|confirm_monthly_payroll_secure|reopen_monthly_payroll_secure|list_project_labor_costs_secure|export_project_labor_costs_secure|get_attendance_accounting_settings_secure|update_attendance_accounting_settings_secure|get_attendance_accounting_bridge_secure)[\s\S]*?\$\$;/giu,
   ) ?? []
-  assert.equal(definitions.length, 12)
+  assert.equal(definitions.length, 13)
   for (const definition of definitions) {
     assert.match(definition, /security definer/iu)
     assert.match(definition, /set search_path\s*=\s*pg_catalog,\s*public/iu)
@@ -176,5 +178,30 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
   }
 
   assert.match(migration, /hint\s*=\s*'ATTENDANCE_ACCOUNTING_VERSION_CONFLICT'/iu)
+  const calendarDefinition = definitions.find((definition) =>
+    /function public\.list_employee_attendance_calendar_secure/iu.test(definition))
+  assert.ok(calendarDefinition)
+  assert.match(calendarDefinition, /private\.attendance_dashboard_employee_json\([^,]+,[^,]+,\s*false\s*\)/iu)
+  assert.doesNotMatch(
+    calendarDefinition,
+    /baseSalary|netSalary|dailySalary|hourlyWage|suggestedProjectCost|finalProjectCost|sessions|firstClockInAt|lastClockOutAt|workedMinutes/iu,
+  )
   assert.doesNotMatch(migration, /insert\s+into\s+public\.(?:project_attendance_sessions|project_attendance_events)|update\s+public\.(?:project_attendance_sessions|project_attendance_events)|delete\s+from\s+public\.(?:project_attendance_sessions|project_attendance_events)/iu)
+})
+
+test('monthly payroll summary exposes attendance-unit metrics instead of legacy day labels', () => {
+  const definition = migration.match(
+    /create or replace function public\.list_monthly_payroll_secure[\s\S]*?\$\$;/iu,
+  )?.[0] ?? ''
+  assert.match(definition, /'scheduledAttendanceUnits'/u)
+  assert.match(definition, /'confirmedAttendanceUnits'/u)
+  assert.doesNotMatch(
+    definition,
+    /'employeeCount'[\s\S]{0,300}'confirmedFullDays'[\s\S]{0,150}'confirmedHalfDays'/u,
+  )
+  const countsDefinition = migration.match(
+    /create or replace function private\.attendance_month_counts[\s\S]*?\$\$;/iu,
+  )?.[0] ?? ''
+  assert.match(countsDefinition, /'scheduledAttendanceUnits'/u)
+  assert.match(countsDefinition, /'confirmedAttendanceUnits'/u)
 })
