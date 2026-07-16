@@ -1828,6 +1828,12 @@ begin
       'workedMinutesReference', dashboard_employee->'workedMinutesReference',
       'sessions', dashboard_employee->'sessions'
     ),
+    'hasMoneyScope',
+      coalesce(day_resolution.final_project_cost, 0) <> 0
+      or exists (
+        select 1 from public.attendance_project_allocations allocation
+        where allocation.resolution_id = day_resolution.resolution_id
+      ),
     'permissions', jsonb_build_object(
       'canResolve', public.has_current_permission('module.labor.update'),
       'canViewSalary', can_view_salary,

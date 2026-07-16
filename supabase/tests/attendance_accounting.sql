@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(214);
+select plan(217);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -2704,12 +2704,13 @@ select ok(
     select
       (select array_agg(key order by key) from jsonb_object_keys(result) key)
         = array[
-          'allocations', 'employee', 'facts', 'permissions', 'resolution',
-          'salary', 'scheduleRequired', 'workDate'
+          'allocations', 'employee', 'facts', 'hasMoneyScope', 'permissions',
+          'resolution', 'salary', 'scheduleRequired', 'workDate'
         ]::text[]
       and result#>>'{employee,employeeName}' = '日薪工作流员工'
       and result#>>'{salary,salaryType}' = '日薪'
       and (result#>>'{salary,suggestedProjectCost}')::numeric = 12001
+      and result->'hasMoneyScope' = 'false'::jsonb
       and result->'resolution' = 'null'::jsonb
       and result->'allocations' = '[]'::jsonb
     from detail
@@ -2770,6 +2771,86 @@ select is(
   )#>>'{resolution,accountingStatus}',
   'draft',
   'labor-only accountants may save a trimmed zero-cost nonmoney resolution'
+);
+
+reset role;
+update public.attendance_day_resolutions
+set final_project_cost = 777
+where employee_profile_id = '75000000-0000-4000-8000-000000000006'
+  and work_date = '2026-08-04';
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '74000000-0000-4000-8000-000000000005', true
+);
+select ok(
+  (
+    with detail as (
+      select public.get_attendance_resolution_detail_secure(
+        '75000000-0000-4000-8000-000000000006', '2026-08-04'
+      ) result
+    )
+    select result->'hasMoneyScope' = 'true'::jsonb
+      and (result#>>'{resolution,attendanceUnits}')::numeric = 0
+      and result#>>'{permissions,canViewSalary}' = 'false'
+      and result#>>'{permissions,canViewProjectCosts}' = 'false'
+      and result->'salary' = 'null'::jsonb
+      and result->'allocations' = '[]'::jsonb
+      and result::text !~ '("finalProjectCost"|"amount"|777)'
+    from detail
+  ),
+  'stored nonzero final cost sets money scope without leaking amounts to a labor-only viewer'
+);
+
+reset role;
+update public.attendance_day_resolutions
+set resolution_type = 'full_day', attendance_units = 1,
+  final_project_cost = 0
+where employee_profile_id = '75000000-0000-4000-8000-000000000006'
+  and work_date = '2026-08-04';
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '74000000-0000-4000-8000-000000000005', true
+);
+select is(
+  public.get_attendance_resolution_detail_secure(
+    '75000000-0000-4000-8000-000000000006', '2026-08-04'
+  )->>'hasMoneyScope',
+  'false',
+  'positive attendance units alone do not create stored money scope'
+);
+
+reset role;
+insert into public.attendance_project_allocations (
+  resolution_id, project_id, project_name_snapshot, amount, allocation_note
+) select
+  resolution.resolution_id, 'P-T4-A', '项目甲', 321, ''
+from public.attendance_day_resolutions resolution
+where resolution.employee_profile_id =
+    '75000000-0000-4000-8000-000000000006'
+  and resolution.work_date = '2026-08-04';
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '74000000-0000-4000-8000-000000000005', true
+);
+select ok(
+  (
+    with detail as (
+      select public.get_attendance_resolution_detail_secure(
+        '75000000-0000-4000-8000-000000000006', '2026-08-04'
+      ) result
+    )
+    select result->'hasMoneyScope' = 'true'::jsonb
+      and result#>>'{allocations,0,projectId}' = 'P-T4-A'
+      and not ((result#>'{allocations,0}') ? 'amount')
+      and result->'salary' = 'null'::jsonb
+      and result::text !~ '("finalProjectCost"|321)'
+    from detail
+  ),
+  'an existing allocation sets money scope while its amount remains redacted'
+);
+
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000002', true
 );
 select throws_ok(
   $$select public.save_attendance_resolution_draft_secure(
