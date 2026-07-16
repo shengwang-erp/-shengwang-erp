@@ -329,6 +329,57 @@ test('selected month moves natural-month operations and the 12-month window but 
   assert.equal(july.revenue.data.comparison, null)
 })
 
+test('purchase occurrence validates selected and immediately prior months independently', () => {
+  const base = sourceFixture()
+  const expectedComparison = {
+    current: 200, prior: 30, change: 170, percentChange: 566.7,
+  }
+  const cases = [
+    {
+      name: 'baseline', extra: null, status: 'ready', comparison: expectedComparison,
+    },
+    {
+      name: 'unrelated March',
+      extra: {
+        purchaseId: 'PO-MARCH-INVALID', projectId: 'P1', purchaseDate: '2026-03-15',
+        purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+      },
+      status: 'ready', comparison: expectedComparison,
+    },
+    {
+      name: 'immediately prior June',
+      extra: {
+        purchaseId: 'PO-JUNE-INVALID', projectId: 'P1', purchaseDate: '2026-06-15',
+        purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+      },
+      status: 'ready', comparison: null,
+    },
+    {
+      name: 'selected July',
+      extra: {
+        purchaseId: 'PO-JULY-INVALID', projectId: 'P1', purchaseDate: '2026-07-15',
+        purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+      },
+      status: 'error', comparison: null,
+    },
+  ]
+
+  for (const item of cases) {
+    const purchaseAccrual = item.extra
+      ? ready([...base.purchaseAccrual.data, item.extra])
+      : base.purchaseAccrual
+    const occurrence = buildExecutiveDashboardReadModel(input({
+      sources: sourceFixture({ purchaseAccrual }),
+    })).purchaseOperations.data.occurrence
+    assert.equal(occurrence.status, item.status, item.name)
+    if (item.status === 'ready') {
+      assert.equal(occurrence.data.monthCost, 200, item.name)
+      assert.equal(occurrence.data.count, 1, item.name)
+      assert.deepEqual(occurrence.data.comparison, item.comparison, item.name)
+    } else assert.equal(occurrence.data, null, item.name)
+  }
+})
+
 test('purchase cash is derived only from validated purchase-linked recorded payments without payment projectId', () => {
   const purchaseAccrual = ready([
     {
@@ -389,6 +440,138 @@ test('purchase cash is derived only from validated purchase-linked recorded paym
   assert.equal(selectedProject.purchaseOperations.data.payment.data.monthPaymentCash, 10)
   assert.equal(selectedProject.purchaseOperations.data.payable.data.currentOutstanding, 60)
   assert.equal(selectedProject.cashFlow.data.series.at(-1).purchaseOutflow, 10)
+})
+
+test('purchase health scopes generic payment anomalies through active purchase relations', () => {
+  const base = sourceFixture()
+  const sources = sourceFixture({
+    purchaseAccrual: ready([
+      ...base.purchaseAccrual.data,
+      {
+        purchaseId: 'PO-P2-HEALTH', projectId: 'P2', purchaseDate: '2026-07-02',
+        purchaseSource: 'Amazon', purchaseStatus: '正常', totalCost: 50,
+        openingPaidAmount: 0,
+      },
+      {
+        purchaseId: 'PO-P2-VOID', projectId: 'P2', purchaseDate: '2026-07-02',
+        purchaseSource: 'Amazon', purchaseStatus: '作废', totalCost: 500,
+        openingPaidAmount: 0,
+      },
+    ]),
+    purchasePayments: ready([
+      ...base.purchasePayments.data,
+      {
+        paymentId: 'PP-P2-DUP', purchaseId: 'PO-P2-HEALTH',
+        paymentDate: '2026-07-03', paymentDateSource: 'recorded', jpyAmount: 5,
+      },
+      {
+        paymentId: 'PP-P2-DUP', purchaseId: 'PO-P2-HEALTH',
+        paymentDate: '2026-07-04', paymentDateSource: 'recorded', jpyAmount: 7,
+      },
+      {
+        paymentId: '', purchaseId: 'PO-P2-HEALTH',
+        paymentDate: '2026-07-05', paymentDateSource: 'recorded', jpyAmount: 9,
+      },
+      {
+        paymentId: 'PP-COMPANY-ORPHAN', purchaseId: 'PO-MISSING',
+        paymentDate: '2026-07-06', paymentDateSource: 'recorded', jpyAmount: 11,
+      },
+      {
+        paymentId: 'PP-P2-ORPHAN', purchaseId: 'PO-MISSING', projectId: 'P2',
+        paymentDate: '2026-07-07', paymentDateSource: 'recorded', jpyAmount: 13,
+      },
+      {
+        paymentId: 'PP-P2-VOID', purchaseId: 'PO-P2-VOID', projectId: 'P2',
+        paymentDate: '2026-07-08', paymentDateSource: 'recorded', jpyAmount: 500,
+      },
+    ]),
+  })
+  const baseline = buildExecutiveDashboardReadModel(input())
+  const selectedP1 = buildExecutiveDashboardReadModel(input({ sources }))
+  assert.deepEqual(selectedP1.purchaseOperations, baseline.purchaseOperations)
+  assert.deepEqual(
+    selectedP1.alerts.data.filter((item) => item.type === 'purchase_anomaly'),
+    baseline.alerts.data.filter((item) => item.type === 'purchase_anomaly'),
+  )
+
+  const selectedP2 = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'P2', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+  const p2Anomalies = selectedP2.purchaseOperations.data.health.data.anomalies
+  assert.deepEqual(p2Anomalies.map((item) => item.code).sort(), [
+    'duplicate_record', 'invalid_record', 'orphan_payment',
+  ])
+  assert.equal(p2Anomalies.some((item) => item.recordId === 'PP-P2-DUP'), true)
+  assert.equal(p2Anomalies.some((item) => item.recordId === 'PP-P2-ORPHAN'), true)
+  assert.equal(p2Anomalies.some((item) => item.recordId === 'PP-COMPANY-ORPHAN'), false)
+  assert.equal(JSON.stringify(p2Anomalies).includes('PP-P2-VOID'), false)
+  for (const issue of p2Anomalies) {
+    assert.deepEqual(Object.keys(issue).sort(), ['code', 'recordId', 'source'])
+  }
+  assert.equal(selectedP2.alerts.data.some((item) => item.type === 'purchase_anomaly'), true)
+
+  const company = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+  const companyAnomalies = company.purchaseOperations.data.health.data.anomalies
+  assert.deepEqual(companyAnomalies.map((item) => item.code).sort(), [
+    'duplicate_record', 'invalid_record', 'orphan_payment', 'orphan_payment',
+  ])
+  assert.equal(companyAnomalies.some((item) => item.recordId === 'PP-COMPANY-ORPHAN'), true)
+  assert.equal(JSON.stringify(companyAnomalies).includes('PP-P2-VOID'), false)
+
+  const p2StatusScope = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: '设计中', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+  assert.deepEqual(
+    p2StatusScope.purchaseOperations.data.health.data.anomalies.map((item) => item.code).sort(),
+    ['duplicate_record', 'invalid_record', 'orphan_payment'],
+  )
+
+  const mixedSources = sourceFixture({
+    purchaseAccrual: ready([
+      ...base.purchaseAccrual.data,
+      {
+        purchaseId: 'PO-P2-MIXED', projectId: 'P2', purchaseDate: '2026-07-02',
+        purchaseSource: 'Amazon', purchaseStatus: '正常', totalCost: 50,
+        openingPaidAmount: 0,
+      },
+    ]),
+    purchasePayments: ready([
+      ...base.purchasePayments.data,
+      {
+        paymentId: 'PP-CROSS-DUP', purchaseId: 'PO-JULY',
+        paymentDate: '2026-07-03', paymentDateSource: 'recorded', jpyAmount: 1,
+      },
+      {
+        paymentId: 'PP-CROSS-DUP', purchaseId: 'PO-P2-MIXED',
+        paymentDate: '2026-07-04', paymentDateSource: 'recorded', jpyAmount: 2,
+      },
+    ]),
+  })
+  for (const projectId of ['P1', 'P2']) {
+    const scoped = buildExecutiveDashboardReadModel(input({
+      filters: {
+        projectId, projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+      },
+      sources: mixedSources,
+    }))
+    const issue = scoped.purchaseOperations.data.health.data.anomalies.find(
+      (item) => item.recordId === 'PP-CROSS-DUP',
+    )
+    assert.deepEqual(issue, {
+      source: 'purchasePayments', code: 'duplicate_record', recordId: 'PP-CROSS-DUP',
+    }, projectId)
+  }
 })
 
 test('cash uses only its four authorized sources and isolates unavailable purchase accrual', () => {
@@ -559,6 +742,28 @@ test('payments linked only to an inactive purchase are ignored without cash heal
     buildExecutiveDashboardReadModel(input({ sources })),
     buildExecutiveDashboardReadModel(input({ sources: base })),
   )
+})
+
+test('an inactive duplicate purchase ID cannot suppress the surviving active purchase payments', () => {
+  const base = sourceFixture()
+  const baseline = buildExecutiveDashboardReadModel(input({ sources: base }))
+  const withInactiveDuplicate = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      purchaseAccrual: ready([
+        ...base.purchaseAccrual.data,
+        {
+          purchaseId: 'PO-JULY', projectId: 'P2', purchaseDate: '2026-07-02',
+          purchaseSource: 'Amazon', purchaseStatus: '作废', totalCost: 900000,
+          openingPaidAmount: 0,
+        },
+      ]),
+    }),
+  }))
+
+  assert.equal(withInactiveDuplicate.purchaseOperations.data.payment.data.monthPaymentCash, 25)
+  assert.equal(withInactiveDuplicate.purchaseOperations.data.payable.data.currentOutstanding, 155)
+  assert.equal(withInactiveDuplicate.cashFlow.data.series.at(-1).purchaseOutflow, 25)
+  assert.deepEqual(withInactiveDuplicate, baseline)
 })
 
 test('required-source and sensitive-permission truth tables block only dependent facts', () => {

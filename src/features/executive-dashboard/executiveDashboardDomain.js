@@ -464,7 +464,7 @@ function recordId(row, fields) {
   return ''
 }
 
-function prepareRows(rows, { source, idFields }) {
+function prepareRows(rows, { source, idFields, anomalyScope = null }) {
   const output = []
   const anomalies = []
   const seen = new Set()
@@ -472,18 +472,37 @@ function prepareRows(rows, { source, idFields }) {
     if (isPlainRecord(row) && isInactive(row)) return
     const id = isPlainRecord(row) ? recordId(row, idFields) : ''
     if (!id || seen.has(id)) {
-      anomalies.push({
+      const anomaly = {
         source,
         code: seen.has(id) ? 'duplicate_record' : 'invalid_record',
         recordId: id || `row-${index + 1}`,
         projectId: isPlainRecord(row) && safeIdentifier(row.projectId) ? row.projectId : '',
-      })
+      }
+      if (anomalyScope) anomaly.scopeProjectIds = anomalyScope(row, id)
+      anomalies.push(anomaly)
       return
     }
     seen.add(id)
     output.push(row)
   })
   return { rows: output, anomalies }
+}
+
+function projectPurchaseHealthAnomaly(issue) {
+  const code = safeIdentifier(issue?.code) ? issue.code : 'invalid_record'
+  const paymentIssue = issue?.source === 'purchasePayments' ||
+    safeIdentifier(issue?.paymentId) || code.includes('payment')
+  const source = issue?.source === 'purchaseAccrual' || issue?.source === 'purchasePayments'
+    ? issue.source
+    : paymentIssue ? 'purchasePayments' : 'purchaseAccrual'
+  const recordIdValue = safeIdentifier(issue?.recordId)
+    ? issue.recordId
+    : paymentIssue && safeIdentifier(issue?.paymentId)
+      ? issue.paymentId
+      : !paymentIssue && safeIdentifier(issue?.purchaseId)
+        ? issue.purchaseId
+        : ''
+  return { source, code, recordId: recordIdValue }
 }
 
 function validateMoneyRows(rows, {
@@ -920,16 +939,53 @@ export function buildExecutiveDashboardReadModel(input) {
         source: 'purchaseAccrual', idFields: ['purchaseId'],
       })
     : emptyPrepared
-  const inactivePurchaseIds = new Set(states.purchaseAccrual.status === 'ready'
+  const knownProjectIds = new Set(allProjects.map((project) => project.projectId))
+  const activePurchaseIds = new Set(purchasePrepared.rows
+    .map((row) => row.purchaseId)
+    .filter(safeIdentifier))
+  const duplicateActivePurchaseIds = new Set(purchasePrepared.anomalies
+    .filter((issue) => issue.code === 'duplicate_record')
+    .map((issue) => issue.recordId)
+    .filter(safeIdentifier))
+  const purchaseProjectById = new Map(purchasePrepared.rows.flatMap((row) =>
+    safeIdentifier(row.purchaseId) && safeIdentifier(row.projectId) &&
+      knownProjectIds.has(row.projectId) && !duplicateActivePurchaseIds.has(row.purchaseId)
+      ? [[row.purchaseId, row.projectId]]
+      : []))
+  const inactiveOnlyPurchaseIds = new Set((states.purchaseAccrual.status === 'ready'
     ? states.purchaseAccrual.data
         .filter((row) => isInactive(row))
         .map((row) => row.purchaseId)
         .filter(safeIdentifier)
-    : [])
+    : []).filter((purchaseId) => !activePurchaseIds.has(purchaseId)))
+  const paymentInputRows = states.purchasePayments.status === 'ready'
+    ? states.purchasePayments.data.filter((row) =>
+        !isInactive(row) && !inactiveOnlyPurchaseIds.has(row.purchaseId))
+    : []
+  const paymentHealthProjects = (row) => {
+    const purchaseId = safeIdentifier(row?.purchaseId) ? row.purchaseId : ''
+    if (activePurchaseIds.has(purchaseId)) {
+      const linkedProjectId = purchaseProjectById.get(purchaseId)
+      return linkedProjectId ? [linkedProjectId] : []
+    }
+    return safeIdentifier(row?.projectId) && knownProjectIds.has(row.projectId)
+      ? [row.projectId]
+      : []
+  }
+  const paymentProjectsById = new Map()
+  for (const row of paymentInputRows) {
+    const paymentId = recordId(row, ['paymentId'])
+    if (!paymentId) continue
+    const projectsForId = paymentProjectsById.get(paymentId) || new Set()
+    for (const projectId of paymentHealthProjects(row)) projectsForId.add(projectId)
+    paymentProjectsById.set(paymentId, projectsForId)
+  }
   const paymentPrepared = states.purchasePayments.status === 'ready'
-    ? prepareRows(states.purchasePayments.data.filter((row) =>
-        !inactivePurchaseIds.has(row.purchaseId)), {
+    ? prepareRows(paymentInputRows, {
         source: 'purchasePayments', idFields: ['paymentId'],
+        anomalyScope: (row, paymentId) => paymentId
+          ? [...(paymentProjectsById.get(paymentId) || [])]
+          : paymentHealthProjects(row),
       })
     : emptyPrepared
   const receiptPrepared = states.receipts.status === 'ready'
@@ -990,15 +1046,29 @@ export function buildExecutiveDashboardReadModel(input) {
     }),
   })
   const scopedPurchasePrepared = scopePrepared(purchasePrepared)
-  const purchasesById = new Map(purchasePrepared.rows.map((row) => [row.purchaseId, row]))
+  const companyWideScope = filters.projectId === 'all' && filters.projectStatus === 'all'
+  const paymentProjectsIntersectScope = (projectIds) =>
+    Array.isArray(projectIds) && projectIds.some((projectId) => scopeIds.has(projectId))
   const scopedPaymentPrepared = {
     rows: paymentPrepared.rows.filter((row) => {
-      const purchase = purchasesById.get(row.purchaseId)
-      if (purchase) return !purchase.projectId || scopeIds.has(purchase.projectId)
-      return filters.projectId === 'all' && filters.projectStatus === 'all'
+      if (!activePurchaseIds.has(row.purchaseId)) return false
+      if (companyWideScope) return true
+      const linkedProjectId = purchaseProjectById.get(row.purchaseId)
+      return Boolean(linkedProjectId && scopeIds.has(linkedProjectId))
     }),
-    anomalies: paymentPrepared.anomalies,
+    anomalies: paymentPrepared.anomalies
+      .filter((issue) => companyWideScope ||
+        paymentProjectsIntersectScope(issue.scopeProjectIds))
+      .map(projectPurchaseHealthAnomaly),
   }
+  const scopedOrphanPaymentAnomalies = paymentPrepared.rows
+    .filter((row) => !activePurchaseIds.has(row.purchaseId))
+    .filter((row) => companyWideScope || paymentProjectsIntersectScope(
+      paymentHealthProjects(row),
+    ))
+    .map((row) => ({
+      source: 'purchasePayments', code: 'orphan_payment', recordId: row.paymentId,
+    }))
   const scopedReceiptPrepared = scopePrepared(receiptPrepared)
   const scopedProjectCostPrepared = scopePrepared(projectCostPrepared)
   const scopedOperatingPrepared = scopePrepared(operatingPrepared)
@@ -1010,6 +1080,8 @@ export function buildExecutiveDashboardReadModel(input) {
   const scopedResponsibilityPrepared = scopePrepared(responsibilityPrepared)
   const windowMonths = new Set(months)
   const selectedMonths = new Set([selectedMonth])
+  const priorMonth = months.at(-2)
+  const priorMonths = new Set([priorMonth])
 
   const purchaseSanitized = states.purchaseAccrual.status === 'ready'
     ? validateDatedMoneyRows(scopedPurchasePrepared, {
@@ -1026,6 +1098,12 @@ export function buildExecutiveDashboardReadModel(input) {
     ? validateDatedMoneyRows(scopedPurchasePrepared, {
         source: 'purchaseAccrual', amountField: 'totalCost', dateFields: ['purchaseDate'],
         months: selectedMonths,
+      })
+    : emptyValidated
+  const purchasePriorMonth = states.purchaseAccrual.status === 'ready'
+    ? validateDatedMoneyRows(scopedPurchasePrepared, {
+        source: 'purchaseAccrual', amountField: 'totalCost', dateFields: ['purchaseDate'],
+        months: priorMonths,
       })
     : emptyValidated
   const paymentSanitized = states.purchasePayments.status === 'ready'
@@ -1386,14 +1464,9 @@ export function buildExecutiveDashboardReadModel(input) {
         const monthCost = sumField(
           purchaseMonth.rows, 'totalCost', [], 'purchaseAccrual',
         )
-        const previousMonth = months.at(-2)
-        const previousCost = purchaseWindow.blocking
+        const previousCost = purchasePriorMonth.blocking
           ? null
-          : sumField(
-              purchaseWindow.rows.filter((row) =>
-                dateInMonth(row, ['purchaseDate'], previousMonth)),
-              'totalCost', [], 'purchaseAccrual',
-            )
+          : sumField(purchasePriorMonth.rows, 'totalCost', [], 'purchaseAccrual')
         if (monthCost !== null) {
           occurrence = mini('ready', {
             count: purchaseMonth.rows.length,
@@ -1460,8 +1533,9 @@ export function buildExecutiveDashboardReadModel(input) {
         ? [
             ...purchaseSanitized.anomalies,
             ...paymentSanitized.anomalies,
+            ...scopedOrphanPaymentAnomalies,
             ...lifetimeAccounting.anomalies,
-          ]
+          ].map(projectPurchaseHealthAnomaly)
         : []
       const payableStatus = payableAccess ? lifetimeStatus : 'forbidden'
       const healthStatus = anomalyAccess ? lifetimeStatus : 'forbidden'
