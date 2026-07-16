@@ -1186,11 +1186,12 @@ function getPurchaseStockInStatus(purchase, stockInRecords) {
 function normalizePurchaseRecord(record) {
   const amounts = calculatePurchaseAmounts(record)
   const openingPaidAmount = Number(record.openingPaidAmount)
+  const normalizedOpeningPaidAmount = Math.round(openingPaidAmount)
   const hasOpeningPaidAmount = record.openingPaidAmount !== undefined &&
     record.openingPaidAmount !== null &&
     !(typeof record.openingPaidAmount === 'string' && record.openingPaidAmount.trim() === '') &&
-    Number.isFinite(openingPaidAmount) &&
-    openingPaidAmount >= 0
+    Number.isSafeInteger(normalizedOpeningPaidAmount) &&
+    normalizedOpeningPaidAmount >= 0
 
   return {
     purchaseId: record.purchaseId,
@@ -1219,7 +1220,7 @@ function normalizePurchaseRecord(record) {
     paidAmount: amounts.paidAmount,
     unpaidAmount: amounts.unpaidAmount,
     ...(hasOpeningPaidAmount
-      ? { openingPaidAmount: Math.round(openingPaidAmount) }
+      ? { openingPaidAmount: normalizedOpeningPaidAmount }
       : {}),
     invoiceStatus: record.invoiceStatus || '未取得',
     arrivalStatus: record.arrivalStatus || '未到货',
@@ -6667,6 +6668,35 @@ function PurchaseStockInSection({
   )
 }
 
+async function commitPurchasePaymentMutation({
+  purchaseToSave,
+  persistPurchase,
+  persistLedger,
+  nextPurchaseRecords,
+  nextPaymentRecords,
+  setPurchaseRecords,
+  setPaymentRecords,
+  onPersistenceError,
+  demoMode,
+}) {
+  if (!demoMode) {
+    try {
+      if (purchaseToSave) await persistPurchase(purchaseToSave)
+      await persistLedger()
+    } catch (error) {
+      onPersistenceError?.(error)
+      return false
+    }
+  }
+
+  const stateUpdateOptions = demoMode
+    ? {}
+    : { stateOnly: true, syncLocal: true }
+  setPurchaseRecords(nextPurchaseRecords, stateUpdateOptions)
+  setPaymentRecords(nextPaymentRecords, stateUpdateOptions)
+  return true
+}
+
 function PurchasePaymentSection({
   employees,
   purchaseRecords,
@@ -6676,7 +6706,12 @@ function PurchasePaymentSection({
   onPersistenceError,
 }) {
   const [form, setForm] = useState(createEmptyPurchasePaymentForm)
-  const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
+  const activePurchases = purchaseRecords.filter(
+    (record) =>
+      record.purchaseStatus !== '作废' &&
+      typeof record.purchaseId === 'string' &&
+      record.purchaseId.trim() !== '',
+  )
   const selectedPurchase = activePurchases.find((record) => record.purchaseId === form.purchaseId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
   const paymentPreview = normalizePurchasePaymentRecord({ ...form, paymentId: 'PREVIEW' })
@@ -6724,20 +6759,20 @@ function PurchasePaymentSection({
       (record) => record.purchaseId === selectedPurchase.purchaseId,
     )
 
-    try {
-      if (!localDemoMode) {
-        await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)
-        await upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment)
-      }
-      const stateUpdateOptions = localDemoMode
-        ? {}
-        : { stateOnly: true, syncLocal: true }
-      setPurchaseRecords(nextPurchases, stateUpdateOptions)
-      setRecords(nextPayments, stateUpdateOptions)
-    } catch (error) {
-      onPersistenceError?.(error)
-      return
-    }
+    const committed = await commitPurchasePaymentMutation({
+      purchaseToSave,
+      persistPurchase: (purchase) =>
+        upsertRecord(STORAGE_KEYS.purchaseRecords, purchase),
+      persistLedger: () =>
+        upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment),
+      nextPurchaseRecords: nextPurchases,
+      nextPaymentRecords: nextPayments,
+      setPurchaseRecords,
+      setPaymentRecords: setRecords,
+      onPersistenceError,
+      demoMode: localDemoMode,
+    })
+    if (!committed) return
     setForm(createEmptyPurchasePaymentForm())
   }
 
@@ -6812,22 +6847,19 @@ function PurchasePaymentSection({
               (purchase) => purchase.purchaseId === record.purchaseId,
             )
 
-            try {
-              if (!localDemoMode) {
-                if (purchaseToSave) {
-                  await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)
-                }
-                await softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId)
-              }
-              const stateUpdateOptions = localDemoMode
-                ? {}
-                : { stateOnly: true, syncLocal: true }
-              setPurchaseRecords(nextPurchases, stateUpdateOptions)
-              setRecords(remainingPayments, stateUpdateOptions)
-            } catch (error) {
-              onPersistenceError?.(error)
-              return
-            }
+            await commitPurchasePaymentMutation({
+              purchaseToSave,
+              persistPurchase: (purchase) =>
+                upsertRecord(STORAGE_KEYS.purchaseRecords, purchase),
+              persistLedger: () =>
+                softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId),
+              nextPurchaseRecords: nextPurchases,
+              nextPaymentRecords: remainingPayments,
+              setPurchaseRecords,
+              setPaymentRecords: setRecords,
+              onPersistenceError,
+              demoMode: localDemoMode,
+            })
           }
         }}
       />

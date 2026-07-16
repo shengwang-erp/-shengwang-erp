@@ -59,6 +59,10 @@ async function loadAppModule() {
             'export function normalizePurchaseRecord(record) {',
           )
           .replace(
+            'async function commitPurchasePaymentMutation({',
+            'export async function commitPurchasePaymentMutation({',
+          )
+          .replace(
             'function DashboardPage({',
             'export function DashboardPage({',
           )
@@ -263,7 +267,12 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
   const normalizedOpeningPurchase = appLoaded.module.normalizePurchaseRecord({
     ...rawPurchase,
     purchaseId: 'PO-OPENING',
-    openingPaidAmount: 2000,
+    openingPaidAmount: 2000.4,
+  })
+  const maxSafeOpeningPurchase = appLoaded.module.normalizePurchaseRecord({
+    ...rawPurchase,
+    purchaseId: 'PO-MAX-SAFE',
+    openingPaidAmount: Number.MAX_SAFE_INTEGER,
   })
   const legacyPurchase = appLoaded.module.normalizePurchaseRecord({
     ...rawPurchase,
@@ -272,9 +281,27 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
 
   assert.equal(normalizedPurchase.openingPaidAmount, 0)
   assert.equal(normalizedOpeningPurchase.openingPaidAmount, 2000)
+  assert.equal(maxSafeOpeningPurchase.openingPaidAmount, Number.MAX_SAFE_INTEGER)
   assert.equal(normalizedPurchase.paidAmount, 9999)
   assert.equal(normalizedPurchase.unpaidAmount, 1)
   assert.equal(Object.hasOwn(legacyPurchase, 'openingPaidAmount'), false)
+  for (const [label, openingPaidAmount] of [
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+    ['infinity', Number.POSITIVE_INFINITY],
+    ['negative', -1],
+    ['blank', '   '],
+  ]) {
+    const normalized = appLoaded.module.normalizePurchaseRecord({
+      ...rawPurchase,
+      purchaseId: `PO-${label}`,
+      openingPaidAmount,
+    })
+    assert.equal(
+      Object.hasOwn(normalized, 'openingPaidAmount'),
+      false,
+      `${label} opening snapshot must stay absent`,
+    )
+  }
 
   const html = renderSection({
     purchaseRecords: [normalizedPurchase],
@@ -294,6 +321,155 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
   )
 })
 
+test('purchase payment mutation orchestration executes durable writes before local state', async (t) => {
+  assert.ifError(appLoaded.error)
+  assert.ok(appLoaded.module?.commitPurchasePaymentMutation)
+  const commitMutation = appLoaded.module.commitPurchasePaymentMutation
+  const purchaseToSave = { purchaseId: 'PO-ORCHESTRATION' }
+  const nextPurchaseRecords = [purchaseToSave]
+  const nextPaymentRecords = [{ paymentId: 'PP-ORCHESTRATION' }]
+  const cloudStateOptions = { stateOnly: true, syncLocal: true }
+
+  await t.test('success awaits purchase then ledger before both local commits', async () => {
+    const events = []
+    const purchaseStateCalls = []
+    const paymentStateCalls = []
+    const committed = await commitMutation({
+      purchaseToSave,
+      persistPurchase: async (purchase) => {
+        assert.equal(purchase, purchaseToSave)
+        events.push('purchase:start')
+        await Promise.resolve()
+        events.push('purchase:end')
+      },
+      persistLedger: async () => { events.push('ledger') },
+      nextPurchaseRecords,
+      nextPaymentRecords,
+      setPurchaseRecords: (...args) => {
+        events.push('purchase-state')
+        purchaseStateCalls.push(args)
+      },
+      setPaymentRecords: (...args) => {
+        events.push('payment-state')
+        paymentStateCalls.push(args)
+      },
+      onPersistenceError: (error) => { throw error },
+      demoMode: false,
+    })
+
+    assert.equal(committed, true)
+    assert.deepEqual(events, [
+      'purchase:start',
+      'purchase:end',
+      'ledger',
+      'purchase-state',
+      'payment-state',
+    ])
+    assert.deepEqual(purchaseStateCalls, [[nextPurchaseRecords, cloudStateOptions]])
+    assert.deepEqual(paymentStateCalls, [[nextPaymentRecords, cloudStateOptions]])
+  })
+
+  await t.test('first durable rejection reports the error without ledger or local state', async () => {
+    const failure = new Error('purchase failed')
+    const events = []
+    const committed = await commitMutation({
+      purchaseToSave,
+      persistPurchase: async () => {
+        events.push('purchase')
+        throw failure
+      },
+      persistLedger: async () => { events.push('ledger') },
+      nextPurchaseRecords,
+      nextPaymentRecords,
+      setPurchaseRecords: () => { events.push('purchase-state') },
+      setPaymentRecords: () => { events.push('payment-state') },
+      onPersistenceError: (error) => {
+        assert.equal(error, failure)
+        events.push('error')
+      },
+      demoMode: false,
+    })
+
+    assert.equal(committed, false)
+    assert.deepEqual(events, ['purchase', 'error'])
+  })
+
+  await t.test('second durable rejection keeps both local states untouched', async () => {
+    const failure = new Error('ledger failed')
+    const events = []
+    const committed = await commitMutation({
+      purchaseToSave,
+      persistPurchase: async () => { events.push('purchase') },
+      persistLedger: async () => {
+        events.push('ledger')
+        throw failure
+      },
+      nextPurchaseRecords,
+      nextPaymentRecords,
+      setPurchaseRecords: () => { events.push('purchase-state') },
+      setPaymentRecords: () => { events.push('payment-state') },
+      onPersistenceError: (error) => {
+        assert.equal(error, failure)
+        events.push('error')
+      },
+      demoMode: false,
+    })
+
+    assert.equal(committed, false)
+    assert.deepEqual(events, ['purchase', 'ledger', 'error'])
+  })
+
+  await t.test('orphan deletion skips purchase persistence but still commits the ledger', async () => {
+    const events = []
+    const committed = await commitMutation({
+      purchaseToSave: undefined,
+      persistPurchase: async () => { events.push('purchase') },
+      persistLedger: async () => { events.push('ledger') },
+      nextPurchaseRecords,
+      nextPaymentRecords,
+      setPurchaseRecords: (_records, options) => {
+        assert.deepEqual(options, cloudStateOptions)
+        events.push('purchase-state')
+      },
+      setPaymentRecords: (_records, options) => {
+        assert.deepEqual(options, cloudStateOptions)
+        events.push('payment-state')
+      },
+      onPersistenceError: (error) => { throw error },
+      demoMode: false,
+    })
+
+    assert.equal(committed, true)
+    assert.deepEqual(events, ['ledger', 'purchase-state', 'payment-state'])
+  })
+
+  await t.test('local demo skips durable writes and uses ordinary setter options', async () => {
+    const events = []
+    const committed = await commitMutation({
+      purchaseToSave,
+      persistPurchase: async () => { events.push('purchase') },
+      persistLedger: async () => { events.push('ledger') },
+      nextPurchaseRecords,
+      nextPaymentRecords,
+      setPurchaseRecords: (records, options) => {
+        assert.equal(records, nextPurchaseRecords)
+        assert.deepEqual(options, {})
+        events.push('purchase-state')
+      },
+      setPaymentRecords: (records, options) => {
+        assert.equal(records, nextPaymentRecords)
+        assert.deepEqual(options, {})
+        events.push('payment-state')
+      },
+      onPersistenceError: (error) => { throw error },
+      demoMode: true,
+    })
+
+    assert.equal(committed, true)
+    assert.deepEqual(events, ['purchase-state', 'payment-state'])
+  })
+})
+
 test('purchase payment App handlers guard and reconcile add/delete before saving the ledger', () => {
   const purchaseForm = sliceBetween(
     appSource,
@@ -304,6 +480,11 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
     appSource,
     'function PurchasePaymentSection',
     '\nfunction PurchaseSummarySection',
+  )
+  const mutationHelper = sliceBetween(
+    appSource,
+    'async function commitPurchasePaymentMutation({',
+    '\nfunction PurchasePaymentSection',
   )
   const authenticatedApp = sliceBetween(
     appSource,
@@ -374,8 +555,9 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
   assert.match(purchaseForm, /openingPaidAmount:\s*amountPreview\.paidAmount,/u)
   assert.match(
     paymentSection,
-    /const activePurchases = purchaseRecords\.filter\(\(record\) => record\.purchaseStatus !== '作废'\)/u,
+    /const activePurchases = purchaseRecords\.filter\(\s*\(record\) =>\s*record\.purchaseStatus !== '作废' &&\s*typeof record\.purchaseId === 'string' &&\s*record\.purchaseId\.trim\(\) !== '',?\s*\)/u,
   )
+  assert.doesNotMatch(mutationHelper, /canApplyPurchasePayment|recalculatePurchasePaymentCache/u)
   assert.match(
     submitHandler,
     /^  const handleSubmit = async \(event\) => \{/u,
@@ -395,31 +577,29 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
     /recalculatePurchasePaymentCache\(\s*record,\s*nextPayments,\s*\{ previousPayments: records \},\s*\)/u,
   )
   assert.equal((submitHandler.match(/updatedAt: todayValue\(\)/gu) || []).length, 1)
+  assert.match(submitHandler, /const committed = await commitPurchasePaymentMutation\(\{/u)
   assert.match(
     submitHandler,
-    /await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)/u,
+    /persistPurchase:\s*\(purchase\) =>\s*upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchase\)/u,
   )
   assert.match(
     submitHandler,
-    /await upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)/u,
+    /persistLedger:\s*\(\) =>\s*upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)/u,
   )
   assert.match(
     submitHandler,
-    /const stateUpdateOptions = localDemoMode\s*\? \{\}\s*:\s*\{ stateOnly: true, syncLocal: true \}/u,
+    /nextPurchaseRecords:\s*nextPurchases[\s\S]*?nextPaymentRecords:\s*nextPayments[\s\S]*?setPaymentRecords:\s*setRecords[\s\S]*?demoMode:\s*localDemoMode/u,
   )
-  assert.match(submitHandler, /onPersistenceError\?\.\(error\)/u)
-  assert.match(
-    submitHandler,
-    /try \{[\s\S]*?if \(!localDemoMode\) \{[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)[\s\S]*?setPurchaseRecords\(nextPurchases, stateUpdateOptions\)[\s\S]*?setRecords\(nextPayments, stateUpdateOptions\)[\s\S]*?\} catch \(error\) \{\s*onPersistenceError\?\.\(error\)\s*return\s*\}/u,
-  )
+  assert.match(submitHandler, /if \(!committed\) return\s*setForm\(createEmptyPurchasePaymentForm\(\)\)/u)
   assertMarkersInOrder(submitHandler, [
     'canApplyPurchasePayment(selectedPurchase, records, payment.jpyAmount)',
     'const nextPayments = [payment, ...records]',
     'recalculatePurchasePaymentCache(',
-    'await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)',
-    'await upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment)',
-    'setPurchaseRecords(nextPurchases, stateUpdateOptions)',
-    'setRecords(nextPayments, stateUpdateOptions)',
+    'const committed = await commitPurchasePaymentMutation({',
+    'persistPurchase:',
+    'persistLedger:',
+    'if (!committed) return',
+    'setForm(createEmptyPurchasePaymentForm())',
   ])
 
   assert.match(deleteHandler, /^        onDelete=\{async \(record\) => \{/u)
@@ -432,30 +612,25 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
     /recalculatePurchasePaymentCache\(\s*purchase,\s*remainingPayments,\s*\{ previousPayments: records \},\s*\)/u,
   )
   assert.equal((deleteHandler.match(/updatedAt: todayValue\(\)/gu) || []).length, 1)
+  assert.match(deleteHandler, /await commitPurchasePaymentMutation\(\{/u)
   assert.match(
     deleteHandler,
-    /await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)/u,
+    /persistPurchase:\s*\(purchase\) =>\s*upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchase\)/u,
   )
   assert.match(
     deleteHandler,
-    /await softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)/u,
+    /persistLedger:\s*\(\) =>\s*softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)/u,
   )
   assert.match(
     deleteHandler,
-    /const stateUpdateOptions = localDemoMode\s*\? \{\}\s*:\s*\{ stateOnly: true, syncLocal: true \}/u,
-  )
-  assert.match(deleteHandler, /onPersistenceError\?\.\(error\)/u)
-  assert.match(
-    deleteHandler,
-    /try \{[\s\S]*?if \(!localDemoMode\) \{[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)[\s\S]*?await softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)[\s\S]*?setPurchaseRecords\(nextPurchases, stateUpdateOptions\)[\s\S]*?setRecords\(remainingPayments, stateUpdateOptions\)[\s\S]*?\} catch \(error\) \{\s*onPersistenceError\?\.\(error\)\s*return\s*\}/u,
+    /nextPurchaseRecords:\s*nextPurchases[\s\S]*?nextPaymentRecords:\s*remainingPayments[\s\S]*?setPaymentRecords:\s*setRecords[\s\S]*?demoMode:\s*localDemoMode/u,
   )
   assertMarkersInOrder(deleteHandler, [
     'const remainingPayments = records.filter(',
     'recalculatePurchasePaymentCache(',
-    'await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)',
-    'await softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId)',
-    'setPurchaseRecords(nextPurchases, stateUpdateOptions)',
-    'setRecords(remainingPayments, stateUpdateOptions)',
+    'await commitPurchasePaymentMutation({',
+    'persistPurchase:',
+    'persistLedger:',
   ])
 })
 

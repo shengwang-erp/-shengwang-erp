@@ -306,7 +306,8 @@ export function recalculatePurchasePaymentCache(purchase, payments = [], options
 }
 
 export function canApplyPurchasePayment(purchase, payments = [], amount) {
-  if (!purchase || purchase.purchaseStatus === VOID_PURCHASE_STATUS) return false
+  if (!purchase || !normalizedId(purchase.purchaseId) ||
+      purchase.purchaseStatus === VOID_PURCHASE_STATUS) return false
   const normalizedAmount = normalizeYen(amount, { blankIsZero: false })
   const normalizedTotal = normalizeYen(purchase.totalCost, { blankIsZero: false })
   if (!normalizedAmount.valid || normalizedAmount.amount <= 0 || !normalizedTotal.valid) {

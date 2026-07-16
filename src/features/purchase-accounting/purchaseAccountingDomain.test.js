@@ -287,3 +287,12 @@ test('allows only a positive valid payment within the derived outstanding balanc
   assert.equal(canApplyPurchasePayment(order, payments, -1), false)
   assert.equal(canApplyPurchasePayment(order, payments, Number.POSITIVE_INFINITY), false)
 })
+
+test('rejects payments when the purchase ID is missing or blank', () => {
+  for (const purchaseId of ['', '   ', undefined]) {
+    assert.equal(
+      canApplyPurchasePayment(purchase({ purchaseId }), [], 1000),
+      false,
+    )
+  }
+})
