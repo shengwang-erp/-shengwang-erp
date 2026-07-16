@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(201);
+select plan(206);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -2147,7 +2147,7 @@ select ok(
 
 select ok(
   (
-    select count(*) = 20
+    select count(*) = 21
       and bool_and(procedure.prosecdef)
       and bool_and(procedure.proconfig @> array['search_path=pg_catalog, public'])
       and bool_and(not has_function_privilege(
@@ -2173,6 +2173,7 @@ select ok(
         'attendance_employee_is_eligible',
         'attendance_schedule_required',
         'attendance_salary_json',
+        'attendance_resolution_result',
         'attendance_resolution_snapshot',
         'attendance_payroll_snapshot',
         'attendance_write_resolution',
@@ -3101,6 +3102,89 @@ select is(
   'an exact repeated day confirmation is idempotent before stale-version rejection'
 );
 
+reset role;
+create or replace function pg_temp.task4_day_hr_drift_replay_probe(
+  p_exact boolean
+)
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+  target_resolution_id uuid;
+  before_version integer;
+  after_version integer;
+  before_audit bigint;
+  after_audit bigint;
+  result_text text;
+  caught_message text;
+begin
+  begin
+    update public.employee_profiles
+    set hire_date = '2026-09-01', resign_date = null
+    where id = '75000000-0000-4000-8000-000000000001';
+    select resolution.resolution_id, resolution.version
+      into target_resolution_id, before_version
+    from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id =
+        '75000000-0000-4000-8000-000000000001'
+      and resolution.work_date = '2026-08-03';
+    select count(*) into before_audit
+    from public.attendance_accounting_audit_log audit
+    where audit.object_type = 'attendance_resolution'
+      and audit.object_id = target_resolution_id::text;
+    begin
+      result := public.confirm_attendance_resolution_secure(
+        '75000000-0000-4000-8000-000000000001', '2026-08-03',
+        'full_day', 1, 12001,
+        '[{"projectId":"P-T4-A","amount":6000,"allocationNote":"甲"},
+          {"projectId":"P-T4-B","amount":6001,"allocationNote":"乙"}]'::jsonb,
+        case when p_exact then '日结确认' else '不同请求' end,
+        2
+      );
+      select resolution.version into after_version
+      from public.attendance_day_resolutions resolution
+      where resolution.resolution_id = target_resolution_id;
+      select count(*) into after_audit
+      from public.attendance_accounting_audit_log audit
+      where audit.object_type = 'attendance_resolution'
+        and audit.object_id = target_resolution_id::text;
+      result_text := coalesce(
+        result#>>'{resolution,accountingStatus}', 'MISSING'
+      ) || ':' || coalesce(result#>>'{resolution,version}', 'MISSING') || ':'
+        || case
+          when before_version = after_version and before_audit = after_audit
+            then 'stable'
+          else 'mutated'
+        end;
+    exception when others then
+      result_text := sqlstate || ':' || sqlerrm;
+    end;
+    raise exception using errcode = 'PT415', message = result_text;
+  exception when sqlstate 'PT415' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message;
+  end;
+end;
+$$;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+select is(
+  pg_temp.task4_day_hr_drift_replay_probe(true),
+  'confirmed:3:stable',
+  'an exact confirmed day retry survives HR interval drift without audit or version mutation'
+);
+select is(
+  pg_temp.task4_day_hr_drift_replay_probe(false),
+  '22023:eligible employee and activated date required',
+  'a different day retry remains subject to current HR eligibility checks'
+);
+
 select set_config(
   'request.jwt.claim.sub', '74000000-0000-4000-8000-000000000004', true
 );
@@ -3567,6 +3651,151 @@ select is(
   )#>>'{payroll,version}',
   '2',
   'an exact repeated monthly confirmation is idempotent before version checking'
+);
+
+reset role;
+create or replace function pg_temp.task4_month_hr_drift_replay_probe(
+  p_exact boolean
+)
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+  target_payroll_id uuid;
+  before_version integer;
+  after_version integer;
+  before_audit bigint;
+  after_audit bigint;
+  result_text text;
+  caught_message text;
+begin
+  begin
+    update public.employee_profiles
+    set hire_date = '2026-09-01', resign_date = null
+    where id = '75000000-0000-4000-8000-000000000001';
+    select payroll.payroll_id, payroll.version
+      into target_payroll_id, before_version
+    from public.attendance_monthly_payrolls payroll
+    where payroll.employee_profile_id =
+        '75000000-0000-4000-8000-000000000001'
+      and payroll.salary_month = '2026-08-01';
+    select count(*) into before_audit
+    from public.attendance_accounting_audit_log audit
+    where audit.object_type = 'monthly_payroll'
+      and audit.object_id = target_payroll_id::text;
+    begin
+      result := public.confirm_monthly_payroll_secure(
+        '75000000-0000-4000-8000-000000000001', '2026-08-01',
+        100, case when p_exact then 200 else 201 end, 50,
+        '工资确认', 1
+      );
+      select payroll.version into after_version
+      from public.attendance_monthly_payrolls payroll
+      where payroll.payroll_id = target_payroll_id;
+      select count(*) into after_audit
+      from public.attendance_accounting_audit_log audit
+      where audit.object_type = 'monthly_payroll'
+        and audit.object_id = target_payroll_id::text;
+      result_text := coalesce(result#>>'{payroll,status}', 'MISSING') || ':'
+        || coalesce(result#>>'{payroll,version}', 'MISSING') || ':'
+        || case
+          when before_version = after_version and before_audit = after_audit
+            then 'stable'
+          else 'mutated'
+        end;
+    exception when others then
+      result_text := sqlstate || ':' || sqlerrm;
+    end;
+    raise exception using errcode = 'PT416', message = result_text;
+  exception when sqlstate 'PT416' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message;
+  end;
+end;
+$$;
+
+create or replace function pg_temp.task4_month_locked_day_replay_probe()
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+  target_resolution_id uuid;
+  before_version integer;
+  after_version integer;
+  before_audit bigint;
+  after_audit bigint;
+  result_text text;
+  caught_message text;
+begin
+  begin
+    select resolution.resolution_id, resolution.version
+      into target_resolution_id, before_version
+    from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id =
+        '75000000-0000-4000-8000-000000000001'
+      and resolution.work_date = '2026-08-03';
+    select count(*) into before_audit
+    from public.attendance_accounting_audit_log audit
+    where audit.object_type = 'attendance_resolution'
+      and audit.object_id = target_resolution_id::text;
+    begin
+      result := public.confirm_attendance_resolution_secure(
+        '75000000-0000-4000-8000-000000000001', '2026-08-03',
+        'full_day', 1, 12001,
+        '[{"projectId":"P-T4-A","amount":6000,"allocationNote":"甲"},
+          {"projectId":"P-T4-B","amount":6001,"allocationNote":"乙"}]'::jsonb,
+        '日结确认', 2
+      );
+      select resolution.version into after_version
+      from public.attendance_day_resolutions resolution
+      where resolution.resolution_id = target_resolution_id;
+      select count(*) into after_audit
+      from public.attendance_accounting_audit_log audit
+      where audit.object_type = 'attendance_resolution'
+        and audit.object_id = target_resolution_id::text;
+      result_text := coalesce(
+        result#>>'{resolution,accountingStatus}', 'MISSING'
+      ) || ':' || coalesce(result#>>'{resolution,version}', 'MISSING') || ':'
+        || case
+          when before_version = after_version and before_audit = after_audit
+            then 'stable'
+          else 'mutated'
+        end;
+    exception when others then
+      result_text := sqlstate || ':' || sqlerrm;
+    end;
+    raise exception using errcode = 'PT417', message = result_text;
+  exception when sqlstate 'PT417' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message;
+  end;
+end;
+$$;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+select is(
+  pg_temp.task4_month_hr_drift_replay_probe(true),
+  'confirmed:2:stable',
+  'an exact monthly confirmation retry survives HR drift without audit or version mutation'
+);
+select is(
+  pg_temp.task4_month_hr_drift_replay_probe(false),
+  '22023:eligible employee and activated month required',
+  'a different monthly retry remains subject to current HR eligibility checks'
+);
+select is(
+  pg_temp.task4_month_locked_day_replay_probe(),
+  'month_locked:4:stable',
+  'an exact day retry survives confirmed payroll month-lock without audit or version mutation'
 );
 
 reset role;

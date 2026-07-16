@@ -1704,7 +1704,7 @@ $$;
 revoke all on function private.attendance_payroll_snapshot(uuid)
   from public, anon, authenticated, service_role;
 
-create or replace function public.get_attendance_resolution_detail_secure(
+create or replace function private.attendance_resolution_result(
   p_employee_profile_id uuid,
   p_work_date date
 )
@@ -1715,7 +1715,6 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  actor public.employee_profiles%rowtype;
   employee public.employee_profiles%rowtype;
   day_resolution public.attendance_day_resolutions%rowtype;
   dashboard_employee jsonb;
@@ -1726,22 +1725,6 @@ declare
   can_view_project_costs boolean;
   can_view_project_money boolean;
 begin
-  actor := private.current_attendance_accountant();
-  if p_work_date is null or not isfinite(p_work_date) then
-    raise exception using errcode = '22023', message = 'valid work date required';
-  end if;
-  if not private.attendance_valid_business_date(p_work_date) then
-    raise exception using
-      errcode = '22023',
-      message = 'work date must be between 1900-01-01 and 2100-12-31';
-  end if;
-  if p_employee_profile_id is null
-      or not private.attendance_employee_is_eligible(
-        p_employee_profile_id, p_work_date
-      ) then
-    raise exception using errcode = '22023', message = 'eligible employee and activated date required';
-  end if;
-
   select profile.* into strict employee
   from public.employee_profiles profile
   where profile.id = p_employee_profile_id;
@@ -1863,6 +1846,45 @@ begin
 end;
 $$;
 
+revoke all on function private.attendance_resolution_result(uuid, date)
+  from public, anon, authenticated, service_role;
+
+create or replace function public.get_attendance_resolution_detail_secure(
+  p_employee_profile_id uuid,
+  p_work_date date
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+begin
+  actor := private.current_attendance_accountant();
+  if p_work_date is null or not isfinite(p_work_date) then
+    raise exception using errcode = '22023', message = 'valid work date required';
+  end if;
+  if not private.attendance_valid_business_date(p_work_date) then
+    raise exception using
+      errcode = '22023',
+      message = 'work date must be between 1900-01-01 and 2100-12-31';
+  end if;
+  if p_employee_profile_id is null
+      or not private.attendance_employee_is_eligible(
+        p_employee_profile_id, p_work_date
+      ) then
+    raise exception using
+      errcode = '22023',
+      message = 'eligible employee and activated date required';
+  end if;
+  return private.attendance_resolution_result(
+    p_employee_profile_id, p_work_date
+  );
+end;
+$$;
+
 revoke all on function public.get_attendance_resolution_detail_secure(uuid, date)
   from public, anon, authenticated, service_role;
 grant execute on function public.get_attendance_resolution_detail_secure(uuid, date)
@@ -1965,9 +1987,7 @@ begin
   from public.employee_profiles profile
   where profile.id = p_employee_profile_id
   for update;
-  if not found or not private.attendance_employee_is_eligible(
-      p_employee_profile_id, p_work_date
-    ) then
+  if not found then
     raise exception using errcode = '22023', message = 'eligible employee and activated date required';
   end if;
 
@@ -1976,12 +1996,6 @@ begin
   where payroll.employee_profile_id = p_employee_profile_id
     and payroll.salary_month = date_trunc('month', p_work_date)::date
   for update;
-  if month_payroll.status = 'confirmed' then
-    raise exception using
-      errcode = '55000',
-      message = 'monthly payroll locks this attendance resolution',
-      hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
-  end if;
 
   select resolution.* into existing_resolution
   from public.attendance_day_resolutions resolution
@@ -1994,12 +2008,6 @@ begin
     where allocation.resolution_id = existing_resolution.resolution_id
     order by allocation.project_id
     for update;
-    if existing_resolution.accounting_status = 'month_locked' then
-      raise exception using
-        errcode = '55000',
-        message = 'monthly payroll locks this attendance resolution',
-        hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
-    end if;
   end if;
 
   for allocation_item in
@@ -2079,16 +2087,37 @@ begin
       from public.attendance_project_allocations allocation
       where allocation.resolution_id = existing_resolution.resolution_id;
     if p_confirm
-        and existing_resolution.accounting_status = 'confirmed'
+        and existing_resolution.accounting_status in ('confirmed', 'month_locked')
         and existing_resolution.resolution_type = p_resolution_type
         and existing_resolution.attendance_units = p_attendance_units
         and existing_resolution.final_project_cost = p_final_project_cost
         and existing_resolution.resolution_note = normalized_note
         and existing_allocations = normalized_allocations then
-      return public.get_attendance_resolution_detail_secure(
+      return private.attendance_resolution_result(
         p_employee_profile_id, p_work_date
       );
     end if;
+  end if;
+
+  if not private.attendance_employee_is_eligible(
+      p_employee_profile_id, p_work_date
+    ) then
+    raise exception using errcode = '22023', message = 'eligible employee and activated date required';
+  end if;
+  if month_payroll.status = 'confirmed' then
+    raise exception using
+      errcode = '55000',
+      message = 'monthly payroll locks this attendance resolution',
+      hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
+  end if;
+  if existing_resolution.accounting_status = 'month_locked' then
+    raise exception using
+      errcode = '55000',
+      message = 'monthly payroll locks this attendance resolution',
+      hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
+  end if;
+
+  if existing_resolution.resolution_id is not null then
     if p_version is null or p_version <> existing_resolution.version then
       raise exception using
         errcode = '40001',
@@ -2609,19 +2638,7 @@ begin
   from public.employee_profiles profile
   where profile.id = p_employee_profile_id
   for update;
-  if not found
-      or employee.deleted_at is not null
-      or employee.is_hidden_system_account
-      or employee.employee_number = 'SW-000'
-      or not exists (
-        select 1
-        from generate_series(
-          p_month::timestamp, month_end::timestamp, interval '1 day'
-        ) generated(day_value)
-        where private.attendance_employee_is_eligible(
-          p_employee_profile_id, generated.day_value::date
-        )
-      ) then
+  if not found then
     raise exception using errcode = '22023', message = 'eligible employee and activated month required';
   end if;
 
@@ -2637,33 +2654,47 @@ begin
       and existing_payroll.bonus = p_bonus
       and existing_payroll.deduction = p_deduction
       and existing_payroll.confirmation_note = normalized_note;
+
+  if is_exact_confirmation then
+    return private.attendance_payroll_result(existing_payroll.payroll_id);
+  end if;
+
+  if employee.deleted_at is not null
+      or employee.is_hidden_system_account
+      or employee.employee_number = 'SW-000'
+      or not exists (
+        select 1
+        from generate_series(
+          p_month::timestamp, month_end::timestamp, interval '1 day'
+        ) generated(day_value)
+        where private.attendance_employee_is_eligible(
+          p_employee_profile_id, generated.day_value::date
+        )
+      ) then
+    raise exception using errcode = '22023', message = 'eligible employee and activated month required';
+  end if;
+
   if existing_payroll.payroll_id is not null then
-    if not is_exact_confirmation then
-      if p_version is null or p_version <> existing_payroll.version then
-        raise exception using
-          errcode = '40001',
-          message = 'attendance accounting version conflict',
-          hint = 'ATTENDANCE_ACCOUNTING_VERSION_CONFLICT';
-      end if;
-      if existing_payroll.status = 'confirmed' then
-        raise exception using
-          errcode = '55000',
-          message = 'monthly payroll is already confirmed',
-          hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
-      end if;
-      before_snapshot := private.attendance_payroll_snapshot(
-        existing_payroll.payroll_id
-      );
+    if p_version is null or p_version <> existing_payroll.version then
+      raise exception using
+        errcode = '40001',
+        message = 'attendance accounting version conflict',
+        hint = 'ATTENDANCE_ACCOUNTING_VERSION_CONFLICT';
     end if;
+    if existing_payroll.status = 'confirmed' then
+      raise exception using
+        errcode = '55000',
+        message = 'monthly payroll is already confirmed',
+        hint = 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED';
+    end if;
+    before_snapshot := private.attendance_payroll_snapshot(
+      existing_payroll.payroll_id
+    );
   elsif p_version is null or p_version <> 0 then
     raise exception using
       errcode = '40001',
       message = 'attendance accounting version conflict',
       hint = 'ATTENDANCE_ACCOUNTING_VERSION_CONFLICT';
-  end if;
-
-  if is_exact_confirmation then
-    return private.attendance_payroll_result(existing_payroll.payroll_id);
   end if;
 
   perform 1
