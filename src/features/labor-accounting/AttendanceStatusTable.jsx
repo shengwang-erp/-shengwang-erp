@@ -64,14 +64,45 @@ export function employeeProjectNames(employee) {
   return names
 }
 
-export function resolutionUnavailableReason(employee, dashboard) {
-  if (!dashboard?.permissions?.canResolve) return '当前账号没有日结处理权限'
+export function resolutionDetailUnavailableReason(employee, dashboard) {
   if (dashboard?.settings?.configured !== true || employee?.dayStatus === 'unconfigured') {
     return '请先完成考勤设置并启用核算'
   }
   if (employee?.dayStatus === 'before_activation') return '启用日期之前不生成日结'
-  if (employee?.resolution?.accountingStatus === 'month_locked') return '该日期已被月度工资锁定'
   return ''
+}
+
+export function resolutionUnavailableReason(employee, dashboard) {
+  const detailUnavailableReason = resolutionDetailUnavailableReason(employee, dashboard)
+  if (detailUnavailableReason) return detailUnavailableReason
+  if (employee?.resolution?.accountingStatus === 'month_locked') return '该日期已被月度工资锁定'
+  if (!dashboard?.permissions?.canResolve) return '当前账号没有日结处理权限'
+  return ''
+}
+
+export function resolutionActionMeta(employee, dashboard) {
+  const detailUnavailableReason = resolutionDetailUnavailableReason(employee, dashboard)
+  if (detailUnavailableReason) {
+    return {
+      label: '尚不可查看',
+      title: detailUnavailableReason,
+      openable: false,
+      editable: false,
+    }
+  }
+  const unavailableReason = resolutionUnavailableReason(employee, dashboard)
+  if (unavailableReason) {
+    return {
+      label: '查看事实',
+      title: `${unavailableReason}；仍可查看原始打卡事实`,
+      openable: true,
+      editable: false,
+    }
+  }
+  const label = employee?.resolution?.accountingStatus === 'confirmed'
+    ? '查看或调整'
+    : '处理日结'
+  return { label, title: `${label}：${employee.name}`, openable: true, editable: true }
 }
 
 function StatusText({ meta }) {
@@ -103,18 +134,17 @@ function ProjectNames({ employee }) {
 }
 
 function ResolutionButton({ employee, dashboard, onOpenResolution }) {
-  const reason = resolutionUnavailableReason(employee, dashboard)
-  const label = employee?.resolution?.accountingStatus === 'confirmed' ? '查看或调整' : '处理日结'
+  const action = resolutionActionMeta(employee, dashboard)
   return (
     <button
       type="button"
       className="labor-row-action"
-      disabled={Boolean(reason)}
-      title={reason || `${label}：${employee.name}`}
-      aria-label={`${label} ${employee.name}`}
+      disabled={!action.openable}
+      title={action.title}
+      aria-label={`${action.label} ${employee.name}`}
       onClick={() => onOpenResolution?.(employee)}
     >
-      {label}
+      {action.label}
     </button>
   )
 }

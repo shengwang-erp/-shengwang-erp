@@ -3,7 +3,7 @@ import React from 'react'
 import {
   ATTENDANCE_ISSUE_LABELS,
   formatTokyoTime,
-  resolutionUnavailableReason,
+  resolutionActionMeta,
 } from './AttendanceStatusTable.jsx'
 
 const EXCEPTION_PRIORITY = Object.freeze([
@@ -67,14 +67,16 @@ export default function AccountingExceptionQueue({
       ) : (
         <ol className="labor-exception-list">
           {queuedEmployees.map((employee) => {
-            const unavailableReason = resolutionUnavailableReason(employee, dashboard)
+            const action = resolutionActionMeta(employee, dashboard)
             return (
               <li key={employee.employeeProfileId}>
                 <button
                   type="button"
-                  disabled={Boolean(unavailableReason)}
-                  title={unavailableReason || `处理 ${employee.name} 的考勤异常`}
-                  aria-label={`处理 ${employee.name}：${employee.issueCodes.map((code) =>
+                  disabled={!action.openable}
+                  title={action.editable
+                    ? `处理 ${employee.name} 的考勤异常`
+                    : action.title}
+                  aria-label={`${action.openable ? '查看' : '尚不可查看'} ${employee.name}：${employee.issueCodes.map((code) =>
                     ATTENDANCE_ISSUE_LABELS[code] || code).join('、')}`}
                   onClick={() => onOpenResolution?.(employee)}
                 >
@@ -90,7 +92,10 @@ export default function AccountingExceptionQueue({
                     ))}
                   </span>
                   <span className="labor-queue-time"><ExceptionTime employee={employee} /></span>
-                  <span className="labor-queue-action">立即处理 <span aria-hidden="true">→</span></span>
+                  <span className="labor-queue-action">
+                    {!action.openable ? '尚不可查看' : action.editable ? '立即处理' : '查看事实'}{' '}
+                    <span aria-hidden="true">→</span>
+                  </span>
                 </button>
               </li>
             )

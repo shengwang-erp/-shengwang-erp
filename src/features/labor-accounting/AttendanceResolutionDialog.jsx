@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState } from 'react'
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import {
   suggestProjectCost,
@@ -104,17 +104,14 @@ export function resolutionReadOnlyReason(detail) {
   return ''
 }
 
-export function existingResolutionHasMoneyScope(detail) {
-  if (!detail?.resolution) return false
-  return Number(detail.resolution.attendanceUnits) > 0 ||
-    Number(detail.resolution.finalProjectCost) > 0 ||
-    (Array.isArray(detail.allocations) && detail.allocations.length > 0)
+export function detailHasMoneyScope(detail) {
+  return detail?.hasMoneyScope === true
 }
 
 export function resolutionWriteBlockedReason(detail) {
   const readOnlyReason = resolutionReadOnlyReason(detail)
   if (readOnlyReason) return readOnlyReason
-  if (existingResolutionHasMoneyScope(detail) &&
+  if (detailHasMoneyScope(detail) &&
       detail?.permissions?.canUpdateProjectCosts !== true) {
     return '该日结已有项目人工成本；当前账号缺少完整费用权限，不能修改或清空原结论'
   }
@@ -151,6 +148,96 @@ export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}
   })
   if (!allocationResult.valid) blockers.push('项目分摊金额合计必须等于最终项目人工成本')
   return [...new Set(blockers)]
+}
+
+const LABOR_MODAL_FOCUSABLE_SELECTOR = [
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  'a[href]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+export function laborModalFocusableElements(dialog) {
+  if (!dialog || typeof dialog.querySelectorAll !== 'function') return []
+  return [...dialog.querySelectorAll(LABOR_MODAL_FOCUSABLE_SELECTOR)].filter((element) => (
+    element?.disabled !== true &&
+    element?.getAttribute?.('aria-hidden') !== 'true' &&
+    element?.matches?.(':disabled') !== true
+  ))
+}
+
+export function focusLaborModal(dialog, previousFocus = globalThis.document?.activeElement) {
+  const explicitTarget = dialog?.querySelector?.('[data-dialog-initial-focus]')
+  const target = explicitTarget || laborModalFocusableElements(dialog)[0] || dialog
+  target?.focus?.()
+  let restored = false
+  return () => {
+    if (restored) return
+    restored = true
+    if (previousFocus && previousFocus !== target &&
+        previousFocus.isConnected !== false) previousFocus.focus?.()
+  }
+}
+
+export function handleLaborModalKeyDown({
+  event,
+  dialog,
+  activeElement = globalThis.document?.activeElement,
+  saving = false,
+  onClose,
+}) {
+  if (event?.key === 'Escape') {
+    if (saving) return false
+    event.preventDefault?.()
+    onClose?.()
+    return true
+  }
+  if (event?.key !== 'Tab') return false
+
+  const focusable = laborModalFocusableElements(dialog)
+  if (focusable.length === 0) {
+    event.preventDefault?.()
+    dialog?.focus?.()
+    return true
+  }
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  const containsActive = dialog?.contains?.(activeElement) === true
+  const nextTarget = event.shiftKey
+    ? (!containsActive || activeElement === first ? last : null)
+    : (!containsActive || activeElement === last ? first : null)
+  if (!nextTarget) return false
+  event.preventDefault?.()
+  nextTarget.focus?.()
+  return true
+}
+
+export function useLaborModalFocus(dialogRef, { onClose, saving = false } = {}) {
+  const onCloseRef = useRef(onClose)
+  const savingRef = useRef(saving)
+  onCloseRef.current = onClose
+  savingRef.current = saving
+
+  useEffect(() => {
+    const documentRef = globalThis.document
+    const dialog = dialogRef?.current
+    if (!documentRef || !dialog) return undefined
+    const restoreFocus = focusLaborModal(dialog, documentRef.activeElement)
+    const onKeyDown = (event) => handleLaborModalKeyDown({
+      event,
+      dialog,
+      activeElement: documentRef.activeElement,
+      saving: savingRef.current,
+      onClose: onCloseRef.current,
+    })
+    documentRef.addEventListener('keydown', onKeyDown)
+    return () => {
+      documentRef.removeEventListener('keydown', onKeyDown)
+      restoreFocus()
+    }
+  }, [dialogRef])
 }
 
 function nextSuggestedCost(detail, attendanceUnits) {
@@ -413,6 +500,7 @@ export default function AttendanceResolutionDialog({
   onClose,
 }) {
   const titleId = useId()
+  const dialogRef = useRef(null)
   const initialDraft = useMemo(
     () => providedDraft ? { ...providedDraft, allocations: cloneAllocations(providedDraft.allocations) }
       : buildInitialResolutionDraft(detail),
@@ -422,14 +510,7 @@ export default function AttendanceResolutionDialog({
   const readOnlyReason = resolutionWriteBlockedReason(detail)
   const blockers = resolutionConfirmBlockers(detail, draft, { saving })
   const controlsDisabled = saving || Boolean(readOnlyReason)
-
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape' && !saving) onClose?.()
-    }
-    globalThis.addEventListener?.('keydown', onKeyDown)
-    return () => globalThis.removeEventListener?.('keydown', onKeyDown)
-  }, [onClose, saving])
+  useLaborModalFocus(dialogRef, { onClose, saving })
 
   const changeDraft = (nextDraft) => {
     setDraft(nextDraft)
@@ -439,10 +520,12 @@ export default function AttendanceResolutionDialog({
   return (
     <div className="labor-dialog-backdrop">
       <section
+        ref={dialogRef}
         className="labor-resolution-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        tabIndex="-1"
       >
         <header className="labor-dialog-heading">
           <span>
@@ -453,6 +536,7 @@ export default function AttendanceResolutionDialog({
           <button
             type="button"
             className="labor-dialog-close"
+            data-dialog-initial-focus
             aria-label="关闭考勤日结弹窗"
             disabled={saving}
             onClick={() => onClose?.()}

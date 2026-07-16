@@ -179,6 +179,7 @@ const detail = Object.freeze({
   },
   workDate: dashboard.workDate,
   scheduleRequired: true,
+  hasMoneyScope: false,
   facts: {
     dayStatus: employee.dayStatus,
     issueCodes: employee.issueCodes,
@@ -287,6 +288,7 @@ test('resolution helpers derive projects and corrected draft defaults from facts
 
   const confirmed = {
     ...detail,
+    hasMoneyScope: true,
     salary: { ...detail.salary, suggestedProjectCost: 12000 },
     resolution: {
       resolutionType: 'full_day',
@@ -405,13 +407,14 @@ test('retained dashboard is visibly marked stale after a failed refresh and clea
 test('revoked money permissions lock an existing monetary resolution but not a new zero-cost day', () => {
   const {
     default: AttendanceResolutionDialog,
-    existingResolutionHasMoneyScope,
+    detailHasMoneyScope,
     resolutionConfirmBlockers,
   } = moduleFor('dialog')
-  assert.equal(typeof existingResolutionHasMoneyScope, 'function')
+  assert.equal(typeof detailHasMoneyScope, 'function')
 
   const permissionsRevoked = {
     ...detail,
+    hasMoneyScope: true,
     permissions: {
       canResolve: true,
       canViewSalary: false,
@@ -421,20 +424,15 @@ test('revoked money permissions lock an existing monetary resolution but not a n
     salary: null,
     resolution: {
       resolutionId: '62000000-0000-4000-8000-000000000001',
-      resolutionType: 'full_day',
-      attendanceUnits: 1,
+      resolutionType: 'rest',
+      attendanceUnits: 0,
       accountingStatus: 'confirmed',
       scheduleRequired: true,
       resolutionNote: '',
       confirmedAt: '2026-07-18T17:05:00+09:00',
       version: 1,
     },
-    allocations: [{
-      allocationId: '63000000-0000-4000-8000-000000000001',
-      projectId: 'PROJECT-001',
-      projectName: '东京站现场',
-      allocationNote: '',
-    }],
+    allocations: [],
   }
   const zeroCostRest = {
     resolutionType: 'rest',
@@ -444,7 +442,7 @@ test('revoked money permissions lock an existing monetary resolution but not a n
     resolutionNote: '',
     version: 1,
   }
-  assert.equal(existingResolutionHasMoneyScope(permissionsRevoked), true)
+  assert.equal(detailHasMoneyScope(permissionsRevoked), true)
   assert.ok(resolutionConfirmBlockers(permissionsRevoked, zeroCostRest).some(
     (reason) => reason.includes('已有项目人工成本') && reason.includes('权限'),
   ))
@@ -461,9 +459,201 @@ test('revoked money permissions lock an existing monetary resolution but not a n
   assert.match(lockedMarkup, /class="labor-save-draft" disabled=""/u)
   assert.match(lockedMarkup, /class="labor-confirm-resolution" disabled=""/u)
 
-  const brandNewZeroCost = { ...permissionsRevoked, resolution: null, allocations: [] }
-  assert.equal(existingResolutionHasMoneyScope(brandNewZeroCost), false)
-  assert.deepEqual(resolutionConfirmBlockers(brandNewZeroCost, zeroCostRest), [])
+  const positiveUnitsButNoExistingMoney = {
+    ...permissionsRevoked,
+    hasMoneyScope: false,
+    resolution: {
+      ...permissionsRevoked.resolution,
+      resolutionType: 'full_day',
+      attendanceUnits: 1,
+    },
+  }
+  assert.equal(detailHasMoneyScope(positiveUnitsButNoExistingMoney), false)
+  assert.deepEqual(resolutionConfirmBlockers(positiveUnitsButNoExistingMoney, zeroCostRest), [])
+})
+
+test('labor viewers can always open immutable facts from table and exception queue', () => {
+  const { default: AttendanceStatusTable, resolutionActionMeta } = moduleFor('table')
+  const { default: AccountingExceptionQueue } = moduleFor('queue')
+  const lockedEmployee = {
+    ...employee,
+    resolution: {
+      resolutionId: '62000000-0000-4000-8000-000000000001',
+      resolutionType: 'full_day',
+      attendanceUnits: 1,
+      accountingStatus: 'month_locked',
+      scheduleRequired: true,
+      resolutionNote: '',
+      confirmedAt: '2026-07-18T17:05:00+09:00',
+      version: 2,
+    },
+  }
+  const viewOnlyDashboard = {
+    ...dashboard,
+    permissions: { ...dashboard.permissions, canResolve: false },
+  }
+  const tableMarkup = render(AttendanceStatusTable, {
+    employees: [lockedEmployee],
+    dashboard: viewOnlyDashboard,
+    onOpenResolution() {},
+  })
+  assert.match(tableMarkup, />查看事实</u)
+  assert.match(tableMarkup, /aria-label="查看事实 山田太郎"/u)
+  assert.doesNotMatch(tableMarkup, /aria-label="查看事实 山田太郎"[^>]*disabled/u)
+
+  const queueMarkup = render(AccountingExceptionQueue, {
+    employees: [lockedEmployee],
+    dashboard: viewOnlyDashboard,
+    onOpenResolution() {},
+  })
+  assert.match(queueMarkup, /查看事实/u)
+  assert.doesNotMatch(queueMarkup, /aria-label="查看 山田太郎[^>]*disabled/u)
+
+  for (const unavailableEmployee of [
+    { ...lockedEmployee, dayStatus: 'unconfigured', resolution: null },
+    { ...lockedEmployee, dayStatus: 'before_activation', resolution: null },
+  ]) {
+    const unavailableDashboard = unavailableEmployee.dayStatus === 'unconfigured'
+      ? { ...dashboard, settings: { ...dashboard.settings, configured: false } }
+      : dashboard
+    const action = resolutionActionMeta(unavailableEmployee, unavailableDashboard)
+    assert.equal(action.openable, false)
+    const unavailableMarkup = render(AttendanceStatusTable, {
+      employees: [unavailableEmployee],
+      dashboard: unavailableDashboard,
+      onOpenResolution() {},
+    })
+    assert.match(
+      unavailableMarkup,
+      /<button[^>]*disabled=""[^>]*aria-label="尚不可查看 山田太郎"/u,
+    )
+  }
+})
+
+test('page request boundary forwards the exact auth-invalid error from an injected service', async () => {
+  const { executeLaborPageRequest, settleLaborPageRequest } = moduleFor('page')
+  assert.equal(typeof executeLaborPageRequest, 'function')
+  assert.equal(typeof settleLaborPageRequest, 'function')
+  const authError = Object.assign(new Error('expired'), { authInvalid: true })
+  let forwarded = null
+  const result = await executeLaborPageRequest({
+    request: () => Promise.reject(authError),
+    onAuthInvalid(error) { forwarded = error },
+  })
+  assert.deepEqual(result, { ok: false, error: authError })
+  assert.equal(forwarded, null)
+  assert.deepEqual(settleLaborPageRequest({
+    result,
+    current: true,
+    onAuthInvalid(error) { forwarded = error },
+  }), { status: 'error', error: authError })
+  assert.equal(forwarded, authError)
+
+  forwarded = null
+  assert.deepEqual(settleLaborPageRequest({
+    result,
+    current: false,
+    onAuthInvalid(error) { forwarded = error },
+  }), { status: 'stale' })
+  assert.equal(forwarded, null)
+})
+
+test('resolution and detail-loading modals move, trap, close, and restore focus safely', () => {
+  const {
+    focusLaborModal,
+    handleLaborModalKeyDown,
+  } = moduleFor('dialog')
+  const { DetailLoadingDialog } = moduleFor('page')
+  assert.equal(typeof focusLaborModal, 'function')
+  assert.equal(typeof handleLaborModalKeyDown, 'function')
+  assert.equal(typeof DetailLoadingDialog, 'function')
+
+  let focused = ''
+  const first = {
+    disabled: false,
+    focus() { focused = 'first' },
+    getAttribute() { return null },
+    matches() { return false },
+  }
+  const last = {
+    disabled: false,
+    focus() { focused = 'last' },
+    getAttribute() { return null },
+    matches() { return false },
+  }
+  const previous = {
+    isConnected: true,
+    focus() { focused = 'previous' },
+  }
+  const dialogNode = {
+    focus() { focused = 'dialog' },
+    querySelector(selector) {
+      return selector === '[data-dialog-initial-focus]' ? first : null
+    },
+    querySelectorAll() { return [first, last] },
+    contains(node) { return node === first || node === last },
+  }
+  const restore = focusLaborModal(dialogNode, previous)
+  assert.equal(focused, 'first')
+  restore()
+  assert.equal(focused, 'previous')
+
+  let prevented = 0
+  let closed = 0
+  handleLaborModalKeyDown({
+    event: { key: 'Tab', shiftKey: false, preventDefault() { prevented += 1 } },
+    dialog: dialogNode,
+    activeElement: last,
+    saving: false,
+    onClose() { closed += 1 },
+  })
+  assert.equal(focused, 'first')
+  assert.equal(prevented, 1)
+  handleLaborModalKeyDown({
+    event: { key: 'Tab', shiftKey: true, preventDefault() { prevented += 1 } },
+    dialog: dialogNode,
+    activeElement: first,
+    saving: false,
+    onClose() { closed += 1 },
+  })
+  assert.equal(focused, 'last')
+  assert.equal(prevented, 2)
+  handleLaborModalKeyDown({
+    event: { key: 'Escape', preventDefault() { prevented += 1 } },
+    dialog: dialogNode,
+    activeElement: first,
+    saving: false,
+    onClose() { closed += 1 },
+  })
+  assert.equal(closed, 1)
+  handleLaborModalKeyDown({
+    event: { key: 'Escape', preventDefault() { prevented += 1 } },
+    dialog: dialogNode,
+    activeElement: first,
+    saving: true,
+    onClose() { closed += 1 },
+  })
+  assert.equal(closed, 1)
+
+  const loadingMarkup = render(DetailLoadingDialog, {
+    selectedEmployee: {
+      employeeProfileId: employee.employeeProfileId,
+      employeeName: employee.name,
+      workDate: dashboard.workDate,
+    },
+    detailLoadState: { status: 'loading', error: '' },
+    onClose() {},
+  })
+  assert.match(loadingMarkup, /aria-modal="true"/u)
+  assert.match(loadingMarkup, /取消查看/u)
+  assert.match(
+    sources.page,
+    /const closeResolution[\s\S]{0,220}detailGenerationRef\.current \+= 1/u,
+  )
+  assert.match(
+    sources.page,
+    /current: mountedRef\.current && generation === detailGenerationRef\.current/u,
+  )
 })
 
 test('daily filters retain all active employees and issue rows without recomputing server summary', () => {
