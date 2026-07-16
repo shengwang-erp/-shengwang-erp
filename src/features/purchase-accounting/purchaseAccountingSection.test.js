@@ -6,6 +6,9 @@ import test from 'node:test'
 import { createServer } from 'vite'
 import { getDashboardSourceData } from '../../services/dashboardService.js'
 
+const DASHBOARD_CURRENT_MONTH = '2026-08'
+const DASHBOARD_PRIOR_MONTH = '2026-07'
+
 const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
 const componentSource = await readFile(
   new URL('./PurchaseAccountingSection.jsx', import.meta.url),
@@ -50,9 +53,19 @@ async function loadAppModule() {
       },
       transform(code, id) {
         if (!id.endsWith('/src/App.jsx')) return null
-        return code.replace(
+        const exported = code.replace(
           'function DashboardPage({',
           'export function DashboardPage({',
+        )
+        const currentMonthNeedle =
+          '  const currentMonth = currentMonthValue()\n  const purchaseAccounting = useMemo('
+        assert.ok(
+          exported.includes(currentMonthNeedle),
+          'expected DashboardPage current-month marker',
+        )
+        return exported.replace(
+          currentMonthNeedle,
+          `  const currentMonth = '${DASHBOARD_CURRENT_MONTH}'\n  const purchaseAccounting = useMemo(`,
         )
       },
     }],
@@ -339,12 +352,6 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.DashboardPage)
 
-  const now = new Date()
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const priorMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 10)
-  const priorMonth = `${priorMonthDate.getFullYear()}-${String(priorMonthDate.getMonth() + 1).padStart(2, '0')}`
-  assert.notEqual(priorMonth, currentMonth)
-
   const source = await getDashboardSourceData({
     employees: [],
     projects: [{
@@ -352,7 +359,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       projectName: '跨月付款项目',
       address: '东京',
       status: '进行中',
-      startDate: `${priorMonth}-01`,
+      startDate: `${DASHBOARD_PRIOR_MONTH}-01`,
       endDate: '',
       profitAnchorTaxExclusiveAmount: 100000,
       adjustedTaxInclusiveAmount: 110000,
@@ -364,7 +371,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
     purchaseRecords: [
       {
         purchaseId: 'PO-DASH',
-        purchaseDate: `${priorMonth}-10`,
+        purchaseDate: `${DASHBOARD_PRIOR_MONTH}-10`,
         projectId: 'P-DASH',
         projectName: '跨月付款项目',
         purchaseSource: '中国采购',
@@ -377,7 +384,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       },
       {
         purchaseId: 'PO-DASH',
-        purchaseDate: `${priorMonth}-11`,
+        purchaseDate: `${DASHBOARD_PRIOR_MONTH}-11`,
         projectId: 'P-DASH',
         projectName: '不应重复计费',
         purchaseSource: '中国采购',
@@ -391,13 +398,13 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       {
         paymentId: 'PP-DASH',
         purchaseId: 'PO-DASH',
-        paymentDate: `${currentMonth}-08`,
+        paymentDate: `${DASHBOARD_CURRENT_MONTH}-08`,
         jpyAmount: 3000,
       },
       {
         paymentId: 'PP-ORPHAN-DASH',
         purchaseId: 'PO-MISSING',
-        paymentDate: `${currentMonth}-09`,
+        paymentDate: `${DASHBOARD_CURRENT_MONTH}-09`,
         jpyAmount: 500,
       },
     ],
@@ -473,10 +480,13 @@ test('AuthenticatedApp wires one shared purchase accounting model into the owner
     'function DashboardPage',
     '\nfunction PageShell',
   )
+  const dashboardOpeningTag = authenticatedApp.match(/<DashboardPage\b[\s\S]*?\/>/u)?.[0]
 
+  assert.ok(dashboardOpeningTag, 'expected one DashboardPage opening tag')
+  assert.match(dashboardOpeningTag, /\bpurchaseRecords=\{purchaseRecords\}/u)
   assert.match(
-    authenticatedApp,
-    /<DashboardPage[\s\S]*?purchaseRecords=\{purchaseRecords\}[\s\S]*?purchasePaymentRecords=\{purchasePaymentRecords\}/u,
+    dashboardOpeningTag,
+    /\bpurchasePaymentRecords=\{purchasePaymentRecords\}/u,
   )
   assert.equal(
     (dashboardPage.match(/buildPurchaseAccountingReadModel\(/gu) || []).length,
