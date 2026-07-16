@@ -152,3 +152,15 @@ test('desktop frame is fixed and gold-highlighted only above the mobile breakpoi
     /\.desktop-admin-menu-item\.active\s*\{[^}]*color:\s*#f3d18b[^}]*background:[^}]*#3a2a16/,
   )
 })
+
+test('desktop shell reserves an accessible labor-only alert badge contract', () => {
+  assert.match(
+    shellSource,
+    /laborAlertCount\s*=\s*0[\s\S]*?laborAlertStale\s*=\s*false/u,
+  )
+  assert.match(shellSource, /item\.view\s*===\s*'labor'/u)
+  assert.match(shellSource, /aria-label=\{[^}]*人工记录[^}]*待处理/u)
+  assert.match(shellSource, /data-labor-alert-badge/u)
+  assert.match(shellSource, /<strong>[\s\S]*?<em[\s\S]*?data-labor-alert-badge/u)
+  assert.doesNotMatch(shellSource, /styles\.css['"]/u)
+})

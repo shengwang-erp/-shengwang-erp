@@ -14,6 +14,8 @@ import {
 } from './features/projects/projectDomain'
 import PersonnelPage from './features/employees/PersonnelPage'
 import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
+import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
+import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import {
   combinePersonnelProtectionSources,
   shouldBlockPersonnelExit,
@@ -1640,6 +1642,15 @@ function createEmptyToolResponsibilityForm() {
 
 function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
+  const {
+    count: laborAlertCount,
+    stale: laborAlertStale,
+    refresh: refreshLaborAlertCount,
+  } = useLaborAlertCount({
+    actorKey: currentUser.id,
+    effectivePermissionKeys: currentUser.effectivePermissionKeys,
+    onAuthInvalid: onLogout,
+  })
   const [personnelEmployees, setPersonnelEmployees] = useState([])
   const [personnelLoadState, setPersonnelLoadState] = useState({
     loading: false,
@@ -2380,6 +2391,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       currentUser={currentUser}
       onNavigate={handlePersonnelAwareNavigate}
       onLogout={handlePersonnelAwareLogout}
+      laborAlertCount={laborAlertCount}
+      laborAlertStale={laborAlertStale}
     >
       {page}
     </DesktopAdminShell>
@@ -2500,13 +2513,11 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   if (currentView === 'labor') {
     return renderInDesktopShell(
-      <LaborPage
-        projects={projects}
-        employees={employees}
-        records={laborRecords}
-        setRecords={setLaborRecords}
+      <LaborAccountingPage
         currentUser={currentUser}
         onBack={() => setCurrentView('home')}
+        onAuthInvalid={onLogout}
+        onAlertCountChange={refreshLaborAlertCount}
       />
     )
   }

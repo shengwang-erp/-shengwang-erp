@@ -25,9 +25,13 @@ export default function DesktopAdminShell({
   currentUser,
   onNavigate,
   onLogout,
+  laborAlertCount = 0,
+  laborAlertStale = false,
   children,
 }) {
   const activeView = getDesktopActiveView(currentView)
+  const normalizedLaborAlertCount =
+    Number.isSafeInteger(laborAlertCount) && laborAlertCount > 0 ? laborAlertCount : 0
   const visibleMenuItems = desktopMenuItems.filter(
     (item) =>
       item.view === 'home' ||
@@ -54,16 +58,50 @@ export default function DesktopAdminShell({
         <nav className="desktop-admin-menu" aria-label="桌面一级菜单">
           {visibleMenuItems.map((item) => {
             const isActive = item.view === activeView
+            const showLaborAlert =
+              item.view === 'labor' && normalizedLaborAlertCount > 0
             return (
               <button
                 className={`desktop-admin-menu-item ${isActive ? 'active' : ''}`}
                 type="button"
                 key={item.view}
                 aria-current={isActive ? 'page' : undefined}
+                aria-label={showLaborAlert
+                  ? ['人工记录，', normalizedLaborAlertCount, ' 条待处理', laborAlertStale ? '，数据可能已过期' : ''].join('')
+                  : undefined}
+                title={showLaborAlert
+                  ? ['人工记录：', normalizedLaborAlertCount, ' 条待处理', laborAlertStale ? '（数据可能已过期）' : ''].join('')
+                  : undefined}
                 onClick={() => onNavigate(item.view)}
               >
                 <span aria-hidden="true">{item.code}</span>
-                <strong>{item.label}</strong>
+                <strong>
+                  {item.label}
+                  {showLaborAlert && (
+                    <em
+                      data-labor-alert-badge
+                      aria-hidden="true"
+                      style={{
+                        alignItems: 'center',
+                        background: laborAlertStale ? '#8a6d3b' : '#b42318',
+                        borderRadius: '999px',
+                        color: '#fff',
+                        display: 'inline-flex',
+                        fontSize: '11px',
+                        fontStyle: 'normal',
+                        fontWeight: 700,
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                        marginLeft: '8px',
+                        minHeight: '19px',
+                        minWidth: '19px',
+                        padding: '0 5px',
+                      }}
+                    >
+                      {normalizedLaborAlertCount}
+                    </em>
+                  )}
+                </strong>
               </button>
             )
           })}
