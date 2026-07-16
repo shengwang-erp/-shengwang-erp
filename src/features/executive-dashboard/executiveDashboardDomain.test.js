@@ -877,6 +877,40 @@ test('filters normalize safely, ranking is deterministic, rows paginate, and out
   )
 })
 
+test('project row options publish the complete authorized set before status filtering and pagination', () => {
+  const reversedProjects = [...projects()].reverse()
+  const model = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: '进行中', rankingMetric: 'profit',
+      page: 1, pageSize: 1,
+    },
+    sources: sourceFixture({ projects: ready(reversedProjects) }),
+  }))
+
+  assert.equal(model.projectRows.status, 'ready')
+  assert.deepEqual(model.projectRows.data.items.map((row) => row.projectId), ['P4'])
+  assert.deepEqual(model.projectRows.data.projectOptions, projects().map((project) => ({
+    projectId: project.projectId,
+    projectName: project.projectName,
+  })))
+  assert.equal(Object.isFrozen(model.projectRows.data.projectOptions), true)
+  assert.equal(Object.isFrozen(model.projectRows.data.projectOptions[0]), true)
+  assert.notEqual(model.projectRows.data.projectOptions[0], reversedProjects.at(-1))
+  assert.deepEqual(Object.getOwnPropertyNames(model.projectRows.data.projectOptions[0]), [
+    'projectId', 'projectName',
+  ])
+  assert.deepEqual(Object.getOwnPropertySymbols(model.projectRows.data.projectOptions[0]), [])
+  for (const descriptor of Object.values(
+    Object.getOwnPropertyDescriptors(model.projectRows.data.projectOptions[0]),
+  )) {
+    assert.equal(descriptor.enumerable, true)
+    assert.equal(Object.hasOwn(descriptor, 'value'), true)
+  }
+  assert.throws(() => {
+    model.projectRows.data.projectOptions[0].projectName = 'mutated'
+  }, TypeError)
+})
+
 test('invalid envelopes throw while malformed source data and unsafe aggregates fail closed in envelopes', () => {
   let getterCalls = 0
   const accessorInput = input()

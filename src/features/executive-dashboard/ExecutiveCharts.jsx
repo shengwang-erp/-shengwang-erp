@@ -66,20 +66,31 @@ function formatValue(formatter, value) {
   }
 }
 
-function normalizeData(data) {
+function normalizeDataState(data) {
   const rows = []
-  for (let index = 0; index < arrayValue(data).length; index += 1) {
+  const source = arrayValue(data)
+  let invalid = !Array.isArray(data)
+  for (let index = 0; index < source.length; index += 1) {
     const row = ownValue(data, index)
-    if (row === null || typeof row !== 'object') continue
+    if (row === null || typeof row !== 'object') {
+      invalid = true
+      continue
+    }
     const label = textValue(ownValue(row, 'label'), `数据 ${index + 1}`)
+    const value = finiteValue(ownValue(row, 'value'))
+    if (value === null) invalid = true
     rows.push({
       key: `${textValue(ownValue(row, 'key'), `item-${index}`)}-${index}`,
       label,
-      value: finiteValue(ownValue(row, 'value')),
+      value,
       color: chartColor(ownValue(row, 'color'), index),
     })
   }
-  return rows
+  return { rows, invalid }
+}
+
+function normalizeData(data) {
+  return normalizeDataState(data).rows
 }
 
 function chartLabel(title, description) {
@@ -110,17 +121,20 @@ function ChartLegend({ title, rows, valueFormatter }) {
     <ul className="executive-chart-legend" aria-label={`${textValue(title, '图表')}图例`}>
       {rows.length === 0 ? (
         <li className="executive-chart-legend-empty">暂无数据</li>
-      ) : rows.map((row) => (
-        <li key={row.key}>
-          <span
-            className="executive-chart-legend-swatch"
-            style={{ '--executive-chart-color': row.color }}
-            aria-hidden="true"
-          />
-          <span>{row.label}</span>
-          <strong>{formatValue(valueFormatter, row.value)}</strong>
-        </li>
-      ))}
+      ) : rows.map((row) => {
+        const formatted = formatValue(valueFormatter, row.value)
+        return (
+          <li key={row.key} tabIndex="0" aria-label={`${row.label}：${formatted}`}>
+            <span
+              className="executive-chart-legend-swatch"
+              style={{ '--executive-chart-color': row.color }}
+              aria-hidden="true"
+            />
+            <span>{row.label}</span>
+            <strong>{formatted}</strong>
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -149,14 +163,29 @@ function SingleValueTable({ title, rows, valueFormatter }) {
 }
 
 export function DonutChart({ title, description, data, valueFormatter }) {
-  const rows = normalizeData(data)
+  const normalized = normalizeDataState(data)
+  const rows = normalized.rows
+  const invalid = normalized.invalid || rows.some((row) => row.value !== null && row.value < 0)
   const positiveRows = rows.filter((row) => row.value !== null && row.value > 0)
-  const total = positiveRows.reduce((sum, row) => sum + row.value, 0)
-  const usableTotal = Number.isFinite(total) && total > 0 ? total : 0
+  let maximum = 0
+  let displayTotal = 0
+  let totalOverflow = false
+  for (const row of positiveRows) {
+    maximum = Math.max(maximum, row.value)
+    if (row.value > Number.MAX_VALUE - displayTotal) totalOverflow = true
+    else if (!totalOverflow) displayTotal += row.value
+  }
+  let normalizedTotal = 0
+  if (maximum > 0) {
+    for (const row of positiveRows) normalizedTotal += row.value / maximum
+  }
+  const hasSegments = !invalid && maximum > 0 && normalizedTotal > 0 && Number.isFinite(normalizedTotal)
   let offset = 0
-  const message = rows.length === 0 || rows.every((row) => row.value === null)
+  const message = invalid
+    ? '图表数据无效'
+    : rows.length === 0
     ? '暂无可展示数据'
-    : usableTotal === 0 ? '当前数据均为零' : ''
+    : rows.every((row) => row.value === 0) ? '当前数据均为零' : ''
   const label = chartLabel(title, description)
 
   return (
@@ -165,8 +194,8 @@ export function DonutChart({ title, description, data, valueFormatter }) {
       <svg role="img" aria-label={label} viewBox="0 0 320 240">
         <title>{label}</title>
         <circle className="executive-donut-track" cx="160" cy="112" r="70" />
-        {usableTotal > 0 ? positiveRows.map((row) => {
-          const percentage = clamp((row.value / usableTotal) * 100, 0, 100)
+        {hasSegments ? positiveRows.map((row) => {
+          const percentage = clamp(((row.value / maximum) / normalizedTotal) * 100, 0, 100)
           const segmentOffset = offset
           offset = clamp(offset + percentage, 0, 100)
           const markLabel = `${row.label}：${formatValue(valueFormatter, row.value)}`
@@ -181,19 +210,16 @@ export function DonutChart({ title, description, data, valueFormatter }) {
               stroke={row.color}
               strokeDasharray={`${svgNumber(percentage)} ${svgNumber(100 - percentage)}`}
               strokeDashoffset={svgNumber(-segmentOffset)}
-              tabIndex="0"
-              role="graphics-symbol"
-              aria-label={markLabel}
             >
               <title>{markLabel}</title>
             </circle>
           )
         }) : <EmptyChartText message={message} x="160" y="116" />}
-        {usableTotal > 0 ? (
+        {hasSegments ? (
           <>
             <text className="executive-donut-total-label" x="160" y="106" textAnchor="middle">合计</text>
             <text className="executive-donut-total-value" x="160" y="128" textAnchor="middle">
-              {formatValue(valueFormatter, usableTotal)}
+              {totalOverflow ? '超出显示范围' : formatValue(valueFormatter, displayTotal)}
             </text>
           </>
         ) : null}
@@ -205,16 +231,32 @@ export function DonutChart({ title, description, data, valueFormatter }) {
 }
 
 function verticalScale(rows) {
-  const values = rows.map((row) => row.value).filter((value) => value !== null)
-  if (values.length === 0) return { minimum: -1, maximum: 1, empty: true, allZero: false }
-  let minimum = Math.min(0, ...values)
-  let maximum = Math.max(0, ...values)
-  const allZero = values.every((value) => value === 0)
+  let minimum = 0
+  let maximum = 0
+  let count = 0
+  let allZero = true
+  for (const row of rows) {
+    if (row.value === null) continue
+    count += 1
+    minimum = Math.min(minimum, row.value)
+    maximum = Math.max(maximum, row.value)
+    if (row.value !== 0) allZero = false
+  }
+  if (count === 0) return { minimum: -1, maximum: 1, empty: true, allZero: false }
   if (minimum === maximum) {
     minimum = -1
     maximum = 1
   }
   return { minimum, maximum, empty: false, allZero }
+}
+
+function ratioInRange(value, minimum, maximum) {
+  const divisor = Math.max(Math.abs(minimum), Math.abs(maximum), 1)
+  const scaledMinimum = minimum / divisor
+  const scaledMaximum = maximum / divisor
+  const scaledRange = scaledMaximum - scaledMinimum
+  if (!Number.isFinite(scaledRange) || scaledRange <= 0) return 0.5
+  return clamp(((value / divisor) - scaledMinimum) / scaledRange, 0, 1)
 }
 
 export function BarChart({ title, description, data, valueFormatter }) {
@@ -226,8 +268,7 @@ export function BarChart({ title, description, data, valueFormatter }) {
   const bottom = 224
   const width = right - left
   const height = bottom - top
-  const range = scale.maximum - scale.minimum || 1
-  const yFor = (value) => clamp(bottom - ((value - scale.minimum) / range) * height, top, bottom)
+  const yFor = (value) => clamp(bottom - ratioInRange(value, scale.minimum, scale.maximum) * height, top, bottom)
   const baseline = yFor(0)
   const slot = rows.length > 0 ? width / rows.length : width
   const barWidth = clamp(slot * 0.52, 8, 62)
@@ -255,9 +296,6 @@ export function BarChart({ title, description, data, valueFormatter }) {
                 width={svgNumber(barWidth)}
                 height={svgNumber(rectHeight)}
                 fill={row.color}
-                tabIndex={row.value === 0 ? undefined : '0'}
-                role="graphics-symbol"
-                aria-label={markLabel}
               >
                 <title>{markLabel}</title>
               </rect>
@@ -276,15 +314,14 @@ export function BarChart({ title, description, data, valueFormatter }) {
 
 export function HorizontalBarChart({ title, description, data, valueFormatter }) {
   const rows = normalizeData(data)
-  const visibleRows = rows.slice(0, 8)
-  const scale = verticalScale(visibleRows)
+  const scale = verticalScale(rows)
   const left = 158
   const right = 636
   const top = 24
-  const rowHeight = visibleRows.length > 0 ? clamp(210 / visibleRows.length, 26, 54) : 40
-  const chartBottom = clamp(top + Math.max(visibleRows.length, 1) * rowHeight, 64, 244)
-  const range = scale.maximum - scale.minimum || 1
-  const xFor = (value) => clamp(left + ((value - scale.minimum) / range) * (right - left), left, right)
+  const rowHeight = rows.length > 0 ? clamp(210 / rows.length, 26, 54) : 40
+  const chartBottom = top + Math.max(rows.length, 1) * rowHeight
+  const chartHeight = Math.max(280, chartBottom + 36)
+  const xFor = (value) => clamp(left + ratioInRange(value, scale.minimum, scale.maximum) * (right - left), left, right)
   const baseline = xFor(0)
   const label = chartLabel(title, description)
   const message = scale.empty ? '暂无可展示数据' : scale.allZero ? '当前数据均为零' : ''
@@ -292,10 +329,10 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
   return (
     <figure className="executive-chart executive-chart-horizontal-bars">
       <ChartCaption title={title} description={description} />
-      <svg role="img" aria-label={label} viewBox="0 0 680 280">
+      <svg role="img" aria-label={label} viewBox={`0 0 680 ${svgNumber(chartHeight)}`}>
         <title>{label}</title>
         <line className="executive-chart-axis" x1={svgNumber(baseline)} x2={svgNumber(baseline)} y1={top} y2={svgNumber(chartBottom)} />
-        {!message ? visibleRows.map((row, index) => {
+        {!message ? rows.map((row, index) => {
           if (row.value === null) return null
           const valueX = xFor(row.value)
           const x = row.value >= 0 ? baseline : valueX
@@ -314,9 +351,6 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
                 width={svgNumber(width)}
                 height={svgNumber(height)}
                 fill={row.color}
-                tabIndex={row.value === 0 ? undefined : '0'}
-                role="graphics-symbol"
-                aria-label={markLabel}
               >
                 <title>{markLabel}</title>
               </rect>
@@ -324,9 +358,6 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
           )
         }) : <EmptyChartText message={message} x="340" y="126" />}
       </svg>
-      {rows.length > visibleRows.length ? (
-        <p className="executive-chart-truncation">图形展示前 8 项，完整数值见图例与数据表。</p>
-      ) : null}
       <ChartLegend title={title} rows={rows} valueFormatter={valueFormatter} />
       <SingleValueTable title={title} rows={rows} valueFormatter={valueFormatter} />
     </figure>
@@ -455,9 +486,6 @@ export function LineChart({ title, description, points, series, valueFormatter }
                   cy={svgNumber(yFor(value))}
                   r="4"
                   fill={item.color}
-                  tabIndex="0"
-                  role="graphics-symbol"
-                  aria-label={markLabel}
                 >
                   <title>{markLabel}</title>
                 </circle>

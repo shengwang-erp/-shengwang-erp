@@ -888,6 +888,12 @@ export function buildExecutiveDashboardReadModel(input) {
   const sourceAnomalies = []
   const projectRowsSource = states.projects.status === 'ready' ? states.projects.data : []
   const allProjects = collectProjects(projectRowsSource, sourceAnomalies)
+  const projectOptions = allProjects
+    .map((project) => ({
+      projectId: project.projectId,
+      projectName: project.projectName,
+    }))
+    .sort((left, right) => left.projectId.localeCompare(right.projectId))
   const filters = normalizedFilters(normalized.rawFilters, allProjects)
   const filteredProjects = allProjects.filter((project) =>
     (filters.projectId === 'all' || project.projectId === filters.projectId) &&
@@ -1413,6 +1419,7 @@ export function buildExecutiveDashboardReadModel(input) {
     const page = Math.min(filters.page, totalPages)
     const start = (page - 1) * filters.pageSize
     projectRows = readyBlock(states, FINANCIAL_REQUIRED, {
+      projectOptions,
       items: financialRows.slice(start, start + filters.pageSize),
       page,
       pageSize: filters.pageSize,

@@ -4,6 +4,7 @@ import {
   HorizontalBarChart,
   LineChart,
 } from './ExecutiveCharts.jsx'
+import { getAdminRoute } from '../../navigation/adminRoutes.js'
 import './executiveDashboard.css'
 
 const BLOCK_STATUSES = new Set(['ready', 'loading', 'error', 'forbidden'])
@@ -23,6 +24,13 @@ const KPI_DEFINITIONS = Object.freeze([
   ['outstandingTaxInclusive', '当前含税未收', 'money'],
   ['estimatedProfitTaxExclusive', '当前累计税抜预计利润', 'money'],
 ])
+const KPI_STATUSES = new Set(['ready', 'loading', 'error', 'forbidden'])
+const RANKING_METRICS = new Set(RANKING_OPTIONS.map(([key]) => key))
+const PROFIT_STATUSES = new Set(['ready', 'legacy_compatibility', 'missing_anchor'])
+const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/u
+const PROJECT_STATUS_VALUES = PROJECT_STATUSES.slice(1)
+const PROJECT_STATUS_SET = new Set(PROJECT_STATUS_VALUES)
+const KPI_KEYS = new Set(KPI_DEFINITIONS.map(([key]) => key))
 
 function ownValue(value, key, fallback = null) {
   try {
@@ -50,6 +58,273 @@ function isArray(value) {
   } catch {
     return false
   }
+}
+
+function isOwnDataRecord(value) {
+  try {
+    if (!isRecord(value) || Object.getOwnPropertySymbols(value).length !== 0) return false
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return false
+    return Object.getOwnPropertyNames(value).every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, 'value')
+    })
+  } catch {
+    return false
+  }
+}
+
+function hasOwnDataFields(value, fields) {
+  if (!isOwnDataRecord(value)) return false
+  return fields.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, 'value')
+  })
+}
+
+function isDenseDataArray(value, validator = () => true) {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return false
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+    const length = lengthDescriptor?.value
+    if (!Number.isSafeInteger(length) || length < 0) return false
+    const names = Object.getOwnPropertyNames(value)
+    if (names.length !== length + 1) return false
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, 'value') ||
+          !validator(descriptor.value, index)) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isNullableFiniteNumber(value) {
+  return value === null || isFiniteNumber(value)
+}
+
+function isNonNegativeNumber(value) {
+  return isFiniteNumber(value) && value >= 0
+}
+
+function isNullableNonNegativeNumber(value) {
+  return value === null || isNonNegativeNumber(value)
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
+function isNonEmptyText(value) {
+  return typeof value === 'string' && value.trim().length > 0 && value.trim() === value
+}
+
+function isMonth(value) {
+  return typeof value === 'string' && MONTH_PATTERN.test(value)
+}
+
+function isNullableDataRecord(value) {
+  return value === null || isOwnDataRecord(value)
+}
+
+function isRecordArray(value) {
+  return isDenseDataArray(value, isOwnDataRecord)
+}
+
+function validKpis(data) {
+  if (!isDenseDataArray(data) || data.length !== KPI_DEFINITIONS.length) return false
+  const seen = new Set()
+  for (let index = 0; index < data.length; index += 1) {
+    const item = ownValue(data, index)
+    if (!hasOwnDataFields(item, ['key', 'label', 'status', 'value', 'comparison', 'message'])) {
+      return false
+    }
+    const key = ownValue(item, 'key')
+    const status = ownValue(item, 'status')
+    const value = ownValue(item, 'value')
+    if (!KPI_KEYS.has(key) || seen.has(key) || !isNonEmptyText(ownValue(item, 'label')) ||
+        !KPI_STATUSES.has(status) || typeof ownValue(item, 'message') !== 'string' ||
+        !isNullableDataRecord(ownValue(item, 'comparison')) ||
+        (status === 'ready' ? !isFiniteNumber(value) : value !== null)) return false
+    if (key === 'activeProjects' && !isNonNegativeInteger(value)) return false
+    seen.add(key)
+  }
+  return seen.size === KPI_KEYS.size
+}
+
+function validRevenue(data) {
+  if (!hasOwnDataFields(data, [
+    'contractTaxInclusiveAmount', 'receivedTaxInclusiveAmount',
+    'outstandingTaxInclusiveAmount', 'collectionRate', 'comparison', 'issues',
+  ])) return false
+  return isNonNegativeNumber(ownValue(data, 'contractTaxInclusiveAmount')) &&
+    isNonNegativeNumber(ownValue(data, 'receivedTaxInclusiveAmount')) &&
+    isNonNegativeNumber(ownValue(data, 'outstandingTaxInclusiveAmount')) &&
+    isNullableNonNegativeNumber(ownValue(data, 'collectionRate')) &&
+    isNullableDataRecord(ownValue(data, 'comparison')) &&
+    isRecordArray(ownValue(data, 'issues'))
+}
+
+function validProjectStatus(data) {
+  if (!isDenseDataArray(data) || data.length !== PROJECT_STATUS_VALUES.length) return false
+  const seen = new Set()
+  for (let index = 0; index < data.length; index += 1) {
+    const row = ownValue(data, index)
+    if (!hasOwnDataFields(row, ['status', 'count'])) return false
+    const status = ownValue(row, 'status')
+    if (!PROJECT_STATUS_SET.has(status) || seen.has(status) ||
+        !isNonNegativeInteger(ownValue(row, 'count'))) return false
+    seen.add(status)
+  }
+  return seen.size === PROJECT_STATUS_SET.size
+}
+
+function validCashFlow(data) {
+  if (!hasOwnDataFields(data, [
+    'series', 'points', 'coverage', 'anomalies', 'componentStatus', 'comparison',
+  ])) return false
+  const points = ownValue(data, 'points')
+  const validPoints = isDenseDataArray(points, (point) =>
+    hasOwnDataFields(point, ['month', 'income', 'outflow', 'net']) &&
+      isMonth(ownValue(point, 'month')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'income')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'outflow')) &&
+      isNullableFiniteNumber(ownValue(point, 'net')))
+  const validSeries = isDenseDataArray(ownValue(data, 'series'), (point) =>
+    hasOwnDataFields(point, [
+      'month', 'income', 'outflow', 'net', 'purchaseOutflow', 'vehicleOutflow',
+    ]) && isMonth(ownValue(point, 'month')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'income')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'outflow')) &&
+      isNullableFiniteNumber(ownValue(point, 'net')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'purchaseOutflow')) &&
+      isNullableNonNegativeNumber(ownValue(point, 'vehicleOutflow')))
+  const validCoverage = isDenseDataArray(ownValue(data, 'coverage'), (row) =>
+    hasOwnDataFields(row, ['code', 'label', 'excludedCount', 'note']) &&
+      isNonEmptyText(ownValue(row, 'code')) && isNonEmptyText(ownValue(row, 'label')) &&
+      isNonNegativeInteger(ownValue(row, 'excludedCount')) &&
+      typeof ownValue(row, 'note') === 'string')
+  const componentStatus = ownValue(data, 'componentStatus')
+  const validComponents = hasOwnDataFields(componentStatus, [
+    'income', 'purchaseOutflow', 'vehicleOutflow', 'outflow', 'net',
+  ]) && ['income', 'purchaseOutflow', 'vehicleOutflow', 'outflow', 'net']
+    .every((key) => KPI_STATUSES.has(ownValue(componentStatus, key)))
+  const comparison = ownValue(data, 'comparison')
+  const validComparison = hasOwnDataFields(comparison, ['income', 'outflow', 'net']) &&
+    ['income', 'outflow', 'net'].every((key) =>
+      isNullableDataRecord(ownValue(comparison, key)))
+  return validPoints && validSeries && validCoverage &&
+    isRecordArray(ownValue(data, 'anomalies')) &&
+    validComponents && validComparison
+}
+
+function validCosts(data) {
+  if (!hasOwnDataFields(data, [
+    'month', 'scope', 'labor', 'purchase', 'vehicle', 'manual', 'operating', 'total',
+    'incomplete', 'monthlyByMonth', 'pending', 'anomalies', 'comparison',
+  ])) return false
+  return isMonth(ownValue(data, 'month')) && isNonEmptyText(ownValue(data, 'scope')) &&
+    ['labor', 'purchase', 'vehicle', 'manual', 'operating', 'total']
+      .every((key) => isNonNegativeNumber(ownValue(data, key))) &&
+    ownValue(data, 'incomplete') === false &&
+    isOwnDataRecord(ownValue(data, 'monthlyByMonth')) &&
+    isOwnDataRecord(ownValue(data, 'pending')) &&
+    isRecordArray(ownValue(data, 'anomalies')) &&
+    isNullableDataRecord(ownValue(data, 'comparison'))
+}
+
+function validRanking(data) {
+  return isDenseDataArray(data, (row) => {
+    if (!hasOwnDataFields(row, [
+      'projectId', 'projectName', 'projectStatus', 'metric', 'value', 'profit',
+      'margin', 'revenue', 'confirmedCost',
+    ])) return false
+    return isNonEmptyText(ownValue(row, 'projectId')) &&
+      isNonEmptyText(ownValue(row, 'projectName')) &&
+      PROJECT_STATUS_SET.has(ownValue(row, 'projectStatus')) &&
+      RANKING_METRICS.has(ownValue(row, 'metric')) &&
+      isFiniteNumber(ownValue(row, 'value')) &&
+      isNullableFiniteNumber(ownValue(row, 'profit')) &&
+      isNullableFiniteNumber(ownValue(row, 'margin')) &&
+      isNullableNonNegativeNumber(ownValue(row, 'revenue')) &&
+      isNullableNonNegativeNumber(ownValue(row, 'confirmedCost'))
+  })
+}
+
+function validAlerts(data) {
+  return isDenseDataArray(data, (alert) => {
+    if (!hasOwnDataFields(alert, [
+      'id', 'type', 'severity', 'title', 'reason', 'count', 'amount',
+      'targetView', 'canNavigate', 'recordRef',
+    ])) return false
+    const targetView = ownValue(alert, 'targetView')
+    const recordRef = ownValue(alert, 'recordRef')
+    return isNonEmptyText(ownValue(alert, 'id')) && isNonEmptyText(ownValue(alert, 'type')) &&
+      ['info', 'warning', 'error'].includes(ownValue(alert, 'severity')) &&
+      isNonEmptyText(ownValue(alert, 'title')) && isNonEmptyText(ownValue(alert, 'reason')) &&
+      isNonNegativeInteger(ownValue(alert, 'count')) &&
+      isNullableNonNegativeNumber(ownValue(alert, 'amount')) &&
+      (targetView === null || isNonEmptyText(targetView)) &&
+      typeof ownValue(alert, 'canNavigate') === 'boolean' &&
+      (recordRef === null || isNonEmptyText(recordRef))
+  })
+}
+
+function validProjectOptionRows(value) {
+  const seen = new Set()
+  if (!isDenseDataArray(value)) return false
+  for (let index = 0; index < value.length; index += 1) {
+    const row = ownValue(value, index)
+    if (!hasOwnDataFields(row, ['projectId', 'projectName'])) return false
+    const projectId = ownValue(row, 'projectId')
+    if (!isNonEmptyText(projectId) || seen.has(projectId) ||
+        !isNonEmptyText(ownValue(row, 'projectName'))) return false
+    seen.add(projectId)
+  }
+  return true
+}
+
+function validProjectRow(row) {
+  if (!hasOwnDataFields(row, [
+    'projectId', 'projectName', 'projectStatus', 'contractTaxInclusiveAmount',
+    'receivedTaxInclusiveAmount', 'outstandingTaxInclusiveAmount', 'confirmedCost',
+    'profitAnchorTaxExclusiveAmount', 'pendingManualCost', 'estimatedProfit', 'margin',
+    'profitStatus', 'profitStatusLabel',
+  ])) return false
+  return isNonEmptyText(ownValue(row, 'projectId')) &&
+    isNonEmptyText(ownValue(row, 'projectName')) &&
+    PROJECT_STATUS_SET.has(ownValue(row, 'projectStatus')) &&
+    ['contractTaxInclusiveAmount', 'receivedTaxInclusiveAmount',
+      'outstandingTaxInclusiveAmount', 'profitAnchorTaxExclusiveAmount', 'confirmedCost']
+      .every((key) => isNullableNonNegativeNumber(ownValue(row, key))) &&
+    isNonNegativeNumber(ownValue(row, 'pendingManualCost')) &&
+    isNullableFiniteNumber(ownValue(row, 'estimatedProfit')) &&
+    isNullableFiniteNumber(ownValue(row, 'margin')) &&
+    PROFIT_STATUSES.has(ownValue(row, 'profitStatus')) &&
+    typeof ownValue(row, 'profitStatusLabel') === 'string'
+}
+
+function validProjectRows(data) {
+  if (!hasOwnDataFields(data, [
+    'projectOptions', 'items', 'page', 'pageSize', 'totalItems', 'totalPages',
+  ])) return false
+  const page = ownValue(data, 'page')
+  const pageSize = ownValue(data, 'pageSize')
+  const totalItems = ownValue(data, 'totalItems')
+  const totalPages = ownValue(data, 'totalPages')
+  return validProjectOptionRows(ownValue(data, 'projectOptions')) &&
+    isDenseDataArray(ownValue(data, 'items'), validProjectRow) &&
+    Number.isSafeInteger(page) && page >= 1 &&
+    Number.isSafeInteger(pageSize) && pageSize >= 1 && pageSize <= 100 &&
+    isNonNegativeInteger(totalItems) && Number.isSafeInteger(totalPages) && totalPages >= 1 &&
+    page <= totalPages
 }
 
 function safeText(value, fallback = '') {
@@ -96,6 +371,21 @@ function normalizedBlock(model, key) {
     data: status === 'ready' ? ownValue(raw, 'data') : null,
     message: safeText(ownValue(raw, 'message')),
     code: safeText(ownValue(raw, 'code')),
+  }
+}
+
+function validatedBlock(model, key, validator, label) {
+  const block = normalizedBlock(model, key)
+  if (block.status !== 'ready') return block
+  let valid = false
+  try {
+    valid = validator(block.data) === true
+  } catch {
+    valid = false
+  }
+  return valid ? block : {
+    status: 'error', stale: false, data: null,
+    message: `${label}数据格式异常`, code: 'INVALID_VIEW_MODEL',
   }
 }
 
@@ -161,32 +451,38 @@ function DashboardPanel({ area, eyebrow, title, block, children, className = '' 
   )
 }
 
-function filterSnapshot(filters, fallbackMonth) {
+function filterSnapshot(filters, fallbackMonth, projectIds) {
+  const projectId = ownValue(filters, 'projectId')
+  const selectedMonth = ownValue(filters, 'selectedMonth')
+  const pageSize = ownValue(filters, 'pageSize')
   return {
-    projectId: safeText(ownValue(filters, 'projectId'), 'all'),
+    projectId: projectId === 'all' || projectIds.has(projectId) ? projectId : 'all',
     projectStatus: PROJECT_STATUSES.includes(ownValue(filters, 'projectStatus'))
       ? ownValue(filters, 'projectStatus')
       : 'all',
-    rankingMetric: RANKING_OPTIONS.some(([key]) => key === ownValue(filters, 'rankingMetric'))
+    rankingMetric: RANKING_METRICS.has(ownValue(filters, 'rankingMetric'))
       ? ownValue(filters, 'rankingMetric')
       : 'profit',
-    selectedMonth: safeText(ownValue(filters, 'selectedMonth'), fallbackMonth),
+    selectedMonth: isMonth(selectedMonth)
+      ? selectedMonth
+      : isMonth(fallbackMonth) ? fallbackMonth : '',
     page: safePositiveInteger(ownValue(filters, 'page'), 1),
-    pageSize: safePositiveInteger(ownValue(filters, 'pageSize'), 10),
+    pageSize: Number.isSafeInteger(pageSize) && pageSize >= 1 && pageSize <= 100
+      ? pageSize
+      : 10,
   }
 }
 
-function projectOptions(projectRowsBlock, currentProjectId, scopeLabel) {
+function projectOptions(projectRowsBlock) {
   const options = new Map([['all', '全部项目']])
   const data = projectRowsBlock.status === 'ready' ? projectRowsBlock.data : null
-  const items = isRecord(data) && isArray(ownValue(data, 'items')) ? ownValue(data, 'items') : []
-  for (let index = 0; index < items.length; index += 1) {
-    const row = ownValue(items, index)
+  const rows = isRecord(data) && isArray(ownValue(data, 'projectOptions'))
+    ? ownValue(data, 'projectOptions')
+    : []
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = ownValue(rows, index)
     const projectId = safeText(ownValue(row, 'projectId'))
     if (projectId) options.set(projectId, safeText(ownValue(row, 'projectName'), projectId))
-  }
-  if (currentProjectId !== 'all' && !options.has(currentProjectId)) {
-    options.set(currentProjectId, safeText(scopeLabel, currentProjectId))
   }
   return [...options.entries()]
 }
@@ -388,6 +684,13 @@ function rankingChart(data, rankingMetric) {
   )
 }
 
+function canonicalNavigationTarget(value) {
+  const targetView = safeText(value)
+  if (!targetView) return ''
+  const route = getAdminRoute(targetView)
+  return route?.view === targetView ? targetView : ''
+}
+
 function Alerts({ data, onNavigate }) {
   if (!isArray(data)) return <MalformedData label="授权预警" />
   const items = []
@@ -398,7 +701,7 @@ function Alerts({ data, onNavigate }) {
     const severity = ['info', 'warning', 'error'].includes(ownValue(alert, 'severity'))
       ? ownValue(alert, 'severity')
       : 'info'
-    const targetView = safeText(ownValue(alert, 'targetView'))
+    const targetView = canonicalNavigationTarget(ownValue(alert, 'targetView'))
     const canNavigate = ownValue(alert, 'canNavigate') === true && Boolean(targetView)
     items.push(
       <li className={`executive-alert executive-alert-${severity}`} key={`${id}-${index}`}>
@@ -506,26 +809,27 @@ export function ExecutiveDashboardPage({
 }) {
   const meta = isRecord(ownValue(model, 'meta')) ? ownValue(model, 'meta') : {}
   const selectedMonth = safeText(ownValue(meta, 'selectedMonth'))
-  const filterValue = filterSnapshot(filters, selectedMonth)
   const blocks = {
-    kpis: normalizedBlock(model, 'kpis'),
-    revenue: normalizedBlock(model, 'revenue'),
-    projectStatus: normalizedBlock(model, 'projectStatus'),
-    cashFlow: normalizedBlock(model, 'cashFlow'),
-    costs: normalizedBlock(model, 'costs'),
-    ranking: normalizedBlock(model, 'projectRanking'),
-    alerts: normalizedBlock(model, 'alerts'),
-    rows: normalizedBlock(model, 'projectRows'),
+    kpis: validatedBlock(model, 'kpis', validKpis, '关键指标'),
+    revenue: validatedBlock(model, 'revenue', validRevenue, '收款结构'),
+    projectStatus: validatedBlock(model, 'projectStatus', validProjectStatus, '项目生命周期'),
+    cashFlow: validatedBlock(model, 'cashFlow', validCashFlow, '现金趋势'),
+    costs: validatedBlock(model, 'costs', validCosts, '成本构成'),
+    ranking: validatedBlock(model, 'projectRanking', validRanking, '盈利能力排行'),
+    alerts: validatedBlock(model, 'alerts', validAlerts, '授权预警'),
+    rows: validatedBlock(model, 'projectRows', validProjectRows, '项目经营明细'),
   }
   const scopeLabel = safeText(ownValue(meta, 'projectScopeLabel'), '全部项目')
-  const options = projectOptions(blocks.rows, filterValue.projectId, scopeLabel)
+  const options = projectOptions(blocks.rows)
+  const projectIds = new Set(options.map(([projectId]) => projectId))
+  const filterValue = filterSnapshot(filters, selectedMonth, projectIds)
   const emitFilter = (key, value) => {
     if (typeof onFiltersChange !== 'function') return
-    onFiltersChange({
+    onFiltersChange(filterSnapshot({
       ...filterValue,
       [key]: value,
       page: key === 'page' ? value : 1,
-    })
+    }, selectedMonth, projectIds))
   }
 
   return (
