@@ -1,0 +1,1075 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+
+import {
+  LaborAccountingServiceError,
+  createLaborAccountingService,
+  laborAccountingService,
+} from './laborAccountingService.js'
+
+const source = await readFile(new URL('./laborAccountingService.js', import.meta.url), 'utf8').catch(() => '')
+
+const EMPLOYEE_ID = '52000000-0000-4000-8000-000000000001'
+const EMPLOYEE_ID_2 = '52000000-0000-4000-8000-000000000002'
+const RESOLUTION_ID = '62000000-0000-4000-8000-000000000001'
+const ALLOCATION_ID = '63000000-0000-4000-8000-000000000001'
+const PAYROLL_ID = '64000000-0000-4000-8000-000000000001'
+const SESSION_ID = '71000000-0000-4000-8000-000000000001'
+const CLOCK_IN_ID = '72000000-0000-4000-8000-000000000001'
+const CLOCK_OUT_ID = '72000000-0000-4000-8000-000000000002'
+const WORK_DATE = '2026-07-18'
+const MONTH = '2026-07'
+
+const clone = (value) => structuredClone(value)
+
+function accountingSettings({ configured = true, version } = {}) {
+  const result = {
+    configured,
+    effectiveFrom: configured ? '2026-07-16' : null,
+    workWeekdays: [1, 2, 3, 4, 5, 6],
+    workStartTime: '08:00',
+    workEndTime: '17:00',
+    breakMinutes: 60,
+    standardDayMinutes: 480,
+  }
+  if (version !== undefined) result.version = version
+  return result
+}
+
+function attendanceEvent(eventType) {
+  return {
+    eventId: eventType === 'clock_in' ? CLOCK_IN_ID : CLOCK_OUT_ID,
+    eventType,
+    serverRecordedAt: eventType === 'clock_in'
+      ? '2026-07-18T08:00:00+09:00'
+      : '2026-07-18T17:00:00+09:00',
+    result: 'normal',
+    abnormalReason: null,
+  }
+}
+
+function attendanceSession() {
+  return {
+    sessionId: SESSION_ID,
+    projectId: 'P001',
+    projectName: '东京站现场',
+    status: 'closed',
+    openedAt: '2026-07-18T08:00:00+09:00',
+    closedAt: '2026-07-18T17:00:00+09:00',
+    clockInEvent: attendanceEvent('clock_in'),
+    clockOutEvent: attendanceEvent('clock_out'),
+  }
+}
+
+function compactResolution() {
+  return {
+    resolutionId: RESOLUTION_ID,
+    resolutionType: 'full_day',
+    attendanceUnits: 1,
+    accountingStatus: 'confirmed',
+    scheduleRequired: true,
+    resolutionNote: '',
+    confirmedAt: '2026-07-18T17:05:00+09:00',
+    version: 1,
+  }
+}
+
+function dashboardEmployee({ canViewSalary = true } = {}) {
+  const result = {
+    employeeProfileId: EMPLOYEE_ID,
+    employeeNumber: 'SW-001',
+    name: '山田太郎',
+    department: '工程部',
+    position: '大工',
+    scheduleRequired: true,
+    dayStatus: 'full_day',
+    issueCodes: [],
+    firstClockInAt: '2026-07-18T08:00:00+09:00',
+    lastClockOutAt: '2026-07-18T17:00:00+09:00',
+    hasOpenSession: false,
+    hasAbnormalLocation: false,
+    workedMinutesReference: 480,
+    sessions: [attendanceSession()],
+    resolution: compactResolution(),
+  }
+  if (canViewSalary) {
+    result.salary = {
+      salaryType: '日薪',
+      baseSalary: null,
+      dailySalary: 12000,
+      hourlyWage: null,
+      salaryRemark: null,
+    }
+  }
+  return result
+}
+
+function dailyDashboard({ canViewSalary = true } = {}) {
+  return {
+    workDate: WORK_DATE,
+    serverNowTokyo: '2026-07-18T17:06:00.000+09:00',
+    settings: accountingSettings(),
+    permissions: {
+      canResolve: true,
+      canViewSalary,
+      canUpdateSalary: canViewSalary,
+      canViewProjectCosts: true,
+      canUpdateProjectCosts: canViewSalary,
+      canUpdateSettings: true,
+    },
+    summary: {
+      totalEmployees: 1,
+      requiredEmployees: 1,
+      normalCompleted: 0,
+      working: 0,
+      excused: 0,
+      alertCount: 0,
+      abnormalLocation: 0,
+      missingClockIn: 0,
+      missingClockOut: 0,
+      late: 0,
+      early: 0,
+      overtimePending: 0,
+    },
+    filters: {
+      departments: ['工程部'],
+      projects: [{ projectId: 'P001', projectName: '东京站现场' }],
+      dayStatuses: ['full_day'],
+      issueCodes: [
+        'abnormal_location', 'missing_clock_in', 'missing_clock_out',
+        'late', 'early', 'overtime_pending',
+      ],
+    },
+    employees: [dashboardEmployee({ canViewSalary })],
+  }
+}
+
+function resolutionDetail({
+  canViewSalary = true,
+  canViewProjectCosts = true,
+  hasResolution = true,
+} = {}) {
+  const permissions = {
+    canResolve: true,
+    canViewSalary,
+    canViewProjectCosts,
+    canUpdateProjectCosts: canViewSalary && canViewProjectCosts,
+  }
+  let salary = null
+  if (canViewSalary) {
+    salary = {
+      salaryType: '日薪',
+      baseSalary: null,
+      dailySalary: 12000,
+      hourlyWage: null,
+      suggestedProjectCost: canViewProjectCosts ? 12000 : null,
+    }
+  }
+  let resolution = null
+  let allocations = []
+  if (hasResolution) {
+    resolution = compactResolution()
+    if (canViewSalary) {
+      Object.assign(resolution, {
+        salaryTypeSnapshot: '日薪',
+        baseSalarySnapshot: null,
+        dailySalarySnapshot: 12000,
+        hourlyWageSnapshot: null,
+        suggestedProjectCost: canViewProjectCosts ? 12000 : null,
+        finalProjectCost: canViewProjectCosts ? 12000 : null,
+      })
+    }
+    const allocation = {
+      allocationId: ALLOCATION_ID,
+      projectId: 'P001',
+      projectName: '东京站现场',
+      allocationNote: '',
+    }
+    if (canViewSalary && canViewProjectCosts) allocation.amount = 12000
+    allocations = [allocation]
+  }
+  return {
+    employee: {
+      employeeProfileId: EMPLOYEE_ID,
+      employeeNumber: 'SW-001',
+      employeeName: '山田太郎',
+      department: '工程部',
+      position: '大工',
+    },
+    workDate: WORK_DATE,
+    scheduleRequired: true,
+    facts: {
+      dayStatus: 'completed',
+      issueCodes: [],
+      firstClockInAt: '2026-07-18T08:00:00+09:00',
+      lastClockOutAt: '2026-07-18T17:00:00+09:00',
+      hasOpenSession: false,
+      hasAbnormalLocation: false,
+      workedMinutesReference: 480,
+      sessions: [attendanceSession()],
+    },
+    permissions,
+    salary,
+    resolution,
+    allocations,
+  }
+}
+
+const MONTHLY_BASE_KEYS = [
+  'employeeProfileId', 'employeeNumber', 'employeeName', 'department',
+  'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
+  'issueCounts', 'status', 'payrollId', 'version',
+]
+
+const MONTHLY_MONEY_KEYS = [
+  'salaryType', 'baseSalarySnapshot', 'basePay', 'overtimePay', 'bonus',
+  'deduction', 'netSalary', 'projectAllocatedAmount',
+  'projectUnallocatedAmount', 'confirmationNote', 'confirmedAt',
+]
+
+function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
+  const result = {
+    employeeProfileId: legacy ? null : EMPLOYEE_ID,
+    employeeNumber: legacy ? 'LEG-001' : 'SW-001',
+    employeeName: legacy ? '旧员工' : '山田太郎',
+    department: legacy ? '' : '工程部',
+    fullDays: legacy ? 0 : 20,
+    halfDays: legacy ? 0 : 1,
+    excusedDays: 0,
+    absenceDays: 0,
+    pendingDays: 0,
+    issueCounts: { late: 0, early: 0, abnormalLocation: 0, overtimePending: 0 },
+    status: legacy ? 'confirmed' : 'ready',
+    payrollId: null,
+    version: 0,
+  }
+  if (legacy) result.source = 'legacy'
+  if (canViewSalary) {
+    Object.assign(result, {
+      salaryType: legacy ? '月薪' : '日薪',
+      baseSalarySnapshot: legacy ? 300000 : 12000,
+      basePay: legacy ? 300000 : 246000,
+      overtimePay: 0,
+      bonus: 0,
+      deduction: 0,
+      netSalary: legacy ? 300000 : 246000,
+      projectAllocatedAmount: 12000,
+      projectUnallocatedAmount: 0,
+      confirmationNote: '',
+      confirmedAt: null,
+    })
+  }
+  return result
+}
+
+function monthlyPayroll({ canViewSalary = true } = {}) {
+  const summary = {
+    employeeCount: 2,
+    confirmedFullDays: 20,
+    confirmedHalfDays: 1,
+    absenceDays: 0,
+    pendingCount: 1,
+  }
+  if (canViewSalary) {
+    Object.assign(summary, {
+      salaryPreviewTotal: 546000,
+      projectAllocatedTotal: 24000,
+      projectUnallocatedTotal: 0,
+    })
+  }
+  return {
+    salaryMonth: '2026-07-01',
+    permissions: { canViewSalary, canUpdateSalary: canViewSalary },
+    summary,
+    employees: [
+      monthlyEmployee({ canViewSalary }),
+      monthlyEmployee({ legacy: true, canViewSalary }),
+    ],
+    reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
+  }
+}
+
+function payrollResult({ canViewSalary = true } = {}) {
+  const payroll = {
+    payrollId: PAYROLL_ID,
+    salaryMonth: '2026-07-01',
+    fullDays: 20,
+    halfDays: 1,
+    absenceDays: 0,
+    status: 'draft',
+    confirmedAt: null,
+    version: 1,
+  }
+  if (canViewSalary) {
+    Object.assign(payroll, {
+      salaryTypeSnapshot: '日薪',
+      baseSalarySnapshot: 12000,
+      basePay: 246000,
+      overtimePay: 1000,
+      bonus: 2000,
+      deduction: 500,
+      netSalary: 248500,
+      confirmationNote: '',
+    })
+  }
+  return {
+    employee: {
+      employeeProfileId: EMPLOYEE_ID,
+      employeeNumber: 'SW-001',
+      employeeName: '山田太郎',
+      department: '工程部',
+    },
+    payroll,
+  }
+}
+
+function projectDetails() {
+  return [
+    {
+      source: 'legacy', sourceKey: 'legacy-row-1', workDate: '2026-07-01',
+      projectId: 'P001', projectName: '东京站现场', employeeProfileId: null,
+      employeeNumber: 'LEG-001', employeeName: '旧员工', attendanceUnits: 1,
+      amount: 3000, accountingStatus: 'legacy',
+    },
+    {
+      source: 'attendance', sourceKey: ALLOCATION_ID, workDate: '2026-07-02',
+      projectId: 'P001', projectName: '东京站现场', employeeProfileId: EMPLOYEE_ID,
+      employeeNumber: 'SW-001', employeeName: '山田太郎', attendanceUnits: 1,
+      amount: 9000, accountingStatus: 'month_locked',
+    },
+    {
+      source: 'attendance', sourceKey: '63000000-0000-4000-8000-000000000002',
+      workDate: '2026-07-03', projectId: 'P001', projectName: '东京站现场',
+      employeeProfileId: EMPLOYEE_ID_2, employeeNumber: 'SW-002', employeeName: '佐藤花子',
+      attendanceUnits: 0.5, amount: 4000, accountingStatus: 'draft',
+    },
+    {
+      source: 'attendance', sourceKey: `draft-unallocated:${RESOLUTION_ID}`,
+      workDate: '2026-07-03', projectId: null, projectName: '未分摊',
+      employeeProfileId: EMPLOYEE_ID_2, employeeNumber: 'SW-002', employeeName: '佐藤花子',
+      attendanceUnits: 0.5, amount: 1000, accountingStatus: 'draft',
+    },
+  ]
+}
+
+function projectReport({ canViewSalary = true, status = 'all' } = {}) {
+  const allDetails = projectDetails()
+  const dailyDetails = status === 'confirmed'
+    ? allDetails.filter((row) => row.accountingStatus !== 'draft')
+    : status === 'pending'
+      ? allDetails.filter((row) => row.accountingStatus === 'draft')
+      : allDetails
+  return {
+    salaryMonth: '2026-07-01',
+    permissions: {
+      canViewSalary,
+      canViewEmployeeComposition: canViewSalary,
+    },
+    summary: {
+      monthlyConfirmedCost: 12000,
+      lifetimeConfirmedCost: 12000,
+      confirmedAttendanceUnits: 2,
+      pendingAllocationCount: 1,
+      pendingAllocationAmount: 4000,
+    },
+    trend: [
+      { salaryMonth: '2026-02', amount: 0 },
+      { salaryMonth: '2026-03', amount: 0 },
+      { salaryMonth: '2026-04', amount: 0 },
+      { salaryMonth: '2026-05', amount: 0 },
+      { salaryMonth: '2026-06', amount: 0 },
+      { salaryMonth: '2026-07', amount: 12000 },
+    ],
+    employeeComposition: canViewSalary ? [{
+      employeeProfileId: EMPLOYEE_ID,
+      employeeNumber: 'SW-001',
+      employeeName: '山田太郎',
+      attendanceUnits: 1,
+      amount: 9000,
+    }] : [],
+    dailyDetails: canViewSalary ? dailyDetails : [],
+    projectComparison: [{
+      projectId: 'P001', projectName: '东京站现场',
+      monthlyConfirmedCost: 12000, lifetimeConfirmedCost: 12000,
+    }],
+    reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
+  }
+}
+
+function projectExport() {
+  return [{
+    projectName: '东京站现场',
+    workDate: '2026-07-02',
+    employeeNumber: 'SW-001',
+    employeeName: '山田太郎',
+    attendanceUnits: 1,
+    amount: 9000,
+    accountingStatus: 'month_locked',
+    source: 'attendance',
+  }]
+}
+
+function bridgeSummary() {
+  return {
+    salaryMonth: '2026-07-01',
+    isAuthoritative: true,
+    salaryTotal: 546000,
+    projectLaborTotal: 12000,
+    projectLaborById: { P001: 12000 },
+    pendingCount: 1,
+    effectiveFrom: '2026-07-16',
+  }
+}
+
+function responseFor(name, args = {}) {
+  if (name === 'get_labor_alert_count_secure') {
+    return { workDate: WORK_DATE, count: 0, refreshedAt: '2026-07-18T17:06:00.000+09:00' }
+  }
+  if (name === 'list_daily_attendance_dashboard_secure') return dailyDashboard()
+  if (name.includes('attendance_resolution')) return resolutionDetail()
+  if (name === 'list_monthly_payroll_secure') return monthlyPayroll()
+  if (name.includes('monthly_payroll')) return payrollResult()
+  if (name === 'list_project_labor_costs_secure') {
+    return projectReport({ status: args.p_status })
+  }
+  if (name === 'export_project_labor_costs_secure') return projectExport()
+  if (name.includes('attendance_accounting_settings')) {
+    return accountingSettings({ version: 1 })
+  }
+  if (name === 'get_attendance_accounting_bridge_secure') return bridgeSummary()
+  throw new Error(`unhandled test RPC: ${name}`)
+}
+
+function serviceWithResponder(responder = responseFor) {
+  const calls = []
+  const service = createLaborAccountingService({
+    async rpc(name, args) {
+      calls.push([name, args])
+      return { data: responder(name, args), error: null, status: 200, statusText: 'OK' }
+    },
+  }, { configured: true })
+  return { service, calls }
+}
+
+const resolutionPayload = () => ({
+  employeeProfileId: EMPLOYEE_ID,
+  workDate: WORK_DATE,
+  resolutionType: 'full_day',
+  attendanceUnits: 1,
+  finalProjectCost: 12000,
+  allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
+  resolutionNote: '',
+  version: 1,
+})
+
+const payrollPayload = () => ({
+  employeeProfileId: EMPLOYEE_ID,
+  month: MONTH,
+  overtimePay: 1000,
+  bonus: 2000,
+  deduction: 500,
+  confirmationNote: '',
+  version: 1,
+})
+
+test('all fourteen methods use exact secure RPC names and arguments', async () => {
+  const { service, calls } = serviceWithResponder()
+  await service.getAlertCount()
+  await service.listDailyDashboard({ workDate: WORK_DATE })
+  await service.getResolutionDetail({ employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE })
+  await service.saveResolutionDraft(resolutionPayload())
+  await service.confirmResolution(resolutionPayload())
+  await service.listMonthlyPayroll({
+    month: MONTH, department: ' 工程部 ', employeeProfileId: EMPLOYEE_ID, onlyPending: true,
+  })
+  await service.saveMonthlyPayrollDraft(payrollPayload())
+  await service.confirmMonthlyPayroll(payrollPayload())
+  await service.reopenMonthlyPayroll({ payrollId: PAYROLL_ID, reason: '\t 修正理由 \n', version: 1 })
+  await service.listProjectLaborCosts({
+    month: MONTH, projectId: ' P001 ', employeeProfileId: EMPLOYEE_ID, status: 'all',
+  })
+  await service.exportProjectLaborCosts({
+    month: MONTH, projectId: ' P001 ', employeeProfileId: EMPLOYEE_ID,
+  })
+  await service.getSettings()
+  await service.updateSettings({
+    effectiveFrom: '2026-07-16', workWeekdays: [1, 2, 3, 4, 5, 6],
+    workStartTime: '08:00', workEndTime: '17:00', breakMinutes: 60,
+    standardDayMinutes: 480, version: 1,
+  })
+  await service.getBridgeSummary({ month: MONTH })
+
+  assert.deepEqual(calls, [
+    ['get_labor_alert_count_secure', {}],
+    ['list_daily_attendance_dashboard_secure', { p_work_date: WORK_DATE }],
+    ['get_attendance_resolution_detail_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_work_date: WORK_DATE,
+    }],
+    ['save_attendance_resolution_draft_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_work_date: WORK_DATE,
+      p_resolution_type: 'full_day', p_attendance_units: 1,
+      p_final_project_cost: 12000,
+      p_allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
+      p_resolution_note: '', p_version: 1,
+    }],
+    ['confirm_attendance_resolution_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_work_date: WORK_DATE,
+      p_resolution_type: 'full_day', p_attendance_units: 1,
+      p_final_project_cost: 12000,
+      p_allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
+      p_resolution_note: '', p_version: 1,
+    }],
+    ['list_monthly_payroll_secure', {
+      p_month: '2026-07-01', p_search: '工程部',
+      p_employee_profile_id: EMPLOYEE_ID, p_only_pending: true,
+    }],
+    ['save_monthly_payroll_draft_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_month: '2026-07-01',
+      p_overtime_pay: 1000, p_bonus: 2000, p_deduction: 500,
+      p_confirmation_note: '', p_version: 1,
+    }],
+    ['confirm_monthly_payroll_secure', {
+      p_employee_profile_id: EMPLOYEE_ID, p_month: '2026-07-01',
+      p_overtime_pay: 1000, p_bonus: 2000, p_deduction: 500,
+      p_confirmation_note: '', p_version: 1,
+    }],
+    ['reopen_monthly_payroll_secure', {
+      p_payroll_id: PAYROLL_ID, p_reason: '修正理由', p_version: 1,
+    }],
+    ['list_project_labor_costs_secure', {
+      p_month: '2026-07-01', p_status: 'all',
+      p_employee_profile_id: EMPLOYEE_ID, p_project_id: 'P001',
+    }],
+    ['export_project_labor_costs_secure', {
+      p_month: '2026-07-01', p_project_id: 'P001',
+      p_employee_profile_id: EMPLOYEE_ID,
+    }],
+    ['get_attendance_accounting_settings_secure', {}],
+    ['update_attendance_accounting_settings_secure', {
+      p_effective_from: '2026-07-16', p_work_weekdays: [1, 2, 3, 4, 5, 6],
+      p_work_start_time: '08:00', p_work_end_time: '17:00',
+      p_break_minutes: 60, p_standard_day_minutes: 480, p_version: 1,
+    }],
+    ['get_attendance_accounting_bridge_secure', { p_month: '2026-07-01' }],
+  ])
+})
+
+test('input and server objects are never mutated and returned month dates normalize to YYYY-MM', async () => {
+  const input = payrollPayload()
+  input.confirmationNote = '\t 月次確認 \n'
+  const inputBefore = clone(input)
+  const serverData = payrollResult()
+  const serverBefore = clone(serverData)
+  const { service } = serviceWithResponder(() => serverData)
+  const result = await service.saveMonthlyPayrollDraft(input)
+  assert.deepEqual(input, inputBefore)
+  assert.deepEqual(serverData, serverBefore)
+  assert.equal(result.payroll.salaryMonth, MONTH)
+  assert.notStrictEqual(result, serverData)
+})
+
+test('daily dashboard validates both salary permission variants and exact issue order', async () => {
+  for (const canViewSalary of [true, false]) {
+    const { service } = serviceWithResponder(() => dailyDashboard({ canViewSalary }))
+    const result = await service.listDailyDashboard({ workDate: WORK_DATE })
+    assert.equal(Object.hasOwn(result.employees[0], 'salary'), canViewSalary)
+  }
+
+  const nullableEvents = dailyDashboard()
+  nullableEvents.employees[0].sessions[0].clockInEvent = null
+  nullableEvents.employees[0].sessions[0].clockOutEvent = null
+  const nullableEventService = serviceWithResponder(() => nullableEvents).service
+  const nullableEventResult = await nullableEventService.listDailyDashboard({ workDate: WORK_DATE })
+  assert.equal(nullableEventResult.employees[0].sessions[0].clockInEvent, null)
+  assert.equal(nullableEventResult.employees[0].sessions[0].clockOutEvent, null)
+
+  for (const mutate of [
+    (row) => { row.permissions.can_view_salary = row.permissions.canViewSalary },
+    (row) => { delete row.permissions.canResolve },
+    (row) => { row.permissions.canUpdateSalary = false; row.permissions.canUpdateProjectCosts = true },
+    (row) => { row.filters.issueCodes = [...row.filters.issueCodes].reverse() },
+    (row) => { row.employees[0].issueCodes = ['late', 'abnormal_location'] },
+    (row) => { row.employees[0].salary.baseSalary = 1 },
+    (row) => { row.employees[0].sessions[0].clockInEvent.eventType = 'clock_out' },
+  ]) {
+    const malformed = dailyDashboard()
+    mutate(malformed)
+    const { service } = serviceWithResponder(() => malformed)
+    await assert.rejects(
+      () => service.listDailyDashboard({ workDate: WORK_DATE }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('resolution detail accepts only explicit salary and project-money variants', async () => {
+  const variants = [
+    { canViewSalary: false, canViewProjectCosts: false, amount: false },
+    { canViewSalary: true, canViewProjectCosts: false, amount: false },
+    { canViewSalary: true, canViewProjectCosts: true, amount: true },
+    { canViewSalary: false, canViewProjectCosts: true, amount: false },
+  ]
+  for (const variant of variants) {
+    const data = resolutionDetail(variant)
+    const { service } = serviceWithResponder(() => data)
+    const result = await service.getResolutionDetail({
+      employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+    })
+    assert.equal(Object.hasOwn(result.allocations[0], 'amount'), variant.amount)
+  }
+  const noResolution = resolutionDetail({ hasResolution: false })
+  const { service } = serviceWithResponder(() => noResolution)
+  assert.equal((await service.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+  })).resolution, null)
+
+  for (const malformed of [
+    (() => { const row = resolutionDetail({ canViewSalary: false }); row.salary = {}; return row })(),
+    (() => { const row = resolutionDetail({ canViewProjectCosts: false }); row.allocations[0].amount = 1; return row })(),
+    (() => { const row = resolutionDetail(); delete row.resolution.finalProjectCost; return row })(),
+    (() => { const row = resolutionDetail(); row.allocations[0].amount = 0.5; return row })(),
+  ]) {
+    const malformedService = serviceWithResponder(() => malformed).service
+    await assert.rejects(
+      () => malformedService.getResolutionDetail({ employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('monthly payroll validates canonical and legacy rows with salary-redacted alternatives', async () => {
+  for (const canViewSalary of [true, false]) {
+    const data = monthlyPayroll({ canViewSalary })
+    const { service } = serviceWithResponder(() => data)
+    const result = await service.listMonthlyPayroll({
+      month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+    })
+    assert.equal(result.salaryMonth, MONTH)
+    assert.deepEqual(
+      Object.keys(result.employees[0]).sort(),
+      [...MONTHLY_BASE_KEYS, ...(canViewSalary ? MONTHLY_MONEY_KEYS : [])].sort(),
+    )
+    assert.equal(result.employees[1].source, 'legacy')
+  }
+
+  for (const malformed of [
+    (() => { const row = monthlyPayroll({ canViewSalary: false }); row.summary.salaryPreviewTotal = 0; return row })(),
+    (() => { const row = monthlyPayroll(); delete row.employees[0].netSalary; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[1].source = 'database'; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].status = 'draft'; return row })(),
+    (() => {
+      const row = monthlyPayroll()
+      Object.assign(row.employees[0], {
+        status: 'confirmed', payrollId: PAYROLL_ID, version: 1, confirmedAt: null,
+      })
+      return row
+    })(),
+  ]) {
+    const { service } = serviceWithResponder(() => malformed)
+    await assert.rejects(
+      () => service.listMonthlyPayroll({ month: MONTH, department: '', employeeProfileId: null, onlyPending: false }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('payroll write DTOs validate the explicit salary visibility alternatives', async () => {
+  for (const canViewSalary of [true, false]) {
+    const { service } = serviceWithResponder(() => payrollResult({ canViewSalary }))
+    const result = await service.saveMonthlyPayrollDraft(payrollPayload())
+    assert.equal(Object.hasOwn(result.payroll, 'netSalary'), canViewSalary)
+    assert.equal(result.payroll.salaryMonth, MONTH)
+  }
+  const malformed = payrollResult()
+  malformed.payroll.netSalary = Number.MAX_SAFE_INTEGER + 1
+  const { service } = serviceWithResponder(() => malformed)
+  await assert.rejects(
+    () => service.saveMonthlyPayrollDraft(payrollPayload()),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
+})
+
+test('project reporting validates salary redaction and all confirmed/pending detail variants', async () => {
+  for (const status of ['all', 'confirmed', 'pending']) {
+    const data = projectReport({ status })
+    const { service } = serviceWithResponder(() => data)
+    const result = await service.listProjectLaborCosts({
+      month: MONTH, projectId: null, employeeProfileId: null, status,
+    })
+    assert.ok(result.dailyDetails.every((row) =>
+      status === 'all' || (status === 'pending') === (row.accountingStatus === 'draft')))
+  }
+  const redacted = projectReport({ canViewSalary: false })
+  const redactedService = serviceWithResponder(() => redacted).service
+  const redactedResult = await redactedService.listProjectLaborCosts({
+    month: MONTH, projectId: null, employeeProfileId: null, status: 'all',
+  })
+  assert.deepEqual(redactedResult.employeeComposition, [])
+  assert.deepEqual(redactedResult.dailyDetails, [])
+
+  const blankLegacyIdentity = projectReport()
+  Object.assign(blankLegacyIdentity.employeeComposition[0], {
+    employeeProfileId: null, employeeNumber: '', employeeName: '',
+  })
+  Object.assign(blankLegacyIdentity.dailyDetails[0], {
+    employeeNumber: '', employeeName: '',
+  })
+  const blankLegacyService = serviceWithResponder(() => blankLegacyIdentity).service
+  const blankLegacyResult = await blankLegacyService.listProjectLaborCosts({
+    month: MONTH, projectId: null, employeeProfileId: null, status: 'all',
+  })
+  assert.equal(blankLegacyResult.dailyDetails[0].employeeNumber, '')
+
+  for (const malformed of [
+    (() => { const row = projectReport({ canViewSalary: false }); row.dailyDetails = [projectDetails()[0]]; return row })(),
+    (() => { const row = projectReport(); row.dailyDetails[0].source = 'raw'; return row })(),
+    (() => { const row = projectReport(); row.dailyDetails[3].projectId = 'P001'; return row })(),
+    (() => { const row = projectReport(); row.dailyDetails[3].sourceKey = 'not-unallocated'; return row })(),
+    (() => { const row = projectReport({ status: 'pending' }); row.dailyDetails.push(projectDetails()[0]); return row })(),
+  ]) {
+    const { service } = serviceWithResponder(() => malformed)
+    await assert.rejects(
+      () => service.listProjectLaborCosts({ month: MONTH, projectId: null, employeeProfileId: null, status: 'pending' }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('settings, exports, alerts, and bridge DTOs reject malformed nested values and project maps', async () => {
+  const successCases = [
+    ['getSettings', undefined, accountingSettings({ configured: false, version: 0 })],
+    ['getSettings', undefined, accountingSettings({ version: 2 })],
+    ['exportProjectLaborCosts', { month: MONTH, projectId: null, employeeProfileId: null }, projectExport()],
+    ['exportProjectLaborCosts', { month: MONTH, projectId: null, employeeProfileId: null }, [{
+      ...projectExport()[0], source: 'legacy', accountingStatus: 'legacy',
+      employeeNumber: '', employeeName: '',
+    }]],
+    ['getAlertCount', undefined, { workDate: WORK_DATE, count: 0, refreshedAt: '2026-07-18T17:06:00+09:00' }],
+    ['getBridgeSummary', { month: MONTH }, bridgeSummary()],
+  ]
+  for (const [method, input, data] of successCases) {
+    const { service } = serviceWithResponder(() => data)
+    const result = input === undefined ? await service[method]() : await service[method](input)
+    assert.ok(result !== null)
+  }
+
+  const poisonedMap = JSON.parse('{"__proto__": 1}')
+  for (const [method, input, data] of [
+    ['getSettings', undefined, { ...accountingSettings({ version: 1 }), workStartTime: '08:00:00' }],
+    ['exportProjectLaborCosts', { month: MONTH, projectId: null, employeeProfileId: null }, [{ ...projectExport()[0], amount: -1 }]],
+    ['getAlertCount', undefined, { workDate: WORK_DATE, count: -0, refreshedAt: '2026-07-18T17:06:00+09:00' }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborById: poisonedMap }],
+    ['getBridgeSummary', { month: MONTH }, { ...bridgeSummary(), projectLaborById: { P001: Number.NaN } }],
+  ]) {
+    const { service } = serviceWithResponder(() => data)
+    await assert.rejects(
+      () => input === undefined ? service[method]() : service[method](input),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('every method rejects null, missing data/error wrappers, and extra top-level DTO keys', async () => {
+  const invocations = [
+    ['getAlertCount'],
+    ['listDailyDashboard', { workDate: WORK_DATE }],
+    ['getResolutionDetail', { employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE }],
+    ['saveResolutionDraft', resolutionPayload()],
+    ['confirmResolution', resolutionPayload()],
+    ['listMonthlyPayroll', { month: MONTH, department: '', employeeProfileId: null, onlyPending: false }],
+    ['saveMonthlyPayrollDraft', payrollPayload()],
+    ['confirmMonthlyPayroll', payrollPayload()],
+    ['reopenMonthlyPayroll', { payrollId: PAYROLL_ID, reason: '修正', version: 1 }],
+    ['listProjectLaborCosts', { month: MONTH, projectId: null, employeeProfileId: null, status: 'all' }],
+    ['exportProjectLaborCosts', { month: MONTH, projectId: null, employeeProfileId: null }],
+    ['getSettings'],
+    ['updateSettings', {
+      effectiveFrom: '2026-07-16', workWeekdays: [1, 2, 3, 4, 5, 6],
+      workStartTime: '08:00', workEndTime: '17:00', breakMinutes: 60,
+      standardDayMinutes: 480, version: 1,
+    }],
+    ['getBridgeSummary', { month: MONTH }],
+  ]
+  for (const [method, input] of invocations) {
+    for (const rpcResult of [null, {}, { data: responseFor(
+      method === 'getAlertCount' ? 'get_labor_alert_count_secure' :
+        method === 'getSettings' ? 'get_attendance_accounting_settings_secure' :
+          'get_attendance_accounting_bridge_secure',
+    ) }]) {
+      const service = createLaborAccountingService({ rpc: async () => rpcResult }, { configured: true })
+      await assert.rejects(
+        () => input === undefined ? service[method]() : service[method](input),
+        (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+      )
+    }
+    const valid = responseFor(
+      method === 'getAlertCount' ? 'get_labor_alert_count_secure' :
+        method === 'listDailyDashboard' ? 'list_daily_attendance_dashboard_secure' :
+          ['getResolutionDetail', 'saveResolutionDraft', 'confirmResolution'].includes(method)
+            ? 'get_attendance_resolution_detail_secure'
+            : method === 'listMonthlyPayroll' ? 'list_monthly_payroll_secure'
+              : ['saveMonthlyPayrollDraft', 'confirmMonthlyPayroll', 'reopenMonthlyPayroll'].includes(method)
+                ? 'save_monthly_payroll_draft_secure'
+                : method === 'listProjectLaborCosts' ? 'list_project_labor_costs_secure'
+                  : method === 'exportProjectLaborCosts' ? 'export_project_labor_costs_secure'
+                    : ['getSettings', 'updateSettings'].includes(method)
+                      ? 'get_attendance_accounting_settings_secure'
+                      : 'get_attendance_accounting_bridge_secure',
+      { p_status: 'all' },
+    )
+    const withExtra = Array.isArray(valid) ? Object.assign([...valid], { unexpected: true }) : { ...valid, unexpected: true }
+    const extraService = createLaborAccountingService({
+      rpc: async () => ({ data: withExtra, error: null }),
+    }, { configured: true })
+    await assert.rejects(
+      () => input === undefined ? extraService[method]() : extraService[method](input),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('exact input objects reject missing, extra, inherited, accessor, and symbol keys before RPC', async () => {
+  let callCount = 0
+  const service = createLaborAccountingService({
+    rpc: async () => { callCount += 1; return { data: dailyDashboard(), error: null } },
+  }, { configured: true })
+  const inherited = Object.create({ extra: true })
+  inherited.workDate = WORK_DATE
+  const accessor = {}
+  Object.defineProperty(accessor, 'workDate', { enumerable: true, get: () => WORK_DATE })
+  const symbol = { workDate: WORK_DATE }
+  symbol[Symbol('extra')] = true
+  for (const input of [
+    {},
+    { workDate: WORK_DATE, extra: true },
+    inherited,
+    accessor,
+    symbol,
+  ]) {
+    await assert.rejects(
+      () => service.listDailyDashboard(input),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+    )
+  }
+  await assert.rejects(
+    () => service.listDailyDashboard({ work_date: WORK_DATE }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+  )
+  await assert.rejects(
+    () => service.getAlertCount({}),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+  )
+  assert.equal(callCount, 0)
+})
+
+test('dates, months, UUIDs, enums, units, yen, versions, and bounded text reject unsafe inputs', async () => {
+  let callCount = 0
+  const service = createLaborAccountingService({
+    rpc: async () => { callCount += 1; return { data: resolutionDetail(), error: null } },
+  }, { configured: true })
+  const invalidCalls = [
+    () => service.listDailyDashboard({ workDate: '2026-02-30' }),
+    () => service.listDailyDashboard({ workDate: '1899-12-31' }),
+    () => service.listDailyDashboard({ workDate: '2101-01-01' }),
+    () => service.getResolutionDetail({ employeeProfileId: 'not-a-uuid', workDate: WORK_DATE }),
+    () => service.listMonthlyPayroll({ month: '2026-13', department: '', employeeProfileId: null, onlyPending: false }),
+    () => service.listMonthlyPayroll({ month: '1899-12', department: '', employeeProfileId: null, onlyPending: false }),
+    () => service.listMonthlyPayroll({ month: MONTH, department: 'x'.repeat(201), employeeProfileId: null, onlyPending: false }),
+    () => service.listMonthlyPayroll({ month: MONTH, department: '', employeeProfileId: null, onlyPending: 1 }),
+    () => service.listProjectLaborCosts({ month: MONTH, projectId: null, employeeProfileId: null, status: 'draft' }),
+    () => service.reopenMonthlyPayroll({ payrollId: PAYROLL_ID, reason: '\t\n\r\f\v ', version: 1 }),
+    () => service.reopenMonthlyPayroll({ payrollId: PAYROLL_ID, reason: 'x'.repeat(2001), version: 1 }),
+  ]
+  for (const field of ['finalProjectCost', 'version']) {
+    for (const unsafe of [-1, -0, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      invalidCalls.push(() => {
+        const payload = resolutionPayload()
+        payload[field] = unsafe
+        return service.saveResolutionDraft(payload)
+      })
+    }
+  }
+  for (const [resolutionType, attendanceUnits] of [
+    ['unknown', 1], ['full_day', 0.5], ['half_day', 1], ['rest', 1], ['absence', -0],
+    ['full_day', Number.NaN], ['full_day', Number.POSITIVE_INFINITY],
+  ]) {
+    invalidCalls.push(() => service.saveResolutionDraft({
+      ...resolutionPayload(), resolutionType, attendanceUnits,
+    }))
+  }
+  for (const call of invalidCalls) {
+    await assert.rejects(call, (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT')
+  }
+  assert.equal(callCount, 0)
+})
+
+test('allocation arrays are dense, exact, unique after POSIX trimming, and safely bounded', async () => {
+  let callCount = 0
+  const service = createLaborAccountingService({
+    rpc: async () => { callCount += 1; return { data: resolutionDetail(), error: null } },
+  }, { configured: true })
+  const sparse = new Array(1)
+  const extraArray = [{ projectId: 'P001', amount: 12000, allocationNote: '' }]
+  extraArray.extra = true
+  const invalidAllocations = [
+    sparse,
+    extraArray,
+    [{ projectId: 'P001', amount: 12000 }],
+    [{ projectId: 'P001', amount: 12000, allocationNote: '', extra: true }],
+    [
+      { projectId: 'P001', amount: 6000, allocationNote: '' },
+      { projectId: '\tP001\n', amount: 6000, allocationNote: '' },
+    ],
+    [{ projectId: '__proto__', amount: 12000, allocationNote: '' }],
+    [{ projectId: ' ', amount: 12000, allocationNote: '' }],
+    [{ projectId: 'P001', amount: -0, allocationNote: '' }],
+    [{ projectId: 'P001', amount: 1.5, allocationNote: '' }],
+    [{ projectId: 'P001', amount: 12000, allocationNote: 'x'.repeat(2001) }],
+    Array.from({ length: 101 }, (_, index) => ({
+      projectId: `P${index}`, amount: 0, allocationNote: '',
+    })),
+  ]
+  for (const allocations of invalidAllocations) {
+    const payload = resolutionPayload()
+    payload.allocations = allocations
+    await assert.rejects(
+      () => service.saveResolutionDraft(payload),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+    )
+  }
+  const overflow = resolutionPayload()
+  overflow.finalProjectCost = Number.MAX_SAFE_INTEGER
+  overflow.allocations = [
+    { projectId: 'P001', amount: Number.MAX_SAFE_INTEGER, allocationNote: '' },
+    { projectId: 'P002', amount: 1, allocationNote: '' },
+  ]
+  await assert.rejects(
+    () => service.saveResolutionDraft(overflow),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+  )
+  const unbalanced = resolutionPayload()
+  unbalanced.allocations[0].amount = 11999
+  await service.saveResolutionDraft(unbalanced)
+  await assert.rejects(
+    () => service.confirmResolution(unbalanced),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+  )
+  assert.equal(callCount, 1)
+})
+
+test('settings input enforces unique weekdays, minute times, schedule arithmetic, and safe integers', async () => {
+  let callCount = 0
+  const service = createLaborAccountingService({
+    rpc: async () => { callCount += 1; return { data: accountingSettings({ version: 2 }), error: null } },
+  }, { configured: true })
+  const base = {
+    effectiveFrom: '2026-07-16', workWeekdays: [1, 2, 3, 4, 5, 6],
+    workStartTime: '08:00', workEndTime: '17:00', breakMinutes: 60,
+    standardDayMinutes: 480, version: 1,
+  }
+  const invalid = [
+    { ...base, workWeekdays: [] },
+    { ...base, workWeekdays: [1, 1] },
+    { ...base, workWeekdays: [0, 1] },
+    { ...base, workStartTime: '8:00' },
+    { ...base, workEndTime: '17:00:00' },
+    { ...base, workStartTime: '17:00', workEndTime: '08:00' },
+    { ...base, breakMinutes: -0 },
+    { ...base, breakMinutes: 540 },
+    { ...base, standardDayMinutes: 0 },
+    { ...base, standardDayMinutes: 481 },
+    { ...base, version: Number.NaN },
+  ]
+  const sparseWeekdays = new Array(2)
+  sparseWeekdays[0] = 1
+  invalid.push({ ...base, workWeekdays: sparseWeekdays })
+  for (const payload of invalid) {
+    await assert.rejects(
+      () => service.updateSettings(payload),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+    )
+  }
+  assert.equal(callCount, 0)
+})
+
+test('only the six approved hints produce specific safe errors and causes stay non-enumerable', async () => {
+  const safeErrors = {
+    ATTENDANCE_ACCOUNTING_VERSION_CONFLICT: '记录已被其他人更新，请刷新后重试',
+    ATTENDANCE_ACCOUNTING_ALLOCATION_UNBALANCED: '项目分摊金额与确认人工成本不一致',
+    ATTENDANCE_ACCOUNTING_SALARY_REQUIRED: '员工工资标准未设置，请先到人员管理补充',
+    ATTENDANCE_ACCOUNTING_OPEN_SESSION: '员工仍在打卡中，暂不能确认当日核算',
+    ATTENDANCE_ACCOUNTING_MONTH_INCOMPLETE: '本月仍有未处理考勤，暂不能确认工资',
+    ATTENDANCE_ACCOUNTING_MONTH_LOCKED: '该月份工资已经确认，请先重新打开',
+  }
+  for (const [hint, message] of Object.entries(safeErrors)) {
+    const cause = { hint, message: 'private SQL relation employees_secret', details: 'password=secret' }
+    const service = createLaborAccountingService({
+      rpc: async () => ({ data: null, error: cause, status: 400 }),
+    }, { configured: true })
+    await assert.rejects(() => service.getAlertCount(), (error) => {
+      assert.ok(error instanceof LaborAccountingServiceError)
+      assert.equal(error.code, hint)
+      assert.equal(error.userMessage, message)
+      assert.equal(error.message, message)
+      assert.strictEqual(error.cause, cause)
+      assert.equal(Object.getOwnPropertyDescriptor(error, 'cause').enumerable, false)
+      assert.doesNotMatch(JSON.stringify(error), /private|secret|password|SQL/iu)
+      return true
+    })
+  }
+
+  for (const failure of [
+    { hint: 'PRIVATE_DATABASE_HINT', message: 'select * from secret_payroll', details: 'token=abc' },
+    Object.assign(Object.create({ hint: 'ATTENDANCE_ACCOUNTING_MONTH_LOCKED' }), { message: 'private' }),
+  ]) {
+    const service = createLaborAccountingService({
+      rpc: async () => ({ data: null, error: failure }),
+    }, { configured: true })
+    await assert.rejects(() => service.getAlertCount(), (error) =>
+      error.code === 'LABOR_ACCOUNTING_SERVICE_UNAVAILABLE' &&
+      error.userMessage === '人工核算服务暂不可用，请稍后重试' &&
+      !error.message.includes('private') && !error.message.includes('secret'))
+  }
+
+  const thrown = new Error('private database network detail')
+  const thrownService = createLaborAccountingService({ rpc: async () => { throw thrown } }, { configured: true })
+  await assert.rejects(() => thrownService.getAlertCount(), (error) =>
+    error.code === 'LABOR_ACCOUNTING_SERVICE_UNAVAILABLE' && error.cause === thrown &&
+    !error.message.includes('private'))
+})
+
+test('missing clients and malformed RPC implementations fail closed without fallback', async () => {
+  for (const [client, options] of [
+    [null, { configured: true }],
+    [{}, { configured: true }],
+    [{ rpc: null }, { configured: true }],
+    [{ rpc: async () => ({ data: dailyDashboard(), error: null }) }, { configured: false }],
+  ]) {
+    const service = createLaborAccountingService(client, options)
+    await assert.rejects(
+      () => service.getAlertCount(),
+      (error) => error.code === 'LABOR_ACCOUNTING_NOT_CONFIGURED',
+    )
+  }
+  const undefinedData = createLaborAccountingService({
+    rpc: async () => ({ data: undefined, error: null }),
+  }, { configured: true })
+  await assert.rejects(
+    () => undefinedData.getAlertCount(),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
+})
+
+test('service source is RPC-only, has no browser cache or logging seam, and singleton is complete', () => {
+  assert.doesNotMatch(source, /\.from\s*\(|localStorage|sessionStorage|indexedDB|console\.|baseRecordService/iu)
+  assert.doesNotMatch(source, /error\?*\.message|error\?*\.details/iu)
+  assert.ok(Object.isFrozen(laborAccountingService))
+  assert.deepEqual(Object.keys(laborAccountingService).sort(), [
+    'confirmMonthlyPayroll', 'confirmResolution', 'exportProjectLaborCosts',
+    'getAlertCount', 'getBridgeSummary', 'getResolutionDetail', 'getSettings',
+    'listDailyDashboard', 'listMonthlyPayroll', 'listProjectLaborCosts',
+    'reopenMonthlyPayroll', 'saveMonthlyPayrollDraft', 'saveResolutionDraft',
+    'updateSettings',
+  ])
+})
