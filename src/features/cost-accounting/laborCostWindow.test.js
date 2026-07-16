@@ -196,3 +196,44 @@ test('projection inputs fail closed when snapshot identity or top-level collecti
     assert.throws(() => buildLaborCostWindow(input), TypeError)
   }
 })
+
+test('projection snapshots required own data fields without invoking or rereading input accessors', () => {
+  const valid = {
+    months: ['2026-07'], snapshotMonth: '2026-07',
+    bridgeState: {
+      windowStatus: 'ready', data: { '2026-07': bridge() },
+      windowIncompleteMonths: [], windowStaleMonths: [], snapshotMonth: '2026-07',
+      snapshotStatus: 'ready', snapshotStale: false, updatedAtByMonth: {},
+    },
+    salaryRecords: [], employees: [], laborRecords: [],
+  }
+
+  assert.throws(() => buildLaborCostWindow(Object.create(valid)), TypeError)
+
+  let accessorCalls = 0
+  const accessor = { ...valid }
+  Object.defineProperty(accessor, 'months', {
+    enumerable: true,
+    get() {
+      accessorCalls += 1
+      return valid.months
+    },
+  })
+  assert.throws(() => buildLaborCostWindow(accessor), TypeError)
+  assert.equal(accessorCalls, 0)
+
+  let ordinaryReads = 0
+  const observed = new Proxy(valid, {
+    get(target, key, receiver) {
+      ordinaryReads += 1
+      return Reflect.get(target, key, receiver)
+    },
+  })
+  const observedModel = buildLaborCostWindow(observed)
+  assert.equal(observedModel.monthly[0].status, 'ready')
+  assert.equal(ordinaryReads, 0)
+
+  const nullPrototype = Object.assign(Object.create(null), valid)
+  const nullPrototypeModel = buildLaborCostWindow(nullPrototype)
+  assert.equal(nullPrototypeModel.monthly[0].status, 'ready')
+})

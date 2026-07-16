@@ -66,11 +66,32 @@ function projectMapTotal(projectMap) {
   return Object.values(projectMap).reduce((total, amount) => total + amount, 0)
 }
 
-function validateInput(input) {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new TypeError('input must be an object')
+function inputSnapshot(input) {
+  try {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      throw new TypeError()
+    }
+    const prototype = Object.getPrototypeOf(input)
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError()
+    const snapshot = {}
+    for (const key of [
+      'months', 'snapshotMonth', 'bridgeState', 'salaryRecords', 'employees', 'laborRecords',
+    ]) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key)
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new TypeError()
+      }
+      snapshot[key] = descriptor.value
+    }
+    return snapshot
+  } catch (cause) {
+    throw new TypeError('input must use required own data fields', { cause })
   }
-  const { months, snapshotMonth, bridgeState, salaryRecords, employees, laborRecords } = input
+}
+
+function validateInput(input) {
+  const snapshot = inputSnapshot(input)
+  const { months, snapshotMonth, bridgeState, salaryRecords, employees, laborRecords } = snapshot
   if (!Array.isArray(months) || months.length === 0 ||
       months.some((month) => normalizeMonth(month) !== month) ||
       new Set(months).size !== months.length) throw new TypeError('months are invalid')
@@ -84,10 +105,11 @@ function validateInput(input) {
   if (![salaryRecords, employees, laborRecords].every(Array.isArray)) {
     throw new TypeError('legacy records must be arrays')
   }
+  return snapshot
 }
 
 export function buildLaborCostWindow(input) {
-  validateInput(input)
+  const snapshot = validateInput(input)
   const {
     months,
     snapshotMonth,
@@ -95,7 +117,7 @@ export function buildLaborCostWindow(input) {
     salaryRecords,
     employees,
     laborRecords,
-  } = input
+  } = snapshot
   const data = safeOwnValue(bridgeState, 'data')
   const incompleteMonths = safeOwnValue(bridgeState, 'windowIncompleteMonths')
   const staleMonths = safeOwnValue(bridgeState, 'windowStaleMonths')

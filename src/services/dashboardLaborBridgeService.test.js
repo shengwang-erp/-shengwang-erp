@@ -258,6 +258,35 @@ test('concurrent overlapping loads share the same in-flight month request', asyn
   await Promise.all([first, second])
 })
 
+test('a settled failed month is retried while a sibling month from the first load is still pending', async () => {
+  const february = deferred()
+  let januaryCalls = 0
+  const loader = createDashboardLaborBridgeLoader({
+    getBridgeSummary: async ({ month }) => {
+      if (month === '2026-01') {
+        januaryCalls += 1
+        if (januaryCalls === 1) throw new Error('temporary January failure')
+        return validBridge(month)
+      }
+      return february.promise
+    },
+  })
+
+  const firstLoad = loader.load({
+    actorScope: 'tenant-1:E-1', endMonth: '2026-02', length: 2, snapshotMonth: '2026-02',
+  })
+  await waitFor(() => januaryCalls === 1)
+  const retryState = await loader.load({
+    actorScope: 'tenant-1:E-1', endMonth: '2026-01', length: 1, snapshotMonth: '2026-01',
+  })
+  february.resolve(validBridge('2026-02'))
+  await firstLoad
+
+  assert.equal(januaryCalls, 2)
+  assert.equal(retryState.windowStatus, 'ready')
+  assert.equal(retryState.data['2026-01'].salaryMonth, '2026-01')
+})
+
 test('the default queue caps requests at four across concurrent loads', async () => {
   const gate = deferred()
   let calls = 0
@@ -326,6 +355,72 @@ test('abort rejects atomically before requests and before return', async () => {
   assert.equal(cache.size, 0)
 })
 
+test('abort promptly rejects a load whose RPC never settles and removes its listener', async () => {
+  const cache = new Map()
+  const controller = new AbortController()
+  const signal = controller.signal
+  const addEventListener = signal.addEventListener.bind(signal)
+  const removeEventListener = signal.removeEventListener.bind(signal)
+  let added = 0
+  let removed = 0
+  Object.defineProperties(signal, {
+    addEventListener: {
+      configurable: true,
+      value(...args) {
+        added += 1
+        return addEventListener(...args)
+      },
+    },
+    removeEventListener: {
+      configurable: true,
+      value(...args) {
+        removed += 1
+        return removeEventListener(...args)
+      },
+    },
+  })
+  let calls = 0
+  const loader = createDashboardLaborBridgeLoader({
+    cache,
+    maxConcurrency: 2,
+    getBridgeSummary: async () => {
+      calls += 1
+      return calls === 1 ? new Promise(() => {}) : validBridge('2026-02')
+    },
+  })
+
+  const pending = loader.load({
+    actorScope: 'tenant-1:E-1', endMonth: '2026-02', length: 1,
+    snapshotMonth: '2026-02', signal,
+  })
+  await waitFor(() => calls === 1)
+  controller.abort()
+  const outcome = await Promise.race([
+    pending.then(
+      () => ({ status: 'resolved' }),
+      (error) => ({ status: 'rejected', error }),
+    ),
+    new Promise((resolve) => setImmediate(() => resolve({ status: 'pending' }))),
+  ])
+
+  assert.equal(outcome.status, 'rejected')
+  assert.equal(outcome.error?.name, 'AbortError')
+  assert.equal(added, 1)
+  assert.equal(removed, 1)
+  assert.equal(cache.size, 0)
+
+  const retryOutcome = await Promise.race([
+    loader.load({
+      actorScope: 'tenant-1:E-1', endMonth: '2026-02', length: 1,
+      snapshotMonth: '2026-02',
+    }).then((state) => ({ status: 'resolved', state })),
+    new Promise((resolve) => setImmediate(() => resolve({ status: 'pending' }))),
+  ])
+  assert.equal(retryOutcome.status, 'resolved')
+  assert.equal(retryOutcome.state?.windowStatus, 'ready')
+  assert.equal(calls, 2)
+})
+
 test('returned values cannot mutate a fresh cache entry', async () => {
   const loader = createDashboardLaborBridgeLoader({
     now: () => new Date(100),
@@ -382,4 +477,55 @@ test('public inputs fail closed before bridge requests', async () => {
   }
   assert.throws(() => loader.clear('   '), TypeError)
   assert.equal(calls, 0)
+})
+
+test('loader options and load input require own data fields without invoking accessors', async () => {
+  let optionGetterCalls = 0
+  const accessorOptions = {}
+  Object.defineProperty(accessorOptions, 'getBridgeSummary', {
+    enumerable: true,
+    get() {
+      optionGetterCalls += 1
+      return async ({ month }) => validBridge(month)
+    },
+  })
+  assert.throws(() => createDashboardLaborBridgeLoader(accessorOptions), TypeError)
+  assert.equal(optionGetterCalls, 0)
+  assert.throws(() => createDashboardLaborBridgeLoader(Object.create({
+    getBridgeSummary: async ({ month }) => validBridge(month),
+  })), TypeError)
+
+  let requests = 0
+  const loader = createDashboardLaborBridgeLoader({
+    getBridgeSummary: async ({ month }) => {
+      requests += 1
+      return validBridge(month)
+    },
+  })
+  const valid = {
+    actorScope: 'tenant-1:E-1', endMonth: '2026-02', length: 1, snapshotMonth: '2026-02',
+  }
+  const inherited = Object.create(valid)
+  let inputGetterCalls = 0
+  const accessor = { ...valid }
+  Object.defineProperty(accessor, 'actorScope', {
+    enumerable: true,
+    get() {
+      inputGetterCalls += 1
+      return valid.actorScope
+    },
+  })
+
+  await assert.rejects(loader.load(inherited), TypeError)
+  await assert.rejects(loader.load(accessor), TypeError)
+  assert.equal(inputGetterCalls, 0)
+  assert.equal(requests, 0)
+
+  const nullPrototype = Object.assign(Object.create(null), {
+    ...valid,
+    actorScope: 'tenant-1:E-null-prototype',
+  })
+  const state = await loader.load(nullPrototype)
+  assert.equal(state.windowStatus, 'ready')
+  assert.equal(requests, 1)
 })

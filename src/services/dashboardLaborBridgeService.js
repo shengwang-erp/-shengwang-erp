@@ -16,6 +16,23 @@ function throwIfAborted(signal) {
   if (signal?.aborted === true) throw abortError()
 }
 
+function createAbortGate(signal) {
+  if (signal === undefined) return { promise: null, dispose() {} }
+  let rejectAbort
+  const onAbort = () => rejectAbort(abortError())
+  const promise = new Promise((_resolve, reject) => {
+    rejectAbort = reject
+  })
+  signal.addEventListener('abort', onAbort, { once: true })
+  if (signal.aborted === true) onAbort()
+  return {
+    promise,
+    dispose() {
+      signal.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
 function currentDate(now) {
   try {
     const value = now()
@@ -55,13 +72,46 @@ function belongsToActor(key, actorScope) {
   return normalizeMonth(month) === month && key.slice(0, -8) === actorScope
 }
 
-export function createDashboardLaborBridgeLoader({
-  getBridgeSummary,
-  cache = new Map(),
-  maxConcurrency = 4,
-  maxAgeMs = DEFAULT_MAX_AGE_MS,
-  now = () => new Date(),
-} = {}) {
+function ownDataSnapshot(value, { required, optional = [], label }) {
+  try {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError()
+    }
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError()
+    const snapshot = {}
+    for (const key of [...required, ...optional]) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor) {
+        if (required.includes(key)) throw new TypeError()
+        continue
+      }
+      if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new TypeError()
+      }
+      snapshot[key] = descriptor.value
+    }
+    return snapshot
+  } catch (cause) {
+    throw new TypeError(`${label} must use own data fields`, { cause })
+  }
+}
+
+export function createDashboardLaborBridgeLoader(options = {}) {
+  const optionSnapshot = ownDataSnapshot(options, {
+    required: ['getBridgeSummary'],
+    optional: ['cache', 'maxConcurrency', 'maxAgeMs', 'now'],
+    label: 'loader options',
+  })
+  const getBridgeSummary = optionSnapshot.getBridgeSummary
+  const cache = optionSnapshot.cache === undefined ? new Map() : optionSnapshot.cache
+  const maxConcurrency = optionSnapshot.maxConcurrency === undefined
+    ? 4
+    : optionSnapshot.maxConcurrency
+  const maxAgeMs = optionSnapshot.maxAgeMs === undefined
+    ? DEFAULT_MAX_AGE_MS
+    : optionSnapshot.maxAgeMs
+  const now = optionSnapshot.now === undefined ? () => new Date() : optionSnapshot.now
   if (typeof getBridgeSummary !== 'function') throw new TypeError('getBridgeSummary is required')
   if (!(cache instanceof Map)) throw new TypeError('cache must be a Map')
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
@@ -114,22 +164,34 @@ export function createDashboardLaborBridgeLoader({
     const flightKey = `${generation}\u0000${key}`
     let entry = inFlight.get(flightKey)
     const waiter = { signal }
+    const removeEntry = () => {
+      if (inFlight.get(flightKey) === entry) inFlight.delete(flightKey)
+    }
 
     if (!entry) {
       entry = { waiters: new Set(), settled: false, promise: null }
       inFlight.set(flightKey, entry)
       entry.waiters.add(waiter)
-      entry.promise = schedule(async () => {
+      const request = schedule(async () => {
         const hasActiveWaiter = [...entry.waiters].some((item) =>
           item.signal === undefined || item.signal.aborted !== true)
         if (!hasActiveWaiter) throw abortError()
         const value = normalizeBridgeSummary(await getBridgeSummary({ month }))
         if (!value || value.salaryMonth !== month) throw new TypeError('invalid bridge summary')
         return { value, updatedAt: currentDate(now), actorScope }
-      }).finally(() => {
-        entry.settled = true
-        if (entry.waiters.size === 0) inFlight.delete(flightKey)
       })
+      entry.promise = request.then(
+        (value) => {
+          entry.settled = true
+          if (entry.waiters.size === 0) removeEntry()
+          return value
+        },
+        (error) => {
+          entry.settled = true
+          removeEntry()
+          throw error
+        },
+      )
     } else {
       entry.waiters.add(waiter)
     }
@@ -141,15 +203,17 @@ export function createDashboardLaborBridgeLoader({
         if (released) return
         released = true
         entry.waiters.delete(waiter)
-        if (entry.settled && entry.waiters.size === 0) inFlight.delete(flightKey)
+        if (entry.waiters.size === 0) removeEntry()
       },
     }
   }
 
   async function load(input) {
-    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-      throw new TypeError('load input must be an object')
-    }
+    const inputSnapshot = ownDataSnapshot(input, {
+      required: ['actorScope', 'endMonth', 'snapshotMonth'],
+      optional: ['length', 'signal', 'refresh'],
+      label: 'load input',
+    })
     const {
       actorScope,
       endMonth,
@@ -157,7 +221,7 @@ export function createDashboardLaborBridgeLoader({
       snapshotMonth,
       signal,
       refresh = false,
-    } = input
+    } = inputSnapshot
     if (typeof actorScope !== 'string' || actorScope.trim().length === 0) {
       throw new TypeError('actorScope is required')
     }
@@ -176,74 +240,79 @@ export function createDashboardLaborBridgeLoader({
     const checkedAt = currentDate(now)
     const generation = actorGenerations.get(actorScope) || 0
     const handles = []
+    const abortGate = createAbortGate(signal)
 
     try {
-      const settled = await Promise.all(requestedMonths.map(async (month) => {
-        const key = `${actorScope}:${month}`
-        const cached = cachedEntry(cache, key, month)
-        const age = cached
-          ? checkedAt.getTime() - cached.updatedAt.getTime()
-          : Number.POSITIVE_INFINITY
-        if (!refresh && cached && age >= 0 && age <= maxAgeMs) {
-          return { month, key, value: cached.value, updatedAt: cached.updatedAt, stale: false, fetched: false }
-        }
+      const work = (async () => {
+        const settled = await Promise.all(requestedMonths.map(async (month) => {
+          const key = `${actorScope}:${month}`
+          const cached = cachedEntry(cache, key, month)
+          const age = cached
+            ? checkedAt.getTime() - cached.updatedAt.getTime()
+            : Number.POSITIVE_INFINITY
+          if (!refresh && cached && age >= 0 && age <= maxAgeMs) {
+            return { month, key, value: cached.value, updatedAt: cached.updatedAt, stale: false, fetched: false }
+          }
+
+          throwIfAborted(signal)
+          const handle = acquireRequest({ actorScope, generation, key, month, signal })
+          handles.push(handle)
+          try {
+            const fetched = await handle.promise
+            throwIfAborted(signal)
+            return {
+              month,
+              key,
+              value: fetched.value,
+              updatedAt: fetched.updatedAt,
+              stale: false,
+              fetched: true,
+            }
+          } catch (error) {
+            if (signal?.aborted === true || error?.[LOADER_ABORT] === true) throw abortError()
+            return cached
+              ? { month, key, value: cached.value, updatedAt: cached.updatedAt, stale: true, fetched: false }
+              : { month, key, value: null, updatedAt: null, stale: false, fetched: false }
+          }
+        }))
 
         throwIfAborted(signal)
-        const handle = acquireRequest({ actorScope, generation, key, month, signal })
-        handles.push(handle)
-        try {
-          const fetched = await handle.promise
-          throwIfAborted(signal)
-          return {
-            month,
-            key,
-            value: fetched.value,
-            updatedAt: fetched.updatedAt,
-            stale: false,
-            fetched: true,
-          }
-        } catch (error) {
-          if (signal?.aborted === true || error?.[LOADER_ABORT] === true) throw abortError()
-          return cached
-            ? { month, key, value: cached.value, updatedAt: cached.updatedAt, stale: true, fetched: false }
-            : { month, key, value: null, updatedAt: null, stale: false, fetched: false }
+        if ((actorGenerations.get(actorScope) || 0) !== generation) throw abortError()
+
+        for (const entry of settled) {
+          if (!entry.fetched) continue
+          cache.set(entry.key, {
+            value: copyBridge(entry.value),
+            updatedAt: new Date(entry.updatedAt.getTime()),
+          })
         }
-      }))
 
-      throwIfAborted(signal)
-      if ((actorGenerations.get(actorScope) || 0) !== generation) throw abortError()
+        const byMonth = new Map(settled.map((entry) => [entry.month, entry]))
+        const successful = settled.filter((entry) => entry.value !== null)
+        const data = Object.fromEntries(successful.map((entry) => [entry.month, copyBridge(entry.value)]))
+        const updatedAtByMonth = Object.fromEntries(successful.map((entry) => [
+          entry.month,
+          new Date(entry.updatedAt.getTime()),
+        ]))
+        const windowIncompleteMonths = months.filter((month) => byMonth.get(month)?.value === null)
+        const windowStaleMonths = months.filter((month) => byMonth.get(month)?.stale === true)
+        const snapshot = byMonth.get(normalizedSnapshotMonth)
 
-      for (const entry of settled) {
-        if (!entry.fetched) continue
-        cache.set(entry.key, {
-          value: copyBridge(entry.value),
-          updatedAt: new Date(entry.updatedAt.getTime()),
-        })
-      }
-
-      const byMonth = new Map(settled.map((entry) => [entry.month, entry]))
-      const successful = settled.filter((entry) => entry.value !== null)
-      const data = Object.fromEntries(successful.map((entry) => [entry.month, copyBridge(entry.value)]))
-      const updatedAtByMonth = Object.fromEntries(successful.map((entry) => [
-        entry.month,
-        new Date(entry.updatedAt.getTime()),
-      ]))
-      const windowIncompleteMonths = months.filter((month) => byMonth.get(month)?.value === null)
-      const windowStaleMonths = months.filter((month) => byMonth.get(month)?.stale === true)
-      const snapshot = byMonth.get(normalizedSnapshotMonth)
-
-      throwIfAborted(signal)
-      return {
-        windowStatus: windowIncompleteMonths.length ? 'error' : 'ready',
-        data,
-        windowIncompleteMonths,
-        windowStaleMonths,
-        snapshotMonth: normalizedSnapshotMonth,
-        snapshotStatus: snapshot?.value ? 'ready' : 'error',
-        snapshotStale: snapshot?.value ? snapshot.stale : false,
-        updatedAtByMonth,
-      }
+        throwIfAborted(signal)
+        return {
+          windowStatus: windowIncompleteMonths.length ? 'error' : 'ready',
+          data,
+          windowIncompleteMonths,
+          windowStaleMonths,
+          snapshotMonth: normalizedSnapshotMonth,
+          snapshotStatus: snapshot?.value ? 'ready' : 'error',
+          snapshotStale: snapshot?.value ? snapshot.stale : false,
+          updatedAtByMonth,
+        }
+      })()
+      return await (abortGate.promise ? Promise.race([work, abortGate.promise]) : work)
     } finally {
+      abortGate.dispose()
       for (const handle of handles) handle.release()
     }
   }
