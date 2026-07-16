@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { laborAccountingService } from '../../services/laborAccountingService.js'
 
 export const LABOR_ALERT_POLL_INTERVAL_MS = 300000
+export const LABOR_ALERT_SOURCE = 'labor-alert-service'
 
 const defaultWindowTarget = typeof window === 'undefined' ? null : window
 const defaultSetInterval = (...args) => globalThis.setInterval(...args)
@@ -21,17 +22,48 @@ export function canRequestLaborAlertCount({ actorKey, effectivePermissionKeys } 
 }
 
 export function createLaborAlertState() {
-  return { count: 0, stale: false }
+  return {
+    count: 0,
+    stale: false,
+    loading: true,
+    error: '',
+    code: '',
+    source: LABOR_ALERT_SOURCE,
+    updatedAt: null,
+  }
 }
 
 export function applyLaborAlertRefreshResult(previousState, result) {
   const previousCount = Number.isSafeInteger(previousState?.count) && previousState.count >= 0
     ? previousState.count
     : 0
+  const previousUpdatedAt = typeof previousState?.updatedAt === 'string'
+    ? previousState.updatedAt
+    : null
   if (result?.ok !== true || !Number.isSafeInteger(result.count) || result.count < 0) {
-    return { count: previousCount, stale: true }
+    return {
+      count: previousCount,
+      stale: true,
+      loading: false,
+      error: typeof result?.message === 'string' && result.message
+        ? result.message
+        : '正式考勤提醒读取失败',
+      code: typeof result?.code === 'string' && result.code
+        ? result.code
+        : 'DATA_OPERATION_FAILED',
+      source: LABOR_ALERT_SOURCE,
+      updatedAt: previousUpdatedAt,
+    }
   }
-  return { count: result.count, stale: false }
+  return {
+    count: result.count,
+    stale: false,
+    loading: false,
+    error: '',
+    code: '',
+    source: LABOR_ALERT_SOURCE,
+    updatedAt: typeof result.updatedAt === 'string' ? result.updatedAt : null,
+  }
 }
 
 function fingerprintPermissions(effectivePermissionKeys) {
@@ -92,6 +124,7 @@ export default function useLaborAlertCount({
       setState((previousState) => applyLaborAlertRefreshResult(previousState, {
         ok: true,
         count: response?.count,
+        updatedAt: new Date().toISOString(),
       }))
       return { status: 'accepted' }
     } catch (error) {
@@ -99,7 +132,13 @@ export default function useLaborAlertCount({
         return { status: 'stale' }
       }
       stateIdentityRef.current = requestIdentity
-      setState((previousState) => applyLaborAlertRefreshResult(previousState, { ok: false }))
+      setState((previousState) => applyLaborAlertRefreshResult(previousState, {
+        ok: false,
+        code: typeof error?.code === 'string' ? error.code : 'DATA_OPERATION_FAILED',
+        message: typeof error?.message === 'string' && error.message
+          ? error.message
+          : '正式考勤提醒读取失败',
+      }))
       notifyCurrentAuthInvalid(onAuthInvalidRef.current, error)
       return { status: 'error' }
     }
@@ -147,5 +186,5 @@ export default function useLaborAlertCount({
   const visibleState = enabled && stateIdentityRef.current === requestIdentity
     ? state
     : createLaborAlertState()
-  return { count: visibleState.count, stale: visibleState.stale, refresh }
+  return { ...visibleState, allowed: enabled, refresh }
 }

@@ -179,8 +179,8 @@ test('valid zero-module profiles authenticate with every dead permission-gate st
 test('legacy project startup clears stale data before any unauthorized list call', () => {
   const projectStartup = sliceBetween(
     authenticatedApp,
-    'const [storedProjects, setStoredProjects]',
-    '\n  const contractRevenueAccess',
+    'const contractRevenueAccess',
+    "\n  useEffect(() => {\n    let active = true\n    if (!contractRevenueAccess.view)",
   )
   const permissionIndex = projectStartup.indexOf(
     "const canViewProjects = canAccessView(currentUser, 'projects')",

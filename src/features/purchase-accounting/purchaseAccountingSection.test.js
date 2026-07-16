@@ -1204,6 +1204,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
     inventory: ready(source.inventoryItems),
     laborRecords: ready(source.laborRecords),
     labor: ready(null),
+    laborAlert: ready(0),
     vehicles: ready([]),
     vehicleUsage: ready(source.vehicleUsageRecords),
     fuel: ready([]),

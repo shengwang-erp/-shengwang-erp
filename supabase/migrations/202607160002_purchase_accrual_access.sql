@@ -594,6 +594,22 @@ begin
       errcode = 'P0002',
       message = 'stock-in record not found';
   end if;
+  if stock_in_found and (
+    not (existing_stock_in.payload ? 'stockInId')
+    or jsonb_typeof(existing_stock_in.payload->'stockInId')
+      is distinct from 'string'
+    or existing_stock_in.payload->>'stockInId'
+      is distinct from p_stock_in_record_key
+    or not (existing_stock_in.payload ? 'sourcePurchaseId')
+    or jsonb_typeof(existing_stock_in.payload->'sourcePurchaseId')
+      is distinct from 'string'
+    or existing_stock_in.payload->>'sourcePurchaseId'
+      is distinct from p_purchase_record_key
+  ) then
+    raise exception using
+      errcode = '22023',
+      message = 'stock-in record binding mismatch';
+  end if;
 
   select inventory.*
     into existing_inventory

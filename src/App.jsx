@@ -2163,6 +2163,12 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const {
     count: laborAlertCount,
     stale: laborAlertStale,
+    loading: laborAlertLoading,
+    error: laborAlertError,
+    code: laborAlertCode,
+    source: laborAlertSource,
+    updatedAt: laborAlertUpdatedAt,
+    allowed: laborAlertAllowed,
     refresh: refreshLaborAlertCount,
   } = useLaborAlertCount({
     actorKey: activeActorId,
@@ -3326,6 +3332,17 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       data: laborBridge,
       stale: laborBridgeDisplayState.stale,
     }),
+    laborAlert: projectLaborSource({
+      loading: laborAlertLoading,
+      error: laborAlertError,
+      code: laborAlertCode,
+      source: laborAlertSource,
+      updatedAt: laborAlertUpdatedAt,
+    }, {
+      readAllowed: laborAlertAllowed,
+      data: laborAlertCount,
+      stale: laborAlertStale,
+    }),
     vehicles: projectPersistentSource(vehicleRawState, {
       readAllowed: vehicleReadAccess,
       data: vehicles,
@@ -3494,7 +3511,6 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         laborBridge={laborBridge}
         sourceStates={dashboardSourceStates}
         bridgeStatusNotice={bridgeStatusNotice}
-        laborAlertCount={laborAlertCount}
         onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
@@ -8814,6 +8830,21 @@ function projectDashboardSource(sourceStates, key, allowed, { array = true } = {
   return { status: 'ready', data: state.data }
 }
 
+function projectDashboardLaborAlertSource(sourceStates, allowed) {
+  const state = projectDashboardSource(sourceStates, 'laborAlert', allowed, { array: false })
+  if (state.status === 'ready' &&
+      (!Number.isSafeInteger(state.data) || state.data < 0)) {
+    return { status: 'error', data: null }
+  }
+  return state
+}
+
+function laborAlertStatusText(status) {
+  if (status === 'forbidden') return '当前权限下无法查看正式考勤待处理数据'
+  if (status === 'error') return '正式考勤待处理数据暂不可用'
+  return '正式考勤待处理数据正在加载'
+}
+
 function combineDashboardSources(states) {
   const status = ['forbidden', 'error', 'loading'].find((candidate) =>
     states.some((state) => state.status === candidate)) || 'ready'
@@ -8838,7 +8869,6 @@ function DashboardPage({
   access,
   sourceStates,
   bridgeStatusNotice,
-  laborAlertCount,
   onBack,
   ...untrustedProps
 }) {
@@ -8899,6 +8929,7 @@ function DashboardPage({
     sourceStates, 'labor', access.labor?.amounts || access.profit?.view,
     { array: false },
   )
+  const laborAlertState = projectDashboardLaborAlertSource(sourceStates, access.labor?.view)
   const vehiclesState = projectDashboardSource(
     sourceStates, 'vehicles', vehicleDataAllowed,
   )
@@ -8973,6 +9004,7 @@ function DashboardPage({
     inventoryState,
     laborRecordsState,
     laborBridgeState,
+    laborAlertState,
     vehiclesState,
     vehicleUsageState,
     fuelState,
@@ -9022,7 +9054,7 @@ function DashboardPage({
         laborBridge={laborBridgeState.data}
         sourceStates={sourceStates}
         bridgeStatusNotice={bridgeStatusNotice}
-        laborAlertCount={laborAlertCount}
+        laborAlertCount={laborAlertState.data}
         onBack={onBack}
       />
     )
@@ -9253,7 +9285,11 @@ function DashboardPage({
           <SectionTitle title="人工记录" note={currentMonth} />
           <div className="stats-grid">
             <div className="stat-card"><strong>{laborRecords.length}</strong><span>人工记录数量</span></div>
-            <div className="stat-card"><strong>{Number.isSafeInteger(laborAlertCount) ? laborAlertCount : 0}</strong><span>正式考勤待处理</span></div>
+            {laborAlertState.status === 'ready' ? (
+              <div className="stat-card"><strong>{laborAlertState.data}</strong><span>正式考勤待处理</span></div>
+            ) : (
+              <EmptyState text={laborAlertStatusText(laborAlertState.status)} />
+            )}
             {laborAllocationInfo && (
               <div className="stat-card money"><strong>{formatYen(laborAllocationInfo.allocatedLaborCostTotal)}</strong><span>本月项目人工分摊</span></div>
             )}
@@ -9360,9 +9396,7 @@ function DashboardFullPage({
     currentMonthValue(),
     laborBridge,
   )
-  const laborExceptionCount = Number.isSafeInteger(laborAlertCount) && laborAlertCount >= 0
-    ? laborAlertCount
-    : 0
+  const laborExceptionCount = laborAlertCount
   const currentMonth = currentMonthValue()
   const purchaseAccounting = useMemo(
     () => buildPurchaseAccountingReadModel({

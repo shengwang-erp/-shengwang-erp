@@ -1292,6 +1292,205 @@ select ok(
   'stock-in commit persists all three rows with server audit and preserves payment data'
 );
 
+select ok(
+  (
+    select stock_in.payload ? 'stockInId'
+      and jsonb_typeof(stock_in.payload->'stockInId') = 'string'
+      and stock_in.payload->>'stockInId' = stock_in.record_key
+      and stock_in.payload ? 'sourcePurchaseId'
+      and jsonb_typeof(stock_in.payload->'sourcePurchaseId') = 'string'
+      and stock_in.payload->>'sourcePurchaseId' = 'PO-TASK7-STOCK'
+    from public.stock_in_records as stock_in
+    where stock_in.record_key = 'SI-TASK7-001'
+  ),
+  'the existing stock-in fixture has own string IDs bound to purchase A'
+);
+
+insert into public.stock_in_records (
+  record_key,
+  payload,
+  status,
+  created_by_employee_id,
+  created_by_employee_name,
+  updated_by_employee_id,
+  updated_by_employee_name
+) values
+  (
+    'SI-TASK7-BINDING-NO-ID',
+    '{"sourcePurchaseId":"PO-TASK7-STOCK","stockInQuantity":1}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'SI-TASK7-BINDING-WRONG-ID',
+    '{
+      "stockInId":"SI-TASK7-BINDING-OTHER",
+      "sourcePurchaseId":"PO-TASK7-STOCK",
+      "stockInQuantity":1
+    }'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'SI-TASK7-BINDING-NO-SOURCE',
+    '{"stockInId":"SI-TASK7-BINDING-NO-SOURCE","stockInQuantity":1}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  );
+
+create temporary table task7_stock_binding_snapshot (
+  state jsonb not null
+) on commit drop;
+
+insert into task7_stock_binding_snapshot (state)
+select jsonb_build_object(
+  'purchase_a', to_jsonb(purchase_a),
+  'purchase_b', to_jsonb(purchase_b),
+  'stock_in', to_jsonb(stock_in),
+  'inventory_item', to_jsonb(inventory_item)
+)
+from public.purchase_records as purchase_a
+cross join public.purchase_records as purchase_b
+cross join public.stock_in_records as stock_in
+cross join public.inventory_items as inventory_item
+where purchase_a.record_key = 'PO-TASK7-STOCK'
+  and purchase_b.record_key = 'PO-TASK7-001'
+  and stock_in.record_key = 'SI-TASK7-001'
+  and inventory_item.record_key = 'INV-TASK7-001';
+
+create or replace function pg_temp.block_task7_stock_binding_mutation()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $function$
+begin
+  raise exception using
+    errcode = 'P0001',
+    message = 'stock-in binding validation reached a mutation';
+end;
+$function$;
+
+create trigger task7_block_stock_binding_purchase_mutation
+before insert or update or delete on public.purchase_records
+for each row execute function pg_temp.block_task7_stock_binding_mutation();
+create trigger task7_block_stock_binding_stock_in_mutation
+before insert or update or delete on public.stock_in_records
+for each row execute function pg_temp.block_task7_stock_binding_mutation();
+create trigger task7_block_stock_binding_inventory_mutation
+before insert or update or delete on public.inventory_items
+for each row execute function pg_temp.block_task7_stock_binding_mutation();
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"missing persisted stock ID"}'::jsonb,
+      'SI-TASK7-BINDING-NO-ID',
+      '{
+        "stockInId":"SI-TASK7-BINDING-NO-ID",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "stockInQuantity":2
+      }'::jsonb,
+      'INV-TASK7-001',
+      '{"inventoryId":"INV-TASK7-001","quantity":2}'::jsonb
+    )$$,
+  '22023',
+  'stock-in record binding mismatch',
+  'stock-in commit rejects an existing row with a missing persisted stockInId before mutation'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"wrong persisted stock ID"}'::jsonb,
+      'SI-TASK7-BINDING-WRONG-ID',
+      '{
+        "stockInId":"SI-TASK7-BINDING-WRONG-ID",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "stockInQuantity":2
+      }'::jsonb,
+      'INV-TASK7-001',
+      '{"inventoryId":"INV-TASK7-001","quantity":2}'::jsonb
+    )$$,
+  '22023',
+  'stock-in record binding mismatch',
+  'stock-in commit rejects an existing row with a different persisted stockInId before mutation'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"missing persisted purchase ID"}'::jsonb,
+      'SI-TASK7-BINDING-NO-SOURCE',
+      '{
+        "stockInId":"SI-TASK7-BINDING-NO-SOURCE",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "stockInQuantity":2
+      }'::jsonb,
+      'INV-TASK7-001',
+      '{"inventoryId":"INV-TASK7-001","quantity":2}'::jsonb
+    )$$,
+  '22023',
+  'stock-in record binding mismatch',
+  'stock-in commit rejects an existing row with a missing persisted sourcePurchaseId before mutation'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-001',
+      '{"purchaseId":"PO-TASK7-001","stockInStatus":"cross-purchase reuse"}'::jsonb,
+      'SI-TASK7-001',
+      '{
+        "stockInId":"SI-TASK7-001",
+        "sourcePurchaseId":"PO-TASK7-001",
+        "stockInQuantity":99
+      }'::jsonb,
+      'INV-TASK7-001',
+      '{"inventoryId":"INV-TASK7-001","quantity":99}'::jsonb
+    )$$,
+  '22023',
+  'stock-in record binding mismatch',
+  'stock-in key bound to purchase A cannot be reused in a commit for purchase B'
+);
+
+reset role;
+select is(
+  (
+    select jsonb_build_object(
+      'purchase_a', to_jsonb(purchase_a),
+      'purchase_b', to_jsonb(purchase_b),
+      'stock_in', to_jsonb(stock_in),
+      'inventory_item', to_jsonb(inventory_item)
+    )
+    from public.purchase_records as purchase_a
+    cross join public.purchase_records as purchase_b
+    cross join public.stock_in_records as stock_in
+    cross join public.inventory_items as inventory_item
+    where purchase_a.record_key = 'PO-TASK7-STOCK'
+      and purchase_b.record_key = 'PO-TASK7-001'
+      and stock_in.record_key = 'SI-TASK7-001'
+      and inventory_item.record_key = 'INV-TASK7-001'
+  ),
+  (select state from task7_stock_binding_snapshot),
+  'rejected cross-purchase reuse leaves both purchases, stock-in, and inventory rows exactly unchanged'
+);
+
+drop trigger task7_block_stock_binding_purchase_mutation
+  on public.purchase_records;
+drop trigger task7_block_stock_binding_stock_in_mutation
+  on public.stock_in_records;
+drop trigger task7_block_stock_binding_inventory_mutation
+  on public.inventory_items;
+
 delete from public.permission_grants
 where subject_type = 'department'
   and subject_code = '采购部'

@@ -88,21 +88,65 @@ test('labor alert eligibility uses only actor identity and exact effective permi
   }), false)
 })
 
-test('labor alert state replaces on success and preserves the last count on failure', () => {
+test('labor alert raw state distinguishes initial, ready, and stale failure snapshots', () => {
   assert.ifError(runtime.hook.error)
   const { applyLaborAlertRefreshResult, createLaborAlertState } = runtime.hook.module
 
   const initial = createLaborAlertState()
-  assert.deepEqual(initial, { count: 0, stale: false })
-  const successful = applyLaborAlertRefreshResult(initial, { ok: true, count: 3 })
-  assert.deepEqual(successful, { count: 3, stale: false })
+  assert.deepEqual(initial, {
+    count: 0,
+    stale: false,
+    loading: true,
+    error: '',
+    code: '',
+    source: 'labor-alert-service',
+    updatedAt: null,
+  })
+  const successful = applyLaborAlertRefreshResult(initial, {
+    ok: true,
+    count: 3,
+    updatedAt: '2026-07-17T01:02:03.000Z',
+  })
+  assert.deepEqual(successful, {
+    count: 3,
+    stale: false,
+    loading: false,
+    error: '',
+    code: '',
+    source: 'labor-alert-service',
+    updatedAt: '2026-07-17T01:02:03.000Z',
+  })
   assert.deepEqual(
-    applyLaborAlertRefreshResult(successful, { ok: false }),
-    { count: 3, stale: true },
+    applyLaborAlertRefreshResult(successful, {
+      ok: false,
+      code: 'DATA_OPERATION_FAILED',
+      message: '正式考勤提醒读取失败',
+    }),
+    {
+      count: 3,
+      stale: true,
+      loading: false,
+      error: '正式考勤提醒读取失败',
+      code: 'DATA_OPERATION_FAILED',
+      source: 'labor-alert-service',
+      updatedAt: '2026-07-17T01:02:03.000Z',
+    },
   )
   assert.deepEqual(
-    applyLaborAlertRefreshResult({ count: 8, stale: true }, { ok: true, count: 1 }),
-    { count: 1, stale: false },
+    applyLaborAlertRefreshResult(successful, {
+      ok: true,
+      count: 1,
+      updatedAt: '2026-07-17T02:03:04.000Z',
+    }),
+    {
+      count: 1,
+      stale: false,
+      loading: false,
+      error: '',
+      code: '',
+      source: 'labor-alert-service',
+      updatedAt: '2026-07-17T02:03:04.000Z',
+    },
   )
 })
 
@@ -139,6 +183,10 @@ test('App wires one server-identity alert hook and routes labor to the accountin
   )
   assert.match(authenticatedApp, /laborAlertCount=\{laborAlertCount\}/u)
   assert.match(authenticatedApp, /laborAlertStale=\{laborAlertStale\}/u)
+  assert.match(
+    authenticatedApp,
+    /laborAlert:\s*projectLaborSource\(\{[\s\S]*?loading:\s*laborAlertLoading[\s\S]*?error:\s*laborAlertError[\s\S]*?code:\s*laborAlertCode[\s\S]*?source:\s*laborAlertSource[\s\S]*?updatedAt:\s*laborAlertUpdatedAt[\s\S]*?\},\s*\{[\s\S]*?readAllowed:\s*laborAlertAllowed[\s\S]*?data:\s*laborAlertCount[\s\S]*?stale:\s*laborAlertStale/u,
+  )
 
   const route = extractBraceBlock(authenticatedApp, "if (authorizedView === 'labor')")
   assert.match(route, /<LaborAccountingPage/u)
@@ -449,15 +497,15 @@ test('legacy dashboard drilldown keeps historical facts but never presents legac
   assert.match(movementCard, /非考勤提醒/u)
 })
 
-test('owner dashboard uses the server alert count instead of legacy exception heuristics', () => {
+test('owner dashboard consumes the standard alert source instead of a bare count', () => {
   const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
 
-  assert.match(authenticatedApp, /<DashboardPage[\s\S]*?laborAlertCount=\{laborAlertCount\}/u)
-  assert.match(dashboard, /laborAlertCount/u)
+  assert.doesNotMatch(authenticatedApp, /<DashboardPage[\s\S]*?laborAlertCount=\{laborAlertCount\}/u)
+  assert.match(dashboard, /projectDashboardLaborAlertSource\(sourceStates, access\.labor\?\.view\)/u)
   assert.match(
     dashboard,
-    /laborExceptionCount\s*=\s*Number\.isSafeInteger\(laborAlertCount\)[\s\S]*?laborAlertCount\s*:\s*0/u,
+    /laborAlertState\.status\s*===\s*'ready'[\s\S]*?laborAlertState\.data/u,
   )
-  assert.match(dashboard, /正式考勤待处理 \$\{laborExceptionCount\}/u)
+  assert.match(dashboard, /laborAlertStatusText\(laborAlertState\.status\)/u)
   assert.doesNotMatch(dashboard, /getLaborExceptions\(normalizedLaborRecords\)\.length/u)
 })

@@ -162,6 +162,105 @@ test('stock-in commits purchase, stock-in, and inventory through one bound atomi
   assert.equal(result.stockIn.stockInQuantity, 2)
 })
 
+test('stock-in commit response requires an own enumerable source purchase data property', async (t) => {
+  const request = {
+    purchaseRecordKey: 'PO-SECURE-1',
+    purchasePatch: purchase(),
+    stockInRecordKey: 'SI-SECURE-1',
+    stockInPayload: {
+      stockInId: 'SI-SECURE-1',
+      sourcePurchaseId: 'PO-SECURE-1',
+      stockInQuantity: 1,
+    },
+    inventoryRecordKey: 'INV-SECURE-1',
+    inventoryPayload: {
+      inventoryId: 'INV-SECURE-1',
+      quantity: 1,
+    },
+  }
+  const responseFor = (stockInPayload) => ({
+    purchase: envelope(),
+    stock_in: {
+      record_key: 'SI-SECURE-1',
+      payload: stockInPayload,
+      status: 'active',
+      updated_at: '2026-07-17T00:00:00.000Z',
+    },
+    inventory_item: {
+      record_key: 'INV-SECURE-1',
+      payload: { inventoryId: 'INV-SECURE-1', quantity: 1 },
+      status: 'active',
+      updated_at: '2026-07-17T00:00:00.000Z',
+    },
+  })
+  const rejectsResponse = async (stockInPayload) => {
+    const service = createPurchaseService({
+      rpc: async () => ({ data: responseFor(stockInPayload), error: null }),
+    }, { configured: true })
+    await assert.rejects(
+      () => service.commitStockIn(request),
+      (error) => error instanceof PurchaseServiceError &&
+        error.code === 'PURCHASE_RESPONSE_INVALID',
+    )
+  }
+
+  await t.test('missing sourcePurchaseId', async () => {
+    await rejectsResponse({ stockInId: 'SI-SECURE-1', stockInQuantity: 1 })
+  })
+
+  await t.test('mismatched sourcePurchaseId', async () => {
+    await rejectsResponse({
+      stockInId: 'SI-SECURE-1',
+      sourcePurchaseId: 'PO-OTHER',
+      stockInQuantity: 1,
+    })
+  })
+
+  await t.test('inherited sourcePurchaseId', async () => {
+    const previousDescriptor = Object.getOwnPropertyDescriptor(
+      Object.prototype, 'sourcePurchaseId',
+    )
+    Object.defineProperty(Object.prototype, 'sourcePurchaseId', {
+      configurable: true,
+      enumerable: true,
+      value: 'PO-SECURE-1',
+      writable: true,
+    })
+    try {
+      await rejectsResponse({ stockInId: 'SI-SECURE-1', stockInQuantity: 1 })
+    } finally {
+      if (previousDescriptor) {
+        Object.defineProperty(Object.prototype, 'sourcePurchaseId', previousDescriptor)
+      } else {
+        delete Object.prototype.sourcePurchaseId
+      }
+    }
+  })
+
+  await t.test('accessor sourcePurchaseId', async () => {
+    let getterCalls = 0
+    const stockInPayload = { stockInId: 'SI-SECURE-1', stockInQuantity: 1 }
+    Object.defineProperty(stockInPayload, 'sourcePurchaseId', {
+      enumerable: true,
+      get() {
+        getterCalls += 1
+        return 'PO-SECURE-1'
+      },
+    })
+    await rejectsResponse(stockInPayload)
+    assert.equal(getterCalls, 0)
+  })
+
+  await t.test('non-enumerable sourcePurchaseId', async () => {
+    const stockInPayload = { stockInId: 'SI-SECURE-1', stockInQuantity: 1 }
+    Object.defineProperty(stockInPayload, 'sourcePurchaseId', {
+      enumerable: false,
+      value: 'PO-SECURE-1',
+    })
+    await rejectsResponse(stockInPayload)
+  })
+})
+
 test('stock-in atomic RPC rejects mismatched inputs and malformed bound response envelopes', async () => {
   const stockInPayload = {
     stockInId: 'SI-SECURE-1', sourcePurchaseId: 'PO-SECURE-1', stockInQuantity: 1,

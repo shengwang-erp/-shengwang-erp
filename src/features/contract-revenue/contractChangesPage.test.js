@@ -90,6 +90,6 @@ test('record-mode state updates keep local cache but do not invoke whole-table c
     recordModeBranch,
     /window\.localStorage\.setItem\(key, JSON\.stringify\(resolvedValue\)\)/,
   )
-  assert.doesNotMatch(recordModeBranch, /saveList\(/)
-  assert.match(appSource, /saveList\(key, resolvedValue\)/)
+  assert.doesNotMatch(recordModeBranch, /cloudSaver\(/)
+  assert.match(appSource, /cloudSaver\(key, resolvedValue\)/)
 })

@@ -751,7 +751,7 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
     toolResponsibilityRecords: [{ compensationStatus: '未赔偿', compensationAmount: 22000 }],
     laborBridge: null,
     bridgeStatusNotice: null,
-    laborAlertCount: 4,
+    laborAlertCount: 97,
     onBack() {},
   }
   const ready = (data) => ({ status: 'ready', data, stale: false, updatedAt: null })
@@ -768,6 +768,7 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
     inventory: ready(props.inventoryItems),
     laborRecords: ready(props.records.labor),
     labor: ready(props.laborBridge),
+    laborAlert: ready(4),
     vehicles: ready(props.vehicles),
     vehicleUsage: ready(props.vehicleUsageRecords),
     fuel: ready(props.fuelRecords),
@@ -820,6 +821,8 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
     sourceStates: readySources,
   }))
   assert.match(fullHtml, /机密项目|合同金额合计|¥880,000|身份机密人员|本月采购总额|机密车辆|机密工具/u)
+  assert.match(fullHtml, /正式考勤待处理 4/u)
+  assert.doesNotMatch(fullHtml, /正式考勤待处理 97/u)
 
   const revokedHtml = renderToStaticMarkup(createElement(DashboardPage, {
     ...props,
@@ -853,4 +856,68 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
   }))
   assert.match(staleProjectHtml, /项目数据正在加载/u)
   assert.doesNotMatch(staleProjectHtml, /机密项目|合同金额合计|¥880,000|预估毛利润/u)
+})
+
+test('Dashboard alert count requires a ready non-stale standard source', () => {
+  const DashboardPage = requireExport('DashboardPage')
+  if (!DashboardPage) return
+
+  const ready = (data) => ({ status: 'ready', data, stale: false, updatedAt: null })
+  const access = {
+    page: true,
+    projectSnapshot: false,
+    contracts: { view: false, amounts: false },
+    profit: { view: false, completeCostRequired: true },
+    attendance: { view: false, identities: false },
+    labor: { view: true, amounts: false },
+    purchase: { accrual: false, payments: false, payable: false, anomalies: false },
+    vehicle: { view: false, amounts: false },
+    inventory: { view: false, amounts: false },
+    tools: { view: false, amounts: false },
+    costCategories: {
+      labor: false, purchase: false, vehicle: false,
+      manualSupplement: false, operatingExpense: false,
+    },
+  }
+  const baseProps = {
+    access,
+    sourceStates: { laborRecords: ready([]) },
+    laborAlertCount: 97,
+    onBack() {},
+  }
+  const renderAlert = (laborAlert) => renderToStaticMarkup(createElement(DashboardPage, {
+    ...baseProps,
+    sourceStates: {
+      ...baseProps.sourceStates,
+      ...(laborAlert === undefined ? {} : { laborAlert }),
+    },
+  }))
+
+  const initialHtml = renderAlert(undefined)
+  assert.match(initialHtml, /正式考勤待处理数据正在加载/u)
+  assert.doesNotMatch(initialHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
+
+  const readyHtml = renderAlert(ready(5))
+  assert.match(readyHtml, /<strong>5<\/strong><span>正式考勤待处理<\/span>/u)
+  assert.doesNotMatch(readyHtml, /正式考勤待处理数据正在加载|正式考勤待处理数据暂不可用/u)
+
+  const staleHtml = renderAlert({ ...ready(8), stale: true })
+  assert.match(staleHtml, /正式考勤待处理数据正在加载/u)
+  assert.doesNotMatch(staleHtml, /<strong>(?:8|97)<\/strong><span>正式考勤待处理<\/span>/u)
+
+  const errorHtml = renderAlert({
+    status: 'error', data: null, stale: false, code: 'DATA_OPERATION_FAILED',
+  })
+  assert.match(errorHtml, /正式考勤待处理数据暂不可用/u)
+  assert.doesNotMatch(errorHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
+
+  const malformedReadyHtml = renderAlert(ready('7'))
+  assert.match(malformedReadyHtml, /正式考勤待处理数据暂不可用/u)
+  assert.doesNotMatch(malformedReadyHtml, /<strong>(?:7|97)<\/strong><span>正式考勤待处理<\/span>/u)
+
+  const forbiddenHtml = renderAlert({
+    status: 'forbidden', data: null, stale: false, code: 'ACCESS_DENIED',
+  })
+  assert.match(forbiddenHtml, /当前权限下无法查看正式考勤待处理数据/u)
+  assert.doesNotMatch(forbiddenHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
 })

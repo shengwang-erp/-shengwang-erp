@@ -291,13 +291,17 @@ function validateStockInCommitResponse(data, request) {
         !Object.hasOwn(descriptors[key], 'value'))) {
     fail('PURCHASE_RESPONSE_INVALID')
   }
+  const stockIn = validateBoundEnvelope(
+    descriptors.stock_in.value, 'stockInId', request.stockInRecordKey,
+  )
+  if (readOwnData(stockIn, 'sourcePurchaseId') !== request.purchaseRecordKey) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
   return deepFreeze({
     purchase: validateBoundEnvelope(
       descriptors.purchase.value, 'purchaseId', request.purchaseRecordKey,
     ),
-    stockIn: validateBoundEnvelope(
-      descriptors.stock_in.value, 'stockInId', request.stockInRecordKey,
-    ),
+    stockIn,
     inventoryItem: validateBoundEnvelope(
       descriptors.inventory_item.value, 'inventoryId', request.inventoryRecordKey,
     ),
