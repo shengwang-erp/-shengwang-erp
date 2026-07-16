@@ -1,0 +1,1171 @@
+.labor-accounting-page {
+  --labor-gold: #b98a36;
+  --labor-gold-bright: #e3bd6d;
+  --labor-ink: #171510;
+  --labor-muted: #6d675d;
+  --labor-line: #e7e0d3;
+  --labor-panel: #fffdfa;
+  --labor-canvas: #f5f2eb;
+  --labor-danger: #b43b35;
+  --labor-danger-soft: #fff1ef;
+  --labor-success: #28734c;
+  --labor-success-soft: #edf8f1;
+  --labor-warning: #9b6519;
+  --labor-warning-soft: #fff7e5;
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+  color: var(--labor-ink);
+}
+
+.labor-accounting-page *,
+.labor-accounting-page *::before,
+.labor-accounting-page *::after {
+  box-sizing: border-box;
+}
+
+.labor-accounting-page h1,
+.labor-accounting-page h2,
+.labor-accounting-page h3,
+.labor-accounting-page h4,
+.labor-accounting-page p,
+.labor-accounting-page dl,
+.labor-accounting-page dd,
+.labor-accounting-page ol,
+.labor-accounting-page ul {
+  margin: 0;
+}
+
+.labor-accounting-page button,
+.labor-accounting-page input,
+.labor-accounting-page select,
+.labor-accounting-page textarea {
+  font: inherit;
+}
+
+.labor-accounting-page button,
+.labor-accounting-page input,
+.labor-accounting-page select,
+.labor-accounting-page textarea {
+  min-height: 42px;
+  border: 1px solid #cfc6b6;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+}
+
+.labor-accounting-page button {
+  padding: 9px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.labor-accounting-page button:hover:not(:disabled) {
+  border-color: var(--labor-gold);
+  background: #fff9ed;
+}
+
+.labor-accounting-page button:focus-visible,
+.labor-accounting-page input:focus-visible,
+.labor-accounting-page select:focus-visible,
+.labor-accounting-page textarea:focus-visible {
+  outline: 3px solid rgb(185 138 54 / 28%);
+  outline-offset: 2px;
+  border-color: var(--labor-gold);
+}
+
+.labor-accounting-page button:disabled,
+.labor-accounting-page input:disabled,
+.labor-accounting-page select:disabled,
+.labor-accounting-page textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.labor-accounting-page .labor-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.labor-accounting-page .labor-page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px;
+  border: 1px solid rgb(185 138 54 / 45%);
+  border-radius: 18px;
+  background: linear-gradient(135deg, #12110e 0%, #2b2419 100%);
+  box-shadow: 0 14px 34px rgb(25 20 12 / 15%);
+  color: #fffdf7;
+}
+
+.labor-accounting-page .labor-page-heading > span {
+  display: grid;
+  gap: 6px;
+}
+
+.labor-accounting-page .labor-page-heading small {
+  color: var(--labor-gold-bright);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.labor-accounting-page .labor-page-heading h1 {
+  font-size: clamp(1.6rem, 2.6vw, 2.2rem);
+}
+
+.labor-accounting-page .labor-page-heading p {
+  color: #ded7c9;
+}
+
+.labor-accounting-page .labor-back-button {
+  flex: 0 0 auto;
+  border-color: rgb(227 189 109 / 60%);
+  background: transparent;
+  color: #fffdf7;
+}
+
+.labor-accounting-page .labor-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid #302a20;
+  border-radius: 13px;
+  background: #1c1914;
+}
+
+.labor-accounting-page .labor-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-color: transparent;
+  background: transparent;
+  color: #e9e1d1;
+}
+
+.labor-accounting-page .labor-tabs button[aria-selected='true'] {
+  border-color: var(--labor-gold);
+  background: var(--labor-gold);
+  color: #18140d;
+}
+
+.labor-accounting-page .labor-tab-badge,
+.labor-accounting-page .labor-alert-count {
+  display: inline-grid;
+  min-width: 24px;
+  min-height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--labor-danger);
+  color: #fff;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.labor-accounting-page .labor-daily-board {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+
+.labor-accounting-page .labor-board-toolbar,
+.labor-accounting-page .labor-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.labor-accounting-page .labor-board-toolbar {
+  padding: 18px 20px;
+  border: 1px solid var(--labor-line);
+  border-radius: 16px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-board-toolbar > span,
+.labor-accounting-page .labor-section-heading > span {
+  display: grid;
+  gap: 4px;
+}
+
+.labor-accounting-page .labor-board-toolbar small,
+.labor-accounting-page .labor-section-heading small,
+.labor-accounting-page .labor-dialog-section header small,
+.labor-accounting-page .labor-dialog-heading small {
+  color: var(--labor-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-date-navigation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.labor-accounting-page .labor-date-navigation input {
+  min-width: 150px;
+  padding: 8px 10px;
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-configuration-notice,
+.labor-accounting-page .labor-locked-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border: 1px solid #e7bd69;
+  border-radius: 12px;
+  background: var(--labor-warning-soft);
+  color: #76501a;
+}
+
+.labor-accounting-page .labor-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.labor-accounting-page .labor-summary-card {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--labor-line);
+  border-radius: 14px;
+  background: var(--labor-panel);
+  box-shadow: 0 7px 20px rgb(38 31 21 / 6%);
+}
+
+.labor-accounting-page .labor-summary-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.labor-accounting-page .labor-summary-card small {
+  color: var(--labor-muted);
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-summary-card strong {
+  font-size: 1.65rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.labor-accounting-page .labor-summary-card div > span {
+  color: var(--labor-muted);
+  font-size: 0.73rem;
+  line-height: 1.35;
+}
+
+.labor-accounting-page .labor-status-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 0.35em;
+  border-radius: 50%;
+  background: #8b867e;
+}
+
+.labor-accounting-page [data-tone='danger'] > .labor-status-dot,
+.labor-accounting-page .labor-summary-card[data-tone='danger'] > .labor-status-dot {
+  background: var(--labor-danger);
+  box-shadow: 0 0 0 4px rgb(180 59 53 / 11%);
+}
+
+.labor-accounting-page [data-tone='success'] > .labor-status-dot,
+.labor-accounting-page .labor-summary-card[data-tone='success'] > .labor-status-dot {
+  background: var(--labor-success);
+}
+
+.labor-accounting-page [data-tone='working'] > .labor-status-dot,
+.labor-accounting-page .labor-summary-card[data-tone='working'] > .labor-status-dot {
+  background: #26709a;
+}
+
+.labor-accounting-page [data-tone='warning'] > .labor-status-dot {
+  background: var(--labor-warning);
+}
+
+.labor-accounting-page [data-tone='locked'] > .labor-status-dot {
+  background: #584a78;
+}
+
+.labor-accounting-page .labor-daily-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 0.75fr)) minmax(220px, 1.4fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--labor-line);
+  border-radius: 14px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-daily-filters label,
+.labor-accounting-page .labor-allocation-editor > label,
+.labor-accounting-page .labor-allocation-list label,
+.labor-accounting-page .labor-resolution-note,
+.labor-accounting-page .labor-page-error label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: #4f4a42;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-daily-filters input,
+.labor-accounting-page .labor-daily-filters select,
+.labor-accounting-page .labor-allocation-editor input,
+.labor-accounting-page .labor-resolution-note textarea,
+.labor-accounting-page .labor-page-error input {
+  width: 100%;
+  padding: 9px 11px;
+}
+
+.labor-accounting-page .labor-checkbox-filter {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d7d0c4;
+  border-radius: 10px;
+  background: #fff;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-checkbox-filter input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  accent-color: var(--labor-gold);
+}
+
+.labor-accounting-page .labor-daily-layout {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(270px, 330px);
+  grid-template-areas: 'employees queue';
+  align-items: start;
+  gap: 16px;
+}
+
+.labor-accounting-page .labor-all-employees,
+.labor-accounting-page .labor-exception-queue {
+  min-width: 0;
+  border: 1px solid var(--labor-line);
+  border-radius: 16px;
+  background: var(--labor-panel);
+  box-shadow: 0 8px 24px rgb(34 27 17 / 6%);
+}
+
+.labor-accounting-page .labor-all-employees {
+  grid-area: employees;
+  overflow: hidden;
+}
+
+.labor-accounting-page .labor-exception-queue {
+  position: sticky;
+  top: 16px;
+  grid-area: queue;
+  overflow: hidden;
+}
+
+.labor-accounting-page .labor-all-employees > .labor-section-heading,
+.labor-accounting-page .labor-exception-queue > .labor-section-heading {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--labor-line);
+}
+
+.labor-accounting-page .labor-section-heading h2 {
+  font-size: 1.05rem;
+}
+
+.labor-accounting-page .labor-status-table-wrap {
+  min-width: 0;
+}
+
+.labor-accounting-page .labor-desktop-table {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.labor-accounting-page .labor-status-table {
+  width: 100%;
+  min-width: 940px;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.labor-accounting-page .labor-status-table th,
+.labor-accounting-page .labor-status-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #eee8de;
+  text-align: left;
+  vertical-align: top;
+}
+
+.labor-accounting-page .labor-status-table thead th {
+  background: #f4f0e8;
+  color: #625b50;
+  font-size: 0.73rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-status-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.labor-accounting-page .labor-status-table tbody tr[data-has-issues='true'] {
+  background: #fffaf8;
+}
+
+.labor-accounting-page .labor-status-table tbody th > strong,
+.labor-accounting-page .labor-status-table tbody th > small {
+  display: block;
+}
+
+.labor-accounting-page .labor-status-table tbody th > small {
+  margin-top: 4px;
+  color: var(--labor-muted);
+  font-weight: 500;
+}
+
+.labor-accounting-page .labor-status-text {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-issue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.labor-accounting-page .labor-issue-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: var(--labor-danger-soft);
+  color: #9c302c;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-muted-text,
+.labor-accounting-page .labor-empty-inline,
+.labor-accounting-page .labor-redacted-inline {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-row-action {
+  min-height: 34px;
+  padding: 6px 10px;
+  border-color: rgb(185 138 54 / 56%);
+  color: #6c4a13;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-mobile-cards {
+  display: none;
+}
+
+.labor-accounting-page .labor-employee-card {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--labor-line);
+  border-radius: 13px;
+  background: #fff;
+}
+
+.labor-accounting-page .labor-employee-card[data-has-issues='true'] {
+  border-color: rgb(180 59 53 / 35%);
+}
+
+.labor-accounting-page .labor-employee-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-employee-card > header > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.labor-accounting-page .labor-employee-card header small {
+  overflow-wrap: anywhere;
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-employee-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.labor-accounting-page .labor-employee-card dl > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px;
+  border-radius: 9px;
+  background: #f8f5ef;
+}
+
+.labor-accounting-page .labor-employee-card dt {
+  color: var(--labor-muted);
+  font-size: 0.72rem;
+}
+
+.labor-accounting-page .labor-employee-card dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-exception-list {
+  display: grid;
+  max-height: 660px;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.labor-accounting-page .labor-exception-list li + li {
+  border-top: 1px solid #eee8de;
+}
+
+.labor-accounting-page .labor-exception-list button {
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  gap: 9px;
+  border: 0;
+  border-radius: 0;
+  padding: 14px 16px;
+  background: transparent;
+  text-align: left;
+}
+
+.labor-accounting-page .labor-queue-person {
+  display: grid;
+  gap: 2px;
+}
+
+.labor-accounting-page .labor-queue-person small,
+.labor-accounting-page .labor-queue-time {
+  color: var(--labor-muted);
+  font-size: 0.74rem;
+}
+
+.labor-accounting-page .labor-queue-action {
+  color: #795418;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-queue-empty,
+.labor-accounting-page .labor-empty-state,
+.labor-accounting-page .labor-loading-panel,
+.labor-accounting-page .labor-page-error,
+.labor-accounting-page .labor-detail-loading-dialog {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 24px;
+}
+
+.labor-accounting-page .labor-queue-empty > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--labor-success-soft);
+  color: var(--labor-success);
+  font-weight: 900;
+}
+
+.labor-accounting-page .labor-queue-empty small,
+.labor-accounting-page .labor-empty-state span,
+.labor-accounting-page .labor-page-error > span {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-loading-panel,
+.labor-accounting-page .labor-page-error {
+  border: 1px solid var(--labor-line);
+  border-radius: 14px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-page-error {
+  border-color: rgb(180 59 53 / 32%);
+  background: var(--labor-danger-soft);
+}
+
+.labor-accounting-page .labor-page-error > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-loading-dot {
+  width: 14px;
+  height: 14px;
+  border: 3px solid #e1d5bf;
+  border-top-color: var(--labor-gold);
+  border-radius: 50%;
+}
+
+.labor-accounting-page .labor-dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(12 10 7 / 67%);
+}
+
+.labor-accounting-page .labor-resolution-dialog {
+  display: grid;
+  width: min(1040px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  border: 1px solid rgb(185 138 54 / 65%);
+  border-radius: 18px;
+  background: var(--labor-canvas);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 36%);
+}
+
+.labor-accounting-page .labor-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, #16130e, #302719);
+  color: #fff;
+}
+
+.labor-accounting-page .labor-dialog-heading > span {
+  display: grid;
+  gap: 4px;
+}
+
+.labor-accounting-page .labor-dialog-heading small {
+  color: var(--labor-gold-bright);
+}
+
+.labor-accounting-page .labor-dialog-heading p {
+  color: #d8d0c2;
+  font-size: 0.82rem;
+}
+
+.labor-accounting-page .labor-dialog-close {
+  width: 42px;
+  padding: 0;
+  border-color: rgb(255 255 255 / 30%);
+  background: transparent;
+  color: #fff;
+  font-size: 1.5rem;
+}
+
+.labor-accounting-page .labor-dialog-scroll {
+  display: grid;
+  overflow-y: auto;
+  gap: 14px;
+  padding: 16px;
+}
+
+.labor-accounting-page .labor-dialog-section {
+  display: grid;
+  gap: 14px;
+  padding: 17px;
+  border: 1px solid var(--labor-line);
+  border-radius: 14px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-dialog-section > header,
+.labor-accounting-page .labor-project-allocation > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.labor-accounting-page .labor-dialog-section > header > span,
+.labor-accounting-page .labor-project-allocation > header > span {
+  display: grid;
+  gap: 3px;
+}
+
+.labor-accounting-page .labor-readonly-badge,
+.labor-accounting-page .labor-accounting-badge {
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #eee9df;
+  color: #625b50;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-fact-summary,
+.labor-accounting-page .labor-salary-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-fact-summary > div,
+.labor-accounting-page .labor-salary-summary > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 11px;
+  border-radius: 10px;
+  background: #f5f1e9;
+}
+
+.labor-accounting-page .labor-fact-summary dt,
+.labor-accounting-page .labor-salary-summary dt {
+  color: var(--labor-muted);
+  font-size: 0.72rem;
+}
+
+.labor-accounting-page .labor-fact-summary dd,
+.labor-accounting-page .labor-salary-summary dd {
+  overflow-wrap: anywhere;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-dialog-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.labor-accounting-page .labor-fact-sessions {
+  display: grid;
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-fact-sessions > article {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #e8dfd0;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.labor-accounting-page .labor-fact-sessions article > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-fact-sessions article > header span {
+  color: var(--labor-muted);
+  font-size: 0.75rem;
+}
+
+.labor-accounting-page .labor-session-events {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-session-events > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 9px;
+  background: #f7f4ee;
+}
+
+.labor-accounting-page .labor-session-events > div > small {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-fact-location {
+  display: grid;
+  gap: 2px;
+  color: var(--labor-success);
+  font-size: 0.72rem;
+}
+
+.labor-accounting-page .labor-fact-location[data-result='abnormal'] {
+  color: var(--labor-danger);
+}
+
+.labor-accounting-page .labor-fact-location small {
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-weight: 500;
+}
+
+.labor-accounting-page .labor-resolution-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  border: 0;
+  padding: 0;
+}
+
+.labor-accounting-page .labor-resolution-options legend {
+  margin-bottom: 8px;
+  color: #514b41;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-resolution-options label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #ddd4c5;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.labor-accounting-page .labor-resolution-options label:has(input:checked) {
+  border-color: var(--labor-gold);
+  background: #fff8e9;
+  box-shadow: inset 0 0 0 1px var(--labor-gold);
+}
+
+.labor-accounting-page .labor-resolution-options input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  accent-color: var(--labor-gold);
+}
+
+.labor-accounting-page .labor-resolution-options label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.labor-accounting-page .labor-resolution-options small {
+  color: var(--labor-muted);
+  font-size: 0.68rem;
+}
+
+.labor-accounting-page .labor-redacted-note,
+.labor-accounting-page .labor-salary-warning {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #ddd5c8;
+  border-radius: 10px;
+  background: #f5f2ec;
+  color: #5e584f;
+}
+
+.labor-accounting-page .labor-salary-warning {
+  border-color: #e6b7aa;
+  background: var(--labor-danger-soft);
+  color: #8d332e;
+}
+
+.labor-accounting-page .labor-redacted-note span,
+.labor-accounting-page .labor-salary-warning span {
+  font-size: 0.78rem;
+}
+
+.labor-accounting-page .labor-project-allocation,
+.labor-accounting-page .labor-allocation-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.labor-accounting-page .labor-project-allocation {
+  padding-top: 4px;
+}
+
+.labor-accounting-page .labor-allocation-list {
+  display: grid;
+  gap: 9px;
+}
+
+.labor-accounting-page .labor-allocation-list > article {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(150px, 1fr) minmax(180px, 1.2fr);
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e6ded0;
+  border-radius: 10px;
+  background: #faf8f3;
+}
+
+.labor-accounting-page .labor-allocation-list > article > strong {
+  align-self: center;
+  overflow-wrap: anywhere;
+}
+
+.labor-accounting-page .labor-allocation-balance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  padding: 12px;
+  border: 1px solid rgb(180 59 53 / 33%);
+  border-radius: 10px;
+  background: var(--labor-danger-soft);
+  color: #8f302c;
+}
+
+.labor-accounting-page .labor-allocation-balance[data-valid='true'] {
+  border-color: rgb(40 115 76 / 32%);
+  background: var(--labor-success-soft);
+  color: var(--labor-success);
+}
+
+.labor-accounting-page .labor-allocation-balance strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.labor-accounting-page .labor-allocation-balance small {
+  grid-column: 1 / -1;
+}
+
+.labor-accounting-page .labor-resolution-note textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.labor-accounting-page .labor-dialog-error,
+.labor-accounting-page .labor-confirm-blockers {
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--labor-danger-soft);
+  color: #932f2b;
+}
+
+.labor-accounting-page .labor-confirm-blockers {
+  display: grid;
+  gap: 5px;
+}
+
+.labor-accounting-page .labor-confirm-blockers ul {
+  padding-left: 20px;
+  font-size: 0.8rem;
+}
+
+.labor-accounting-page .labor-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--labor-line);
+  background: #fff;
+}
+
+.labor-accounting-page .labor-save-draft {
+  border-color: var(--labor-gold);
+  color: #705018;
+}
+
+.labor-accounting-page .labor-confirm-resolution {
+  border-color: #18150f;
+  background: #18150f;
+  color: #fff;
+}
+
+.labor-accounting-page .labor-confirm-resolution:hover:not(:disabled) {
+  background: #342b1e;
+  color: #fff;
+}
+
+.labor-accounting-page .labor-detail-loading-dialog {
+  width: min(440px, 100%);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 32%);
+}
+
+@media (max-width: 1180px) {
+  .labor-accounting-page .labor-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-daily-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-search-filter {
+    grid-column: span 2;
+  }
+
+  .labor-accounting-page .labor-checkbox-filter {
+    justify-self: stretch;
+  }
+}
+
+@media (max-width: 900px) {
+  .labor-accounting-page .labor-board-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .labor-accounting-page .labor-date-navigation {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .labor-accounting-page .labor-date-navigation input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .labor-accounting-page .labor-daily-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'queue' 'employees';
+  }
+
+  .labor-accounting-page .labor-exception-queue {
+    position: static;
+  }
+
+  .labor-accounting-page .labor-exception-list {
+    max-height: 390px;
+  }
+
+  .labor-accounting-page .labor-desktop-table {
+    display: none;
+  }
+
+  .labor-accounting-page .labor-mobile-cards {
+    display: grid;
+    min-width: 0;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .labor-accounting-page .labor-fact-summary,
+  .labor-accounting-page .labor-salary-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-allocation-list > article {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .labor-accounting-page .labor-allocation-list > article > strong {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .labor-accounting-page {
+    gap: 12px;
+  }
+
+  .labor-accounting-page .labor-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 18px;
+  }
+
+  .labor-accounting-page .labor-summary-grid,
+  .labor-accounting-page .labor-daily-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .labor-accounting-page .labor-search-filter {
+    grid-column: auto;
+  }
+
+  .labor-accounting-page .labor-summary-card {
+    min-height: 104px;
+  }
+
+  .labor-accounting-page .labor-date-navigation {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-date-navigation label {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .labor-accounting-page .labor-date-navigation button {
+    width: 100%;
+  }
+
+  .labor-accounting-page .labor-employee-card dl,
+  .labor-accounting-page .labor-fact-summary,
+  .labor-accounting-page .labor-salary-summary,
+  .labor-accounting-page .labor-session-events,
+  .labor-accounting-page .labor-resolution-options,
+  .labor-accounting-page .labor-allocation-list > article {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .labor-accounting-page .labor-dialog-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .labor-accounting-page .labor-resolution-dialog {
+    width: 100%;
+    max-height: 96dvh;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .labor-accounting-page .labor-dialog-scroll {
+    padding: 10px;
+  }
+
+  .labor-accounting-page .labor-dialog-section {
+    padding: 13px;
+  }
+
+  .labor-accounting-page .labor-dialog-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-dialog-actions .labor-confirm-resolution {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+}
