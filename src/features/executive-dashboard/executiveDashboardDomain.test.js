@@ -213,7 +213,7 @@ function sourceFixture(overrides = {}) {
     toolReturnRecords: ready([]),
     lifelongToolAssignments: ready([]),
     toolResponsibilityRecords: ready([
-      { responsibilityId: 'TR1', toolId: 'T1', projectId: 'P1', compensationStatus: '未赔偿', compensationAmount: 9 },
+      { responsibilityRecordId: 'TR1', toolId: 'T1', projectId: 'P1', compensationStatus: '未赔偿', compensationAmount: 9 },
     ]),
   }
   return { ...values, ...overrides }
@@ -329,6 +329,68 @@ test('selected month moves natural-month operations and the 12-month window but 
   assert.equal(july.revenue.data.comparison, null)
 })
 
+test('purchase cash is derived only from validated purchase-linked recorded payments without payment projectId', () => {
+  const purchaseAccrual = ready([
+    {
+      purchaseId: 'PO-P1', projectId: 'P1', purchaseDate: '2026-07-02',
+      purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: 100,
+      openingPaidAmount: 0,
+    },
+    {
+      purchaseId: 'PO-P2', projectId: 'P2', purchaseDate: '2026-07-02',
+      purchaseSource: 'Amazon', purchaseStatus: '正常', totalCost: 200,
+      openingPaidAmount: 0,
+    },
+    {
+      purchaseId: 'PO-VOID', projectId: 'P1', purchaseDate: '2026-07-02',
+      purchaseSource: '中国采购', purchaseStatus: '作废', totalCost: 900,
+      openingPaidAmount: 0,
+    },
+  ])
+  const purchasePayments = ready([
+    {
+      paymentId: 'PP-P1', purchaseId: 'PO-P1', paymentDate: '2026-07-03',
+      paymentDateSource: 'recorded', jpyAmount: 10,
+    },
+    {
+      paymentId: 'PP-P2', purchaseId: 'PO-P2', paymentDate: '2026-07-04',
+      paymentDateSource: 'recorded', jpyAmount: 20,
+    },
+    {
+      paymentId: 'PP-ORPHAN', purchaseId: 'PO-MISSING', paymentDate: '2026-07-05',
+      paymentDateSource: 'recorded', jpyAmount: 999,
+    },
+    {
+      paymentId: 'PP-P1', purchaseId: 'PO-P2', paymentDate: '2026-07-06',
+      paymentDateSource: 'recorded', jpyAmount: 888,
+    },
+    {
+      paymentId: 'PP-VOID', purchaseId: 'PO-VOID', paymentDate: '2026-07-07',
+      paymentDateSource: 'recorded', jpyAmount: 777,
+    },
+    {
+      paymentId: 'PP-DEFAULTED', purchaseId: 'PO-P1', paymentDate: '2026-07-08',
+      paymentDateSource: 'defaulted', jpyAmount: 30,
+    },
+  ])
+  const sources = sourceFixture({ purchaseAccrual, purchasePayments })
+
+  const company = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+  assert.equal(company.purchaseOperations.data.payment.data.monthPaymentCash, 30)
+  assert.equal(company.purchaseOperations.data.payable.data.currentOutstanding, 240)
+  assert.equal(company.cashFlow.data.series.at(-1).purchaseOutflow, 30)
+
+  const selectedProject = buildExecutiveDashboardReadModel(input({ sources }))
+  assert.equal(selectedProject.purchaseOperations.data.payment.data.monthPaymentCash, 10)
+  assert.equal(selectedProject.purchaseOperations.data.payable.data.currentOutstanding, 60)
+  assert.equal(selectedProject.cashFlow.data.series.at(-1).purchaseOutflow, 10)
+})
+
 test('required-source and sensitive-permission truth tables block only dependent facts', () => {
   const inventoryIndependent = buildExecutiveDashboardReadModel(input({
     sources: sourceFixture({ toolRecords: forbidden() }),
@@ -396,6 +458,9 @@ test('operations use exact natural source rules and alerts are redacted before o
   assert.equal(model.toolOperations.data.unpaidCompensation, null)
 
   const sensitiveAlertTypes = new Set(['attendance_exception', 'vehicle_issue', 'tool_responsibility'])
+  const targetByType = {
+    attendance_exception: 'labor', vehicle_issue: 'vehicle', tool_responsibility: 'tools',
+  }
   for (const alert of model.alerts.data.filter((item) => sensitiveAlertTypes.has(item.type))) {
     assert.deepEqual(Object.keys(alert), [
       'id', 'type', 'severity', 'title', 'reason', 'count', 'amount',
@@ -403,8 +468,8 @@ test('operations use exact natural source rules and alerts are redacted before o
     ])
     assert.equal(alert.amount, null)
     assert.equal(alert.recordRef, null)
-    assert.equal(alert.targetView, null)
-    assert.equal(alert.canNavigate, false)
+    assert.equal(alert.targetView, targetByType[alert.type])
+    assert.equal(alert.canNavigate, true)
     assert.equal(JSON.stringify(alert).includes('Secret Person'), false)
     assert.equal(JSON.stringify(alert).includes('E-SECRET'), false)
   }
@@ -437,7 +502,7 @@ test('filters normalize safely, ranking is deterministic, rows paginate, and out
   )
 })
 
-test('invalid, accessor, inherited, cyclic, overflow, duplicate, and pollution inputs fail closed', () => {
+test('invalid envelopes throw while malformed source data and unsafe aggregates fail closed in envelopes', () => {
   let getterCalls = 0
   const accessorInput = input()
   Object.defineProperty(accessorInput.filters, 'projectId', {
@@ -462,7 +527,9 @@ test('invalid, accessor, inherited, cyclic, overflow, duplicate, and pollution i
   assert.throws(() => buildExecutiveDashboardReadModel(input({ filters: inherited })), TypeError)
   const cycle = sourceFixture()
   cycle.projects.data.push(cycle.projects.data)
-  assert.throws(() => buildExecutiveDashboardReadModel(input({ sources: cycle })), TypeError)
+  const cyclicSource = buildExecutiveDashboardReadModel(input({ sources: cycle }))
+  assert.equal(cyclicSource.projectStatus.status, 'error')
+  assert.equal(cyclicSource.inventoryOperations.status, 'ready')
   assert.throws(() => buildExecutiveDashboardReadModel({ ...input(), purchases: [] }), TypeError)
 
   const unsafe = sourceFixture({
@@ -474,10 +541,9 @@ test('invalid, accessor, inherited, cyclic, overflow, duplicate, and pollution i
     ]),
   })
   const model = buildExecutiveDashboardReadModel(input({ sources: unsafe }))
-  assert.equal(Number.isSafeInteger(model.purchaseOperations.data.occurrence.data.monthCost), true)
-  assert.equal(model.purchaseOperations.data.occurrence.data.monthCost >= 0, true)
+  assert.equal(model.purchaseOperations.status, 'error')
+  assert.equal(model.costs.status, 'error')
   assert.equal(Object.prototype.polluted, undefined)
-  assert.equal(model.purchaseOperations.data.health.data.anomalyCount > 0, true)
 })
 
 test('source truth tables isolate snapshot revenue, cash receipts, purchase occurrence, and every hidden cost category', () => {
@@ -592,16 +658,6 @@ test('malformed source-state and ready-data accessors fail without invocation wh
   })), TypeError)
   assert.equal(calls, 0)
 
-  const readyData = {}
-  Object.defineProperty(readyData, 'secret', {
-    enumerable: true,
-    get() { calls += 1; return 1 },
-  })
-  assert.throws(() => buildExecutiveDashboardReadModel(input({
-    sources: sourceFixture({ contractRevenue: ready(readyData) }),
-  })), TypeError)
-  assert.equal(calls, 0)
-
   const forbiddenData = {}
   Object.defineProperty(forbiddenData, 'payments', {
     enumerable: true,
@@ -615,6 +671,143 @@ test('malformed source-state and ready-data accessors fail without invocation wh
   }))
   assert.equal(model.purchaseOperations.data.occurrence.status, 'ready')
   assert.deepEqual(model.purchaseOperations.data.payment, { status: 'forbidden', data: null })
+  assert.equal(calls, 0)
+})
+
+test('malformed ready payloads become isolated source errors across every dashboard source family', () => {
+  let calls = 0
+  const accessorRow = () => {
+    const row = {}
+    Object.defineProperty(row, 'projectId', {
+      enumerable: true,
+      get() { calls += 1; return 'P1' },
+    })
+    return row
+  }
+  const inheritedRow = (value) => Object.assign(Object.create({ inherited: true }), value)
+  const cases = [
+    {
+      name: 'projects', sources: { projects: ready([null]) },
+      check(model) {
+        assert.equal(model.kpis.status, 'error')
+        assert.equal(model.projectStatus.status, 'error')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'contract revenue', sources: { contractRevenue: ready([null]) },
+      check(model) {
+        assert.equal(model.revenue.status, 'error')
+        assert.equal(model.projectStatus.status, 'ready')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'cash receipts', sources: { receipts: ready([accessorRow()]) },
+      check(model) {
+        assert.equal(model.cashFlow.status, 'error')
+        assert.equal(model.purchaseOperations.status, 'ready')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'labor window', sources: {
+        laborWindow: ready({ ...laborWindow(), monthly: [null] }),
+      },
+      check(model) {
+        assert.equal(model.costs.status, 'error')
+        assert.equal(model.laborOperations.status, 'ready')
+        assert.equal(model.laborOperations.data.attendance.status, 'ready')
+        assert.equal(model.laborOperations.data.labor.status, 'error')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'purchase accrual', sources: { purchaseAccrual: ready([null]) },
+      check(model) {
+        assert.equal(model.purchaseOperations.status, 'error')
+        assert.equal(model.cashFlow.status, 'error')
+        assert.equal(model.costs.status, 'error')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'project costs', sources: {
+        projectCosts: ready([inheritedRow({
+          costRecordId: 'PC-INHERITED', projectId: 'P1', date: '2026-07-01',
+          costType: '外包费', amount: 1,
+        })]),
+      },
+      check(model) {
+        assert.equal(model.costs.status, 'error')
+        assert.equal(model.purchaseOperations.status, 'ready')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'vehicle', sources: { vehicleUsage: ready([null]) },
+      check(model) {
+        assert.equal(model.vehicleOperations.status, 'error')
+        assert.equal(model.costs.status, 'ready')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'attendance', sources: { attendance: ready([null]) },
+      check(model) {
+        assert.equal(model.laborOperations.status, 'ready')
+        assert.equal(model.laborOperations.data.attendance.status, 'error')
+        assert.equal(model.laborOperations.data.labor.status, 'ready')
+        assert.equal(model.inventoryOperations.status, 'ready')
+      },
+    },
+    {
+      name: 'inventory', sources: { inventoryItems: ready([null]) },
+      check(model) {
+        assert.equal(model.inventoryOperations.status, 'error')
+        assert.equal(model.toolOperations.status, 'ready')
+        assert.equal(model.costs.status, 'ready')
+      },
+    },
+    {
+      name: 'tools', sources: {
+        toolRecords: ready([inheritedRow({ toolId: 'T-INHERITED', currentStatus: '可用' })]),
+      },
+      check(model) {
+        assert.equal(model.toolOperations.status, 'error')
+        assert.equal(model.inventoryOperations.status, 'ready')
+        assert.equal(model.costs.status, 'ready')
+      },
+    },
+    {
+      name: 'responsibility', sources: {
+        toolResponsibilityRecords: ready([accessorRow()]),
+      },
+      check(model) {
+        assert.equal(model.toolOperations.status, 'error')
+        assert.equal(model.inventoryOperations.status, 'ready')
+        assert.equal(model.costs.status, 'ready')
+      },
+    },
+  ]
+
+  for (const item of cases) {
+    const model = buildExecutiveDashboardReadModel(input({
+      sources: sourceFixture(item.sources),
+    }))
+    item.check(model)
+    const issue = model.sourceIssues.data.find((row) => row.status === 'error')
+    assert.ok(issue, item.name)
+    assert.equal(issue.message, '数据格式无效', item.name)
+  }
+  assert.equal(calls, 0)
+
+  const unauthorizedAccessor = accessorRow()
+  const forbiddenModel = buildExecutiveDashboardReadModel(input({
+    access: fullAccess({ inventory: { view: false, amounts: true } }),
+    sources: sourceFixture({ inventoryItems: ready([unauthorizedAccessor]) }),
+  }))
+  assert.equal(forbiddenModel.inventoryOperations.status, 'forbidden')
   assert.equal(calls, 0)
 })
 
@@ -667,6 +860,78 @@ test('alerts include current payable and unbound facts while forbidden source me
   assert.equal(JSON.stringify(model.alerts.data).includes('PRIVATE-1'), false)
 })
 
+test('alert navigation and detail gates are independent and source failures never echo caller secrets', () => {
+  const sources = sourceFixture({
+    attendance: ready([{
+      attendanceId: 'ATTENDANCE-SECRET-¥111', projectId: 'P1', employeeId: 'PERSON-SECRET',
+      employeeName: 'Secret Identity', workDate: '2026-07-11', status: '异常',
+    }]),
+    vehicleIssues: ready([{
+      issueId: 'VEHICLE-SECRET-¥777', projectId: 'P1', issueDate: '2026-07-10',
+      allocateToProject: true, issueStatus: '未处理', repairCost: 777,
+    }]),
+    toolResponsibilityRecords: ready([{
+      responsibilityRecordId: 'TOOL-SECRET-¥999', toolId: 'T1', projectId: 'P1',
+      compensationStatus: '未赔偿', compensationAmount: 999,
+    }]),
+    inventoryItems: {
+      status: 'error', data: null, code: 'PRIVATE_CODE_PERSON-SECRET_¥123456',
+      message: 'PRIVATE_MESSAGE PERSON-SECRET has ¥123456 in PRIVATE-RECORD',
+    },
+  })
+  const model = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    access: fullAccess({
+      contracts: { view: true, amounts: true },
+      attendance: { view: true, identities: false },
+      vehicle: { view: true, amounts: false },
+      tools: { view: true, amounts: false },
+    }),
+    sources,
+  }))
+
+  const attendance = model.alerts.data.find((alert) => alert.type === 'attendance_exception')
+  assert.equal(attendance.canNavigate, true)
+  assert.equal(attendance.targetView, 'labor')
+  assert.equal(attendance.amount, null)
+  assert.equal(attendance.recordRef, null)
+
+  const vehicle = model.alerts.data.find((alert) => alert.type === 'vehicle_issue')
+  assert.equal(vehicle.canNavigate, true)
+  assert.equal(vehicle.targetView, 'vehicle')
+  assert.equal(vehicle.amount, null)
+  assert.equal(vehicle.recordRef, null)
+
+  const tool = model.alerts.data.find((alert) => alert.type === 'tool_responsibility')
+  assert.equal(tool.canNavigate, true)
+  assert.equal(tool.targetView, 'tools')
+  assert.equal(tool.amount, null)
+  assert.equal(tool.recordRef, null)
+
+  const contract = model.alerts.data.find((alert) => alert.type === 'over_receipt')
+  assert.equal(contract.canNavigate, true)
+  assert.equal(contract.targetView, 'contractRevenue')
+  assert.equal(contract.amount, 75)
+  assert.equal(contract.recordRef, 'P2')
+
+  assert.equal(model.inventoryOperations.status, 'error')
+  assert.equal(model.inventoryOperations.code, 'DATA_OPERATION_FAILED')
+  assert.equal(model.inventoryOperations.message, '数据暂不可用')
+  const sourceIssue = model.sourceIssues.data.find((issue) => issue.source === 'inventoryItems')
+  assert.equal(sourceIssue.message, '数据暂不可用')
+  const sourceAlert = model.alerts.data.find((alert) =>
+    alert.type === 'source_issue' && alert.id === 'source:inventoryItems')
+  assert.equal(sourceAlert.reason, '数据暂不可用')
+
+  const serialized = JSON.stringify(model)
+  for (const secret of [
+    'ATTENDANCE-SECRET', 'PERSON-SECRET', 'Secret Identity', 'VEHICLE-SECRET',
+    'TOOL-SECRET', 'PRIVATE_CODE', 'PRIVATE_MESSAGE', 'PRIVATE-RECORD', '123456',
+  ]) assert.equal(serialized.includes(secret), false, secret)
+})
+
 test('overflowing contributing facts block totals, profit, ranking, and financial rows instead of publishing partial values', () => {
   const model = buildExecutiveDashboardReadModel(input({
     sources: sourceFixture({
@@ -689,6 +954,245 @@ test('overflowing contributing facts block totals, profit, ranking, and financia
   assert.equal(model.projectRanking.data, null)
   assert.equal(model.projectRows.status, 'error')
   assert.equal(model.projectRows.data, null)
+})
+
+test('invalid monetary contributors fail closed without suppressing independent dashboard blocks', () => {
+  const base = sourceFixture()
+
+  const purchaseInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      purchaseAccrual: ready([
+        ...base.purchaseAccrual.data,
+        {
+          purchaseId: 'PO-INVALID', projectId: 'P1', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+        },
+      ]),
+    }),
+  }))
+  assert.equal(purchaseInvalid.purchaseOperations.status, 'error')
+  assert.equal(purchaseInvalid.cashFlow.status, 'error')
+  assert.equal(purchaseInvalid.costs.status, 'error')
+  assert.equal(purchaseInvalid.projectRanking.status, 'error')
+  assert.equal(purchaseInvalid.projectRows.status, 'error')
+  assert.equal(kpi(purchaseInvalid, 'estimatedProfitTaxExclusive').status, 'error')
+  assert.equal(purchaseInvalid.revenue.status, 'ready')
+  assert.equal(purchaseInvalid.inventoryOperations.status, 'ready')
+
+  const paymentInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      purchasePayments: ready([
+        ...base.purchasePayments.data,
+        {
+          paymentId: 'PP-FRACTION', purchaseId: 'PO-JULY', paymentDate: '2026-07-15',
+          paymentDateSource: 'recorded', jpyAmount: 0.5,
+        },
+      ]),
+    }),
+  }))
+  assert.equal(paymentInvalid.purchaseOperations.status, 'ready')
+  assert.equal(paymentInvalid.purchaseOperations.data.occurrence.status, 'ready')
+  assert.equal(paymentInvalid.purchaseOperations.data.payment.status, 'error')
+  assert.equal(paymentInvalid.purchaseOperations.data.payable.status, 'error')
+  assert.equal(paymentInvalid.cashFlow.status, 'error')
+  assert.equal(paymentInvalid.costs.status, 'ready')
+  assert.equal(paymentInvalid.projectRanking.status, 'ready')
+
+  const receiptInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      receipts: ready([
+        ...base.receipts.data,
+        {
+          receiptId: 'R-NEGATIVE', projectId: 'P1', receivedDate: '2026-07-15',
+          taxInclusiveAmount: -1, statusCode: 'active',
+        },
+      ]),
+    }),
+  }))
+  assert.equal(receiptInvalid.cashFlow.status, 'error')
+  assert.equal(receiptInvalid.revenue.status, 'ready')
+  assert.equal(receiptInvalid.purchaseOperations.status, 'ready')
+  assert.equal(receiptInvalid.costs.status, 'ready')
+
+  const costInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      operatingExpenses: ready([
+        ...base.operatingExpenses.data,
+        {
+          operatingExpenseId: 'OE-FRACTION', projectId: 'P1', date: '2026-07-15',
+          allocateToProject: true, amount: 1.25,
+        },
+      ]),
+    }),
+  }))
+  assert.equal(costInvalid.costs.status, 'error')
+  assert.equal(costInvalid.projectRanking.status, 'error')
+  assert.equal(costInvalid.projectRows.status, 'error')
+  assert.equal(costInvalid.cashFlow.status, 'ready')
+  assert.equal(costInvalid.purchaseOperations.status, 'ready')
+  assert.equal(costInvalid.revenue.status, 'ready')
+
+  const pendingOverflow = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      projectCosts: ready([{
+        costRecordId: 'PC-PENDING-MAX', projectId: 'P1', date: '2026-07-04',
+        costType: '人工费', amount: Number.MAX_SAFE_INTEGER,
+      }]),
+      vehicleIssues: ready([{
+        issueId: 'VI-PENDING-ONE', projectId: 'P1', issueDate: '2026-07-10',
+        allocateToProject: true, issueStatus: '未处理', repairCost: 1,
+      }]),
+    }),
+  }))
+  assert.equal(pendingOverflow.costs.status, 'ready')
+  assert.equal(pendingOverflow.projectRanking.status, 'error')
+  assert.equal(pendingOverflow.projectRows.status, 'error')
+  assert.equal(kpi(pendingOverflow, 'estimatedProfitTaxExclusive').status, 'error')
+
+  const lifetimeOverflow = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      laborWindow: ready(laborWindow({
+        projectLaborLifetimeById: {
+          P1: Number.MAX_SAFE_INTEGER, P2: 0, P3: 0, P4: 0, P5: 0, P6: 0, P7: 0,
+        },
+      })),
+    }),
+  }))
+  assert.equal(lifetimeOverflow.costs.status, 'error')
+  assert.equal(lifetimeOverflow.projectRanking.status, 'error')
+  assert.equal(lifetimeOverflow.projectRows.status, 'error')
+  assert.equal(kpi(lifetimeOverflow, 'estimatedProfitTaxExclusive').status, 'error')
+
+  const vehicleOverflow = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      fuel: ready([{
+        fuelRecordId: 'F-MAX', projectId: 'P1', fuelDate: '2026-07-08',
+        fuelDateSource: 'recorded', paymentMethod: '现金', paymentMethodSource: 'recorded',
+        allocateToProject: true, fuelAmount: Number.MAX_SAFE_INTEGER,
+      }]),
+      vehicleExpenses: ready([{
+        vehicleExpenseId: 'VE-ONE', projectId: 'P1', expenseDate: '2026-07-09',
+        expenseDateSource: 'recorded', paymentMethod: '卡', paymentMethodSource: 'recorded',
+        allocateToProject: true, amount: 1,
+      }]),
+    }),
+  }))
+  assert.equal(vehicleOverflow.vehicleOperations.status, 'error')
+  assert.equal(vehicleOverflow.cashFlow.status, 'error')
+  assert.equal(vehicleOverflow.costs.status, 'error')
+  assert.equal(vehicleOverflow.purchaseOperations.status, 'ready')
+  assert.equal(vehicleOverflow.inventoryOperations.status, 'ready')
+
+  const laborInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      laborWindow: ready(laborWindow({
+        monthly: laborWindow().monthly.map((row) => row.month === '2026-07'
+          ? { ...row, salaryTotal: -1 }
+          : row),
+      })),
+    }),
+  }))
+  assert.equal(laborInvalid.laborOperations.data.labor.status, 'error')
+  assert.equal(laborInvalid.costs.status, 'error')
+  assert.equal(laborInvalid.projectRanking.status, 'error')
+  assert.equal(laborInvalid.inventoryOperations.status, 'ready')
+
+  const inventoryInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      inventoryItems: ready([{
+        inventoryId: 'I-INVALID', projectId: 'P1', currentStatus: '库存不足', totalCost: 0.5,
+      }]),
+    }),
+  }))
+  assert.equal(inventoryInvalid.inventoryOperations.status, 'error')
+  assert.equal(inventoryInvalid.toolOperations.status, 'ready')
+  assert.equal(inventoryInvalid.costs.status, 'ready')
+
+  const toolInvalid = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      toolResponsibilityRecords: ready([{
+        responsibilityRecordId: 'TR-INVALID', toolId: 'T1', projectId: 'P1',
+        compensationStatus: '未赔偿', compensationAmount: -1,
+      }]),
+    }),
+  }))
+  assert.equal(toolInvalid.toolOperations.status, 'error')
+  assert.equal(toolInvalid.inventoryOperations.status, 'ready')
+  assert.equal(toolInvalid.costs.status, 'ready')
+})
+
+test('source arrays require exact dense canonical indexes and reject expanded or accessor entries', () => {
+  let calls = 0
+  const expandedAttendance = [...sourceFixture().attendance.data]
+  Object.defineProperty(expandedAttendance, '4294967295', {
+    enumerable: true,
+    value: { attendanceId: 'A-OUTSIDE', projectId: 'P1', workDate: '2026-07-01' },
+  })
+  const attendanceModel = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ attendance: ready(expandedAttendance) }),
+  }))
+  assert.equal(attendanceModel.laborOperations.data.attendance.status, 'error')
+  assert.equal(attendanceModel.inventoryOperations.status, 'ready')
+
+  const expandedInventory = [...sourceFixture().inventoryItems.data]
+  Object.defineProperty(expandedInventory, 'helper', {
+    enumerable: true,
+    value() { return 'must never run' },
+  })
+  const inventoryModel = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ inventoryItems: ready(expandedInventory) }),
+  }))
+  assert.equal(inventoryModel.inventoryOperations.status, 'error')
+  assert.equal(inventoryModel.toolOperations.status, 'ready')
+
+  const sparseTools = new Array(2)
+  sparseTools[0] = { toolId: 'T1', currentStatus: '可用', totalCost: 1 }
+  const sparseModel = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ toolRecords: ready(sparseTools) }),
+  }))
+  assert.equal(sparseModel.toolOperations.status, 'error')
+  assert.equal(sparseModel.inventoryOperations.status, 'ready')
+
+  const accessorTools = [{ toolId: 'T1', currentStatus: '可用', totalCost: 1 }]
+  Object.defineProperty(accessorTools, '0', {
+    enumerable: true,
+    get() { calls += 1; return { toolId: 'T-SECRET' } },
+  })
+  const accessorModel = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ toolRecords: ready(accessorTools) }),
+  }))
+  assert.equal(accessorModel.toolOperations.status, 'error')
+  assert.equal(accessorModel.inventoryOperations.status, 'ready')
+  assert.equal(calls, 0)
+})
+
+test('attendance inventory and tool status maps use null prototypes and normalize unsafe keys', () => {
+  const unsafeStatuses = ['__proto__', 'constructor', 'prototype']
+  const model = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      attendance: ready(unsafeStatuses.map((status, index) => ({
+        attendanceId: `A-STATUS-${index}`, projectId: 'P1', workDate: '2026-07-11', status,
+      }))),
+      inventoryItems: ready(unsafeStatuses.map((currentStatus, index) => ({
+        inventoryId: `I-STATUS-${index}`, projectId: 'P1', currentStatus, totalCost: 1,
+      }))),
+      toolRecords: ready(unsafeStatuses.map((currentStatus, index) => ({
+        toolId: `T-STATUS-${index}`, currentStatus, totalCost: 1,
+      }))),
+    }),
+  }))
+
+  const maps = [
+    model.laborOperations.data.attendance.data.statusCounts,
+    model.inventoryOperations.data.statusCounts,
+    model.toolOperations.data.statusCounts,
+  ]
+  for (const statusCounts of maps) {
+    assert.equal(Object.getPrototypeOf(statusCounts), null)
+    for (const key of unsafeStatuses) assert.equal(Object.hasOwn(statusCounts, key), false)
+    assert.equal(statusCounts['其他'], 3)
+  }
+  assert.equal(Object.prototype.polluted, undefined)
 })
 
 test('inconsistent access projections never upgrade a dependent financial gate', () => {
@@ -727,4 +1231,19 @@ test('inconsistent access projections never upgrade a dependent financial gate',
   assert.deepEqual(paymentMismatch.purchaseOperations.data.payment, { status: 'forbidden', data: null })
   assert.deepEqual(paymentMismatch.purchaseOperations.data.payable, { status: 'forbidden', data: null })
   assert.deepEqual(paymentMismatch.purchaseOperations.data.health, { status: 'forbidden', data: null })
+
+  const baseViewDenied = buildExecutiveDashboardReadModel(input({
+    access: fullAccess({
+      contracts: { view: false, amounts: true },
+      attendance: { view: false, identities: true },
+      vehicle: { view: false, amounts: true },
+      tools: { view: false, amounts: true },
+    }),
+  }))
+  for (const type of [
+    'attendance_exception', 'vehicle_issue', 'tool_responsibility',
+    'missing_profit_anchor', 'over_receipt',
+  ]) {
+    assert.equal(baseViewDenied.alerts.data.some((alert) => alert.type === type), false, type)
+  }
 })

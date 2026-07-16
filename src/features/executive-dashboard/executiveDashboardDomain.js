@@ -34,6 +34,17 @@ const INACTIVE_VALUES = new Set([
 const NORMAL_ATTENDANCE = new Set([
   '正常', '出勤', '已确认', 'confirmed', 'ready', 'approved',
 ])
+const ATTENDANCE_STATUS_KEYS = new Set([
+  ...NORMAL_ATTENDANCE, '异常', '迟到', '早退', '缺勤', '请假', '休假', '其他', '未设置',
+])
+const INVENTORY_STATUS_KEYS = new Set([
+  '库存充足', '库存不足', '低库存', '缺货', '正常', '在库', '已出库', '已退回',
+  '停用', '其他', '未设置',
+])
+const TOOL_STATUS_KEYS = new Set([
+  '可用', '借出', '在库', '临时借出', '已归还', '已终身领用', '已丢失', '已损坏',
+  '维修中', '已报废', '报废', '丢失', '停用', '其他', '未设置',
+])
 const COST_REQUIRED = Object.freeze([
   'laborWindow', 'purchaseAccrual', 'projectCosts', 'operatingExpenses',
   'fuel', 'vehicleExpenses', 'vehicleIssues',
@@ -107,7 +118,13 @@ function cloneOwnData(value, ancestors = new WeakSet()) {
       const names = Object.getOwnPropertyNames(value)
       const length = Object.getOwnPropertyDescriptor(value, 'length')?.value
       if (!Number.isSafeInteger(length) || length < 0 ||
-          names.some((key) => key !== 'length' && !/^(?:0|[1-9]\d*)$/u.test(key))) {
+          names.length !== length + 1 ||
+          names.some((key) => {
+            if (key === 'length') return false
+            if (!/^(?:0|[1-9]\d*)$/u.test(key)) return true
+            const index = Number(key)
+            return !Number.isSafeInteger(index) || index < 0 || index >= length
+          })) {
         throw new TypeError('expanded array input')
       }
       const output = new Array(length)
@@ -136,6 +153,33 @@ function cloneOwnData(value, ancestors = new WeakSet()) {
   }
 }
 
+function invalidSourceData(updatedAt = null) {
+  return {
+    status: 'error', data: null, code: 'INVALID_SOURCE_DATA',
+    message: '数据格式无效', stale: false, updatedAt,
+  }
+}
+
+function recordArray(value) {
+  return Array.isArray(value) && value.every((row) => isPlainRecord(row))
+}
+
+function sourceDataShapeIsValid(name, data) {
+  if (name === 'laborWindow') {
+    if (!isPlainRecord(data) || !recordArray(data.monthly) ||
+        !Array.isArray(data.incompleteMonths) || !Array.isArray(data.staleMonths)) return false
+    if (data.monthly.some((row) => !isPlainRecord(row.projectLaborById))) return false
+    return isPlainRecord(data.projectLaborLifetimeById) ||
+      (data.projectLaborLifetimeById === null && data.lifetimeStatus !== 'ready')
+  }
+  if (name === 'contractRevenue' && isPlainRecord(data)) {
+    if (Object.hasOwn(data, 'snapshots')) return recordArray(data.snapshots)
+    const map = Object.hasOwn(data, 'byProjectId') ? data.byProjectId : data
+    return isPlainRecord(map) && Object.values(map).every((row) => isPlainRecord(row))
+  }
+  return recordArray(data)
+}
+
 function sourceState(value, name) {
   try {
     if (!isPlainRecord(value) || Object.getOwnPropertySymbols(value).length !== 0) {
@@ -150,22 +194,35 @@ function sourceState(value, name) {
     const status = SOURCE_STATUSES.has(descriptors.status.value)
       ? descriptors.status.value
       : 'error'
+    const updatedAt = typeof descriptors.updatedAt?.value === 'string'
+      ? descriptors.updatedAt.value
+      : null
     let data = null
-    if (status === 'ready') data = cloneOwnData(descriptors.data.value)
+    if (status === 'ready') {
+      try {
+        data = cloneOwnData(descriptors.data.value)
+      } catch {
+        return invalidSourceData(updatedAt)
+      }
+      if (!sourceDataShapeIsValid(name, data)) return invalidSourceData(updatedAt)
+    }
+    const stale = status === 'ready' && descriptors.stale?.value === true
+    const callerCode = typeof descriptors.code?.value === 'string' ? descriptors.code.value : ''
+    const code = status === 'forbidden'
+      ? 'ACCESS_DENIED'
+      : status === 'error'
+        ? callerCode === 'INVALID_SOURCE_DATA' ? 'INVALID_SOURCE_DATA' : 'DATA_OPERATION_FAILED'
+        : status === 'loading' ? 'SOURCE_LOADING' : ''
+    const message = status === 'forbidden'
+      ? '当前权限下无法查看该数据'
+      : status === 'error'
+        ? code === 'INVALID_SOURCE_DATA' ? '数据格式无效' : '数据暂不可用'
+        : status === 'loading' ? '数据正在加载' : stale ? '数据可能已过期' : ''
     const state = {
-      status,
-      data,
-      code: typeof descriptors.code?.value === 'string' ? descriptors.code.value : '',
-      message: typeof descriptors.message?.value === 'string' ? descriptors.message.value : '',
-      stale: status === 'ready' && descriptors.stale?.value === true,
-      updatedAt: typeof descriptors.updatedAt?.value === 'string'
-        ? descriptors.updatedAt.value
-        : null,
+      status, data, code, message, stale,
+      updatedAt,
     }
     if (status !== 'ready' && descriptors.data.value !== null) state.data = null
-    if (status === 'forbidden' && !state.code) state.code = 'ACCESS_DENIED'
-    if (status === 'forbidden') state.message = '无权读取该数据'
-    if (status === 'error' && !state.code) state.code = 'DATA_OPERATION_FAILED'
     return state
   } catch (cause) {
     throw new TypeError(`${name} source state is invalid`, { cause })
@@ -182,10 +239,7 @@ function normalizeSources(value) {
     const objectAllowed = name === 'laborWindow' || name === 'contractRevenue'
     if (objectAllowed ? !(Array.isArray(state.data) || isPlainRecord(state.data)) :
       !Array.isArray(state.data)) {
-      states[name] = {
-        status: 'error', data: null, code: 'INVALID_SOURCE_DATA',
-        message: `${name}数据格式无效`, stale: false, updatedAt: state.updatedAt,
-      }
+      states[name] = invalidSourceData(state.updatedAt)
     }
   }
   return states
@@ -255,6 +309,12 @@ function safeIdentifier(value) {
   return typeof value === 'string' && value.length > 0 &&
     value.length <= MAX_IDENTIFIER_LENGTH && value.trim() === value &&
     !POLLUTION_KEYS.has(value)
+}
+
+function normalizedStatusKey(value, allowed) {
+  if (typeof value !== 'string' || value.length === 0) return '未设置'
+  if (value.trim() !== value || POLLUTION_KEYS.has(value) || !allowed.has(value)) return '其他'
+  return value
 }
 
 function safeYen(value) {
@@ -405,26 +465,69 @@ function sanitizeMoneyRows(rows, {
   const anomalies = []
   const seen = new Set()
   let aggregate = 0
+  let blocking = false
   rows.forEach((row, index) => {
     const id = isPlainRecord(row) ? recordId(row, idFields) : ''
-    const amount = isPlainRecord(row) ? safeYen(row[amountField]) : null
-    if (!id || seen.has(id) || isInactive(row) ||
-        (amount === null && !allowMissingAmount)) {
+    if (!id || seen.has(id)) {
       anomalies.push({ source, code: seen.has(id) ? 'duplicate_record' : 'invalid_record', recordId: id || `row-${index + 1}` })
+      return
+    }
+    seen.add(id)
+    if (isInactive(row)) {
+      output.push(row)
+      return
+    }
+    const rawAmount = row[amountField]
+    const amount = safeYen(rawAmount)
+    const missingAllowed = allowMissingAmount &&
+      (rawAmount === undefined || rawAmount === null || rawAmount === '')
+    if (amount === null && !missingAllowed) {
+      anomalies.push({ source, code: 'invalid_amount', recordId: id })
+      blocking = true
       return
     }
     if (amount !== null) {
       const next = safeAdd(aggregate, amount)
       if (next === null) {
         anomalies.push({ source, code: 'amount_overflow', recordId: id })
+        blocking = true
         return
       }
       aggregate = next
     }
-    seen.add(id)
     output.push(row)
   })
-  return { rows: output, anomalies }
+  return { rows: output, anomalies, blocking }
+}
+
+function laborMoneyIsBlocking(value) {
+  let salaryAggregate = 0
+  for (const row of value.monthly) {
+    if (row.status !== 'ready') continue
+    const salary = safeYen(row.salaryTotal)
+    const projectTotal = safeYen(row.projectLaborTotal)
+    const pending = safeYen(row.pendingCount)
+    if (salary === null || projectTotal === null || pending === null) return true
+    const nextSalary = safeAdd(salaryAggregate, salary)
+    if (nextSalary === null) return true
+    salaryAggregate = nextSalary
+    let mapTotal = 0
+    for (const amount of Object.values(row.projectLaborById)) {
+      const next = safeAdd(mapTotal, amount)
+      if (next === null) return true
+      mapTotal = next
+    }
+    if (mapTotal !== projectTotal) return true
+  }
+  if (value.lifetimeStatus === 'ready') {
+    let lifetimeTotal = 0
+    for (const amount of Object.values(value.projectLaborLifetimeById)) {
+      const next = safeAdd(lifetimeTotal, amount)
+      if (next === null) return true
+      lifetimeTotal = next
+    }
+  }
+  return false
 }
 
 function contractRows(data) {
@@ -509,7 +612,7 @@ function sumField(rows, field, anomalies, source) {
     const next = amount === null ? null : safeAdd(total, amount)
     if (next === null) {
       anomalies.push({ source, code: 'invalid_or_overflow_amount', recordId: '' })
-      continue
+      return null
     }
     total = next
   }
@@ -518,11 +621,17 @@ function sumField(rows, field, anomalies, source) {
 
 function pendingCostByProject(projectCosts, vehicleIssues) {
   const totals = new Map()
+  let blocking = false
   const add = (projectId, amount) => {
-    if (!safeIdentifier(projectId) || safeYen(amount) === null) return
+    if (!safeIdentifier(projectId)) return
+    if (safeYen(amount) === null) {
+      blocking = true
+      return
+    }
     const current = totals.get(projectId) || 0
     const next = safeAdd(current, amount)
-    if (next !== null) totals.set(projectId, next)
+    if (next === null) blocking = true
+    else totals.set(projectId, next)
   }
   const seenCosts = new Set()
   for (const row of projectCosts) {
@@ -538,7 +647,7 @@ function pendingCostByProject(projectCosts, vehicleIssues) {
     seenIssues.add(id)
     if (row.allocateToProject === true) add(row.projectId, row.repairCost)
   }
-  return totals
+  return { totals, blocking }
 }
 
 function buildFinancialRows(projects, contractMap, costModel, pendingMap) {
@@ -711,34 +820,84 @@ export function buildExecutiveDashboardReadModel(input) {
     ? sanitizeMoneyRows(states.purchaseAccrual.data, {
         source: 'purchaseAccrual', idFields: ['purchaseId'], amountField: 'totalCost',
       })
-    : { rows: [], anomalies: [] }
+    : { rows: [], anomalies: [], blocking: false }
   const paymentSanitized = states.purchasePayments.status === 'ready'
     ? sanitizeMoneyRows(states.purchasePayments.data, {
         source: 'purchasePayments', idFields: ['paymentId'], amountField: 'jpyAmount',
       })
-    : { rows: [], anomalies: [] }
+    : { rows: [], anomalies: [], blocking: false }
+  const receiptSanitized = states.receipts.status === 'ready'
+    ? sanitizeMoneyRows(states.receipts.data, {
+        source: 'receipts', idFields: ['receiptId'], amountField: 'taxInclusiveAmount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const projectCostSanitized = states.projectCosts.status === 'ready'
+    ? sanitizeMoneyRows(states.projectCosts.data, {
+        source: 'projectCosts', idFields: ['costRecordId'], amountField: 'amount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const operatingSanitized = states.operatingExpenses.status === 'ready'
+    ? sanitizeMoneyRows(states.operatingExpenses.data, {
+        source: 'operatingExpenses',
+        idFields: ['operatingExpenseId', 'expenseRecordId'], amountField: 'amount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const fuelSanitized = states.fuel.status === 'ready'
+    ? sanitizeMoneyRows(states.fuel.data, {
+        source: 'fuel', idFields: ['fuelRecordId'], amountField: 'fuelAmount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const vehicleExpenseSanitized = states.vehicleExpenses.status === 'ready'
+    ? sanitizeMoneyRows(states.vehicleExpenses.data, {
+        source: 'vehicleExpenses', idFields: ['vehicleExpenseId'], amountField: 'amount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const vehicleIssueSanitized = states.vehicleIssues.status === 'ready'
+    ? sanitizeMoneyRows(states.vehicleIssues.data, {
+        source: 'vehicleIssues', idFields: ['issueId'], amountField: 'repairCost',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const vehicleUsageSanitized = states.vehicleUsage.status === 'ready'
+    ? sanitizeMoneyRows(states.vehicleUsage.data, {
+        source: 'vehicleUsage', idFields: ['usageId'], amountField: 'dailyMileage',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const inventorySanitized = states.inventoryItems.status === 'ready'
+    ? sanitizeMoneyRows(states.inventoryItems.data, {
+        source: 'inventoryItems', idFields: ['inventoryId', 'itemId'], amountField: 'totalCost',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const responsibilitySanitized = states.toolResponsibilityRecords.status === 'ready'
+    ? sanitizeMoneyRows(states.toolResponsibilityRecords.data.filter((row) =>
+        row.compensationStatus === '未赔偿' && !isInactive(row)), {
+        source: 'toolResponsibilityRecords',
+        idFields: ['responsibilityId', 'responsibilityRecordId'],
+        amountField: 'compensationAmount',
+      })
+    : { rows: [], anomalies: [], blocking: false }
+  const laborMoneyBlocking = states.laborWindow.status === 'ready' &&
+    laborMoneyIsBlocking(states.laborWindow.data)
   const scopedPurchases = rowsForScope(purchaseSanitized.rows, scopeIds, filters.projectId)
-  const scopedPayments = rowsForScope(paymentSanitized.rows, scopeIds, filters.projectId)
   const scopedProjectCosts = rowsForScope(
-    states.projectCosts.status === 'ready' ? states.projectCosts.data : [],
+    projectCostSanitized.rows,
     scopeIds,
     filters.projectId,
   )
   const scopedOperating = rowsForScope(
-    states.operatingExpenses.status === 'ready' ? states.operatingExpenses.data : [],
+    operatingSanitized.rows,
     scopeIds,
     filters.projectId,
   )
   const scopedFuel = rowsForScope(
-    states.fuel.status === 'ready' ? states.fuel.data : [], scopeIds, filters.projectId,
+    fuelSanitized.rows, scopeIds, filters.projectId,
   )
   const scopedVehicleExpenses = rowsForScope(
-    states.vehicleExpenses.status === 'ready' ? states.vehicleExpenses.data : [],
+    vehicleExpenseSanitized.rows,
     scopeIds,
     filters.projectId,
   )
   const scopedVehicleIssues = rowsForScope(
-    states.vehicleIssues.status === 'ready' ? states.vehicleIssues.data : [],
+    vehicleIssueSanitized.rows,
     scopeIds,
     filters.projectId,
   )
@@ -752,10 +911,15 @@ export function buildExecutiveDashboardReadModel(input) {
   const dashboardCostAccess = completeCostAccess && access.profit.view
   const dashboardProfitAccess = dashboardCostAccess && contractAmountAccess
   const costSourceBlock = blockResolution(states, COST_REQUIRED)
+  const costContributorBlocking = laborMoneyBlocking || purchaseSanitized.blocking ||
+    projectCostSanitized.blocking || operatingSanitized.blocking || fuelSanitized.blocking ||
+    vehicleExpenseSanitized.blocking || vehicleIssueSanitized.blocking
   let costModel = null
   let costModelError = ''
   if (dashboardCostAccess && !costSourceBlock) {
-    try {
+    if (costContributorBlocking) {
+      costModelError = '成本金额不完整或超出安全范围，未发布部分合计。'
+    } else try {
       const laborForScope = scopedLaborWindow(states.laborWindow.data, filteredProjects, filters)
       const domainProjectId = filters.projectId !== 'all' && scopeIds.has(filters.projectId)
         ? filters.projectId
@@ -844,6 +1008,7 @@ export function buildExecutiveDashboardReadModel(input) {
     states.laborWindow.data?.lifetimeStatus === 'ready' &&
     isPlainRecord(states.laborWindow.data?.projectLaborLifetimeById)
   const financialSourceBlock = blockResolution(states, FINANCIAL_REQUIRED)
+  const pendingCostResult = pendingCostByProject(scopedProjectCosts, scopedVehicleIssues)
   let projectRanking
   let projectRows
   let financialRows = []
@@ -858,14 +1023,19 @@ export function buildExecutiveDashboardReadModel(input) {
     profitAggregate = {
       status: financialSourceBlock.status, value: null, message: financialSourceBlock.message,
     }
-  } else if (!lifetimeReady || !costModel || costModelError) {
-    const message = !lifetimeReady ? '当前累计人工快照不完整，未发布累计成本与利润。' : costModelError
+  } else if (!lifetimeReady || !costModel || costModelError || pendingCostResult.blocking) {
+    const message = !lifetimeReady
+      ? '当前累计人工快照不完整，未发布累计成本与利润。'
+      : pendingCostResult.blocking
+        ? '待确认成本累计超出安全范围，未发布部分累计成本与利润。'
+        : costModelError
     projectRanking = errorBlock(FINANCIAL_REQUIRED, message)
     projectRows = errorBlock(FINANCIAL_REQUIRED, message)
     profitAggregate = { status: 'error', value: null, message }
   } else {
-    const pendingMap = pendingCostByProject(scopedProjectCosts, scopedVehicleIssues)
-    financialRows = buildFinancialRows(filteredProjects, contractMap, costModel, pendingMap)
+    financialRows = buildFinancialRows(
+      filteredProjects, contractMap, costModel, pendingCostResult.totals,
+    )
       .sort((left, right) => left.projectName.localeCompare(right.projectName, 'zh-CN') ||
         left.projectId.localeCompare(right.projectId))
     const missingAnchor = financialRows.some((row) => row.profitStatus === 'missing_anchor')
@@ -936,6 +1106,11 @@ export function buildExecutiveDashboardReadModel(input) {
   let purchaseOperations
   let purchaseAccounting = null
   if (!access.purchase.accrual) purchaseOperations = forbiddenBlock(['purchaseAccrual'])
+  else if (purchaseSanitized.blocking) {
+    purchaseOperations = errorBlock(
+      ['purchaseAccrual'], '采购金额不完整或超出安全范围，未发布部分合计。',
+    )
+  }
   else {
     const blocked = blockResolution(states, ['purchaseAccrual'])
     if (blocked) purchaseOperations = blocked
@@ -944,13 +1119,19 @@ export function buildExecutiveDashboardReadModel(input) {
         const paymentAccess = access.purchase.accrual && access.purchase.payments
         const payableAccess = paymentAccess && access.purchase.payable
         const anomalyAccess = paymentAccess && access.purchase.anomalies
+        const effectivePaymentStatus = paymentSanitized.blocking
+          ? 'error'
+          : states.purchasePayments.status
         const paymentState = paymentAccess
-          ? { status: states.purchasePayments.status, data: states.purchasePayments.data }
+          ? {
+              status: effectivePaymentStatus,
+              data: effectivePaymentStatus === 'ready' ? paymentSanitized.rows : null,
+            }
           : { status: 'forbidden', data: null }
         purchaseAccounting = buildPurchaseAccountingReadModel({
           purchaseRecords: scopedPurchases,
-          paymentRecords: paymentAccess && states.purchasePayments.status === 'ready'
-            ? scopedPayments
+          paymentRecords: paymentAccess && effectivePaymentStatus === 'ready'
+            ? paymentSanitized.rows
             : [],
           paymentState,
           month: selectedMonth,
@@ -962,13 +1143,13 @@ export function buildExecutiveDashboardReadModel(input) {
           dateInMonth(row, ['purchaseDate'], selectedMonth),
         )
         const paymentStatus = paymentAccess
-          ? states.purchasePayments.status
+          ? effectivePaymentStatus
           : 'forbidden'
         const payableStatus = payableAccess
-          ? states.purchasePayments.status
+          ? effectivePaymentStatus
           : 'forbidden'
         const healthStatus = anomalyAccess
-          ? states.purchasePayments.status
+          ? effectivePaymentStatus
           : 'forbidden'
         const anomalies = [
           ...purchaseSanitized.anomalies,
@@ -1014,13 +1195,22 @@ export function buildExecutiveDashboardReadModel(input) {
   const cashPurchaseAllowed = access.purchase.accrual && access.purchase.payments
   const cashVehicleAllowed = access.vehicle.view && access.vehicle.amounts
   if (cashIncomeAllowed) cashRequired.push('receipts')
-  if (cashPurchaseAllowed) cashRequired.push('purchasePayments')
+  if (cashPurchaseAllowed) cashRequired.push('purchaseAccrual', 'purchasePayments')
   if (cashVehicleAllowed) cashRequired.push('fuel', 'vehicleExpenses')
+  const cashContributorBlocking =
+    (cashIncomeAllowed && receiptSanitized.blocking) ||
+    (cashPurchaseAllowed && (purchaseSanitized.blocking || paymentSanitized.blocking)) ||
+    (cashVehicleAllowed && (fuelSanitized.blocking || vehicleExpenseSanitized.blocking))
   let cashFlow
   if (cashRequired.length === 0) cashFlow = forbiddenBlock([])
   else {
     const blocked = blockResolution(states, cashRequired)
     if (blocked) cashFlow = blocked
+    else if (cashContributorBlocking || (cashPurchaseAllowed && !purchaseAccounting)) {
+      cashFlow = errorBlock(
+        cashRequired, '现金金额不完整或超出安全范围，未发布部分合计。',
+      )
+    }
     else {
       try {
         const raw = buildRecordedCashFlow({
@@ -1030,9 +1220,9 @@ export function buildExecutiveDashboardReadModel(input) {
             : 'all',
           activeProjectIds: filteredProjects.map((project) => project.projectId),
           receipts: cashIncomeAllowed
-            ? rowsForScope(states.receipts.data, scopeIds, filters.projectId)
+            ? rowsForScope(receiptSanitized.rows, scopeIds, filters.projectId)
             : [],
-          purchasePaymentRows: cashPurchaseAllowed ? scopedPayments : [],
+          purchasePaymentRows: cashPurchaseAllowed ? purchaseAccounting.cashPaymentRows : [],
           fuelRecords: cashVehicleAllowed ? scopedFuel : [],
           vehicleExpenseRecords: cashVehicleAllowed ? scopedVehicleExpenses : [],
           laborWindow: internalEmptyLaborWindow(),
@@ -1040,6 +1230,16 @@ export function buildExecutiveDashboardReadModel(input) {
           manualProjectCosts: [],
           vehicleIssueRecords: [],
         })
+        const unsafeCash = raw.series.some((row) =>
+          (cashIncomeAllowed && safeYen(row.income) === null) ||
+          (cashPurchaseAllowed && safeYen(row.purchaseOutflow) === null) ||
+          (cashVehicleAllowed && safeYen(row.vehicleOutflow) === null) ||
+          (cashPurchaseAllowed && cashVehicleAllowed && safeYen(row.totalOutflow) === null),
+        ) || raw.anomalies.some((issue) =>
+          typeof issue.code === 'string' &&
+          (issue.code.includes('overflow') || issue.code.includes('invalid_amount')),
+        )
+        if (unsafeCash) throw new TypeError('unsafe cash aggregate')
         const series = raw.series.map((row) => {
           const outflowComplete = cashPurchaseAllowed && cashVehicleAllowed
           const income = cashIncomeAllowed ? row.income : null
@@ -1077,9 +1277,9 @@ export function buildExecutiveDashboardReadModel(input) {
       : (() => {
           const rows = rowsForScope(states.attendance.data, scopeIds, filters.projectId)
             .filter((row) => dateInMonth(row, ['workDate', 'attendanceDate', 'date'], selectedMonth))
-          const statusCounts = {}
+          const statusCounts = Object.create(null)
           for (const row of rows) {
-            const status = typeof row.status === 'string' && row.status ? row.status : '未设置'
+            const status = normalizedStatusKey(row.status, ATTENDANCE_STATUS_KEYS)
             statusCounts[status] = (statusCounts[status] || 0) + 1
           }
           const abnormalCount = rows.filter((row) => !NORMAL_ATTENDANCE.has(row.status)).length
@@ -1089,6 +1289,8 @@ export function buildExecutiveDashboardReadModel(input) {
     ? mini('forbidden', null)
     : states.laborWindow.status !== 'ready'
       ? mini(states.laborWindow.status, null)
+      : access.labor.amounts && laborMoneyBlocking
+        ? mini('error', null)
       : (() => {
           const rows = states.laborWindow.data.monthly.filter((row) => row?.month === selectedMonth)
           if (rows.length !== 1 || rows[0]?.status !== 'ready') return mini('error', null)
@@ -1134,8 +1336,16 @@ export function buildExecutiveDashboardReadModel(input) {
   else {
     const blocked = blockResolution(states, VEHICLE_REQUIRED)
     if (blocked) vehicleOperations = blocked
+    else if (vehicleUsageSanitized.blocking || (access.vehicle.amounts && (
+      fuelSanitized.blocking || vehicleExpenseSanitized.blocking ||
+      vehicleIssueSanitized.blocking
+    ))) {
+      vehicleOperations = errorBlock(
+        VEHICLE_REQUIRED, '车辆金额或里程不完整，未发布部分合计。',
+      )
+    }
     else {
-      const usage = rowsForScope(states.vehicleUsage.data, scopeIds, filters.projectId)
+      const usage = rowsForScope(vehicleUsageSanitized.rows, scopeIds, filters.projectId)
         .filter((row) => dateInMonth(row, ['usageDate', 'date'], selectedMonth))
       const fuel = scopedFuel.filter((row) => dateInMonth(row, ['fuelDate'], selectedMonth))
       const expenses = scopedVehicleExpenses.filter((row) =>
@@ -1151,18 +1361,24 @@ export function buildExecutiveDashboardReadModel(input) {
             sumField(expenses, 'amount', opAnomalies, 'vehicleExpenses'),
           )
         : null
-      vehicleOperations = readyBlock(states, VEHICLE_REQUIRED, {
-        vehicleCount: states.vehicles.data.filter((row) => !isInactive(row)).length,
-        usageCount: usage.length,
-        mileage: sumField(usage, 'dailyMileage', opAnomalies, 'vehicleUsage'),
-        fee,
-        pendingRepairAmount: access.vehicle.amounts
-          ? sumField(issues, 'repairCost', opAnomalies, 'vehicleIssues')
-          : null,
-        issueCount: issues.length,
-        comparison: null,
-        anomalies: opAnomalies,
-      })
+      const mileage = sumField(usage, 'dailyMileage', opAnomalies, 'vehicleUsage')
+      const pendingRepairAmount = access.vehicle.amounts
+        ? sumField(issues, 'repairCost', opAnomalies, 'vehicleIssues')
+        : null
+      vehicleOperations = mileage === null || (access.vehicle.amounts && (
+        fee === null || pendingRepairAmount === null
+      ))
+        ? errorBlock(VEHICLE_REQUIRED, '车辆金额或里程不完整，未发布部分合计。')
+        : readyBlock(states, VEHICLE_REQUIRED, {
+            vehicleCount: states.vehicles.data.filter((row) => !isInactive(row)).length,
+            usageCount: usage.length,
+            mileage,
+            fee,
+            pendingRepairAmount,
+            issueCount: issues.length,
+            comparison: null,
+            anomalies: opAnomalies,
+          })
     }
   }
 
@@ -1171,12 +1387,23 @@ export function buildExecutiveDashboardReadModel(input) {
   else {
     const blocked = blockResolution(states, INVENTORY_REQUIRED)
     if (blocked) inventoryOperations = blocked
+    else if (access.inventory.amounts && inventorySanitized.blocking) {
+      inventoryOperations = errorBlock(
+        INVENTORY_REQUIRED, '库存金额不完整或超出安全范围，未发布部分合计。',
+      )
+    }
     else {
-      const items = rowsForScope(states.inventoryItems.data, scopeIds, filters.projectId)
+      const itemRows = access.inventory.amounts
+        ? inventorySanitized.rows
+        : states.inventoryItems.data
+      const items = rowsForScope(itemRows, scopeIds, filters.projectId)
         .filter((row) => !isInactive(row))
-      const statusCounts = {}
+      const statusCounts = Object.create(null)
       for (const row of items) {
-        const status = row.currentStatus || row.status || '未设置'
+        const status = normalizedStatusKey(
+          row.currentStatus || row.status,
+          INVENTORY_STATUS_KEYS,
+        )
         statusCounts[status] = (statusCounts[status] || 0) + 1
       }
       const countMonth = (name, fields) => rowsForScope(states[name].data, scopeIds, filters.projectId)
@@ -1200,11 +1427,16 @@ export function buildExecutiveDashboardReadModel(input) {
   else {
     const blocked = blockResolution(states, TOOL_REQUIRED)
     if (blocked) toolOperations = blocked
+    else if (access.tools.amounts && responsibilitySanitized.blocking) {
+      toolOperations = errorBlock(
+        TOOL_REQUIRED, '工具赔偿金额不完整或超出安全范围，未发布部分合计。',
+      )
+    }
     else {
       const tools = states.toolRecords.data.filter((row) => !isInactive(row))
-      const statusCounts = {}
+      const statusCounts = Object.create(null)
       for (const row of tools) {
-        const status = row.currentStatus || row.status || '未设置'
+        const status = normalizedStatusKey(row.currentStatus || row.status, TOOL_STATUS_KEYS)
         statusCounts[status] = (statusCounts[status] || 0) + 1
       }
       const returned = new Set(states.toolReturnRecords.data
@@ -1218,8 +1450,11 @@ export function buildExecutiveDashboardReadModel(input) {
       const assignments = rowsForScope(
         states.lifelongToolAssignments.data, scopeIds, filters.projectId,
       ).filter((row) => !isInactive(row))
+      const responsibilityRows = access.tools.amounts
+        ? responsibilitySanitized.rows
+        : states.toolResponsibilityRecords.data
       const responsibilities = rowsForScope(
-        states.toolResponsibilityRecords.data, scopeIds, filters.projectId,
+        responsibilityRows, scopeIds, filters.projectId,
       ).filter((row) => !isInactive(row) && row.compensationStatus === '未赔偿')
       toolOperations = readyBlock(states, TOOL_REQUIRED, {
         toolCount: tools.length,
@@ -1247,8 +1482,10 @@ export function buildExecutiveDashboardReadModel(input) {
   const sourceIssues = readyBlock(states, [], sourceIssueRows)
 
   const alertsData = []
-  const pushAlert = (alert, allowed, revealAmount = allowed, revealRecord = allowed) => {
-    const canNavigate = allowed === true
+  const pushAlert = (alert, gates = {}) => {
+    const canNavigate = gates.canNavigate === true
+    const revealAmount = canNavigate && gates.revealAmount === true
+    const revealRecord = canNavigate && gates.revealRecord === true
     alertsData.push({
       id: alert.id,
       type: alert.type,
@@ -1273,7 +1510,11 @@ export function buildExecutiveDashboardReadModel(input) {
       type: 'attendance_exception', severity: 'warning', title: '考勤异常',
       reason: '所选月份存在待核对考勤。', count: attendanceState.data.abnormalCount,
       amount: null, targetView: 'labor', recordRef: row?.attendanceId || '',
-    }, access.attendance.identities, false, access.attendance.identities)
+    }, {
+      canNavigate: access.attendance.view,
+      revealAmount: false,
+      revealRecord: access.attendance.identities,
+    })
   }
   if (laborState.status === 'ready' && laborState.data.pendingConfirmationCount > 0) {
     pushAlert({
@@ -1281,7 +1522,11 @@ export function buildExecutiveDashboardReadModel(input) {
       title: '人工费用待确认', reason: '所选月份存在待确认人工记录。',
       count: laborState.data.pendingConfirmationCount, amount: laborState.data.fee,
       targetView: 'labor', recordRef: '',
-    }, access.labor.amounts, access.labor.amounts, false)
+    }, {
+      canNavigate: access.labor.view,
+      revealAmount: access.labor.amounts,
+      revealRecord: false,
+    })
   }
   if (purchaseOperations.status === 'ready' &&
       purchaseOperations.data.payable.status === 'ready' &&
@@ -1291,7 +1536,11 @@ export function buildExecutiveDashboardReadModel(input) {
       title: '采购应付待处理', reason: '当前仍有采购应付余额。', count: 1,
       amount: purchaseOperations.data.payable.data.currentOutstanding,
       targetView: 'purchase', recordRef: '',
-    }, access.purchase.payable, access.purchase.payable, false)
+    }, {
+      canNavigate: access.purchase.accrual,
+      revealAmount: access.purchase.payable,
+      revealRecord: false,
+    })
   }
   if (purchaseOperations.status === 'ready' &&
       purchaseOperations.data.health.status === 'ready' &&
@@ -1301,9 +1550,13 @@ export function buildExecutiveDashboardReadModel(input) {
       title: '采购数据待核对', reason: '采购台账存在异常记录。',
       count: purchaseOperations.data.health.data.anomalyCount,
       amount: null, targetView: 'purchase', recordRef: '',
-    }, access.purchase.anomalies, false, false)
+    }, {
+      canNavigate: access.purchase.accrual,
+      revealAmount: false,
+      revealRecord: false,
+    })
   }
-  if (states.projectCosts.status === 'ready') {
+  if (access.costCategories.manualSupplement && states.projectCosts.status === 'ready') {
     const unbound = states.projectCosts.data.filter((row) =>
       !isInactive(row) && !safeIdentifier(row?.projectId),
     )
@@ -1313,63 +1566,103 @@ export function buildExecutiveDashboardReadModel(input) {
         title: '项目成本归属待核对', reason: '存在未绑定项目的成本事实。',
         count: unbound.length,
         amount: null, targetView: 'accounting', recordRef: '',
-      }, access.costCategories.manualSupplement, false, false)
+      }, {
+        canNavigate: access.costCategories.manualSupplement,
+        revealAmount: false,
+        revealRecord: false,
+      })
     }
   }
-  for (const row of scopedVehicleIssues.filter((item) =>
-    dateInMonth(item, ['issueDate'], selectedMonth) && item.issueStatus !== '已处理')) {
+  for (const row of access.vehicle.view
+    ? scopedVehicleIssues.filter((item) =>
+        dateInMonth(item, ['issueDate'], selectedMonth) && item.issueStatus !== '已处理')
+    : []) {
     const id = recordId(row, ['issueId'])
     if (!id) continue
     pushAlert({
-      id: `vehicle:${id}`, type: 'vehicle_issue', severity: 'warning',
+      id: `vehicle:${selectedMonth}:${alertsData.filter((item) => item.type === 'vehicle_issue').length + 1}`,
+      type: 'vehicle_issue', severity: 'warning',
       title: '车辆异常待处理', reason: '所选月份存在未处理车辆异常。', count: 1,
       amount: row.repairCost, targetView: 'vehicle', recordRef: id,
-    }, access.vehicle.amounts, access.vehicle.amounts, access.vehicle.amounts)
+    }, {
+      canNavigate: access.vehicle.view,
+      revealAmount: access.vehicle.amounts,
+      revealRecord: access.vehicle.amounts,
+    })
   }
-  for (const row of scopedProjectCosts.filter((item) =>
-    PENDING_COST_TYPES.has(item.costType) && dateInMonth(item, ['date'], selectedMonth))) {
+  for (const row of access.costCategories.manualSupplement
+    ? scopedProjectCosts.filter((item) =>
+        PENDING_COST_TYPES.has(item.costType) && dateInMonth(item, ['date'], selectedMonth))
+    : []) {
     const id = recordId(row, ['costRecordId'])
     if (!id) continue
     pushAlert({
-      id: `pending-cost:${id}`, type: 'pending_manual_cost', severity: 'warning',
+      id: `pending-cost:${selectedMonth}:${alertsData.filter((item) => item.type === 'pending_manual_cost').length + 1}`,
+      type: 'pending_manual_cost', severity: 'warning',
       title: '手工成本待核对', reason: `${row.costType}尚未计入确认成本。`, count: 1,
       amount: row.amount, targetView: 'accounting', recordRef: id,
-    }, access.costCategories.manualSupplement, access.costCategories.manualSupplement,
-    access.costCategories.manualSupplement)
+    }, {
+      canNavigate: access.costCategories.manualSupplement,
+      revealAmount: access.costCategories.manualSupplement,
+      revealRecord: access.costCategories.manualSupplement,
+    })
   }
-  for (const row of states.toolResponsibilityRecords.status === 'ready'
-    ? rowsForScope(states.toolResponsibilityRecords.data, scopeIds, filters.projectId)
+  for (const row of access.tools.view &&
+    states.toolResponsibilityRecords.status === 'ready' &&
+    !(access.tools.amounts && responsibilitySanitized.blocking)
+    ? rowsForScope(
+        access.tools.amounts
+          ? responsibilitySanitized.rows
+          : states.toolResponsibilityRecords.data,
+        scopeIds,
+        filters.projectId,
+      )
     : []) {
     if (row.compensationStatus !== '未赔偿') continue
-    const id = recordId(row, ['responsibilityId'])
+    const id = recordId(row, ['responsibilityId', 'responsibilityRecordId'])
     if (!id) continue
     pushAlert({
-      id: `tool:${id}`, type: 'tool_responsibility', severity: 'warning',
+      id: `tool:${alertsData.filter((item) => item.type === 'tool_responsibility').length + 1}`,
+      type: 'tool_responsibility', severity: 'warning',
       title: '工具赔偿待处理', reason: '存在未赔偿工具责任记录。', count: 1,
       amount: row.compensationAmount, targetView: 'tools', recordRef: id,
-    }, access.tools.amounts, access.tools.amounts, access.tools.amounts)
+    }, {
+      canNavigate: access.tools.view,
+      revealAmount: access.tools.amounts,
+      revealRecord: access.tools.amounts,
+    })
   }
   for (const row of financialRows.filter((item) => item.profitStatus === 'missing_anchor')) {
     pushAlert({
-      id: `profit-anchor:${row.projectId}`, type: 'missing_profit_anchor', severity: 'error',
+      id: `profit-anchor:${alertsData.filter((item) => item.type === 'missing_profit_anchor').length + 1}`,
+      type: 'missing_profit_anchor', severity: 'error',
       title: '合同收入待确认', reason: '项目尚无有效税抜利润收入锚点。', count: 1,
       amount: null, targetView: 'contractRevenue', recordRef: row.projectId,
-    }, access.contracts.view, false, access.contracts.view)
+    }, {
+      canNavigate: access.contracts.view,
+      revealAmount: false,
+      revealRecord: access.contracts.view,
+    })
   }
   for (const issue of revenueResult.issues) {
     pushAlert({
-      id: `over-receipt:${issue.projectId}`, type: 'over_receipt', severity: 'warning',
+      id: `over-receipt:${alertsData.filter((item) => item.type === 'over_receipt').length + 1}`,
+      type: 'over_receipt', severity: 'warning',
       title: '收款超过合同额', reason: '含税未收已夹紧为零，超收金额需核对。', count: 1,
       amount: issue.excessTaxInclusiveAmount, targetView: 'contractRevenue',
       recordRef: issue.projectId,
-    }, access.contracts.amounts, access.contracts.amounts, access.contracts.view)
+    }, {
+      canNavigate: access.contracts.view,
+      revealAmount: access.contracts.amounts,
+      revealRecord: access.contracts.view,
+    })
   }
   for (const issue of sourceIssueRows) {
     pushAlert({
       id: `source:${issue.source}`, type: 'source_issue', severity: 'info',
       title: '数据源状态提示', reason: issue.message || `${issue.source}数据暂不可用`,
       count: 1, amount: null, targetView: null, recordRef: '',
-    }, false, false, false)
+    }, { canNavigate: false, revealAmount: false, revealRecord: false })
   }
   const dedupedAlerts = [...new Map(alertsData.map((alert) => [alert.id, alert])).values()]
     .sort((left, right) => left.id.localeCompare(right.id))
