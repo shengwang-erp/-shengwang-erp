@@ -283,6 +283,39 @@ test('renders an empty detail state without mutation controls', () => {
   assert.doesNotMatch(html, /<button|保存|删除/u)
 })
 
+test('forbidden payment state renders accrual only and exposes no payable inference', () => {
+  const redactedPurchase = {
+    purchaseId: 'PO-ACCRUAL-ONLY',
+    purchaseDate: '2026-08-03',
+    itemName: '仅应计材料',
+    supplierName: '合规供应商',
+    projectId: 'P-2',
+    projectName: '横滨仓库',
+    purchaseSource: 'Amazon',
+    totalCost: 80000,
+    invoiceStatus: '未取得',
+    purchaseStatus: '正常',
+  }
+  const html = renderSection({
+    purchaseRecords: [redactedPurchase],
+    purchasePaymentRecords: [{
+      paymentId: 'PP-MUST-NOT-BE-USED',
+      purchaseId: redactedPurchase.purchaseId,
+      paymentDate: '2026-08-04',
+      jpyAmount: 80000,
+    }],
+    paymentState: { status: 'forbidden', data: null },
+  })
+
+  assert.match(html, /<strong>¥80,000<\/strong><span>本月采购确认成本<\/span>/u)
+  assert.match(html, /仅应计材料/u)
+  assert.match(html, /采购成本/u)
+  assert.doesNotMatch(html, /本月已记录付款|本月初始付款|当前未付采购款|异常付款数量/u)
+  assert.doesNotMatch(html, /付款状态|<th>已付<\/th>|<th>未付<\/th>|全部状态/u)
+  assert.doesNotMatch(html, /legacy_opening_payment|旧采购初始付款|全部未付/u)
+  assert.doesNotMatch(html, /PP-MUST-NOT-BE-USED/u)
+})
+
 test('AuthenticatedApp purchase normalization preserves the opening snapshot for ledger-derived accounting', () => {
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.normalizePurchaseRecord)
@@ -745,11 +778,11 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
   assert.match(submitHandler, /const committed = await commitPurchasePaymentMutation\(\{/u)
   assert.match(
     submitHandler,
-    /persistPurchase:\s*\(purchase\) =>\s*upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchase\)/u,
+    /persistPurchase:\s*\(purchase\) =>\s*persistPurchase\?\.\(purchase\) \|\| purchaseService\.update\(purchase\.purchaseId, purchase\)/u,
   )
   assert.match(
     submitHandler,
-    /persistLedger:\s*\(\) =>\s*upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)/u,
+    /persistLedger:\s*\(\) =>\s*purchaseService\.upsertPayment\(payment\)/u,
   )
   assert.match(
     submitHandler,
@@ -780,11 +813,11 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
   assert.match(deleteHandler, /await commitPurchasePaymentMutation\(\{/u)
   assert.match(
     deleteHandler,
-    /persistPurchase:\s*\(purchase\) =>\s*upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchase\)/u,
+    /persistPurchase:\s*\(purchase\) =>\s*persistPurchase\?\.\(purchase\) \|\| purchaseService\.update\(purchase\.purchaseId, purchase\)/u,
   )
   assert.match(
     deleteHandler,
-    /persistLedger:\s*\(\) =>\s*softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)/u,
+    /persistLedger:\s*\(\) =>\s*purchaseService\.softDeletePayment\(record\.paymentId\)/u,
   )
   assert.match(
     deleteHandler,
@@ -893,7 +926,7 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
   )
   assert.match(
     monthlySummary,
-    /buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords,[\s\S]*?paymentRecords:\s*purchasePaymentRecords,[\s\S]*?month:\s*monthFilter/u,
+    /buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords:\s*resolvedAccess\.purchaseAccrual \? purchaseRecords : \[\],[\s\S]*?paymentRecords:\s*resolvedAccess\.purchasePayments \? purchasePaymentRecords : \[\],[\s\S]*?paymentState:[\s\S]*?month:\s*monthFilter/u,
   )
   assert.match(
     monthlySummary,
@@ -1084,7 +1117,7 @@ test('AuthenticatedApp wires one shared purchase accounting model into the owner
   assert.match(dashboardPage, /const currentMonth = currentMonthValue\(\)/u)
   assert.match(
     dashboardPage,
-    /paymentRecords:\s*purchasePaymentRecords[\s\S]*?month:\s*currentMonth[\s\S]*?\[purchaseRecords, purchasePaymentRecords, currentMonth\]/u,
+    /paymentRecords:\s*purchasePaymentRecords[\s\S]*?paymentState:\s*sourceStates\?\.purchasePayments[\s\S]*?month:\s*currentMonth[\s\S]*?\[purchaseRecords, purchasePaymentRecords, sourceStates\?\.purchasePayments, currentMonth\]/u,
   )
   assert.match(dashboardPage, /purchaseAccounting\.summary\.monthPaymentCash/u)
   assert.match(dashboardPage, /purchaseAccounting\.summary\.currentOutstanding/u)

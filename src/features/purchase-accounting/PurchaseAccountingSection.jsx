@@ -93,6 +93,7 @@ export default function PurchaseAccountingSection({
   projects = [],
   purchaseRecords = [],
   purchasePaymentRecords = [],
+  paymentState,
   monthFilter = '',
   onMonthFilterChange = () => {},
 }) {
@@ -103,20 +104,24 @@ export default function PurchaseAccountingSection({
   const readModel = useMemo(() => buildPurchaseAccountingReadModel({
     purchaseRecords,
     paymentRecords: purchasePaymentRecords,
+    paymentState,
     month: monthFilter,
     projectId: projectFilter,
     source: sourceFilter,
   }), [
     purchaseRecords,
     purchasePaymentRecords,
+    paymentState,
     monthFilter,
     projectFilter,
     sourceFilter,
   ])
 
+  const paymentVisible = readModel.currentPayable.status === 'ready'
+
   const rows = useMemo(() => filterPurchaseAccountingRows(readModel.rows, {
-    paymentStatus: paymentStatusFilter,
-  }), [readModel.rows, paymentStatusFilter])
+    paymentStatus: paymentVisible ? paymentStatusFilter : '',
+  }), [readModel.rows, paymentStatusFilter, paymentVisible])
 
   const availableProjects = useMemo(
     () => projectOptions(projects, purchaseRecords),
@@ -166,18 +171,20 @@ export default function PurchaseAccountingSection({
             ))}
           </select>
         </label>
-        <label className="field">
-          <span>付款状态</span>
-          <select
-            value={paymentStatusFilter}
-            onChange={(event) => setPaymentStatusFilter(event.target.value)}
-          >
-            <option value="">全部状态</option>
-            {PAYMENT_STATUS_OPTIONS.map((status) => (
-              <option value={status} key={status}>{status}</option>
-            ))}
-          </select>
-        </label>
+        {paymentVisible && (
+          <label className="field">
+            <span>付款状态</span>
+            <select
+              value={paymentStatusFilter}
+              onChange={(event) => setPaymentStatusFilter(event.target.value)}
+            >
+              <option value="">全部状态</option>
+              {PAYMENT_STATUS_OPTIONS.map((status) => (
+                <option value={status} key={status}>{status}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div className="stats-grid">
@@ -185,26 +192,32 @@ export default function PurchaseAccountingSection({
           <strong>{formatYen(readModel.summary.monthPurchaseCost)}</strong>
           <span>本月采购确认成本</span>
         </div>
-        <div className="stat-card money">
-          <strong>{formatYen(readModel.summary.monthPaymentCash)}</strong>
-          <span>本月已记录付款</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(readModel.summary.currentOutstanding)}</strong>
-          <span>当前未付采购款</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(readModel.summary.monthOpeningPaid)}</strong>
-          <span>本月初始付款</span>
-        </div>
+        {paymentVisible && (
+          <>
+            <div className="stat-card money">
+              <strong>{formatYen(readModel.summary.monthPaymentCash)}</strong>
+              <span>本月已记录付款</span>
+            </div>
+            <div className="stat-card money">
+              <strong>{formatYen(readModel.summary.currentOutstanding)}</strong>
+              <span>当前未付采购款</span>
+            </div>
+            <div className="stat-card money">
+              <strong>{formatYen(readModel.summary.monthOpeningPaid)}</strong>
+              <span>本月初始付款</span>
+            </div>
+          </>
+        )}
         <div className="stat-card">
           <strong>{readModel.summary.missingInvoiceCount}</strong>
           <span>未取得发票数量</span>
         </div>
-        <div className="stat-card">
-          <strong>{paymentAnomalyCount}</strong>
-          <span>异常付款数量</span>
-        </div>
+        {paymentVisible && (
+          <div className="stat-card">
+            <strong>{paymentAnomalyCount}</strong>
+            <span>异常付款数量</span>
+          </div>
+        )}
       </div>
 
       <div className="empty-state cost-note">
@@ -235,9 +248,9 @@ export default function PurchaseAccountingSection({
                 <th>供应商</th>
                 <th>项目</th>
                 <th>采购成本</th>
-                <th>已付</th>
-                <th>未付</th>
-                <th>付款状态</th>
+                {paymentVisible && <th>已付</th>}
+                {paymentVisible && <th>未付</th>}
+                {paymentVisible && <th>付款状态</th>}
                 <th>发票状态</th>
               </tr>
             </thead>
@@ -250,9 +263,9 @@ export default function PurchaseAccountingSection({
                   <td>{row.supplierName || '未填写'}</td>
                   <td>{row.projectName || row.projectId || '未绑定'}</td>
                   <td>{formatYen(row.totalCost)}</td>
-                  <td>{formatYen(row.paidAmount)}</td>
-                  <td>{formatYen(row.unpaidAmount)}</td>
-                  <td>{row.paymentStatus}</td>
+                  {paymentVisible && <td>{formatYen(row.paidAmount)}</td>}
+                  {paymentVisible && <td>{formatYen(row.unpaidAmount)}</td>}
+                  {paymentVisible && <td>{row.paymentStatus}</td>}
                   <td>{row.invoiceStatus || '未填写'}</td>
                 </tr>
               ))}

@@ -211,6 +211,10 @@ test('App loads the formal accounting bridge only for exact identity, permission
   )
   assert.match(
     appSource,
+    /import \{ createDashboardLaborBridgeLoader \} from '.\/services\/dashboardLaborBridgeService\.js'/u,
+  )
+  assert.match(
+    appSource,
     /import \{[\s\S]*?canRequestLaborAccountingBridge[\s\S]*?normalizeBridgeSummary[\s\S]*?\} from '.\/features\/labor-accounting\/laborAccountingBridge\.js'/u,
   )
   assert.match(
@@ -231,10 +235,10 @@ test('App loads the formal accounting bridge only for exact identity, permission
   )
   assert.match(
     authenticatedApp,
-    /laborAccountingService\.getBridgeSummary\(\{\s*month:\s*bridgeRequestedMonth\s*\}\)/u,
+    /laborBridgeLoaderRef\.current\.load\(\{[\s\S]*?actorScope:\s*bridgeActorScope[\s\S]*?endMonth:\s*bridgeRequestedMonth[\s\S]*?length:\s*1[\s\S]*?snapshotMonth:\s*bridgeRequestedMonth[\s\S]*?signal:\s*abortController\.signal/u,
   )
   assert.equal(
-    (authenticatedApp.match(/laborAccountingService\.getBridgeSummary\(/gu) || []).length,
+    (authenticatedApp.match(/laborBridgeLoaderRef\.current\.load\(/gu) || []).length,
     1,
   )
 
@@ -273,6 +277,57 @@ test('bridge request lifecycle fences actor, permission, view, month, and genera
   )
   assert.match(authenticatedApp, /stale:\s*Boolean\(sameMonthBridge\)/u)
   assert.match(authenticatedApp, /setBridgeRetryToken\(\(value\) => value \+ 1\)/u)
+  assert.match(authenticatedApp, /const abortController = new AbortController\(\)/u)
+  assert.match(authenticatedApp, /abortController\.abort\(\)/u)
+  assert.match(authenticatedApp, /bridgeActorScope/u)
+  assert.match(authenticatedApp, /previousBridgeActorScopeRef/u)
+  assert.match(
+    authenticatedApp,
+    /previousActorScope[\s\S]*?previousActorScope !== bridgeActorScope[\s\S]*?laborBridgeLoaderRef\.current\.clear\(previousActorScope\)/u,
+  )
+})
+
+test('forbidden labor, salary, or project-cost access cannot invoke the loader', () => {
+  const bridgeEffect = sliceBetween(
+    authenticatedApp,
+    '  useEffect(() => {\n    const generation = bridgeRequestGenerationRef.current + 1',
+    '\n  }, [\n    bridgeEligible,',
+  )
+  const deniedIndex = bridgeEffect.indexOf('if (!bridgeTargetActive || !bridgeEligible)')
+  const loadIndex = bridgeEffect.indexOf('laborBridgeLoaderRef.current.load(')
+
+  assert.ok(deniedIndex >= 0, 'expected denied branch')
+  assert.ok(loadIndex > deniedIndex, 'loader must follow the denied early return')
+  assert.match(bridgeEffect, /if \(!bridgeTargetActive \|\| !bridgeEligible\) \{[\s\S]*?return \(\) => \{[\s\S]*?\}[\s\S]*?\}/u)
+  assert.doesNotMatch(
+    bridgeEffect.slice(deniedIndex, loadIndex),
+    /\.load\(|getBridgeSummary\(/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /canRequestLaborAccountingBridge\(\{[\s\S]*?effectivePermissionKeys:\s*activePermissionKeys/u,
+  )
+})
+
+test('actor or effective-permission changes abort work and clear only the previous actor cache', () => {
+  const scopeEffect = sliceBetween(
+    authenticatedApp,
+    '  useEffect(() => {\n    const previousActorScope = previousBridgeActorScopeRef.current',
+    '\n  }, [bridgeActorScope])',
+  )
+  assert.match(scopeEffect, /if \(previousActorScope && previousActorScope !== bridgeActorScope\)/u)
+  assert.match(scopeEffect, /laborBridgeLoaderRef\.current\.clear\(previousActorScope\)/u)
+  assert.match(scopeEffect, /previousBridgeActorScopeRef\.current = bridgeActorScope/u)
+  assert.doesNotMatch(scopeEffect, /\.clear\(bridgeActorScope\)/u)
+
+  const requestIdentity = sliceBetween(
+    authenticatedApp,
+    '  const bridgeRequestIdentity = ',
+    '\n  const bridgeRequestIdentityRef',
+  )
+  assert.match(requestIdentity, /activeActorId/u)
+  assert.match(requestIdentity, /bridgePermissionFingerprint/u)
+  assert.match(requestIdentity, /bridgeActorScope/u)
 })
 
 test('accounting month is controlled by AuthenticatedApp and bridge status is visible and retryable', () => {

@@ -58,6 +58,12 @@ import { persistLegacyContractRevenueMigration } from './services/contractRevenu
 import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
+import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
+import { purchaseService } from './services/purchaseService.js'
+import {
+  classifyBusinessSourceError,
+  toBusinessSourceState,
+} from './services/businessSourceState.js'
 import {
   canUpdateProjectFinancials,
   canViewProjectFinancials,
@@ -65,6 +71,7 @@ import {
 import {
   canAccessView,
   getAccountingAccess,
+  getDashboardAccess,
   getPurchaseAccess,
 } from './auth/businessAccess.js'
 
@@ -1226,6 +1233,12 @@ function getPurchaseStockInStatus(purchase, stockInRecords) {
 
 function normalizePurchaseRecord(record) {
   const amounts = calculatePurchaseAmounts(record)
+  const hasPaymentFacts = [
+    'openingPaidAmount',
+    'paidAmount',
+    'unpaidAmount',
+    'paymentStatus',
+  ].some((field) => Object.hasOwn(record, field))
   const openingPaidAmount = Number(record.openingPaidAmount)
   const normalizedOpeningPaidAmount = Math.round(openingPaidAmount)
   const hasOpeningPaidAmount = record.openingPaidAmount !== undefined &&
@@ -1258,11 +1271,15 @@ function normalizePurchaseRecord(record) {
     purchasePurpose: record.purchasePurpose || '仓库备货',
     projectId: record.projectId || '',
     projectName: record.projectName || '',
-    paymentStatus: amounts.paymentStatus,
-    paidAmount: amounts.paidAmount,
-    unpaidAmount: amounts.unpaidAmount,
-    ...(hasOpeningPaidAmount
-      ? { openingPaidAmount: normalizedOpeningPaidAmount }
+    ...(hasPaymentFacts
+      ? {
+          paymentStatus: amounts.paymentStatus,
+          paidAmount: amounts.paidAmount,
+          unpaidAmount: amounts.unpaidAmount,
+          ...(hasOpeningPaidAmount
+            ? { openingPaidAmount: normalizedOpeningPaidAmount }
+            : {}),
+        }
       : {}),
     invoiceStatus: record.invoiceStatus || '未取得',
     arrivalStatus: record.arrivalStatus || '未到货',
@@ -1393,60 +1410,164 @@ function normalizeOperatingExpenseRecord(record) {
   }
 }
 
+function strictRawSourceState(rawState) {
+  try {
+    if (rawState === null || typeof rawState !== 'object' || Array.isArray(rawState)) {
+      throw new TypeError()
+    }
+    const prototype = Object.getPrototypeOf(rawState)
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError()
+    const descriptors = Object.getOwnPropertyDescriptors(rawState)
+    if (Object.hasOwn(descriptors, 'status')) throw new TypeError()
+    const snapshot = {}
+    for (const key of ['loading', 'error', 'code', 'source', 'updatedAt']) {
+      const descriptor = descriptors[key]
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) throw new TypeError()
+      snapshot[key] = descriptor.value
+    }
+    if (typeof snapshot.loading !== 'boolean' ||
+        typeof snapshot.error !== 'string' ||
+        typeof snapshot.code !== 'string' ||
+        typeof snapshot.source !== 'string' ||
+        (snapshot.updatedAt !== null && typeof snapshot.updatedAt !== 'string')) {
+      throw new TypeError()
+    }
+    return snapshot
+  } catch {
+    return {
+      loading: false,
+      error: '业务数据状态无效',
+      code: 'DATA_OPERATION_FAILED',
+      source: 'blocked',
+      updatedAt: null,
+    }
+  }
+}
+
+function projectRawBusinessSource(rawState, options = {}) {
+  const strictState = strictRawSourceState(rawState)
+  return Object.freeze(toBusinessSourceState(strictState, {
+    readAllowed: options.readAllowed !== false,
+    data: options.data ?? null,
+    stale: options.stale === true,
+    updatedAt: strictState.updatedAt,
+  }))
+}
+
+export function projectPersistentSource(rawState, options = {}) {
+  return projectRawBusinessSource(rawState, options)
+}
+
+export function projectPromiseSource(rawState, options = {}) {
+  return projectRawBusinessSource(rawState, options)
+}
+
+export function projectLaborSource(rawState, options = {}) {
+  return projectRawBusinessSource(rawState, options)
+}
+
 function usePersistentState(key, fallback, options = {}) {
   const cloudPersistence = localDemoMode ? 'none' : options.cloudPersistence || 'list'
   const cloudRead = localDemoMode ? false : options.cloudRead !== false
+  const readAllowed = options.readAllowed !== false
   const localCompatibility = options.localCompatibility === true
   const readOnly = options.readOnly === true
+  const cloudLoader = options.cloudLoader || getList
+  const cloudSaver = options.cloudSaver || saveList
   const [value, setValue] = useState(() =>
-    localCompatibility ? readStorage(key, fallback) : fallback,
+    readAllowed && localCompatibility ? readStorage(key, fallback) : fallback,
   )
-  const [cloudState, setCloudState] = useState({
-    loading: cloudRead,
-    error: '',
-    source: localCompatibility ? 'compatibility-local' : 'supabase',
-  })
+  const [cloudState, setCloudState] = useState(() => readAllowed
+    ? {
+        loading: cloudRead,
+        error: '',
+        code: '',
+        source: localCompatibility ? 'compatibility-local' : 'supabase',
+        updatedAt: null,
+      }
+    : {
+        loading: false,
+        error: '无权读取该数据',
+        code: 'ACCESS_DENIED',
+        source: 'blocked',
+        updatedAt: null,
+      })
 
-  const failClosed = (error, message) => {
+  const failClosed = (error, message, { write = false } = {}) => {
+    const classification = classifyBusinessSourceError(error)
     setValue(fallback)
     window.localStorage.removeItem(key)
     setCloudState({
       loading: false,
-      error: message,
+      error: classification.status === 'forbidden' ? classification.message : message,
+      code: classification.code,
       source: 'blocked',
+      updatedAt: null,
     })
-    options.onError?.({
+    const failure = {
       key,
-      code: error?.code || 'DATA_OPERATION_FAILED',
-      status: error?.status || 503,
+      code: classification.code,
+      httpStatus: error?.status || 503,
       message,
-    })
+    }
+    if (write) {
+      options.onWriteError?.(failure)
+      return classification
+    }
+    if (classification.status === 'forbidden') {
+      return classification
+    }
+    if (classification.fatal) options.onFatalError?.(failure)
+    return classification
   }
 
   useEffect(() => {
     let isMounted = true
 
     async function loadCloudValue() {
+      if (!readAllowed) {
+        setValue(fallback)
+        window.localStorage.removeItem(key)
+        setCloudState({
+          loading: false,
+          error: '无权读取该数据',
+          code: 'ACCESS_DENIED',
+          source: 'blocked',
+          updatedAt: null,
+        })
+        return
+      }
       if (!cloudRead) {
         setCloudState({
           loading: false,
           error: '',
+          code: '',
           source: localCompatibility ? 'compatibility-local' : 'disabled',
+          updatedAt: null,
         })
         return
       }
       if (!isCloudDatabaseReady()) {
-        failClosed(null, '云端数据服务未配置，已停止访问业务数据。')
+        failClosed(
+          { code: 'CONFIGURATION_ERROR' },
+          '云端数据服务未配置，已停止访问业务数据。',
+        )
         return
       }
 
-      setCloudState((current) => ({ ...current, loading: true, error: '' }))
+      setCloudState((current) => ({ ...current, loading: true, error: '', code: '' }))
       try {
-        const cloudValue = await getList(key)
+        const cloudValue = await cloudLoader(key)
         if (!isMounted || cloudValue === undefined) return
         setValue(cloudValue)
         window.localStorage.setItem(key, JSON.stringify(cloudValue))
-        setCloudState({ loading: false, error: '', source: 'supabase' })
+        setCloudState({
+          loading: false,
+          error: '',
+          code: '',
+          source: 'supabase',
+          updatedAt: new Date().toISOString(),
+        })
       } catch (error) {
         console.error(`Supabase 读取失败: ${key}`, error)
         if (isMounted) failClosed(error, '云端数据读取失败，已停止访问业务数据。')
@@ -1458,11 +1579,11 @@ function usePersistentState(key, fallback, options = {}) {
     return () => {
       isMounted = false
     }
-  }, [key, cloudRead])
+  }, [key, cloudLoader, cloudRead, localCompatibility, readAllowed])
 
   const updateValue = (nextValue, updateOptions = {}) => {
     setValue((currentValue) => {
-      if (readOnly) return currentValue
+      if (readOnly || !readAllowed) return currentValue
       const resolvedValue =
         typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
       if (updateOptions.stateOnly) {
@@ -1479,19 +1600,33 @@ function usePersistentState(key, fallback, options = {}) {
 
       if (!isCloudDatabaseReady()) {
         queueMicrotask(() =>
-          failClosed(null, '云端数据服务未配置，已停止保存业务数据。'),
+          failClosed(
+            { code: 'CONFIGURATION_ERROR' },
+            '云端数据服务未配置，已停止保存业务数据。',
+            { write: true },
+          ),
         )
         return fallback
       }
 
-      saveList(key, resolvedValue)
+      cloudSaver(key, resolvedValue)
         .then(() => {
           window.localStorage.setItem(key, JSON.stringify(resolvedValue))
-          setCloudState({ loading: false, error: '', source: 'supabase' })
+          setCloudState({
+            loading: false,
+            error: '',
+            code: '',
+            source: 'supabase',
+            updatedAt: new Date().toISOString(),
+          })
         })
         .catch((error) => {
           console.error(`Supabase 保存失败: ${key}`, error)
-          failClosed(error, '云端数据保存失败，已停止访问业务数据。')
+          failClosed(
+            error,
+            '云端数据保存失败，已停止访问业务数据。',
+            { write: true },
+          )
         })
       return resolvedValue
     })
@@ -2008,6 +2143,23 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const activePermissionKeys = authorizedView === null
     ? []
     : currentUser.effectivePermissionKeys
+  const accountingAccess = getAccountingAccess(currentUser)
+  const purchaseAccess = getPurchaseAccess(currentUser)
+  const dashboardAccess = getDashboardAccess(currentUser)
+  const accountingReadAccess = {
+    salary: accountingAccess.salary.view || dashboardAccess.labor.amounts,
+    projectCost: accountingAccess.projectCost.view || dashboardAccess.costCategories.manualSupplement,
+    operatingExpense: accountingAccess.operatingExpense.view ||
+      dashboardAccess.costCategories.operatingExpense,
+  }
+  const purchaseReadAccess = {
+    records: purchaseAccess.records.view ||
+      accountingAccess.purchaseAccounting.view ||
+      dashboardAccess.purchase.accrual,
+    payments: purchaseAccess.payments.view ||
+      accountingAccess.monthlySummary.purchasePayments ||
+      dashboardAccess.purchase.payments,
+  }
   const {
     count: laborAlertCount,
     stale: laborAlertStale,
@@ -2036,14 +2188,39 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     actorKey: activeActorId,
     effectivePermissionKeys: activePermissionKeys,
   })
+  const bridgeActorScope = JSON.stringify([activeActorId, bridgePermissionFingerprint])
   const bridgeRequestIdentity = JSON.stringify([
     activeActorId,
     bridgePermissionFingerprint,
+    bridgeActorScope,
     bridgeTargetActive && bridgeEligible ? bridgeRequestedMonth : '',
   ])
   const bridgeRequestIdentityRef = useRef(bridgeRequestIdentity)
   bridgeRequestIdentityRef.current = bridgeRequestIdentity
   const bridgeRequestGenerationRef = useRef(0)
+  const onLogoutRef = useRef(onLogout)
+  onLogoutRef.current = onLogout
+  const laborBridgeLoaderRef = useRef(null)
+  if (laborBridgeLoaderRef.current === null) {
+    laborBridgeLoaderRef.current = createDashboardLaborBridgeLoader({
+      getBridgeSummary: async ({ month }) => {
+        try {
+          return await laborAccountingService.getBridgeSummary({ month })
+        } catch (error) {
+          notifyBridgeAuthInvalid(onLogoutRef.current, error)
+          throw error
+        }
+      },
+    })
+  }
+  const previousBridgeActorScopeRef = useRef('')
+  useEffect(() => {
+    const previousActorScope = previousBridgeActorScopeRef.current
+    if (previousActorScope && previousActorScope !== bridgeActorScope) {
+      laborBridgeLoaderRef.current.clear(previousActorScope)
+    }
+    previousBridgeActorScopeRef.current = bridgeActorScope
+  }, [bridgeActorScope])
   const [bridgeRetryToken, setBridgeRetryToken] = useState(0)
   const [laborBridgeState, setLaborBridgeState] = useState({
     identity: '',
@@ -2052,6 +2229,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     loading: false,
     stale: false,
     error: '',
+    updatedAt: null,
   })
   const retryLaborBridge = useCallback(() => {
     setBridgeRetryToken((value) => value + 1)
@@ -2070,9 +2248,12 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         loading: false,
         stale: false,
         error: '',
+        updatedAt: null,
       })
       return () => { active = false }
     }
+
+    const abortController = new AbortController()
 
     setLaborBridgeState((current) => {
       const sameMonthBridge = current.identity === requestIdentity &&
@@ -2087,6 +2268,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         loading: true,
         stale: Boolean(sameMonthBridge),
         error: '',
+        updatedAt: sameMonthBridge ? current.updatedAt : null,
       }
     })
 
@@ -2096,9 +2278,19 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       bridgeRequestIdentityRef.current !== requestIdentity
     )
 
-    void laborAccountingService.getBridgeSummary({ month: bridgeRequestedMonth })
-      .then((value) => {
+    void laborBridgeLoaderRef.current.load({
+      actorScope: bridgeActorScope,
+      endMonth: bridgeRequestedMonth,
+      length: 1,
+      snapshotMonth: bridgeRequestedMonth,
+      signal: abortController.signal,
+      refresh: bridgeRetryToken > 0,
+    })
+      .then((result) => {
         if (!isCurrentRequest()) return
+        const value = result.snapshotStatus === 'ready'
+          ? result.data?.[bridgeRequestedMonth]
+          : null
         const normalized = normalizeBridgeSummary(value)
         if (normalized?.salaryMonth !== bridgeRequestedMonth) {
           throw new Error('invalid labor accounting bridge response')
@@ -2108,8 +2300,9 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
           month: bridgeRequestedMonth,
           bridge: normalized,
           loading: false,
-          stale: false,
+          stale: result.snapshotStale === true,
           error: '',
+          updatedAt: result.updatedAtByMonth?.[bridgeRequestedMonth]?.toISOString?.() || null,
         })
       })
       .catch((error) => {
@@ -2127,14 +2320,19 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
             loading: false,
             stale: Boolean(sameMonthBridge),
             error: '正式核算暂不可用',
+            updatedAt: sameMonthBridge ? current.updatedAt : null,
           }
         })
         notifyBridgeAuthInvalid(onLogout, error)
       })
 
-    return () => { active = false }
+    return () => {
+      active = false
+      abortController.abort()
+    }
   }, [
     bridgeEligible,
+    bridgeActorScope,
     bridgeRequestIdentity,
     bridgeRequestedMonth,
     bridgeRetryToken,
@@ -2160,147 +2358,248 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const projectDirectoryRequestVersion = useRef(0)
   const [contractRevenueProjectId, setContractRevenueProjectId] = useState('')
   const [persistenceFailure, setPersistenceFailure] = useState(null)
-  const persistenceOptions = { onError: setPersistenceFailure }
+  const persistenceOptions = {
+    onFatalError: setPersistenceFailure,
+    onWriteError: setPersistenceFailure,
+  }
+  const contractRevenueAccess = getContractRevenueAccess(currentUser)
+  const canViewProjects = canAccessView(currentUser, 'projects') ||
+    dashboardAccess.projectSnapshot || purchaseReadAccess.records ||
+    accountingReadAccess.projectCost
   const [storedProjects, setStoredProjects] = useState([])
+  const [projectRawState, setProjectRawState] = useState({
+    loading: canViewProjects,
+    error: '',
+    code: '',
+    source: 'project-service',
+    updatedAt: null,
+  })
   const [projectContractChanges, setProjectContractChanges] = useState([])
   const [projectPaymentPlans, setProjectPaymentPlans] = useState([])
   const [projectReceipts, setProjectReceipts] = useState([])
-  const canViewProjects = canAccessView(currentUser, 'projects')
+  const [contractRevenueRawState, setContractRevenueRawState] = useState({
+    loading: contractRevenueAccess.view,
+    error: '',
+    code: '',
+    source: 'contract-revenue-service',
+    updatedAt: null,
+  })
   useEffect(() => {
     let active = true
     if (!canViewProjects) {
       setStoredProjects([])
+      setProjectRawState({
+        loading: false,
+        error: '无权读取该数据',
+        code: 'ACCESS_DENIED',
+        source: 'blocked',
+        updatedAt: null,
+      })
       return () => { active = false }
     }
-    projectService.listProjects().then((rows) => { if (active) setStoredProjects(rows) }).catch((error) => {
-      if (active) setPersistenceFailure(error)
+    setProjectRawState((current) => ({ ...current, loading: true, error: '', code: '' }))
+    projectService.listProjects().then((rows) => {
+      if (!active) return
+      setStoredProjects(rows)
+      setProjectRawState({
+        loading: false,
+        error: '',
+        code: '',
+        source: 'project-service',
+        updatedAt: new Date().toISOString(),
+      })
+    }).catch((error) => {
+      if (!active) return
+      const classification = classifyBusinessSourceError(error)
+      setStoredProjects([])
+      setProjectRawState({
+        loading: false,
+        error: classification.message,
+        code: classification.code,
+        source: 'blocked',
+        updatedAt: null,
+      })
+      if (classification.fatal) setPersistenceFailure(error)
     })
     return () => { active = false }
   }, [canViewProjects])
-  const contractRevenueAccess = getContractRevenueAccess(currentUser)
   useEffect(() => {
     let active = true
     if (!contractRevenueAccess.view) {
       setProjectContractChanges([])
       setProjectPaymentPlans([])
       setProjectReceipts([])
+      setContractRevenueRawState({
+        loading: false,
+        error: '无权读取该数据',
+        code: 'ACCESS_DENIED',
+        source: 'blocked',
+        updatedAt: null,
+      })
       return () => { active = false }
     }
+    setContractRevenueRawState((current) => ({
+      ...current,
+      loading: true,
+      error: '',
+      code: '',
+    }))
     Promise.all([loadContractChanges(), loadPaymentPlans(), loadProjectReceipts()])
       .then(([changes, plans, receipts]) => {
         if (!active) return
         setProjectContractChanges(Array.isArray(changes) ? changes : [])
         setProjectPaymentPlans(Array.isArray(plans) ? plans : [])
         setProjectReceipts(Array.isArray(receipts) ? receipts : [])
+        setContractRevenueRawState({
+          loading: false,
+          error: '',
+          code: '',
+          source: 'contract-revenue-service',
+          updatedAt: new Date().toISOString(),
+        })
       })
-      .catch((error) => { if (active) { setProjectContractChanges([]); setProjectPaymentPlans([]); setProjectReceipts([]); setPersistenceFailure(error) } })
+      .catch((error) => {
+        if (!active) return
+        const classification = classifyBusinessSourceError(error)
+        setProjectContractChanges([])
+        setProjectPaymentPlans([])
+        setProjectReceipts([])
+        setContractRevenueRawState({
+          loading: false,
+          error: classification.message,
+          code: classification.code,
+          source: 'blocked',
+          updatedAt: null,
+        })
+        if (classification.fatal) setPersistenceFailure(error)
+      })
     return () => { active = false }
   }, [contractRevenueAccess.view])
-  const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {
+  const employeeReadAccess = canAccessView(currentUser, 'employees') ||
+    dashboardAccess.attendance.identities || accountingReadAccess.salary ||
+    purchaseAccess.records.view || accountingAccess.projectCost.view ||
+    accountingAccess.operatingExpense.view
+  const laborReadAccess = canAccessView(currentUser, 'labor') || bridgeEligible ||
+    dashboardAccess.labor.view
+  const vehicleReadAccess = canAccessView(currentUser, 'vehicle') || dashboardAccess.vehicle.view
+  const toolReadAccess = canAccessView(currentUser, 'toolBorrow') || dashboardAccess.tools.view
+  const inventoryReadAccess = purchaseAccess.stockIn.view || dashboardAccess.inventory.view
+  const [storedEmployees, , employeeRawState] = usePersistentState(STORAGE_KEYS.employees, [], {
     cloudRead: false,
     cloudPersistence: 'none',
     localCompatibility: true,
     readOnly: true,
+    readAllowed: employeeReadAccess,
   })
-  const [stockOutRecords, setStockOutRecords] = usePersistentState(
+  const [stockOutRecords, setStockOutRecords, stockOutRawState] = usePersistentState(
     STORAGE_KEYS.stockOutRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: canAccessView(currentUser, 'stockOut') },
   )
-  const [stockReturnRecords, setStockReturnRecords] = usePersistentState(
+  const [stockReturnRecords, setStockReturnRecords, stockReturnRawState] = usePersistentState(
     STORAGE_KEYS.stockReturnRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: canAccessView(currentUser, 'stockReturn') },
   )
-  const [laborRecords, setLaborRecords] = usePersistentState(
+  const [laborRecords, setLaborRecords, laborRawState] = usePersistentState(
     STORAGE_KEYS.laborRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: laborReadAccess },
   )
-  const [vehicleRecords, setVehicleRecords] = usePersistentState(
+  const [vehicleRecords, setVehicleRecords, vehicleRawState] = usePersistentState(
     STORAGE_KEYS.vehicleRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: vehicleReadAccess },
   )
-  const [storedVehicleUsageRecords, setStoredVehicleUsageRecords] = usePersistentState(
+  const [storedVehicleUsageRecords, setStoredVehicleUsageRecords, vehicleUsageRawState] = usePersistentState(
     STORAGE_KEYS.vehicleUsageRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: vehicleReadAccess },
   )
-  const [storedFuelRecords, setStoredFuelRecords] = usePersistentState(
+  const [storedFuelRecords, setStoredFuelRecords, fuelRawState] = usePersistentState(
     STORAGE_KEYS.fuelRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: vehicleReadAccess },
   )
-  const [storedVehicleExpenseRecords, setStoredVehicleExpenseRecords] = usePersistentState(
+  const [storedVehicleExpenseRecords, setStoredVehicleExpenseRecords, vehicleExpenseRawState] = usePersistentState(
     STORAGE_KEYS.vehicleExpenseRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: vehicleReadAccess },
   )
-  const [storedVehicleIssueRecords, setStoredVehicleIssueRecords] = usePersistentState(
+  const [storedVehicleIssueRecords, setStoredVehicleIssueRecords, vehicleIssueRawState] = usePersistentState(
     STORAGE_KEYS.vehicleIssueRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: vehicleReadAccess },
   )
-  const [toolBorrowRecords, setToolBorrowRecords] = usePersistentState(
+  const [toolBorrowRecords, setToolBorrowRecords, toolBorrowRawState] = usePersistentState(
     STORAGE_KEYS.toolBorrowRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: toolReadAccess },
   )
-  const [toolReturnRecords, setToolReturnRecords] = usePersistentState(
+  const [toolReturnRecords, setToolReturnRecords, toolReturnRawState] = usePersistentState(
     STORAGE_KEYS.toolReturnRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: toolReadAccess },
   )
-  const [storedToolRecords, setStoredToolRecords] = usePersistentState(
+  const [storedToolRecords, setStoredToolRecords, toolRawState] = usePersistentState(
     STORAGE_KEYS.toolRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: toolReadAccess },
   )
-  const [storedLifelongToolAssignments, setStoredLifelongToolAssignments] = usePersistentState(
+  const [storedLifelongToolAssignments, setStoredLifelongToolAssignments, lifelongToolRawState] = usePersistentState(
     STORAGE_KEYS.lifelongToolAssignments,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: toolReadAccess },
   )
-  const [storedToolResponsibilityRecords, setStoredToolResponsibilityRecords] = usePersistentState(
+  const [storedToolResponsibilityRecords, setStoredToolResponsibilityRecords, toolResponsibilityRawState] = usePersistentState(
     STORAGE_KEYS.toolResponsibilityRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: toolReadAccess },
   )
-  const [storedSalaryRecords, setStoredSalaryRecords] = usePersistentState(
+  const [storedSalaryRecords, setStoredSalaryRecords, salaryRawState] = usePersistentState(
     STORAGE_KEYS.salaryRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: accountingReadAccess.salary },
   )
-  const [storedProjectCostRecords, setStoredProjectCostRecords] = usePersistentState(
+  const [storedProjectCostRecords, setStoredProjectCostRecords, projectCostRawState] = usePersistentState(
     STORAGE_KEYS.projectCostRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: accountingReadAccess.projectCost },
   )
-  const [storedOperatingExpenseRecords, setStoredOperatingExpenseRecords] = usePersistentState(
+  const [storedOperatingExpenseRecords, setStoredOperatingExpenseRecords, operatingExpenseRawState] = usePersistentState(
     STORAGE_KEYS.operatingExpenseRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: accountingReadAccess.operatingExpense },
   )
-  const [storedPurchaseRecords, setStoredPurchaseRecords] = usePersistentState(
+  const [storedPurchaseRecords, setStoredPurchaseRecords, purchaseRawState] = usePersistentState(
     STORAGE_KEYS.purchaseRecords,
     [],
-    persistenceOptions,
+    {
+      ...persistenceOptions,
+      readAllowed: purchaseReadAccess.records,
+      cloudLoader: purchaseService.getList,
+      cloudPersistence: 'record',
+    },
   )
-  const [storedPurchasePaymentRecords, setStoredPurchasePaymentRecords] = usePersistentState(
+  const [storedPurchasePaymentRecords, setStoredPurchasePaymentRecords, purchasePaymentRawState] = usePersistentState(
     STORAGE_KEYS.purchasePaymentRecords,
     [],
-    persistenceOptions,
+    {
+      ...persistenceOptions,
+      readAllowed: purchaseReadAccess.payments,
+      cloudLoader: purchaseService.getPaymentList,
+      cloudPersistence: 'record',
+    },
   )
-  const [storedStockInRecords, setStoredStockInRecords] = usePersistentState(
+  const [storedStockInRecords, setStoredStockInRecords, stockInRawState] = usePersistentState(
     STORAGE_KEYS.stockInRecords,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: inventoryReadAccess },
   )
-  const [storedInventoryItems, setStoredInventoryItems] = usePersistentState(
+  const [storedInventoryItems, setStoredInventoryItems, inventoryRawState] = usePersistentState(
     STORAGE_KEYS.inventoryItems,
     [],
-    persistenceOptions,
+    { ...persistenceOptions, readAllowed: inventoryReadAccess },
   )
 
   const refreshPersonnelEmployees = useCallback(async () => {
@@ -2717,6 +3016,70 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       return resolvedRecords.map((record) => normalizePurchasePaymentRecord(record))
     }, updateOptions)
   }
+  const purchaseStateOnlyOptions = localDemoMode
+    ? {}
+    : { stateOnly: true, syncLocal: true }
+  const handleCreatePurchase = async (record) => {
+    const normalized = normalizePurchaseRecord(record)
+    const previousRecords = purchaseRecords
+    setPurchaseRecords(
+      [normalized, ...previousRecords.filter((item) => item.purchaseId !== normalized.purchaseId)],
+      purchaseStateOnlyOptions,
+    )
+    if (localDemoMode) return normalized
+    try {
+      const saved = normalizePurchaseRecord(await purchaseService.create(normalized))
+      setPurchaseRecords((current) => [
+        saved,
+        ...current.filter((item) => item.purchaseId !== saved.purchaseId),
+      ], purchaseStateOnlyOptions)
+      return saved
+    } catch (error) {
+      setPurchaseRecords(previousRecords, purchaseStateOnlyOptions)
+      setPersistenceFailure(error)
+      throw error
+    }
+  }
+  const handleUpdatePurchase = async (record) => {
+    const normalized = normalizePurchaseRecord(record)
+    const previousRecords = purchaseRecords
+    setPurchaseRecords((current) => current.map((item) =>
+      item.purchaseId === normalized.purchaseId ? normalized : item
+    ), purchaseStateOnlyOptions)
+    if (localDemoMode) return normalized
+    try {
+      const saved = normalizePurchaseRecord(
+        await purchaseService.update(normalized.purchaseId, normalized),
+      )
+      setPurchaseRecords((current) => current.map((item) =>
+        item.purchaseId === saved.purchaseId ? saved : item
+      ), purchaseStateOnlyOptions)
+      return saved
+    } catch (error) {
+      setPurchaseRecords(previousRecords, purchaseStateOnlyOptions)
+      setPersistenceFailure(error)
+      throw error
+    }
+  }
+  const handleDeletePurchase = async (recordKey) => {
+    const previousRecords = purchaseRecords
+    setPurchaseRecords(
+      previousRecords.filter((item) => item.purchaseId !== recordKey),
+      purchaseStateOnlyOptions,
+    )
+    if (localDemoMode) return recordKey
+    try {
+      await purchaseService.softDelete(recordKey)
+      return recordKey
+    } catch (error) {
+      setPurchaseRecords(previousRecords, purchaseStateOnlyOptions)
+      setPersistenceFailure(error)
+      throw error
+    }
+  }
+  const persistPurchasePaymentCache = (record) => localDemoMode
+    ? Promise.resolve(record)
+    : purchaseService.update(record.purchaseId, record)
   const setStockInRecords = (nextRecords) => {
     setStoredStockInRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) => normalizeStockInRecord(record))
@@ -2900,7 +3263,118 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         loading: bridgeTargetActive && bridgeEligible,
         stale: false,
         error: '',
+        updatedAt: null,
       }
+  const laborBridgeStateRaw = {
+    loading: laborBridgeDisplayState.loading,
+    error: laborBridgeDisplayState.error,
+    code: laborBridgeDisplayState.error ? 'DATA_OPERATION_FAILED' : '',
+    source: 'labor-bridge',
+    updatedAt: laborBridgeDisplayState.updatedAt,
+  }
+  const dashboardSourceStates = {
+    projects: projectPromiseSource(projectRawState, {
+      readAllowed: canViewProjects,
+      data: projectRevenueProjects,
+    }),
+    contractRevenue: projectPromiseSource(contractRevenueRawState, {
+      readAllowed: contractRevenueAccess.view,
+      data: {
+        changes: projectContractChanges,
+        plans: projectPaymentPlans,
+        receipts: projectReceipts,
+      },
+    }),
+    employees: projectPersistentSource(employeeRawState, {
+      readAllowed: employeeReadAccess,
+      data: employees,
+    }),
+    salary: projectPersistentSource(salaryRawState, {
+      readAllowed: accountingReadAccess.salary,
+      data: salaryRecords,
+    }),
+    projectCost: projectPersistentSource(projectCostRawState, {
+      readAllowed: accountingReadAccess.projectCost,
+      data: projectCostRecords,
+    }),
+    operatingExpense: projectPersistentSource(operatingExpenseRawState, {
+      readAllowed: accountingReadAccess.operatingExpense,
+      data: operatingExpenseRecords,
+    }),
+    purchaseAccrual: projectPersistentSource(purchaseRawState, {
+      readAllowed: purchaseReadAccess.records,
+      data: purchaseRecords,
+    }),
+    purchasePayments: projectPersistentSource(purchasePaymentRawState, {
+      readAllowed: purchaseReadAccess.payments,
+      data: purchasePaymentRecords,
+    }),
+    stockIn: projectPersistentSource(stockInRawState, {
+      readAllowed: inventoryReadAccess,
+      data: stockInRecords,
+    }),
+    inventory: projectPersistentSource(inventoryRawState, {
+      readAllowed: inventoryReadAccess,
+      data: inventoryItems,
+    }),
+    laborRecords: projectPersistentSource(laborRawState, {
+      readAllowed: laborReadAccess,
+      data: laborRecords,
+    }),
+    labor: projectLaborSource(laborBridgeStateRaw, {
+      readAllowed: bridgeEligible,
+      data: laborBridge,
+      stale: laborBridgeDisplayState.stale,
+    }),
+    vehicles: projectPersistentSource(vehicleRawState, {
+      readAllowed: vehicleReadAccess,
+      data: vehicles,
+    }),
+    vehicleUsage: projectPersistentSource(vehicleUsageRawState, {
+      readAllowed: vehicleReadAccess,
+      data: vehicleUsageRecords,
+    }),
+    fuel: projectPersistentSource(fuelRawState, {
+      readAllowed: vehicleReadAccess,
+      data: fuelRecords,
+    }),
+    vehicleExpense: projectPersistentSource(vehicleExpenseRawState, {
+      readAllowed: vehicleReadAccess,
+      data: vehicleExpenseRecords,
+    }),
+    vehicleIssue: projectPersistentSource(vehicleIssueRawState, {
+      readAllowed: vehicleReadAccess,
+      data: vehicleIssueRecords,
+    }),
+    tools: projectPersistentSource(toolRawState, {
+      readAllowed: toolReadAccess,
+      data: toolRecords,
+    }),
+    toolBorrow: projectPersistentSource(toolBorrowRawState, {
+      readAllowed: toolReadAccess,
+      data: normalizedToolBorrowRecords,
+    }),
+    toolReturn: projectPersistentSource(toolReturnRawState, {
+      readAllowed: toolReadAccess,
+      data: toolReturnRecords,
+    }),
+    lifelongTools: projectPersistentSource(lifelongToolRawState, {
+      readAllowed: toolReadAccess,
+      data: lifelongToolAssignments,
+    }),
+    toolResponsibility: projectPersistentSource(toolResponsibilityRawState, {
+      readAllowed: toolReadAccess,
+      data: toolResponsibilityRecords,
+    }),
+    stockOut: projectPersistentSource(stockOutRawState, {
+      readAllowed: canAccessView(currentUser, 'stockOut'),
+      data: stockOutRecords,
+    }),
+    stockReturn: projectPersistentSource(stockReturnRawState, {
+      readAllowed: canAccessView(currentUser, 'stockReturn'),
+      data: stockReturnRecords,
+    }),
+  }
   const bridgeStatusNotice = (
     <LaborBridgeStatusNotice
       eligible={bridgeTargetActive && bridgeEligible}
@@ -3017,6 +3491,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         lifelongToolAssignments={lifelongToolAssignments}
         toolResponsibilityRecords={toolResponsibilityRecords}
         laborBridge={laborBridge}
+        sourceStates={dashboardSourceStates}
         bridgeStatusNotice={bridgeStatusNotice}
         laborAlertCount={laborAlertCount}
         onBack={() => handlePersonnelAwareNavigate('home')}
@@ -3027,11 +3502,17 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   if (authorizedView === 'purchase') {
     return renderInDesktopShell(
       <PurchaseManagementPage
+        access={purchaseAccess}
         projects={projects}
         employees={employees}
         purchaseRecords={purchaseRecords}
         setPurchaseRecords={setPurchaseRecords}
+        onCreatePurchase={handleCreatePurchase}
+        onUpdatePurchase={handleUpdatePurchase}
+        onDeletePurchase={handleDeletePurchase}
+        persistPurchasePaymentCache={persistPurchasePaymentCache}
         purchasePaymentRecords={purchasePaymentRecords}
+        purchasePaymentState={dashboardSourceStates.purchasePayments}
         setPurchasePaymentRecords={setPurchasePaymentRecords}
         onPersistenceError={setPersistenceFailure}
         stockInRecords={stockInRecords}
@@ -3099,6 +3580,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   if (authorizedView === 'accounting') {
     return renderInDesktopShell(
       <AccountingCostPage
+        access={accountingAccess}
         projects={projects}
         employees={employees}
         salaryRecords={salaryRecords}
@@ -3109,6 +3591,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         setOperatingExpenseRecords={setOperatingExpenseRecords}
         purchaseRecords={purchaseRecords}
         purchasePaymentRecords={purchasePaymentRecords}
+        purchasePaymentState={dashboardSourceStates.purchasePayments}
         laborRecords={laborRecords}
         fuelRecords={fuelRecords}
         vehicleExpenseRecords={vehicleExpenseRecords}
@@ -5589,7 +6072,8 @@ function ToolResponsibilityList({ records }) {
   )
 }
 
-function AccountingCostPage({
+export function AccountingCostPage({
+  access,
   projects,
   employees,
   salaryRecords,
@@ -5600,6 +6084,7 @@ function AccountingCostPage({
   setOperatingExpenseRecords,
   purchaseRecords,
   purchasePaymentRecords,
+  purchasePaymentState,
   laborRecords,
   fuelRecords,
   vehicleExpenseRecords,
@@ -5610,22 +6095,47 @@ function AccountingCostPage({
   bridgeStatusNotice,
   onBack,
 }) {
-  const [section, setSection] = useState('salary')
+  const resolvedAccess = access || {
+    salary: { view: true, create: true, update: true, delete: true },
+    projectCost: { view: true, create: true, update: true, delete: true },
+    operatingExpense: { view: true, create: true, update: true, delete: true },
+    purchaseAccounting: { view: true },
+    monthlySummary: {
+      salary: true,
+      projectCost: true,
+      operatingExpense: true,
+      purchaseAccrual: true,
+      purchasePayments: true,
+    },
+  }
+  const monthlySummaryVisible = Object.values(resolvedAccess.monthlySummary).some(Boolean)
   const sections = [
-    { id: 'salary', title: '工资记录' },
-    { id: 'projectCost', title: '项目成本' },
-    { id: 'operatingExpense', title: '经营费用' },
-    { id: 'purchaseAccounting', title: '采购对账' },
-    { id: 'monthlySummary', title: '月度汇总' },
+    ...(resolvedAccess.salary.view ? [{ id: 'salary', title: '工资记录' }] : []),
+    ...(resolvedAccess.projectCost.view ? [{ id: 'projectCost', title: '项目成本' }] : []),
+    ...(resolvedAccess.operatingExpense.view
+      ? [{ id: 'operatingExpense', title: '经营费用' }]
+      : []),
+    ...(resolvedAccess.purchaseAccounting.view
+      ? [{ id: 'purchaseAccounting', title: '采购对账' }]
+      : []),
+    ...(monthlySummaryVisible ? [{ id: 'monthlySummary', title: '月度汇总' }] : []),
   ]
+  const [section, setSection] = useState(() => sections[0]?.id || '')
+  const visibleSection = sections.some((item) => item.id === section)
+    ? section
+    : sections[0]?.id || ''
+  useEffect(() => {
+    if (!sections.some((item) => item.id === section)) setSection(sections[0]?.id || '')
+  }, [section, sections])
 
   return (
     <PageShell title="会计成本中心" subtitle="AccountingCostCenter" onBack={onBack}>
       {bridgeStatusNotice}
+      {sections.length === 0 && <EmptyState text="当前账号无可用功能" />}
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
-            className={`accounting-entry ${section === item.id ? 'active' : ''}`}
+            className={`accounting-entry ${visibleSection === item.id ? 'active' : ''}`}
             type="button"
             key={item.id}
             onClick={() => setSection(item.id)}
@@ -5635,36 +6145,40 @@ function AccountingCostPage({
         ))}
       </div>
 
-      {section === 'salary' && (
-        <SalaryRecordsSection employees={employees} records={salaryRecords} setRecords={setSalaryRecords} />
+      {visibleSection === 'salary' && (
+        <SalaryRecordsSection access={resolvedAccess.salary} employees={employees} records={salaryRecords} setRecords={setSalaryRecords} />
       )}
-      {section === 'projectCost' && (
+      {visibleSection === 'projectCost' && (
         <ProjectCostSection
           projects={projects}
           employees={employees}
           records={projectCostRecords}
           setRecords={setProjectCostRecords}
+          access={resolvedAccess.projectCost}
         />
       )}
-      {section === 'operatingExpense' && (
+      {visibleSection === 'operatingExpense' && (
         <OperatingExpenseSection
           projects={projects}
           employees={employees}
           records={operatingExpenseRecords}
           setRecords={setOperatingExpenseRecords}
+          access={resolvedAccess.operatingExpense}
         />
       )}
-      {section === 'purchaseAccounting' && (
+      {visibleSection === 'purchaseAccounting' && (
         <PurchaseAccountingSection
           projects={projects}
           purchaseRecords={purchaseRecords}
           purchasePaymentRecords={purchasePaymentRecords}
+          paymentState={purchasePaymentState}
           monthFilter={monthFilter}
           onMonthFilterChange={onMonthFilterChange}
         />
       )}
-      {section === 'monthlySummary' && (
+      {visibleSection === 'monthlySummary' && (
         <MonthlySummarySection
+          access={resolvedAccess.monthlySummary}
           salaryRecords={salaryRecords}
           employees={employees}
           laborRecords={laborRecords}
@@ -5672,6 +6186,7 @@ function AccountingCostPage({
           operatingExpenseRecords={operatingExpenseRecords}
           purchaseRecords={purchaseRecords}
           purchasePaymentRecords={purchasePaymentRecords}
+          purchasePaymentState={purchasePaymentState}
           fuelRecords={fuelRecords}
           vehicleExpenseRecords={vehicleExpenseRecords}
           vehicleIssueRecords={vehicleIssueRecords}
@@ -5684,7 +6199,7 @@ function AccountingCostPage({
   )
 }
 
-function SalaryRecordsSection({ employees, records, setRecords }) {
+function SalaryRecordsSection({ access, employees, records, setRecords }) {
   const [form, setForm] = useState(createEmptySalaryForm)
   const [editingId, setEditingId] = useState('')
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
@@ -5699,6 +6214,7 @@ function SalaryRecordsSection({ employees, records, setRecords }) {
 
   const handleSubmit = (event) => {
     event.preventDefault()
+    if ((editingId && !access.update) || (!editingId && !access.create)) return
 
     if (!selectedEmployee) {
       window.alert('请选择员工')
@@ -5736,7 +6252,8 @@ function SalaryRecordsSection({ employees, records, setRecords }) {
   return (
     <>
       <SectionTitle title="工资记录" note="公司级成本" />
-      <form className="form-panel" onSubmit={handleSubmit}>
+      {(access.create || (editingId && access.update)) && (
+        <form className="form-panel" onSubmit={handleSubmit}>
         <EmployeeSelect
           employees={employees}
           value={form.employeeId}
@@ -5829,7 +6346,8 @@ function SalaryRecordsSection({ employees, records, setRecords }) {
             </button>
           )}
         </div>
-      </form>
+        </form>
+      )}
 
       <div className="filter-panel">
         <Field label="按月份筛选" type="month" value={monthFilter} onChange={setMonthFilter} />
@@ -5887,6 +6405,8 @@ function SalaryRecordsSection({ employees, records, setRecords }) {
                 )}
               </dl>
               <RecordActions
+                canEdit={access.update}
+                canDelete={access.delete}
                 onEdit={() => {
                   setEditingId(record.salaryRecordId)
                   setForm({
@@ -5920,7 +6440,7 @@ function SalaryRecordsSection({ employees, records, setRecords }) {
   )
 }
 
-function ProjectCostSection({ projects, employees, records, setRecords }) {
+function ProjectCostSection({ access, projects, employees, records, setRecords }) {
   const [form, setForm] = useState(createEmptyProjectCostForm)
   const [editingId, setEditingId] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
@@ -5936,6 +6456,7 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
 
   const handleSubmit = (event) => {
     event.preventDefault()
+    if ((editingId && !access.update) || (!editingId && !access.create)) return
 
     if (projects.length === 0) {
       window.alert('请先在工程项目中新增项目')
@@ -5990,7 +6511,8 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
       </div>
       {projects.length === 0 && <EmptyState text="请先在工程项目中新增项目" />}
 
-      <form className="form-panel" onSubmit={handleSubmit}>
+      {(access.create || (editingId && access.update)) && (
+        <form className="form-panel" onSubmit={handleSubmit}>
         <ProjectSelect
           projects={projects}
           value={form.projectId}
@@ -6045,7 +6567,8 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
             </button>
           )}
         </div>
-      </form>
+        </form>
+      )}
 
       <div className="filter-panel">
         <ProjectSelect projects={projects} value={projectFilter} onChange={setProjectFilter} allowAll />
@@ -6060,6 +6583,8 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
       </div>
 
       <AccountingRecordList
+        canEdit={access.update}
+        canDelete={access.delete}
         emptyText="暂无项目成本记录"
         records={filteredRecords}
         idField="costRecordId"
@@ -6096,7 +6621,7 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
   )
 }
 
-function OperatingExpenseSection({ projects, employees, records, setRecords }) {
+function OperatingExpenseSection({ access, projects, employees, records, setRecords }) {
   const [form, setForm] = useState(createEmptyOperatingExpenseForm)
   const [editingId, setEditingId] = useState('')
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
@@ -6111,6 +6636,7 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
 
   const handleSubmit = (event) => {
     event.preventDefault()
+    if ((editingId && !access.update) || (!editingId && !access.create)) return
 
     if (form.allocateToProject && !selectedProject) {
       window.alert('选择分摊到项目时，必须选择工程项目')
@@ -6156,7 +6682,8 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
   return (
     <>
       <SectionTitle title="经营费用" note="公司日常费用" />
-      <form className="form-panel" onSubmit={handleSubmit}>
+      {(access.create || (editingId && access.update)) && (
+        <form className="form-panel" onSubmit={handleSubmit}>
         <div className="form-grid">
           <OptionField
             label="费用类型"
@@ -6223,7 +6750,8 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
             </button>
           )}
         </div>
-      </form>
+        </form>
+      )}
 
       <div className="filter-panel">
         <Field label="按月份筛选" type="month" value={monthFilter} onChange={setMonthFilter} />
@@ -6237,6 +6765,8 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
       </div>
 
       <AccountingRecordList
+        canEdit={access.update}
+        canDelete={access.delete}
         emptyText="暂无经营费用记录"
         records={filteredRecords}
         idField="expenseRecordId"
@@ -6275,6 +6805,7 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
 }
 
 export function MonthlySummarySection({
+  access,
   salaryRecords,
   employees,
   laborRecords,
@@ -6282,6 +6813,7 @@ export function MonthlySummarySection({
   operatingExpenseRecords,
   purchaseRecords,
   purchasePaymentRecords,
+  purchasePaymentState,
   fuelRecords,
   vehicleExpenseRecords,
   vehicleIssueRecords,
@@ -6289,26 +6821,44 @@ export function MonthlySummarySection({
   onMonthFilterChange,
   laborBridge,
 }) {
-  const laborAllocationInfo = getLaborAllocationInfo(
-    salaryRecords,
-    employees,
-    laborRecords,
-    monthFilter,
-    laborBridge,
-  )
+  const resolvedAccess = access || {
+    salary: true,
+    projectCost: true,
+    operatingExpense: true,
+    purchaseAccrual: true,
+    purchasePayments: true,
+  }
+  const laborAllocationInfo = resolvedAccess.salary
+    ? getLaborAllocationInfo(
+        salaryRecords,
+        employees,
+        laborRecords,
+        monthFilter,
+        laborBridge,
+      )
+    : {
+        salaryPaidTotal: 0,
+        allocatedLaborCostTotal: 0,
+        unallocatedLaborCost: 0,
+        laborAllocationRate: 0,
+        isOverAllocated: false,
+      }
   const totalSalary = laborAllocationInfo.salaryPaidTotal
-  const totalProjectCost = projectCostRecords
+  const totalProjectCost = (resolvedAccess.projectCost ? projectCostRecords : [])
     .filter((record) => monthFromDate(record.date) === monthFilter)
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const companyProjectCost = projectCostRecords
+  const companyProjectCost = (resolvedAccess.projectCost ? projectCostRecords : [])
     .filter((record) => monthFromDate(record.date) === monthFilter && record.costType !== '人工费')
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const totalOperatingExpense = operatingExpenseRecords
+  const totalOperatingExpense = (resolvedAccess.operatingExpense ? operatingExpenseRecords : [])
     .filter((record) => monthFromDate(record.date) === monthFilter)
     .reduce((total, record) => total + toAmount(record.amount), 0)
   const purchaseAccounting = buildPurchaseAccountingReadModel({
-    purchaseRecords,
-    paymentRecords: purchasePaymentRecords,
+    purchaseRecords: resolvedAccess.purchaseAccrual ? purchaseRecords : [],
+    paymentRecords: resolvedAccess.purchasePayments ? purchasePaymentRecords : [],
+    paymentState: resolvedAccess.purchasePayments
+      ? purchasePaymentState
+      : { status: 'forbidden', data: null },
     month: monthFilter,
   })
   const monthlyPurchases = purchaseAccounting.rows.filter(
@@ -6341,8 +6891,17 @@ export function MonthlySummarySection({
     totalFuelCost +
     monthlyVehicleExpenses.reduce((total, record) => total + toAmount(record.amount), 0) +
     monthlyVehicleIssues.reduce((total, record) => total + toAmount(record.repairCost), 0)
-  const totalCost =
-    totalSalary + companyProjectCost + totalOperatingExpense + totalPurchaseCost + totalVehicleCost
+  const completeTotalVisible = resolvedAccess.salary && resolvedAccess.projectCost &&
+    resolvedAccess.operatingExpense && resolvedAccess.purchaseAccrual
+  const totalCost = completeTotalVisible
+    ? totalSalary + companyProjectCost + totalOperatingExpense +
+      totalPurchaseCost + totalVehicleCost
+    : null
+  const companyTotal = completeTotalVisible
+    ? { status: 'ready', data: totalCost }
+    : { status: 'forbidden', data: null }
+  const purchasePaymentVisible = resolvedAccess.purchasePayments &&
+    purchaseAccounting.currentPayable.status === 'ready'
 
   return (
     <>
@@ -6351,66 +6910,78 @@ export function MonthlySummarySection({
         <Field label="统计月份" type="month" value={monthFilter} onChange={onMonthFilterChange} />
       </div>
       <div className="stats-grid">
-        <div className="stat-card money">
-          <strong>{formatYen(totalSalary)}</strong>
-          <span>本月工资发放</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(laborAllocationInfo.allocatedLaborCostTotal)}</strong>
-          <span>本月项目人工分摊</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(laborAllocationInfo.unallocatedLaborCost)}</strong>
-          <span>本月未分摊人工成本</span>
-        </div>
-        <div className="stat-card">
-          <strong>{formatPercent(laborAllocationInfo.laborAllocationRate)}</strong>
-          <span>项目人工分摊率</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(totalProjectCost)}</strong>
-          <span>项目成本记录合计</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(totalOperatingExpense)}</strong>
-          <span>经营费用合计</span>
-        </div>
-        <div className="stat-card money">
-          <strong>{formatYen(totalPurchaseCost)}</strong>
-          <span>本月采购确认成本</span>
-        </div>
+        {resolvedAccess.salary && (
+          <>
+            <div className="stat-card money">
+              <strong>{formatYen(totalSalary)}</strong>
+              <span>本月工资发放</span>
+            </div>
+            <div className="stat-card money">
+              <strong>{formatYen(laborAllocationInfo.allocatedLaborCostTotal)}</strong>
+              <span>本月项目人工分摊</span>
+            </div>
+            <div className="stat-card money">
+              <strong>{formatYen(laborAllocationInfo.unallocatedLaborCost)}</strong>
+              <span>本月未分摊人工成本</span>
+            </div>
+            <div className="stat-card">
+              <strong>{formatPercent(laborAllocationInfo.laborAllocationRate)}</strong>
+              <span>项目人工分摊率</span>
+            </div>
+          </>
+        )}
+        {resolvedAccess.projectCost && (
+          <div className="stat-card money">
+            <strong>{formatYen(totalProjectCost)}</strong>
+            <span>项目成本记录合计</span>
+          </div>
+        )}
+        {resolvedAccess.operatingExpense && (
+          <div className="stat-card money">
+            <strong>{formatYen(totalOperatingExpense)}</strong>
+            <span>经营费用合计</span>
+          </div>
+        )}
+        {resolvedAccess.purchaseAccrual && (
+          <div className="stat-card money">
+            <strong>{formatYen(totalPurchaseCost)}</strong>
+            <span>本月采购确认成本</span>
+          </div>
+        )}
         <div className="stat-card money">
           <strong>{formatYen(totalVehicleCost)}</strong>
           <span>车辆费用合计</span>
         </div>
-        <div className="stat-card money">
-          <strong>{formatYen(totalCost)}</strong>
-          <span>公司总成本</span>
-        </div>
-        <div className="stat-card money">
+        {companyTotal.status === 'ready' && (
+          <div className="stat-card money">
+            <strong>{formatYen(companyTotal.data)}</strong>
+            <span>公司总成本</span>
+          </div>
+        )}
+        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('中国采购'))}</strong>
           <span>中国采购金额</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('Amazon'))}</strong>
           <span>Amazon 采购金额</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('Yahoo拍卖'))}</strong>
           <span>Yahoo拍卖采购金额</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('东鹏株式会社'))}</strong>
           <span>东鹏株式会社采购金额</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {purchasePaymentVisible && <div className="stat-card money">
           <strong>{formatYen(unpaidPurchaseCost)}</strong>
           <span>当前采购应付余额</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {purchasePaymentVisible && <div className="stat-card money">
           <strong>{formatYen(monthPaymentCash)}</strong>
           <span>本月采购付款现金流</span>
-        </div>
+        </div>}
         <div className="stat-card money">
           <strong>{formatYen(totalFuelCost)}</strong>
           <span>加油费用</span>
@@ -6424,8 +6995,12 @@ export function MonthlySummarySection({
           <span>维修/保养/车检/保险</span>
         </div>
       </div>
-      <div className="empty-state cost-note">工资发放是公司实际支出；项目人工成本是工资向工程项目的分摊，不重复计入公司总成本。采购确认成本按采购日期计入公司总成本，采购付款现金流仅单独展示；请避免再手工重复录入同一笔采购费用。</div>
-      {laborAllocationInfo.isOverAllocated && (
+      <div className="empty-state cost-note">
+        {completeTotalVisible
+          ? '工资发放是公司实际支出；项目人工成本是工资向工程项目的分摊，不重复计入公司总成本。采购确认成本按采购日期计入公司总成本，采购付款现金流仅单独展示；请避免再手工重复录入同一笔采购费用。'
+          : '已按当前账号可见的成本分类分别展示，不提供不完整的合计。'}
+      </div>
+      {resolvedAccess.salary && laborAllocationInfo.isOverAllocated && (
         <div className="empty-state cost-note warning-note">
           项目人工分摊成本超过工资发放总额，请检查人工记录是否重复或工资标准是否错误。
         </div>
@@ -6443,6 +7018,8 @@ function AccountingRecordList({
   details,
   onEdit,
   onDelete,
+  canEdit = true,
+  canDelete = true,
 }) {
   return (
     <div className="record-list">
@@ -6466,7 +7043,12 @@ function AccountingRecordList({
                 </div>
               ))}
             </dl>
-            <RecordActions onEdit={() => onEdit(record)} onDelete={() => onDelete(record)} />
+            <RecordActions
+              canEdit={canEdit}
+              canDelete={canDelete}
+              onEdit={() => onEdit(record)}
+              onDelete={() => onDelete(record)}
+            />
           </article>
         ))
       )}
@@ -6474,25 +7056,36 @@ function AccountingRecordList({
   )
 }
 
-function RecordActions({ onEdit, onDelete }) {
+function RecordActions({ onEdit, onDelete, canEdit = true, canDelete = true }) {
+  if (!canEdit && !canDelete) return null
   return (
     <div className="record-actions">
-      <button className="ghost-button" type="button" onClick={onEdit}>
-        编辑
-      </button>
-      <button className="danger-button" type="button" onClick={onDelete}>
-        删除
-      </button>
+      {canEdit && (
+        <button className="ghost-button" type="button" onClick={onEdit}>
+          编辑
+        </button>
+      )}
+      {canDelete && (
+        <button className="danger-button" type="button" onClick={onDelete}>
+          删除
+        </button>
+      )}
     </div>
   )
 }
 
-function PurchaseManagementPage({
+export function PurchaseManagementPage({
+  access,
   projects,
   employees,
   purchaseRecords,
   setPurchaseRecords,
+  onCreatePurchase,
+  onUpdatePurchase,
+  onDeletePurchase,
+  persistPurchasePaymentCache,
   purchasePaymentRecords,
+  purchasePaymentState,
   setPurchasePaymentRecords,
   onPersistenceError,
   stockInRecords,
@@ -6501,21 +7094,34 @@ function PurchaseManagementPage({
   setInventoryItems,
   onBack,
 }) {
-  const [section, setSection] = useState('create')
+  const resolvedAccess = access || {
+    records: { view: true, create: true, update: true, delete: true },
+    payments: { view: true, create: true, update: true, delete: true },
+    stockIn: { view: true, create: true, update: true, delete: true },
+    summary: { view: true },
+  }
   const sections = [
-    { id: 'create', title: '新增采购' },
-    { id: 'list', title: '采购列表' },
-    { id: 'stockIn', title: '到货入库' },
-    { id: 'payment', title: '付款记录' },
-    { id: 'summary', title: '采购汇总' },
+    ...(resolvedAccess.records.create ? [{ id: 'create', title: '新增采购' }] : []),
+    ...(resolvedAccess.records.view ? [{ id: 'list', title: '采购列表' }] : []),
+    ...(resolvedAccess.stockIn.view ? [{ id: 'stockIn', title: '到货入库' }] : []),
+    ...(resolvedAccess.payments.view ? [{ id: 'payment', title: '付款记录' }] : []),
+    ...(resolvedAccess.summary.view ? [{ id: 'summary', title: '采购汇总' }] : []),
   ]
+  const [section, setSection] = useState(() => sections[0]?.id || '')
+  const visibleSection = sections.some((item) => item.id === section)
+    ? section
+    : sections[0]?.id || ''
+  useEffect(() => {
+    if (!sections.some((item) => item.id === section)) setSection(sections[0]?.id || '')
+  }, [section, sections])
 
   return (
     <PageShell title="采购管理" subtitle="国内・日本・关系单位" onBack={onBack}>
+      {sections.length === 0 && <EmptyState text="当前账号无可用功能" />}
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
-            className={`accounting-entry ${section === item.id ? 'active' : ''}`}
+            className={`accounting-entry ${visibleSection === item.id ? 'active' : ''}`}
             type="button"
             key={item.id}
             onClick={() => setSection(item.id)}
@@ -6525,24 +7131,30 @@ function PurchaseManagementPage({
         ))}
       </div>
 
-      {section === 'create' && (
+      {visibleSection === 'create' && (
         <PurchaseFormSection
           projects={projects}
           employees={employees}
           records={purchaseRecords}
           setRecords={setPurchaseRecords}
+          onCreate={onCreatePurchase}
+          canUpdatePayments={resolvedAccess.payments.update}
         />
       )}
-      {section === 'list' && (
+      {visibleSection === 'list' && (
         <PurchaseListSection
           projects={projects}
           records={purchaseRecords}
           setRecords={setPurchaseRecords}
           paymentRecords={purchasePaymentRecords}
           stockInRecords={stockInRecords}
+          access={resolvedAccess.records}
+          paymentVisible={resolvedAccess.payments.view}
+          onUpdate={onUpdatePurchase}
+          onDelete={onDeletePurchase}
         />
       )}
-      {section === 'stockIn' && (
+      {visibleSection === 'stockIn' && (
         <PurchaseStockInSection
           employees={employees}
           purchaseRecords={purchaseRecords}
@@ -6551,9 +7163,11 @@ function PurchaseManagementPage({
           setStockInRecords={setStockInRecords}
           inventoryItems={inventoryItems}
           setInventoryItems={setInventoryItems}
+          access={resolvedAccess.stockIn}
+          onUpdatePurchase={onUpdatePurchase}
         />
       )}
-      {section === 'payment' && (
+      {visibleSection === 'payment' && (
         <PurchasePaymentSection
           employees={employees}
           purchaseRecords={purchaseRecords}
@@ -6561,26 +7175,37 @@ function PurchaseManagementPage({
           records={purchasePaymentRecords}
           setRecords={setPurchasePaymentRecords}
           onPersistenceError={onPersistenceError}
+          access={resolvedAccess.payments}
+          persistPurchase={persistPurchasePaymentCache}
         />
       )}
-      {section === 'summary' && (
+      {visibleSection === 'summary' && (
         <PurchaseSummarySection
           purchaseRecords={purchaseRecords}
           stockInRecords={stockInRecords}
           inventoryItems={inventoryItems}
+          paymentVisible={resolvedAccess.payments.view}
+          paymentState={purchasePaymentState}
         />
       )}
     </PageShell>
   )
 }
 
-function PurchaseFormSection({ projects, employees, records, setRecords }) {
+function PurchaseFormSection({
+  projects,
+  employees,
+  records,
+  setRecords,
+  onCreate,
+  canUpdatePayments = true,
+}) {
   const [form, setForm] = useState(createEmptyPurchaseForm)
   const selectedProject = projects.find((project) => project.projectId === form.projectId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
   const amountPreview = calculatePurchaseAmounts(form)
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
 
     if (form.purchasePurpose === '项目使用' && projects.length === 0) {
@@ -6604,10 +7229,16 @@ function PurchaseFormSection({ projects, employees, records, setRecords }) {
     }
 
     const personName = selectedEmployee?.name || form.externalPersonName.trim()
+    const { paidAmount: _redactedPaidAmount, ...accrualForm } = form
     const purchase = normalizePurchaseRecord({
-      ...form,
+      ...accrualForm,
       purchaseId: nextId('PO', records, 'purchaseId'),
-      openingPaidAmount: amountPreview.paidAmount,
+      ...(canUpdatePayments
+        ? {
+            paidAmount: form.paidAmount,
+            openingPaidAmount: amountPreview.paidAmount,
+          }
+        : {}),
       projectId: selectedProject?.projectId || '',
       projectName: selectedProject?.projectName || '',
       employeeId: selectedEmployee?.employeeId || '',
@@ -6616,7 +7247,8 @@ function PurchaseFormSection({ projects, employees, records, setRecords }) {
       updatedAt: todayValue(),
     })
 
-    setRecords((currentRecords) => [purchase, ...currentRecords])
+    if (onCreate) await onCreate(purchase)
+    else setRecords((currentRecords) => [purchase, ...currentRecords])
     setForm(createEmptyPurchaseForm())
   }
 
@@ -6668,10 +7300,14 @@ function PurchaseFormSection({ projects, employees, records, setRecords }) {
           <OptionField label="到货状态" value={form.arrivalStatus} onChange={(value) => setForm({ ...form, arrivalStatus: value })} options={arrivalStatusOptions} />
         </FormGroup>
 
-        <FormGroup title="付款/发票信息">
-          <Field label="已付款金额（日元）" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
-          <ReadOnlyField label="未付款金额" value={formatYen(amountPreview.unpaidAmount)} />
-          <ReadOnlyField label="付款状态" value={amountPreview.paymentStatus} />
+        <FormGroup title={canUpdatePayments ? '付款/发票信息' : '发票信息'}>
+          {canUpdatePayments && (
+            <>
+              <Field label="已付款金额（日元）" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
+              <ReadOnlyField label="未付款金额" value={formatYen(amountPreview.unpaidAmount)} />
+              <ReadOnlyField label="付款状态" value={amountPreview.paymentStatus} />
+            </>
+          )}
           <OptionField label="发票/收据状态" value={form.invoiceStatus} onChange={(value) => setForm({ ...form, invoiceStatus: value })} options={invoiceStatusOptions} />
         </FormGroup>
 
@@ -6689,7 +7325,17 @@ function PurchaseFormSection({ projects, employees, records, setRecords }) {
   )
 }
 
-function PurchaseListSection({ projects, records, setRecords, paymentRecords, stockInRecords }) {
+function PurchaseListSection({
+  projects,
+  records,
+  setRecords,
+  paymentRecords,
+  stockInRecords,
+  access,
+  paymentVisible,
+  onUpdate,
+  onDelete,
+}) {
   const [filters, setFilters] = useState({
     source: '',
     platform: '',
@@ -6715,7 +7361,7 @@ function PurchaseListSection({ projects, records, setRecords, paymentRecords, st
       (!filters.platform || record.platform === filters.platform) &&
       (!filters.type || record.purchaseType === filters.type) &&
       (!filters.projectId || record.projectId === filters.projectId) &&
-      (!filters.paymentStatus || record.paymentStatus === filters.paymentStatus) &&
+      (!paymentVisible || !filters.paymentStatus || record.paymentStatus === filters.paymentStatus) &&
       (!filters.arrivalStatus || record.arrivalStatus === filters.arrivalStatus) &&
       (!filters.stockInStatus || stockInStatus === filters.stockInStatus) &&
       startMatched &&
@@ -6733,7 +7379,9 @@ function PurchaseListSection({ projects, records, setRecords, paymentRecords, st
         <OptionField label="采购平台" value={filters.platform} onChange={(value) => setFilters({ ...filters, platform: value })} options={purchasePlatformOptions} includeAll />
         <OptionField label="采购类型" value={filters.type} onChange={(value) => setFilters({ ...filters, type: value })} options={purchaseTypeOptions} includeAll />
         <ProjectSelect projects={projects} value={filters.projectId} onChange={(value) => setFilters({ ...filters, projectId: value })} allowAll />
-        <OptionField label="付款状态" value={filters.paymentStatus} onChange={(value) => setFilters({ ...filters, paymentStatus: value })} options={purchasePaymentStatusOptions} includeAll />
+        {paymentVisible && (
+          <OptionField label="付款状态" value={filters.paymentStatus} onChange={(value) => setFilters({ ...filters, paymentStatus: value })} options={purchasePaymentStatusOptions} includeAll />
+        )}
         <OptionField label="到货状态" value={filters.arrivalStatus} onChange={(value) => setFilters({ ...filters, arrivalStatus: value })} options={arrivalStatusOptions} includeAll />
         <OptionField label="入库状态" value={filters.stockInStatus} onChange={(value) => setFilters({ ...filters, stockInStatus: value })} options={stockInStatusOptions} includeAll />
         <Field label="开始日期" type="date" value={filters.startDate} onChange={(value) => setFilters({ ...filters, startDate: value })} />
@@ -6751,26 +7399,32 @@ function PurchaseListSection({ projects, records, setRecords, paymentRecords, st
               key={record.purchaseId}
               record={record}
               stockInStatus={getPurchaseStockInStatus(record, stockInRecords)}
-              onVoid={() => {
-                setRecords((currentRecords) =>
-                  currentRecords.map((item) =>
-                    item.purchaseId === record.purchaseId
-                      ? normalizePurchaseRecord({ ...item, purchaseStatus: '作废', updatedAt: todayValue() })
-                      : item,
-                  ),
-                )
+              showPayments={paymentVisible}
+              canVoid={access.update}
+              canDelete={access.delete}
+              onVoid={async () => {
+                const nextRecord = normalizePurchaseRecord({
+                  ...record,
+                  purchaseStatus: '作废',
+                  updatedAt: todayValue(),
+                })
+                if (onUpdate) await onUpdate(nextRecord)
+                else setRecords((currentRecords) => currentRecords.map((item) =>
+                  item.purchaseId === record.purchaseId ? nextRecord : item
+                ))
               }}
-              onDelete={() => {
-                const hasPayment = paymentRecords.some((item) => item.purchaseId === record.purchaseId)
+              onDelete={async () => {
+                const hasPayment = paymentVisible &&
+                  paymentRecords.some((item) => item.purchaseId === record.purchaseId)
                 const hasStockIn = stockInRecords.some((item) => item.sourcePurchaseId === record.purchaseId)
                 if (hasPayment || hasStockIn) {
                   window.alert('该采购已有付款或入库记录，建议作废，不建议删除。')
                   return
                 }
                 if (window.confirm('确定删除这条采购记录吗？')) {
-                  setRecords((currentRecords) =>
-                    currentRecords.filter((item) => item.purchaseId !== record.purchaseId),
-                  )
+                  if (onDelete) await onDelete(record.purchaseId)
+                  else setRecords((currentRecords) =>
+                    currentRecords.filter((item) => item.purchaseId !== record.purchaseId))
                 }
               }}
             />
@@ -6782,6 +7436,7 @@ function PurchaseListSection({ projects, records, setRecords, paymentRecords, st
 }
 
 function PurchaseStockInSection({
+  access,
   employees,
   purchaseRecords,
   setPurchaseRecords,
@@ -6789,14 +7444,16 @@ function PurchaseStockInSection({
   setStockInRecords,
   inventoryItems,
   setInventoryItems,
+  onUpdatePurchase,
 }) {
   const [form, setForm] = useState(createEmptyStockInForm)
   const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
   const selectedPurchase = activePurchases.find((record) => record.purchaseId === form.purchaseId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
+    if (!access.create) return
 
     if (!selectedPurchase) {
       window.alert('请选择采购记录')
@@ -6829,24 +7486,22 @@ function PurchaseStockInSection({
     )
 
     const nextStockIns = [stockIn, ...stockInRecords]
-    setPurchaseRecords((currentRecords) =>
-      currentRecords.map((record) =>
-        record.purchaseId === selectedPurchase.purchaseId
-          ? normalizePurchaseRecord({
-              ...record,
-              stockInStatus: getPurchaseStockInStatus(record, nextStockIns),
-              updatedAt: todayValue(),
-            })
-          : record,
-      ),
-    )
+    const updatedPurchase = normalizePurchaseRecord({
+      ...selectedPurchase,
+      stockInStatus: getPurchaseStockInStatus(selectedPurchase, nextStockIns),
+      updatedAt: todayValue(),
+    })
+    if (onUpdatePurchase) await onUpdatePurchase(updatedPurchase)
+    else setPurchaseRecords((currentRecords) => currentRecords.map((record) =>
+      record.purchaseId === selectedPurchase.purchaseId ? updatedPurchase : record
+    ))
     setForm(createEmptyStockInForm())
   }
 
   return (
     <>
       <SectionTitle title="到货入库" note="支持分批入库" />
-      <form className="form-panel" onSubmit={handleSubmit}>
+      {access.create && <form className="form-panel" onSubmit={handleSubmit}>
         <label className="field full-width">
           <span>采购记录</span>
           <select value={form.purchaseId} onChange={(event) => setForm({ ...form, purchaseId: event.target.value })}>
@@ -6884,7 +7539,7 @@ function PurchaseStockInSection({
         <div className="form-actions">
           <button className="primary-button" type="submit">保存入库</button>
         </div>
-      </form>
+      </form>}
     </>
   )
 }
@@ -6919,12 +7574,14 @@ async function commitPurchasePaymentMutation({
 }
 
 function PurchasePaymentSection({
+  access,
   employees,
   purchaseRecords,
   setPurchaseRecords,
   records,
   setRecords,
   onPersistenceError,
+  persistPurchase,
 }) {
   const [form, setForm] = useState(createEmptyPurchasePaymentForm)
   const activePurchases = purchaseRecords.filter(
@@ -6939,6 +7596,7 @@ function PurchasePaymentSection({
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    if (!access.create) return
 
     if (!selectedPurchase) {
       window.alert('请选择采购记录')
@@ -6983,9 +7641,9 @@ function PurchasePaymentSection({
     const committed = await commitPurchasePaymentMutation({
       purchaseToSave,
       persistPurchase: (purchase) =>
-        upsertRecord(STORAGE_KEYS.purchaseRecords, purchase),
+        persistPurchase?.(purchase) || purchaseService.update(purchase.purchaseId, purchase),
       persistLedger: () =>
-        upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment),
+        purchaseService.upsertPayment(payment),
       nextPurchaseRecords: nextPurchases,
       nextPaymentRecords: nextPayments,
       setPurchaseRecords,
@@ -7000,7 +7658,7 @@ function PurchasePaymentSection({
   return (
     <>
       <SectionTitle title="付款记录" note="支持分批付款" />
-      <form className="form-panel" onSubmit={handleSubmit}>
+      {access.create && <form className="form-panel" onSubmit={handleSubmit}>
         <label className="field full-width">
           <span>采购记录</span>
           <select value={form.purchaseId} onChange={(event) => setForm({ ...form, purchaseId: event.target.value, currency: activePurchases.find((item) => item.purchaseId === event.target.value)?.currency || 'JPY' })}>
@@ -7033,8 +7691,10 @@ function PurchasePaymentSection({
         <div className="form-actions">
           <button className="primary-button" type="submit">保存付款记录</button>
         </div>
-      </form>
+      </form>}
       <AccountingRecordList
+        canEdit={access.update}
+        canDelete={access.delete}
         emptyText="暂无采购付款记录"
         records={records}
         idField="paymentId"
@@ -7071,9 +7731,9 @@ function PurchasePaymentSection({
             await commitPurchasePaymentMutation({
               purchaseToSave,
               persistPurchase: (purchase) =>
-                upsertRecord(STORAGE_KEYS.purchaseRecords, purchase),
+                persistPurchase?.(purchase) || purchaseService.update(purchase.purchaseId, purchase),
               persistLedger: () =>
-                softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId),
+                purchaseService.softDeletePayment(record.paymentId),
               nextPurchaseRecords: nextPurchases,
               nextPaymentRecords: remainingPayments,
               setPurchaseRecords,
@@ -7088,13 +7748,21 @@ function PurchasePaymentSection({
   )
 }
 
-function PurchaseSummarySection({ purchaseRecords, stockInRecords, inventoryItems }) {
+function PurchaseSummarySection({
+  purchaseRecords,
+  stockInRecords,
+  inventoryItems,
+  paymentVisible = true,
+  paymentState,
+}) {
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
   const activePurchases = purchaseRecords.filter(
     (record) => record.purchaseStatus !== '作废' && monthFromDate(record.purchaseDate) === monthFilter,
   )
   const total = activePurchases.reduce((sum, record) => sum + toAmount(record.totalCost), 0)
   const unpaid = activePurchases.reduce((sum, record) => sum + toAmount(record.unpaidAmount), 0)
+  const showPayments = paymentVisible &&
+    (paymentState === undefined || paymentState?.status === 'ready')
   const stockStatusCount = (status) =>
     activePurchases.filter((record) => getPurchaseStockInStatus(record, stockInRecords) === status).length
   const inventoryTotal = inventoryItems.reduce((sum, item) => sum + toAmount(item.totalCost), 0)
@@ -7111,7 +7779,9 @@ function PurchaseSummarySection({ purchaseRecords, stockInRecords, inventoryItem
         <div className="stat-card money"><strong>{formatYen(sourceTotal(activePurchases, 'Amazon'))}</strong><span>Amazon 采购金额</span></div>
         <div className="stat-card money"><strong>{formatYen(sourceTotal(activePurchases, 'Yahoo拍卖'))}</strong><span>Yahoo拍卖金额</span></div>
         <div className="stat-card money"><strong>{formatYen(sourceTotal(activePurchases, '东鹏株式会社'))}</strong><span>东鹏株式会社采购金额</span></div>
-        <div className="stat-card money"><strong>{formatYen(unpaid)}</strong><span>未付款采购金额</span></div>
+        {showPayments && (
+          <div className="stat-card money"><strong>{formatYen(unpaid)}</strong><span>未付款采购金额</span></div>
+        )}
         <div className="stat-card"><strong>{stockStatusCount('未入库')}</strong><span>未入库采购数量</span></div>
         <div className="stat-card"><strong>{stockStatusCount('部分入库')}</strong><span>部分入库采购数量</span></div>
         <div className="stat-card"><strong>{stockStatusCount('已入库')}</strong><span>已入库采购数量</span></div>
@@ -7121,7 +7791,15 @@ function PurchaseSummarySection({ purchaseRecords, stockInRecords, inventoryItem
   )
 }
 
-function PurchaseCard({ record, stockInStatus, onVoid, onDelete }) {
+function PurchaseCard({
+  record,
+  stockInStatus,
+  onVoid,
+  onDelete,
+  showPayments = true,
+  canVoid = true,
+  canDelete = true,
+}) {
   return (
     <article className="record-card">
       <div className="record-header">
@@ -7136,17 +7814,19 @@ function PurchaseCard({ record, stockInStatus, onVoid, onDelete }) {
         <div><dt>类型</dt><dd>{record.purchaseType}</dd></div>
         <div><dt>数量</dt><dd>{record.quantity} {record.unit}</dd></div>
         <div><dt>原币金额</dt><dd>{formatOriginalAmount(record.originalAmount, record.currency)}</dd></div>
-        <div><dt>付款状态</dt><dd>{record.paymentStatus}</dd></div>
-        <div><dt>未付款</dt><dd>{formatYen(record.unpaidAmount)}</dd></div>
+        {showPayments && <div><dt>付款状态</dt><dd>{record.paymentStatus}</dd></div>}
+        {showPayments && <div><dt>未付款</dt><dd>{formatYen(record.unpaidAmount)}</dd></div>}
         <div><dt>到货状态</dt><dd>{record.arrivalStatus}</dd></div>
         <div><dt>入库状态</dt><dd>{stockInStatus}</dd></div>
         <div><dt>工程项目</dt><dd>{record.projectName || '未绑定'}</dd></div>
         <div><dt>经办人</dt><dd>{record.employeeName || '未填写'}</dd></div>
       </dl>
-      <div className="record-actions">
-        <button className="ghost-button" type="button" onClick={onVoid}>作废</button>
-        <button className="danger-button" type="button" onClick={onDelete}>删除</button>
-      </div>
+      {(canVoid || canDelete) && (
+        <div className="record-actions">
+          {canVoid && <button className="ghost-button" type="button" onClick={onVoid}>作废</button>}
+          {canDelete && <button className="danger-button" type="button" onClick={onDelete}>删除</button>}
+        </div>
+      )}
     </article>
   )
 }
@@ -8001,6 +8681,7 @@ function DashboardPage({
   lifelongToolAssignments,
   toolResponsibilityRecords,
   laborBridge,
+  sourceStates,
   bridgeStatusNotice,
   laborAlertCount,
   onBack,
@@ -8027,10 +8708,12 @@ function DashboardPage({
     () => buildPurchaseAccountingReadModel({
       purchaseRecords,
       paymentRecords: purchasePaymentRecords,
+      paymentState: sourceStates?.purchasePayments,
       month: currentMonth,
     }),
-    [purchaseRecords, purchasePaymentRecords, currentMonth],
+    [purchaseRecords, purchasePaymentRecords, sourceStates?.purchasePayments, currentMonth],
   )
+  const purchasePaymentVisible = purchaseAccounting.currentPayable.status === 'ready'
   const returnedToolBorrowIds = new Set(
     toolReturnRecords.map((record) => record.borrowRecordId).filter(Boolean),
   )
@@ -8268,16 +8951,17 @@ function DashboardPage({
     { label: 'Amazon 采购金额', value: formatYen(sourceTotal(currentMonthPurchases, 'Amazon')), tone: 'money' },
     { label: 'Yahoo拍卖金额', value: formatYen(sourceTotal(currentMonthPurchases, 'Yahoo拍卖')), tone: 'money' },
     { label: '东鹏株式会社采购金额', value: formatYen(sourceTotal(currentMonthPurchases, '东鹏株式会社')), tone: 'money' },
-    {
-      label: '本月实际付款',
-      value: formatYen(purchaseAccounting.summary.monthPaymentCash),
-      tone: 'money',
-    },
-    {
-      label: '当前采购应付余额',
-      value: formatYen(purchaseAccounting.summary.currentOutstanding),
-      tone: 'money',
-    },
+    ...(purchasePaymentVisible
+      ? [{
+          label: '本月实际付款',
+          value: formatYen(purchaseAccounting.summary.monthPaymentCash),
+          tone: 'money',
+        }, {
+          label: '当前采购应付余额',
+          value: formatYen(purchaseAccounting.summary.currentOutstanding),
+          tone: 'money',
+        }]
+      : []),
     { label: '采购数据异常数量', value: purchaseAccounting.summary.anomalyCount },
     {
       label: '未入库采购数量',
@@ -8544,8 +9228,8 @@ function DashboardPage({
                 <th>项目采购金额</th>
                 <th>项目材料采购金额</th>
                 <th>项目工具采购金额</th>
-                <th>项目已付采购金额</th>
-                <th>项目未付采购金额</th>
+                {purchasePaymentVisible && <th>项目已付采购金额</th>}
+                {purchasePaymentVisible && <th>项目未付采购金额</th>}
                 <th>项目未入库采购数量</th>
                 <th>项目车辆费用</th>
                 <th>项目用车次数</th>
@@ -8590,14 +9274,12 @@ function DashboardPage({
                 const toolPurchaseTotal = projectPurchases
                   .filter((row) => row.purchaseType === '工具')
                   .reduce((total, row) => total + row.totalCost, 0)
-                const paidPurchaseTotal = projectPurchases.reduce(
-                  (total, row) => total + row.paidAmount,
-                  0,
-                )
-                const unpaidPurchaseTotal = projectPurchases.reduce(
-                  (total, row) => total + row.unpaidAmount,
-                  0,
-                )
+                const paidPurchaseTotal = purchasePaymentVisible
+                  ? projectPurchases.reduce((total, row) => total + row.paidAmount, 0)
+                  : null
+                const unpaidPurchaseTotal = purchasePaymentVisible
+                  ? projectPurchases.reduce((total, row) => total + row.unpaidAmount, 0)
+                  : null
                 const notStockedPurchaseCount = projectPurchases.filter(
                   (record) => getPurchaseStockInStatus(record, stockInRecords) === '未入库',
                 ).length
@@ -8682,8 +9364,8 @@ function DashboardPage({
                     <td>{formatYen(purchaseTotal)}</td>
                     <td>{formatYen(materialPurchaseTotal)}</td>
                     <td>{formatYen(toolPurchaseTotal)}</td>
-                    <td>{formatYen(paidPurchaseTotal)}</td>
-                    <td>{formatYen(unpaidPurchaseTotal)}</td>
+                    {purchasePaymentVisible && <td>{formatYen(paidPurchaseTotal)}</td>}
+                    {purchasePaymentVisible && <td>{formatYen(unpaidPurchaseTotal)}</td>}
                     <td>{notStockedPurchaseCount}</td>
                     <td>{formatYen(projectVehicleTotal)}</td>
                     <td>{projectVehicleUsage.length}</td>

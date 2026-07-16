@@ -326,3 +326,213 @@ test('AuthenticatedApp consumes the executed resolver, controller, summary, and 
   assert.equal(runtime.businessAccess.canAccessView(activeUser(), 'home'), true)
   assert.equal(runtime.businessAccess.canAccessView({}, 'home'), false)
 })
+
+test('persistent, Promise, and labor adapters project one strict raw state without status upgrades', () => {
+  const projectPersistentSource = requireExport('projectPersistentSource')
+  const projectPromiseSource = requireExport('projectPromiseSource')
+  const projectLaborSource = requireExport('projectLaborSource')
+  if (!projectPersistentSource || !projectPromiseSource || !projectLaborSource) return
+
+  const forbiddenRaw = Object.freeze({
+    loading: false,
+    error: '无权读取该数据',
+    code: 'ACCESS_DENIED',
+    source: 'blocked',
+    updatedAt: null,
+  })
+  const errorRaw = Object.freeze({
+    loading: false,
+    error: '读取失败',
+    code: 'DATA_OPERATION_FAILED',
+    source: 'blocked',
+    updatedAt: null,
+  })
+  const data = Object.freeze([{ secret: 'must not become ready' }])
+
+  const persistent = projectPersistentSource(forbiddenRaw, {
+    readAllowed: true,
+    data,
+  })
+  const promised = projectPromiseSource(errorRaw, { readAllowed: true, data })
+  const labor = projectLaborSource({
+    loading: false,
+    error: '无权读取该数据',
+    code: 'ACCESS_DENIED',
+    source: 'labor-bridge',
+    updatedAt: null,
+  }, { readAllowed: true, data })
+
+  assert.equal(persistent.status, 'forbidden')
+  assert.equal(persistent.data, null)
+  assert.equal(promised.status, 'error')
+  assert.equal(promised.data, null)
+  assert.equal(labor.status, 'forbidden')
+  assert.equal(labor.data, null)
+  for (const state of [persistent, promised, labor]) {
+    assert.equal(Object.isFrozen(state), true)
+    assert.notEqual(state, forbiddenRaw)
+    assert.notEqual(state, errorRaw)
+  }
+
+  for (const adapter of [projectPersistentSource, projectPromiseSource]) {
+    const malformedNormalizedInput = adapter(
+      { status: 'forbidden', data: null },
+      { readAllowed: true, data },
+    )
+    assert.equal(malformedNormalizedInput.status, 'error')
+    assert.equal(malformedNormalizedInput.data, null)
+  }
+})
+
+test('Accounting defaults to the first authorized section and hides forbidden salary/actions', () => {
+  const AccountingCostPage = requireExport('AccountingCostPage')
+  if (!AccountingCostPage) return
+
+  const access = {
+    salary: { view: false, create: false, update: false, delete: false },
+    projectCost: { view: true, create: false, update: false, delete: false },
+    operatingExpense: { view: false, create: false, update: false, delete: false },
+    purchaseAccounting: { view: false },
+    monthlySummary: {
+      salary: false,
+      projectCost: true,
+      operatingExpense: false,
+      purchaseAccrual: false,
+      purchasePayments: false,
+    },
+  }
+  const html = renderToStaticMarkup(createElement(AccountingCostPage, {
+    access,
+    projects: [],
+    employees: [{ employeeId: 'E-SALARY', name: '工资机密', baseSalary: 999999 }],
+    salaryRecords: [{ salaryRecordId: 'SALARY-SECRET', netSalary: 999999 }],
+    setSalaryRecords() {},
+    projectCostRecords: [{
+      costRecordId: 'PC-1',
+      projectId: 'P-1',
+      projectName: '允许项目',
+      costType: '材料费',
+      amount: 1200,
+      date: '2026-07-01',
+      operator: '经办人',
+      remark: '',
+    }],
+    setProjectCostRecords() {},
+    operatingExpenseRecords: [],
+    setOperatingExpenseRecords() {},
+    purchaseRecords: [],
+    purchasePaymentRecords: [],
+    purchasePaymentState: { status: 'forbidden', data: null },
+    laborRecords: [],
+    fuelRecords: [],
+    vehicleExpenseRecords: [],
+    vehicleIssueRecords: [],
+    monthFilter: '2026-07',
+    onMonthFilterChange() {},
+    laborBridge: null,
+    bridgeStatusNotice: null,
+    onBack() {},
+  }))
+
+  assert.match(html, /项目成本/u)
+  assert.match(html, /¥1,200/u)
+  assert.doesNotMatch(html, /工资记录|工资机密|SALARY-SECRET|¥999,999/u)
+  assert.doesNotMatch(html, /<form|>编辑<|>删除</u)
+})
+
+test('Accounting monthly summary blocks an inferable total when any category is hidden', () => {
+  const MonthlySummarySection = requireExport('MonthlySummarySection')
+  if (!MonthlySummarySection) return
+
+  const html = renderToStaticMarkup(createElement(MonthlySummarySection, {
+    access: {
+      salary: false,
+      projectCost: true,
+      operatingExpense: false,
+      purchaseAccrual: true,
+      purchasePayments: false,
+    },
+    salaryRecords: [{ netSalary: 900000, salaryMonth: '2026-07' }],
+    employees: [],
+    laborRecords: [],
+    projectCostRecords: [{ date: '2026-07-01', costType: '材料费', amount: 1000 }],
+    operatingExpenseRecords: [{ date: '2026-07-01', amount: 2000 }],
+    purchaseRecords: [{
+      purchaseId: 'PO-1', purchaseDate: '2026-07-01', totalCost: 3000,
+      purchaseStatus: '正常', openingPaidAmount: 0,
+    }],
+    purchasePaymentRecords: [],
+    purchasePaymentState: { status: 'forbidden', data: null },
+    fuelRecords: [],
+    vehicleExpenseRecords: [],
+    vehicleIssueRecords: [],
+    monthFilter: '2026-07',
+    onMonthFilterChange() {},
+    laborBridge: null,
+  }))
+
+  assert.match(html, /项目成本记录合计/u)
+  assert.match(html, /本月采购确认成本/u)
+  assert.doesNotMatch(html, /本月工资发放|经营费用合计|公司总成本|当前采购应付余额/u)
+  assert.doesNotMatch(html, /¥904,000/u)
+})
+
+test('Purchase sections and controls follow exact record, payment, stock, and summary access', () => {
+  const PurchaseManagementPage = requireExport('PurchaseManagementPage')
+  if (!PurchaseManagementPage) return
+  const baseProps = {
+    projects: [],
+    employees: [],
+    purchaseRecords: [{
+      purchaseId: 'PO-READ', purchaseDate: '2026-07-01', itemName: '可见材料',
+      purchaseSource: '中国采购', purchaseType: '材料', platform: '线下店铺',
+      totalCost: 80000, purchaseStatus: '正常', arrivalStatus: '未到货',
+      projectName: '', supplierName: '', quantity: 1, unit: '件', currency: 'JPY',
+    }],
+    setPurchaseRecords() {},
+    purchasePaymentRecords: [],
+    purchasePaymentState: { status: 'forbidden', data: null },
+    setPurchasePaymentRecords() {},
+    onPersistenceError() {},
+    stockInRecords: [],
+    setStockInRecords() {},
+    inventoryItems: [],
+    setInventoryItems() {},
+    onBack() {},
+  }
+  const viewOnly = {
+    records: { view: true, create: false, update: false, delete: false },
+    payments: { view: false, create: false, update: false, delete: false },
+    stockIn: { view: false, create: false, update: false, delete: false },
+    summary: { view: true },
+  }
+  const readHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
+    ...baseProps,
+    access: viewOnly,
+  }))
+  assert.match(readHtml, /采购列表|采购汇总|可见材料|¥80,000/u)
+  assert.doesNotMatch(readHtml, /新增采购|付款记录|到货入库|<form|>作废<|>删除</u)
+  assert.doesNotMatch(readHtml, /付款状态|未付款/u)
+
+  const createHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
+    ...baseProps,
+    access: {
+      ...viewOnly,
+      records: { view: true, create: true, update: false, delete: false },
+    },
+  }))
+  assert.match(createHtml, /新增采购|保存采购记录/u)
+  assert.doesNotMatch(createHtml, /已付款金额|未付款金额|付款状态/u)
+
+  const noAccessHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
+    ...baseProps,
+    access: {
+      records: { view: false, create: false, update: false, delete: false },
+      payments: { view: false, create: false, update: false, delete: false },
+      stockIn: { view: false, create: false, update: false, delete: false },
+      summary: { view: false },
+    },
+  }))
+  assert.match(noAccessHtml, /当前账号无可用功能/u)
+  assert.doesNotMatch(noAccessHtml, /新增采购|采购列表|付款记录|采购汇总/u)
+})

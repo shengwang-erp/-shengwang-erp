@@ -5,9 +5,71 @@ import {
 } from '../cost-accounting/cashFactProvenance.js'
 
 const VOID_PURCHASE_STATUS = '作废'
+const PAYMENT_FIELDS = [
+  'openingPaidAmount',
+  'ledgerPaidAmount',
+  'paidAmount',
+  'unpaidAmount',
+  'paymentStatus',
+  'legacyOpeningEstimated',
+]
+const PAYMENT_SOURCE_STATUSES = new Set(['ready', 'loading', 'forbidden', 'error'])
 
 function asArray(value) {
   return Array.isArray(value) ? value : []
+}
+
+function frozenCopy(value, seen = new WeakMap()) {
+  if (value === null || typeof value !== 'object') return value
+  if (seen.has(value)) return seen.get(value)
+
+  const output = Array.isArray(value) ? [] : {}
+  seen.set(value, output)
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) continue
+    output[key] = frozenCopy(descriptor.value, seen)
+  }
+  return Object.freeze(output)
+}
+
+function paymentSource(paymentState, paymentRecords) {
+  if (paymentState === undefined) {
+    return { status: 'ready', data: asArray(paymentRecords) }
+  }
+  if (paymentState === null || typeof paymentState !== 'object' ||
+      Array.isArray(paymentState) || Object.getPrototypeOf(paymentState) !== Object.prototype) {
+    return { status: 'error', data: null }
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(paymentState)
+  const statusDescriptor = descriptors.status
+  const dataDescriptor = descriptors.data
+  if (!statusDescriptor?.enumerable || !Object.hasOwn(statusDescriptor, 'value') ||
+      !dataDescriptor?.enumerable || !Object.hasOwn(dataDescriptor, 'value') ||
+      !PAYMENT_SOURCE_STATUSES.has(statusDescriptor.value)) {
+    return { status: 'error', data: null }
+  }
+  if (statusDescriptor.value === 'ready' && !Array.isArray(dataDescriptor.value)) {
+    return { status: 'error', data: null }
+  }
+  if (statusDescriptor.value !== 'ready' && dataDescriptor.value !== null) {
+    return { status: 'error', data: null }
+  }
+
+  return {
+    status: statusDescriptor.value,
+    data: statusDescriptor.value === 'ready' ? dataDescriptor.value : null,
+  }
+}
+
+function paymentBlock(status, data) {
+  return frozenCopy({ status, data })
+}
+
+function stripPaymentFields(purchase) {
+  const row = { ...purchase }
+  for (const field of PAYMENT_FIELDS) delete row[field]
+  return row
 }
 
 function normalizedId(value) {
@@ -182,7 +244,7 @@ function paymentCacheMismatchFields(purchase, derivedCache) {
   return mismatches
 }
 
-function derivePurchaseRow(purchase, payments, anomalies) {
+function derivePurchaseRow(purchase, payments, anomalies, { validateCache = true } = {}) {
   const ledgerPaidAmount = sumPaymentAmounts(payments)
   const hasOpeningSnapshot = purchase.openingPaidAmount !== undefined &&
     purchase.openingPaidAmount !== null &&
@@ -225,7 +287,7 @@ function derivePurchaseRow(purchase, payments, anomalies) {
   const paidAmount = openingPaidAmount + ledgerPaidAmount
   const unpaidAmount = Math.max(purchase.totalCost - paidAmount, 0)
   const derivedPaymentStatus = paymentStatus(purchase.totalCost, paidAmount)
-  if (openingSnapshotReliable) {
+  if (openingSnapshotReliable && validateCache) {
     const mismatchFields = paymentCacheMismatchFields(purchase, {
       paidAmount,
       unpaidAmount,
@@ -279,13 +341,42 @@ function uniqueLinkedPaymentTotal(purchaseId, paymentRecords) {
 export function buildPurchaseAccountingReadModel({
   purchaseRecords = [],
   paymentRecords = [],
+  paymentState,
   month = '',
   projectId = '',
   source = '',
 } = {}) {
   const anomalies = []
   const { purchases, purchasesById } = normalizePurchases(purchaseRecords, anomalies)
-  const payments = normalizePayments(paymentRecords, purchasesById, anomalies)
+  const sourceState = paymentSource(paymentState, paymentRecords)
+
+  if (sourceState.status !== 'ready') {
+    const rows = purchases
+      .filter((purchase) => purchase.purchaseStatus !== VOID_PURCHASE_STATUS)
+      .map(stripPaymentFields)
+      .filter((row) => matchesScope(row, projectId, source))
+    return {
+      rows,
+      paymentRows: [],
+      cashPaymentRows: [],
+      anomalies,
+      currentPayable: paymentBlock(sourceState.status, null),
+      monthPayment: paymentBlock(sourceState.status, null),
+      paymentHealth: paymentBlock(sourceState.status, null),
+      summary: {
+        monthPurchaseCost: rows
+          .filter((row) => inMonth(row.purchaseDate, month))
+          .reduce((total, row) => total + row.totalCost, 0),
+        monthOpeningPaid: null,
+        monthPaymentCash: null,
+        currentOutstanding: null,
+        missingInvoiceCount: rows.filter((row) => row.invoiceStatus === '未取得').length,
+        anomalyCount: anomalies.length,
+      },
+    }
+  }
+
+  const payments = normalizePayments(sourceState.data, purchasesById, anomalies)
   const groupedPayments = paymentsByPurchaseId(payments)
   const allRows = purchases
     .filter((purchase) => purchase.purchaseStatus !== VOID_PURCHASE_STATUS)
@@ -293,6 +384,7 @@ export function buildPurchaseAccountingReadModel({
       purchase,
       groupedPayments.get(purchase.purchaseId) || [],
       anomalies,
+      { validateCache: paymentState === undefined },
     ))
   const rows = allRows.filter((row) => matchesScope(row, projectId, source))
   const paymentRows = payments.filter((payment) => matchesScope(payment, projectId, source))
@@ -300,25 +392,33 @@ export function buildPurchaseAccountingReadModel({
     isRecordedCashFact(payment, PURCHASE_PAYMENT_CASH_SCHEMA),
   )
 
+  const summary = {
+    monthPurchaseCost: rows
+      .filter((row) => inMonth(row.purchaseDate, month))
+      .reduce((total, row) => total + row.totalCost, 0),
+    monthOpeningPaid: rows
+      .filter((row) => inMonth(row.purchaseDate, month))
+      .reduce((total, row) => total + row.openingPaidAmount, 0),
+    monthPaymentCash: cashPaymentRows
+      .filter((payment) => inMonth(payment.paymentDate, month))
+      .reduce((total, payment) => total + payment.jpyAmount, 0),
+    currentOutstanding: rows.reduce((total, row) => total + row.unpaidAmount, 0),
+    missingInvoiceCount: rows.filter((row) => row.invoiceStatus === '未取得').length,
+    anomalyCount: anomalies.length,
+  }
+
   return {
     rows,
     paymentRows,
     cashPaymentRows,
     anomalies,
-    summary: {
-      monthPurchaseCost: rows
-        .filter((row) => inMonth(row.purchaseDate, month))
-        .reduce((total, row) => total + row.totalCost, 0),
-      monthOpeningPaid: rows
-        .filter((row) => inMonth(row.purchaseDate, month))
-        .reduce((total, row) => total + row.openingPaidAmount, 0),
-      monthPaymentCash: cashPaymentRows
-        .filter((payment) => inMonth(payment.paymentDate, month))
-        .reduce((total, payment) => total + payment.jpyAmount, 0),
-      currentOutstanding: rows.reduce((total, row) => total + row.unpaidAmount, 0),
-      missingInvoiceCount: rows.filter((row) => row.invoiceStatus === '未取得').length,
-      anomalyCount: anomalies.length,
-    },
+    currentPayable: paymentBlock('ready', summary.currentOutstanding),
+    monthPayment: paymentBlock('ready', {
+      openingPaidAmount: summary.monthOpeningPaid,
+      paymentCash: summary.monthPaymentCash,
+    }),
+    paymentHealth: paymentBlock('ready', { anomalies }),
+    summary,
   }
 }
 

@@ -413,3 +413,118 @@ test('rejects payments when the purchase ID is missing or blank', () => {
     )
   }
 })
+
+test('forbidden payment state keeps purchase accrual usable without inventing payment facts', () => {
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-07',
+    purchaseRecords: [{
+      purchaseId: 'PO-REDACTED',
+      purchaseDate: '2026-07-18',
+      purchaseStatus: '正常',
+      purchaseSource: '中国采购',
+      totalCost: 80000,
+      invoiceStatus: '未取得',
+    }],
+    paymentRecords: [{
+      paymentId: 'PP-MUST-NOT-BE-READ',
+      purchaseId: 'PO-REDACTED',
+      paymentDate: '2026-07-19',
+      jpyAmount: 80000,
+    }],
+    paymentState: { status: 'forbidden', data: null },
+  })
+
+  assert.equal(model.summary.monthPurchaseCost, 80000)
+  assert.equal(model.rows[0].totalCost, 80000)
+  for (const field of [
+    'openingPaidAmount', 'ledgerPaidAmount', 'paidAmount', 'unpaidAmount',
+    'paymentStatus', 'legacyOpeningEstimated',
+  ]) {
+    assert.equal(Object.hasOwn(model.rows[0], field), false, `${field} must stay absent`)
+  }
+  assert.deepEqual(model.currentPayable, { status: 'forbidden', data: null })
+  assert.deepEqual(model.monthPayment, { status: 'forbidden', data: null })
+  assert.deepEqual(model.paymentHealth, { status: 'forbidden', data: null })
+  assert.equal(model.summary.currentOutstanding, null)
+  assert.equal(model.summary.monthOpeningPaid, null)
+  assert.equal(model.summary.monthPaymentCash, null)
+  assert.deepEqual(model.paymentRows, [])
+  assert.deepEqual(model.cashPaymentRows, [])
+  assert.equal(model.anomalies.some(({ code }) => code === 'legacy_opening_payment'), false)
+})
+
+test('loading and error payment states propagate without upgrading to ready or reading supplied ledgers', () => {
+  for (const status of ['loading', 'error']) {
+    const paymentState = Object.freeze({
+      status,
+      data: null,
+      code: status === 'error' ? 'DATA_OPERATION_FAILED' : '',
+    })
+    const model = buildPurchaseAccountingReadModel({
+      month: '2026-07',
+      purchaseRecords: [purchase({ totalCost: 80000 })],
+      paymentRecords: [payment({ jpyAmount: 80000, paymentDate: '2026-07-20' })],
+      paymentState,
+    })
+
+    for (const block of [model.currentPayable, model.monthPayment, model.paymentHealth]) {
+      assert.equal(block.status, status)
+      assert.equal(block.data, null)
+      assert.notEqual(block, paymentState)
+      assert.equal(Object.isFrozen(block), true)
+    }
+    assert.equal(model.summary.monthPurchaseCost, 80000)
+    assert.equal(model.summary.monthPaymentCash, null)
+  }
+})
+
+test('ready payment state is the sole payment input and returns immutable detached blocks', () => {
+  const sourcePayment = payment({ paymentDate: '2026-07-20', jpyAmount: 3000 })
+  const sourceState = Object.freeze({ status: 'ready', data: Object.freeze([sourcePayment]) })
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-07',
+    purchaseRecords: [purchase({ totalCost: 10000, openingPaidAmount: 2000 })],
+    paymentRecords: [payment({ paymentId: 'PP-IGNORED', jpyAmount: 9000 })],
+    paymentState: sourceState,
+  })
+
+  assert.deepEqual(model.currentPayable, { status: 'ready', data: 5000 })
+  assert.deepEqual(model.monthPayment, {
+    status: 'ready',
+    data: { openingPaidAmount: 2000, paymentCash: 3000 },
+  })
+  assert.equal(model.paymentHealth.status, 'ready')
+  assert.deepEqual(model.paymentHealth.data.anomalies, [])
+  assert.equal(Object.isFrozen(model.currentPayable), true)
+  assert.equal(Object.isFrozen(model.monthPayment.data), true)
+  assert.notEqual(model.monthPayment, sourceState)
+  assert.notEqual(model.paymentRows[0], sourcePayment)
+})
+
+test('malformed or accessor payment state fails closed without invoking accessors', () => {
+  let getterCalls = 0
+  const accessorState = { status: 'ready' }
+  Object.defineProperty(accessorState, 'data', {
+    enumerable: true,
+    get() {
+      getterCalls += 1
+      return [payment()]
+    },
+  })
+
+  for (const paymentState of [
+    accessorState,
+    Object.create({ status: 'ready', data: [payment()] }),
+    { status: 'ready', data: {} },
+    { status: 'unknown', data: null },
+  ]) {
+    const model = buildPurchaseAccountingReadModel({
+      purchaseRecords: [purchase()],
+      paymentState,
+    })
+    assert.equal(model.currentPayable.status, 'error')
+    assert.equal(model.currentPayable.data, null)
+    assert.equal(model.summary.currentOutstanding, null)
+  }
+  assert.equal(getterCalls, 0)
+})
