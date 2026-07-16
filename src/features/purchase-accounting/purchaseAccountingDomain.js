@@ -217,10 +217,10 @@ function uniqueLinkedPaymentTotal(purchaseId, paymentRecords) {
   let total = 0
 
   for (const payment of asArray(paymentRecords)) {
-    if (normalizedId(payment?.purchaseId) !== purchaseId) continue
     const paymentId = normalizedId(payment?.paymentId)
     if (!paymentId || seenIds.has(paymentId)) continue
     seenIds.add(paymentId)
+    if (normalizedId(payment?.purchaseId) !== purchaseId) continue
     const normalizedAmount = normalizeYen(payment?.jpyAmount, { blankIsZero: false })
     if (normalizedAmount.valid) total += normalizedAmount.amount
   }
@@ -278,17 +278,21 @@ export function filterPurchaseAccountingRows(rows = [], filters = {}) {
   )
 }
 
-export function recalculatePurchasePaymentCache(purchase, payments = []) {
+export function recalculatePurchasePaymentCache(purchase, payments = [], options = {}) {
   if (!purchase || typeof purchase !== 'object') return purchase
 
   const purchaseId = normalizedId(purchase.purchaseId)
   const totalCost = normalizeYen(purchase.totalCost).amount
   const ledgerPaidAmount = uniqueLinkedPaymentTotal(purchaseId, payments)
+  const previousPayments = Array.isArray(options?.previousPayments)
+    ? options.previousPayments
+    : payments
+  const previousLedgerPaidAmount = uniqueLinkedPaymentTotal(purchaseId, previousPayments)
   const normalizedOpening = normalizeYen(purchase.openingPaidAmount)
   const openingPaidAmount = purchase.openingPaidAmount === undefined ||
     purchase.openingPaidAmount === null ||
     (typeof purchase.openingPaidAmount === 'string' && purchase.openingPaidAmount.trim() === '')
-    ? Math.max(normalizeYen(purchase.paidAmount).amount - ledgerPaidAmount, 0)
+    ? Math.max(normalizeYen(purchase.paidAmount).amount - previousLedgerPaidAmount, 0)
     : normalizedOpening.amount
   const paidAmount = openingPaidAmount + ledgerPaidAmount
 

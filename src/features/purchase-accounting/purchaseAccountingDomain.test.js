@@ -234,6 +234,49 @@ test('recalculates the purchase cache from opening payment and unique linked pay
   assert.equal(original.paidAmount, 9000)
 })
 
+test('cache recalculation applies global first-payment-ID wins before purchase filtering', () => {
+  const recalculated = recalculatePurchasePaymentCache(
+    purchase({ purchaseId: 'PO-1', openingPaidAmount: 0 }),
+    [
+      payment({ paymentId: 'PP-DUP', purchaseId: 'PO-2', jpyAmount: 3000 }),
+      payment({ paymentId: 'PP-DUP', purchaseId: 'PO-1', jpyAmount: 4000 }),
+    ],
+  )
+
+  assert.equal(recalculated.paidAmount, 0)
+  assert.equal(recalculated.unpaidAmount, 10000)
+  assert.equal(recalculated.paymentStatus, '未付款')
+})
+
+test('legacy cache deletion estimates opening from previous payments', () => {
+  const legacyPurchase = purchase({ openingPaidAmount: undefined, paidAmount: 6000 })
+  const previousPayments = [payment({ paymentId: 'PP-OLD', jpyAmount: 6000 })]
+  const recalculated = recalculatePurchasePaymentCache(
+    legacyPurchase,
+    [],
+    { previousPayments },
+  )
+
+  assert.equal(recalculated.openingPaidAmount, 0)
+  assert.equal(recalculated.paidAmount, 0)
+  assert.equal(recalculated.unpaidAmount, 10000)
+  assert.equal(recalculated.paymentStatus, '未付款')
+})
+
+test('legacy cache addition does not absorb the new payment into opening', () => {
+  const legacyPurchase = purchase({ openingPaidAmount: undefined, paidAmount: 6000 })
+  const recalculated = recalculatePurchasePaymentCache(
+    legacyPurchase,
+    [payment({ paymentId: 'PP-NEW', jpyAmount: 2000 })],
+    { previousPayments: [] },
+  )
+
+  assert.equal(recalculated.openingPaidAmount, 6000)
+  assert.equal(recalculated.paidAmount, 8000)
+  assert.equal(recalculated.unpaidAmount, 2000)
+  assert.equal(recalculated.paymentStatus, '部分付款')
+})
+
 test('allows only a positive valid payment within the derived outstanding balance', () => {
   const order = purchase({ openingPaidAmount: 2000 })
   const payments = [payment({ jpyAmount: 3000 })]
