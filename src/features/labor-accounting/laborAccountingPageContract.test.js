@@ -372,6 +372,100 @@ test('zero-unit zero-cost excused conclusions can confirm without salary or mone
   assert.ok(hiddenSalaryBlockers.every((reason) => !reason.includes('工资标准未设置')))
 })
 
+test('retained dashboard is visibly marked stale after a failed refresh and clears on success', () => {
+  const { DashboardLoadNotice, dailyDashboardPresentationState } = moduleFor('page')
+  assert.equal(typeof DashboardLoadNotice, 'function')
+  assert.equal(typeof dailyDashboardPresentationState, 'function')
+
+  const failedState = { status: 'error', error: '服务器刷新失败' }
+  assert.deepEqual(dailyDashboardPresentationState(failedState, dashboard), {
+    showDashboard: true,
+    stale: true,
+    error: '服务器刷新失败',
+  })
+  const staleMarkup = render(DashboardLoadNotice, {
+    loadState: failedState,
+    dashboard,
+    onRetry() {},
+  })
+  assert.match(staleMarkup, /当前数据可能已过期/u)
+  assert.match(staleMarkup, /服务器刷新失败/u)
+  assert.match(staleMarkup, /重新加载/u)
+
+  assert.deepEqual(dailyDashboardPresentationState(
+    { status: 'success', error: '' }, dashboard,
+  ), { showDashboard: true, stale: false, error: '' })
+  assert.equal(render(DashboardLoadNotice, {
+    loadState: { status: 'success', error: '' },
+    dashboard,
+    onRetry() {},
+  }), '')
+})
+
+test('revoked money permissions lock an existing monetary resolution but not a new zero-cost day', () => {
+  const {
+    default: AttendanceResolutionDialog,
+    existingResolutionHasMoneyScope,
+    resolutionConfirmBlockers,
+  } = moduleFor('dialog')
+  assert.equal(typeof existingResolutionHasMoneyScope, 'function')
+
+  const permissionsRevoked = {
+    ...detail,
+    permissions: {
+      canResolve: true,
+      canViewSalary: false,
+      canViewProjectCosts: true,
+      canUpdateProjectCosts: false,
+    },
+    salary: null,
+    resolution: {
+      resolutionId: '62000000-0000-4000-8000-000000000001',
+      resolutionType: 'full_day',
+      attendanceUnits: 1,
+      accountingStatus: 'confirmed',
+      scheduleRequired: true,
+      resolutionNote: '',
+      confirmedAt: '2026-07-18T17:05:00+09:00',
+      version: 1,
+    },
+    allocations: [{
+      allocationId: '63000000-0000-4000-8000-000000000001',
+      projectId: 'PROJECT-001',
+      projectName: '东京站现场',
+      allocationNote: '',
+    }],
+  }
+  const zeroCostRest = {
+    resolutionType: 'rest',
+    attendanceUnits: 0,
+    finalProjectCost: 0,
+    allocations: [],
+    resolutionNote: '',
+    version: 1,
+  }
+  assert.equal(existingResolutionHasMoneyScope(permissionsRevoked), true)
+  assert.ok(resolutionConfirmBlockers(permissionsRevoked, zeroCostRest).some(
+    (reason) => reason.includes('已有项目人工成本') && reason.includes('权限'),
+  ))
+  const lockedMarkup = render(AttendanceResolutionDialog, {
+    detail: permissionsRevoked,
+    draft: zeroCostRest,
+    saving: false,
+    error: '',
+    onChange() {},
+    onSaveDraft() {},
+    onConfirm() {},
+    onClose() {},
+  })
+  assert.match(lockedMarkup, /class="labor-save-draft" disabled=""/u)
+  assert.match(lockedMarkup, /class="labor-confirm-resolution" disabled=""/u)
+
+  const brandNewZeroCost = { ...permissionsRevoked, resolution: null, allocations: [] }
+  assert.equal(existingResolutionHasMoneyScope(brandNewZeroCost), false)
+  assert.deepEqual(resolutionConfirmBlockers(brandNewZeroCost, zeroCostRest), [])
+})
+
 test('daily filters retain all active employees and issue rows without recomputing server summary', () => {
   const { filterDailyEmployees } = moduleFor('board')
   assert.equal(filterDailyEmployees(dashboard.employees, filters).length, 2)

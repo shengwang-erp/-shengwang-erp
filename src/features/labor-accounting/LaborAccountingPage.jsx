@@ -24,6 +24,37 @@ function notifyAlertCountChange(onAlertCountChange) {
   }
 }
 
+export function dailyDashboardPresentationState(loadState, dashboard) {
+  const showDashboard = Boolean(dashboard)
+  const stale = showDashboard && ['loading', 'error'].includes(loadState?.status)
+  return {
+    showDashboard,
+    stale,
+    error: loadState?.status === 'error' ? String(loadState.error || '') : '',
+  }
+}
+
+export function DashboardLoadNotice({ loadState, dashboard, onRetry }) {
+  const presentation = dailyDashboardPresentationState(loadState, dashboard)
+  if (!presentation.stale) return null
+  const failed = loadState.status === 'error'
+  return (
+    <div className="labor-stale-warning" role={failed ? 'alert' : 'status'}>
+      <span>
+        <strong>{failed
+          ? '看板刷新失败，当前数据可能已过期'
+          : '正在刷新，当前仍显示上次数据'}</strong>
+        <small>{failed
+          ? presentation.error
+          : '刷新成功后会自动替换，并清除此提示。'}</small>
+      </span>
+      {failed && (
+        <button type="button" onClick={() => onRetry?.()}>重新加载</button>
+      )}
+    </div>
+  )
+}
+
 export default function LaborAccountingPage({
   service = laborAccountingService,
   initialWorkDate = '',
@@ -272,6 +303,12 @@ export default function LaborAccountingPage({
             </div>
           </div>
         )}
+
+        <DashboardLoadNotice
+          loadState={loadState}
+          dashboard={dashboard}
+          onRetry={() => void loadDashboard(workDate)}
+        />
 
         {dashboard && (
           <DailyAttendanceBoard

@@ -233,6 +233,33 @@
   color: #76501a;
 }
 
+.labor-accounting-page .labor-stale-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px solid #ddad55;
+  border-radius: 12px;
+  background: var(--labor-warning-soft);
+  color: #714a12;
+}
+
+.labor-accounting-page .labor-stale-warning > span {
+  display: grid;
+  gap: 3px;
+}
+
+.labor-accounting-page .labor-stale-warning small {
+  color: #795f36;
+}
+
+.labor-accounting-page .labor-stale-warning button {
+  flex: 0 0 auto;
+  border-color: #b57e21;
+  color: #704b12;
+}
+
 .labor-accounting-page .labor-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1103,6 +1130,11 @@
     align-items: stretch;
     flex-direction: column;
     padding: 18px;
+  }
+
+  .labor-accounting-page .labor-stale-warning {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .labor-accounting-page .labor-summary-grid,

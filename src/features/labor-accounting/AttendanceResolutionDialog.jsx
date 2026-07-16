@@ -104,10 +104,27 @@ export function resolutionReadOnlyReason(detail) {
   return ''
 }
 
+export function existingResolutionHasMoneyScope(detail) {
+  if (!detail?.resolution) return false
+  return Number(detail.resolution.attendanceUnits) > 0 ||
+    Number(detail.resolution.finalProjectCost) > 0 ||
+    (Array.isArray(detail.allocations) && detail.allocations.length > 0)
+}
+
+export function resolutionWriteBlockedReason(detail) {
+  const readOnlyReason = resolutionReadOnlyReason(detail)
+  if (readOnlyReason) return readOnlyReason
+  if (existingResolutionHasMoneyScope(detail) &&
+      detail?.permissions?.canUpdateProjectCosts !== true) {
+    return '该日结已有项目人工成本；当前账号缺少完整费用权限，不能修改或清空原结论'
+  }
+  return ''
+}
+
 export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}) {
   const blockers = []
-  const readOnlyReason = resolutionReadOnlyReason(detail)
-  if (readOnlyReason) blockers.push(readOnlyReason)
+  const writeBlockedReason = resolutionWriteBlockedReason(detail)
+  if (writeBlockedReason) blockers.push(writeBlockedReason)
   if (saving) blockers.push('请求正在处理中')
   if (detail?.facts?.hasOpenSession) blockers.push('员工仍在打卡中，请完成下班打卡后确认')
   if (!validResolutionUnits(draft)) blockers.push('核算类型与确认人天不一致')
@@ -402,7 +419,7 @@ export default function AttendanceResolutionDialog({
     [detail, providedDraft],
   )
   const [draft, setDraft] = useState(initialDraft)
-  const readOnlyReason = resolutionReadOnlyReason(detail)
+  const readOnlyReason = resolutionWriteBlockedReason(detail)
   const blockers = resolutionConfirmBlockers(detail, draft, { saving })
   const controlsDisabled = saving || Boolean(readOnlyReason)
 
