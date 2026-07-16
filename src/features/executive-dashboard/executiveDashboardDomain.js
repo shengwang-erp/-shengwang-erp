@@ -1022,6 +1022,12 @@ export function buildExecutiveDashboardReadModel(input) {
         months: windowMonths,
       })
     : emptyValidated
+  const purchaseMonth = states.purchaseAccrual.status === 'ready'
+    ? validateDatedMoneyRows(scopedPurchasePrepared, {
+        source: 'purchaseAccrual', amountField: 'totalCost', dateFields: ['purchaseDate'],
+        months: selectedMonths,
+      })
+    : emptyValidated
   const paymentSanitized = states.purchasePayments.status === 'ready'
     ? validateDatedMoneyRows(scopedPaymentPrepared, {
         source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
@@ -1031,6 +1037,12 @@ export function buildExecutiveDashboardReadModel(input) {
     ? validateDatedMoneyRows(scopedPaymentPrepared, {
         source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
         months: windowMonths,
+      })
+    : emptyValidated
+  const paymentMonth = states.purchasePayments.status === 'ready'
+    ? validateDatedMoneyRows(scopedPaymentPrepared, {
+        source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
+        months: selectedMonths,
       })
     : emptyValidated
   const receiptSanitized = states.receipts.status === 'ready'
@@ -1357,89 +1369,121 @@ export function buildExecutiveDashboardReadModel(input) {
   }
 
   let purchaseOperations
-  let purchaseAccounting = null
   if (!access.purchase.accrual) purchaseOperations = forbiddenBlock(['purchaseAccrual'])
-  else if (purchaseSanitized.blocking) {
-    purchaseOperations = errorBlock(
-      ['purchaseAccrual'], '采购金额不完整或超出安全范围，未发布部分合计。',
-    )
-  }
   else {
     const blocked = blockResolution(states, ['purchaseAccrual'])
     if (blocked) purchaseOperations = blocked
     else {
-      try {
-        const paymentAccess = access.purchase.accrual && access.purchase.payments
-        const payableAccess = paymentAccess && access.purchase.payable
-        const anomalyAccess = paymentAccess && access.purchase.anomalies
-        const effectivePaymentStatus = paymentSanitized.blocking
-          ? 'error'
-          : states.purchasePayments.status
-        const paymentState = paymentAccess
-          ? {
-              status: effectivePaymentStatus,
-              data: effectivePaymentStatus === 'ready' ? paymentSanitized.rows : null,
-            }
-          : { status: 'forbidden', data: null }
-        purchaseAccounting = buildPurchaseAccountingReadModel({
-          purchaseRecords: scopedPurchases,
-          paymentRecords: paymentAccess && effectivePaymentStatus === 'ready'
-            ? paymentSanitized.rows
-            : [],
-          paymentState,
-          month: selectedMonth,
-          projectId: filters.projectId === 'all' || !scopeIds.has(filters.projectId)
-            ? ''
-            : filters.projectId,
-        })
-        const occurrenceRows = purchaseAccounting.rows.filter((row) =>
-          dateInMonth(row, ['purchaseDate'], selectedMonth),
+      const paymentAccess = access.purchase.payments
+      const payableAccess = paymentAccess && access.purchase.payable
+      const anomalyAccess = paymentAccess && access.purchase.anomalies
+      const projectId = filters.projectId === 'all' || !scopeIds.has(filters.projectId)
+        ? ''
+        : filters.projectId
+
+      let occurrence = mini('error', null)
+      if (!purchaseMonth.blocking) {
+        const monthCost = sumField(
+          purchaseMonth.rows, 'totalCost', [], 'purchaseAccrual',
         )
-        const paymentStatus = paymentAccess
-          ? effectivePaymentStatus
-          : 'forbidden'
-        const payableStatus = payableAccess
-          ? effectivePaymentStatus
-          : 'forbidden'
-        const healthStatus = anomalyAccess
-          ? effectivePaymentStatus
-          : 'forbidden'
-        const anomalies = [
-          ...purchaseSanitized.anomalies,
-          ...paymentSanitized.anomalies,
-          ...purchaseAccounting.anomalies,
-        ]
         const previousMonth = months.at(-2)
-        const previousCost = sumField(
-          purchaseAccounting.rows.filter((row) => dateInMonth(row, ['purchaseDate'], previousMonth)),
-          'totalCost', [], 'purchaseAccrual',
-        )
-        purchaseOperations = readyBlock(states, ['purchaseAccrual'], {
-          occurrence: mini('ready', {
-            count: occurrenceRows.length,
-            monthCost: purchaseAccounting.summary.monthPurchaseCost,
-            comparison: comparison(purchaseAccounting.summary.monthPurchaseCost, previousCost),
-          }),
-          payment: paymentStatus === 'ready'
-            ? mini('ready', {
-                monthPaymentCash: purchaseAccounting.summary.monthPaymentCash,
-                comparison: null,
-              })
-            : mini(paymentStatus, null),
-          payable: payableStatus === 'ready'
-            ? mini('ready', { currentOutstanding: purchaseAccounting.summary.currentOutstanding })
-            : mini(payableStatus, null),
-          health: healthStatus === 'ready'
-            ? mini('ready', {
-                anomalyCount: anomalies.length,
-                missingInvoiceCount: purchaseAccounting.summary.missingInvoiceCount,
-                anomalies,
-              })
-            : mini(healthStatus, null),
-        })
-      } catch {
-        purchaseOperations = errorBlock(['purchaseAccrual'], '采购数据格式无效。')
+        const previousCost = purchaseWindow.blocking
+          ? null
+          : sumField(
+              purchaseWindow.rows.filter((row) =>
+                dateInMonth(row, ['purchaseDate'], previousMonth)),
+              'totalCost', [], 'purchaseAccrual',
+            )
+        if (monthCost !== null) {
+          occurrence = mini('ready', {
+            count: purchaseMonth.rows.length,
+            monthCost,
+            comparison: comparison(monthCost, previousCost),
+          })
+        }
       }
+
+      let paymentStatus = paymentAccess ? states.purchasePayments.status : 'forbidden'
+      let monthPaymentAccounting = null
+      if (paymentAccess && paymentStatus === 'ready') {
+        if (paymentMonth.blocking) paymentStatus = 'error'
+        else {
+          try {
+            const paymentTotals = new Map()
+            for (const payment of paymentMonth.rows) {
+              const total = safeAdd(
+                paymentTotals.get(payment.purchaseId) || 0,
+                payment.jpyAmount,
+              )
+              if (total === null) throw new TypeError('purchase payment overflow')
+              paymentTotals.set(payment.purchaseId, total)
+            }
+            const linkPurchases = scopedPurchasePrepared.rows.map((row) => ({
+              ...row,
+              totalCost: safeYen(row.totalCost) ?? paymentTotals.get(row.purchaseId) ?? 0,
+              openingPaidAmount: 0,
+            }))
+            monthPaymentAccounting = buildPurchaseAccountingReadModel({
+              purchaseRecords: linkPurchases,
+              paymentRecords: paymentMonth.rows,
+              paymentState: { status: 'ready', data: paymentMonth.rows },
+              month: selectedMonth,
+              projectId,
+            })
+          } catch {
+            paymentStatus = 'error'
+          }
+        }
+      }
+
+      let lifetimeStatus = paymentAccess ? states.purchasePayments.status : 'forbidden'
+      let lifetimeAccounting = null
+      if (paymentAccess && lifetimeStatus === 'ready') {
+        if (purchaseSanitized.blocking || paymentSanitized.blocking) {
+          lifetimeStatus = 'error'
+        } else {
+          try {
+            lifetimeAccounting = buildPurchaseAccountingReadModel({
+              purchaseRecords: purchaseSanitized.rows,
+              paymentRecords: paymentSanitized.rows,
+              paymentState: { status: 'ready', data: paymentSanitized.rows },
+              month: selectedMonth,
+              projectId,
+            })
+          } catch {
+            lifetimeStatus = 'error'
+          }
+        }
+      }
+
+      const anomalies = lifetimeStatus === 'ready'
+        ? [
+            ...purchaseSanitized.anomalies,
+            ...paymentSanitized.anomalies,
+            ...lifetimeAccounting.anomalies,
+          ]
+        : []
+      const payableStatus = payableAccess ? lifetimeStatus : 'forbidden'
+      const healthStatus = anomalyAccess ? lifetimeStatus : 'forbidden'
+      purchaseOperations = readyBlock(states, ['purchaseAccrual'], {
+        occurrence,
+        payment: paymentStatus === 'ready'
+          ? mini('ready', {
+              monthPaymentCash: monthPaymentAccounting.summary.monthPaymentCash,
+              comparison: null,
+            })
+          : mini(paymentStatus, null),
+        payable: payableStatus === 'ready'
+          ? mini('ready', { currentOutstanding: lifetimeAccounting.summary.currentOutstanding })
+          : mini(payableStatus, null),
+        health: healthStatus === 'ready'
+          ? mini('ready', {
+              anomalyCount: anomalies.length,
+              missingInvoiceCount: lifetimeAccounting.summary.missingInvoiceCount,
+              anomalies,
+            })
+          : mini(healthStatus, null),
+      })
     }
   }
 

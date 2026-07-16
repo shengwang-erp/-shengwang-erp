@@ -711,7 +711,11 @@ test('invalid envelopes throw while malformed source data and unsafe aggregates 
     ]),
   })
   const model = buildExecutiveDashboardReadModel(input({ sources: unsafe }))
-  assert.equal(model.purchaseOperations.status, 'error')
+  assert.equal(model.purchaseOperations.status, 'ready')
+  assert.deepEqual(model.purchaseOperations.data.occurrence, { status: 'error', data: null })
+  assert.equal(model.purchaseOperations.data.payment.status, 'ready')
+  assert.deepEqual(model.purchaseOperations.data.payable, { status: 'error', data: null })
+  assert.deepEqual(model.purchaseOperations.data.health, { status: 'error', data: null })
   assert.equal(model.costs.status, 'error')
   assert.equal(Object.prototype.polluted, undefined)
 })
@@ -1146,7 +1150,14 @@ test('invalid monetary contributors fail closed without suppressing independent 
       ]),
     }),
   }))
-  assert.equal(purchaseInvalid.purchaseOperations.status, 'error')
+  assert.equal(purchaseInvalid.purchaseOperations.status, 'ready')
+  assert.deepEqual(purchaseInvalid.purchaseOperations.data.occurrence,
+    { status: 'error', data: null })
+  assert.equal(purchaseInvalid.purchaseOperations.data.payment.status, 'ready')
+  assert.deepEqual(purchaseInvalid.purchaseOperations.data.payable,
+    { status: 'error', data: null })
+  assert.deepEqual(purchaseInvalid.purchaseOperations.data.health,
+    { status: 'error', data: null })
   assert.equal(purchaseInvalid.cashFlow.status, 'ready')
   assert.equal(purchaseInvalid.cashFlow.data.componentStatus.purchaseOutflow, 'ready')
   assert.equal(purchaseInvalid.cashFlow.data.series.at(-1).purchaseOutflow, 25)
@@ -1456,9 +1467,115 @@ test('window current and lifetime consumers validate only their exact date horiz
       purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
     }]) }),
   }))
-  assert.equal(historicalPurchase.purchaseOperations.status, 'error')
+  assert.equal(historicalPurchase.purchaseOperations.status, 'ready')
+  assert.equal(historicalPurchase.purchaseOperations.data.occurrence.status, 'ready')
+  assert.equal(historicalPurchase.purchaseOperations.data.occurrence.data.monthCost, 200)
+  assert.equal(historicalPurchase.purchaseOperations.data.payment.status, 'ready')
+  assert.deepEqual(historicalPurchase.purchaseOperations.data.payable,
+    { status: 'error', data: null })
+  assert.deepEqual(historicalPurchase.purchaseOperations.data.health,
+    { status: 'error', data: null })
   assert.equal(historicalPurchase.costs.status, 'ready')
   assert.equal(historicalPurchase.projectRanking.status, 'error')
+})
+
+test('purchase operations separate month occurrence and payment from lifetime payable and health', () => {
+  const base = sourceFixture()
+  const cases = [
+    {
+      name: 'historical purchase',
+      sources: {
+        purchaseAccrual: ready([...base.purchaseAccrual.data, {
+          purchaseId: 'PO-HISTORICAL-INVALID', projectId: 'P1', purchaseDate: '2020-01-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+        }]),
+      },
+      occurrence: 'ready',
+      payment: 'ready',
+    },
+    {
+      name: 'selected-month purchase',
+      sources: {
+        purchaseAccrual: ready([...base.purchaseAccrual.data, {
+          purchaseId: 'PO-MONTH-INVALID', projectId: 'P1', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+        }]),
+      },
+      occurrence: 'error',
+      payment: 'ready',
+    },
+    {
+      name: 'historical payment',
+      sources: {
+        purchasePayments: ready([...base.purchasePayments.data, {
+          paymentId: 'PP-HISTORICAL-INVALID', purchaseId: 'PO-JULY',
+          paymentDate: '2020-01-15', paymentDateSource: 'recorded', jpyAmount: -1,
+        }]),
+      },
+      occurrence: 'ready',
+      payment: 'ready',
+    },
+    {
+      name: 'selected-month payment',
+      sources: {
+        purchasePayments: ready([...base.purchasePayments.data, {
+          paymentId: 'PP-MONTH-INVALID', purchaseId: 'PO-JULY',
+          paymentDate: '2026-07-15', paymentDateSource: 'recorded', jpyAmount: -1,
+        }]),
+      },
+      occurrence: 'ready',
+      payment: 'error',
+    },
+  ]
+
+  for (const item of cases) {
+    const model = buildExecutiveDashboardReadModel(input({
+      sources: sourceFixture(item.sources),
+    }))
+    const purchase = model.purchaseOperations
+    assert.equal(purchase.status, 'ready', item.name)
+    assert.equal(purchase.data.occurrence.status, item.occurrence, `${item.name}:occurrence`)
+    assert.equal(purchase.data.payment.status, item.payment, `${item.name}:payment`)
+    if (item.occurrence === 'ready') {
+      assert.equal(purchase.data.occurrence.data.monthCost, 200, item.name)
+    } else assert.equal(purchase.data.occurrence.data, null, item.name)
+    if (item.payment === 'ready') {
+      assert.equal(purchase.data.payment.data.monthPaymentCash, 25, item.name)
+    } else assert.equal(purchase.data.payment.data, null, item.name)
+    assert.deepEqual(purchase.data.payable, { status: 'error', data: null }, item.name)
+    assert.deepEqual(purchase.data.health, { status: 'error', data: null }, item.name)
+  }
+
+  const otherProject = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      purchaseAccrual: ready([
+        ...base.purchaseAccrual.data,
+        {
+          purchaseId: 'PO-P2-MONTH-INVALID', projectId: 'P2', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+        },
+        {
+          purchaseId: 'PO-P2-LINK', projectId: 'P2', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: 10,
+        },
+      ]),
+      purchasePayments: ready([
+        ...base.purchasePayments.data,
+        {
+          paymentId: 'PP-P2-HISTORICAL-INVALID', purchaseId: 'PO-P2-LINK',
+          paymentDate: '2020-01-15', paymentDateSource: 'recorded', jpyAmount: -1,
+        },
+        {
+          paymentId: 'PP-P2-MONTH-INVALID', purchaseId: 'PO-P2-LINK',
+          paymentDate: '2026-07-15', paymentDateSource: 'recorded', jpyAmount: -1,
+        },
+      ]),
+    }),
+  }))
+  assert.deepEqual(
+    otherProject.purchaseOperations,
+    buildExecutiveDashboardReadModel(input()).purchaseOperations,
+  )
 })
 
 test('labor validation separates selected project current window and lifetime scopes', () => {
