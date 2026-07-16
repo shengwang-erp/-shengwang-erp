@@ -17,6 +17,7 @@ const ERROR_MESSAGES = Object.freeze({
   LABOR_ACCOUNTING_INVALID_INPUT: '人工核算请求参数无效',
   LABOR_ACCOUNTING_INVALID_RESPONSE: '人工核算服务返回了无效数据',
   LABOR_ACCOUNTING_NOT_CONFIGURED: '云端人工核算服务未配置',
+  LABOR_ACCOUNTING_REQUEST_FAILED: '人工核算请求失败，请稍后重试',
   LABOR_ACCOUNTING_SERVICE_UNAVAILABLE: '人工核算服务暂不可用，请稍后重试',
 })
 
@@ -149,7 +150,9 @@ function objectShape(value, expectedKeys, factory = invalidResponse) {
     for (const name of names) {
       if (!expected.has(name) || POLLUTION_KEYS.has(name)) return fail(factory)
       const descriptor = Object.getOwnPropertyDescriptor(value, name)
-      if (!descriptor || !Object.hasOwn(descriptor, 'value')) return fail(factory)
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        return fail(factory)
+      }
     }
     for (const key in value) {
       if (!Object.hasOwn(value, key)) return fail(factory)
@@ -259,6 +262,21 @@ function dtoMonth(value) {
   const parts = dateParts(value, invalidResponse)
   if (parts.day !== 1) throw invalidResponse()
   return value.slice(0, 7)
+}
+
+function dtoTrendMonth(value) {
+  if (typeof value !== 'string') throw invalidResponse()
+  const match = MONTH_PATTERN.exec(value)
+  if (!match) throw invalidResponse()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const monthIndex = year * 12 + month - 1
+  const minimumIndex = (MIN_YEAR - 1) * 12 + 7
+  const maximumIndex = MAX_YEAR * 12 + 11
+  if (month < 1 || month > 12 || monthIndex < minimumIndex || monthIndex > maximumIndex) {
+    throw invalidResponse()
+  }
+  return value
 }
 
 function minuteTime(value, { factory = invalidResponse } = {}) {
@@ -965,7 +983,7 @@ function validateProjectReport(value, statusFilter) {
   if (trendRows.length !== 6) throw invalidResponse()
   const trend = trendRows.map((item) => {
     const trendRow = objectShape(item, ['salaryMonth', 'amount'])
-    return { salaryMonth: dtoMonth(trendRow.salaryMonth), amount: yenValue(trendRow.amount) }
+    return { salaryMonth: dtoTrendMonth(trendRow.salaryMonth), amount: yenValue(trendRow.amount) }
   })
   const compositionRows = arrayShape(row.employeeComposition)
   const detailRows = arrayShape(row.dailyDetails)
@@ -1210,6 +1228,14 @@ function remoteError(cause) {
   )
 }
 
+function requestFailed(cause) {
+  return new LaborAccountingServiceError(
+    'LABOR_ACCOUNTING_REQUEST_FAILED',
+    ERROR_MESSAGES.LABOR_ACCOUNTING_REQUEST_FAILED,
+    cause,
+  )
+}
+
 function responsePair(value) {
   try {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) throw invalidResponse()
@@ -1235,18 +1261,31 @@ function factoryConfiguration(client, options) {
 export function createLaborAccountingService(client = supabase, options) {
   const configured = factoryConfiguration(client, options)
   const ensureClient = () => {
-    if (!configured || client === null || client === undefined || typeof client.rpc !== 'function') {
+    if (!configured || client === null || client === undefined) {
       throw new LaborAccountingServiceError(
         'LABOR_ACCOUNTING_NOT_CONFIGURED',
         ERROR_MESSAGES.LABOR_ACCOUNTING_NOT_CONFIGURED,
       )
     }
+    let rpc
+    try {
+      rpc = client.rpc
+    } catch (cause) {
+      throw requestFailed(cause)
+    }
+    if (typeof rpc !== 'function') {
+      throw new LaborAccountingServiceError(
+        'LABOR_ACCOUNTING_NOT_CONFIGURED',
+        ERROR_MESSAGES.LABOR_ACCOUNTING_NOT_CONFIGURED,
+      )
+    }
+    return rpc
   }
   const call = async (name, args = {}) => {
-    ensureClient()
+    const rpc = ensureClient()
     let raw
     try {
-      raw = await client.rpc(name, args)
+      raw = await Reflect.apply(rpc, client, [name, args])
     } catch (cause) {
       throw remoteError(cause)
     }

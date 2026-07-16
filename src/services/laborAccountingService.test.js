@@ -603,6 +603,23 @@ test('daily dashboard validates both salary permission variants and exact issue 
   }
 })
 
+test('daily dashboard rejects non-enumerable required response fields', async () => {
+  const data = dailyDashboard()
+  const hiddenSummary = {}
+  for (const [key, value] of Object.entries(data.summary)) {
+    Object.defineProperty(hiddenSummary, key, {
+      value, enumerable: false, configurable: true, writable: true,
+    })
+  }
+  data.summary = hiddenSummary
+  const { service } = serviceWithResponder(() => data)
+
+  await assert.rejects(
+    () => service.listDailyDashboard({ workDate: WORK_DATE }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
+})
+
 test('resolution detail accepts only explicit salary and project-money variants', async () => {
   const variants = [
     { canViewSalary: false, canViewProjectCosts: false, amount: false },
@@ -734,6 +751,30 @@ test('project reporting validates salary redaction and all confirmed/pending det
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
+})
+
+test('project trend is bounded to the six-month lookback needed by public report months', async () => {
+  const boundary = projectReport()
+  boundary.salaryMonth = '1900-01-01'
+  boundary.trend = ['1899-08', '1899-09', '1899-10', '1899-11', '1899-12', '1900-01']
+    .map((salaryMonth) => ({ salaryMonth, amount: 0 }))
+  const boundaryService = serviceWithResponder(() => boundary).service
+  const result = await boundaryService.listProjectLaborCosts({
+    month: '1900-01', projectId: null, employeeProfileId: null, status: 'all',
+  })
+  assert.deepEqual(result.trend.map((row) => row.salaryMonth), [
+    '1899-08', '1899-09', '1899-10', '1899-11', '1899-12', '1900-01',
+  ])
+
+  const tooEarly = clone(boundary)
+  tooEarly.trend[0].salaryMonth = '1899-07'
+  const tooEarlyService = serviceWithResponder(() => tooEarly).service
+  await assert.rejects(
+    () => tooEarlyService.listProjectLaborCosts({
+      month: '1900-01', projectId: null, employeeProfileId: null, status: 'all',
+    }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
 })
 
 test('settings, exports, alerts, and bridge DTOs reject malformed nested values and project maps', async () => {
@@ -1037,6 +1078,26 @@ test('only the six approved hints produce specific safe errors and causes stay n
   await assert.rejects(() => thrownService.getAlertCount(), (error) =>
     error.code === 'LABOR_ACCOUNTING_SERVICE_UNAVAILABLE' && error.cause === thrown &&
     !error.message.includes('private'))
+})
+
+test('throwing RPC property access becomes a safe request failure', async () => {
+  const privateCause = new Error('PRIVATE_DATABASE_DETAIL')
+  const client = {}
+  Object.defineProperty(client, 'rpc', {
+    enumerable: true,
+    get() { throw privateCause },
+  })
+  const service = createLaborAccountingService(client, { configured: true })
+
+  await assert.rejects(() => service.getAlertCount(), (error) => {
+    assert.ok(error instanceof LaborAccountingServiceError)
+    assert.equal(error.code, 'LABOR_ACCOUNTING_REQUEST_FAILED')
+    assert.equal(error.userMessage, '人工核算请求失败，请稍后重试')
+    assert.strictEqual(error.cause, privateCause)
+    assert.doesNotMatch(error.message, /PRIVATE_DATABASE_DETAIL/u)
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE_DATABASE_DETAIL/u)
+    return true
+  })
 })
 
 test('missing clients and malformed RPC implementations fail closed without fallback', async () => {
