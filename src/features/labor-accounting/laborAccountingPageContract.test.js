@@ -11,6 +11,9 @@ const COMPONENT_FILES = Object.freeze({
   table: 'AttendanceStatusTable.jsx',
   queue: 'AccountingExceptionQueue.jsx',
   dialog: 'AttendanceResolutionDialog.jsx',
+  monthly: 'MonthlyPayrollTab.jsx',
+  project: 'ProjectLaborCostTab.jsx',
+  settings: 'AttendanceAccountingSettings.jsx',
 })
 
 const sourceEntries = await Promise.all(Object.entries(COMPONENT_FILES).map(async ([key, name]) => [
@@ -213,6 +216,142 @@ const draft = Object.freeze({
   finalProjectCost: 12000,
   allocations: [{ projectId: 'PROJECT-001', amount: 12000, allocationNote: '' }],
   resolutionNote: '',
+  version: 0,
+})
+
+const monthlyEmployee = Object.freeze({
+  employeeProfileId: employee.employeeProfileId,
+  employeeNumber: employee.employeeNumber,
+  employeeName: employee.name,
+  department: employee.department,
+  fullDays: 20,
+  halfDays: 1,
+  excusedDays: 1,
+  absenceDays: 0,
+  pendingDays: 0,
+  issueCounts: { late: 1, early: 1, abnormalLocation: 1, overtimePending: 0 },
+  status: 'ready',
+  payrollId: null,
+  version: 0,
+  salaryType: '日薪',
+  baseSalarySnapshot: 12000,
+  basePay: 246000,
+  overtimePay: 1000,
+  bonus: 2000,
+  deduction: 500,
+  netSalary: 248500,
+  projectAllocatedAmount: 246000,
+  projectUnallocatedAmount: 0,
+  confirmationNote: '七月工资',
+  confirmedAt: null,
+})
+
+const legacyMonthlyEmployee = Object.freeze({
+  ...monthlyEmployee,
+  source: 'legacy',
+  employeeProfileId: null,
+  employeeNumber: 'LEG-001',
+  employeeName: '历史员工',
+  department: '',
+  fullDays: 0,
+  halfDays: 0,
+  excusedDays: 0,
+  status: 'confirmed',
+  payrollId: null,
+  version: 0,
+})
+
+const monthlyReport = Object.freeze({
+  salaryMonth: '2026-07',
+  permissions: { canViewSalary: true, canUpdateSalary: true },
+  summary: {
+    employeeCount: 2,
+    confirmedFullDays: 20,
+    confirmedHalfDays: 1,
+    absenceDays: 0,
+    pendingCount: 0,
+    salaryPreviewTotal: 497000,
+    projectAllocatedTotal: 492000,
+    projectUnallocatedTotal: 0,
+  },
+  employees: [monthlyEmployee, legacyMonthlyEmployee],
+  reconciliation: { postActivationLegacyRows: 1, globalMalformedLegacyRows: 0 },
+})
+
+const redactedMonthlyReport = Object.freeze({
+  salaryMonth: '2026-07',
+  permissions: { canViewSalary: false, canUpdateSalary: false },
+  summary: {
+    employeeCount: 1,
+    confirmedFullDays: 20,
+    confirmedHalfDays: 1,
+    absenceDays: 0,
+    pendingCount: 0,
+  },
+  employees: [Object.fromEntries(Object.entries(monthlyEmployee).filter(([key]) => ![
+    'salaryType', 'baseSalarySnapshot', 'basePay', 'overtimePay', 'bonus',
+    'deduction', 'netSalary', 'projectAllocatedAmount', 'projectUnallocatedAmount',
+    'confirmationNote', 'confirmedAt',
+  ].includes(key)))],
+  reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
+})
+
+const projectReport = Object.freeze({
+  salaryMonth: '2026-07',
+  permissions: { canViewSalary: true, canViewEmployeeComposition: true },
+  summary: {
+    monthlyConfirmedCost: 12000,
+    lifetimeConfirmedCost: 74000,
+    confirmedAttendanceUnits: 1,
+    pendingAllocationCount: 1,
+    pendingAllocationAmount: 4000,
+  },
+  trend: ['2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07']
+    .map((salaryMonth, index) => ({ salaryMonth, amount: index * 2400 })),
+  employeeComposition: [{
+    employeeProfileId: employee.employeeProfileId,
+    employeeNumber: employee.employeeNumber,
+    employeeName: employee.name,
+    attendanceUnits: 1,
+    amount: 12000,
+  }],
+  dailyDetails: [{
+    source: 'attendance',
+    sourceKey: '63000000-0000-4000-8000-000000000001',
+    workDate: '2026-07-18',
+    projectId: 'PROJECT-001',
+    projectName: '东京站现场',
+    employeeProfileId: employee.employeeProfileId,
+    employeeNumber: employee.employeeNumber,
+    employeeName: employee.name,
+    attendanceUnits: 1,
+    amount: 12000,
+    accountingStatus: 'confirmed',
+  }],
+  projectComparison: [{
+    projectId: 'PROJECT-001',
+    projectName: '东京站现场',
+    monthlyConfirmedCost: 12000,
+    lifetimeConfirmedCost: 74000,
+  }],
+  reconciliation: { postActivationLegacyRows: 1, globalMalformedLegacyRows: 0 },
+})
+
+const redactedProjectReport = Object.freeze({
+  ...projectReport,
+  permissions: { canViewSalary: false, canViewEmployeeComposition: false },
+  employeeComposition: [],
+  dailyDetails: [],
+})
+
+const accountingSettings = Object.freeze({
+  configured: false,
+  effectiveFrom: null,
+  workWeekdays: [1, 2, 3, 4, 5, 6],
+  workStartTime: '08:00',
+  workEndTime: '17:00',
+  breakMinutes: 60,
+  standardDayMinutes: 480,
   version: 0,
 })
 
@@ -668,6 +807,250 @@ test('daily filters retain all active employees and issue rows without recomputi
       .map((row) => row.name),
     ['佐藤花子'],
   )
+})
+
+test('monthly payroll, project costs, and settings render the approved accounting structure', () => {
+  const { default: MonthlyPayrollTab } = moduleFor('monthly')
+  const { default: ProjectLaborCostTab } = moduleFor('project')
+  const { default: AttendanceAccountingSettings } = moduleFor('settings')
+  const monthlyMarkup = render(MonthlyPayrollTab, {
+    service: {},
+    month: '2026-07',
+    initialReport: monthlyReport,
+    onMonthChange() {},
+  })
+  assert.match(monthlyMarkup, /月度工资/u)
+  assert.match(monthlyMarkup, /整天/u)
+  assert.match(monthlyMarkup, /半天/u)
+  assert.match(monthlyMarkup, /实发工资/u)
+  assert.match(monthlyMarkup, /历史人工记录/u)
+  assert.match(monthlyMarkup, /历史数据核对/u)
+  assert.match(monthlyMarkup, /labor-payroll-mobile-cards/u)
+
+  const projectMarkup = render(ProjectLaborCostTab, {
+    service: {},
+    month: '2026-07',
+    initialReport: projectReport,
+    onMonthChange() {},
+  })
+  assert.match(projectMarkup, /项目开工至今累计/u)
+  assert.match(projectMarkup, /全部项目费用对比/u)
+  assert.match(projectMarkup, /导出项目用工明细/u)
+  assert.match(projectMarkup, /最近六个月费用趋势/u)
+  assert.match(projectMarkup, /员工费用构成/u)
+  assert.match(projectMarkup, /每日分摊明细/u)
+  assert.match(projectMarkup, /新考勤核算/u)
+
+  const settingsMarkup = render(AttendanceAccountingSettings, {
+    service: {},
+    canUpdateSettings: true,
+    initialSettings: accountingSettings,
+  })
+  assert.match(settingsMarkup, /考勤设置/u)
+  assert.match(settingsMarkup, /周一/u)
+  assert.match(settingsMarkup, /周六/u)
+  assert.match(settingsMarkup, /08:00/u)
+  assert.match(settingsMarkup, /17:00/u)
+  assert.match(settingsMarkup, /启用日期/u)
+})
+
+test('salary and employee-level project data are absent under redacted permission variants', () => {
+  const { default: MonthlyPayrollTab } = moduleFor('monthly')
+  const { default: ProjectLaborCostTab } = moduleFor('project')
+  const monthlyMarkup = render(MonthlyPayrollTab, {
+    service: {}, month: '2026-07', initialReport: redactedMonthlyReport,
+  })
+  assert.match(monthlyMarkup, /工资金额已按权限隐藏/u)
+  assert.doesNotMatch(monthlyMarkup, /实发工资/u)
+  assert.doesNotMatch(monthlyMarkup, /加班费/u)
+  assert.doesNotMatch(monthlyMarkup, /奖金/u)
+  assert.doesNotMatch(monthlyMarkup, /扣款/u)
+  assert.doesNotMatch(monthlyMarkup, /type="number"/u)
+
+  const projectMarkup = render(ProjectLaborCostTab, {
+    service: {}, month: '2026-07', initialReport: redactedProjectReport,
+  })
+  assert.match(projectMarkup, /项目开工至今累计/u)
+  assert.match(projectMarkup, /全部项目费用对比/u)
+  assert.doesNotMatch(projectMarkup, /员工筛选/u)
+  assert.doesNotMatch(projectMarkup, /员工费用构成/u)
+  assert.doesNotMatch(projectMarkup, /每日分摊明细/u)
+  assert.doesNotMatch(projectMarkup, /导出项目用工明细/u)
+})
+
+test('payroll and settings payload builders enforce exact safe integers and sorted weekdays', () => {
+  const {
+    buildMonthlyPayrollPayload,
+    buildPayrollReopenPayload,
+  } = moduleFor('monthly')
+  const { buildAttendanceSettingsPayload } = moduleFor('settings')
+  assert.deepEqual(buildMonthlyPayrollPayload({
+    employee: monthlyEmployee,
+    month: '2026-07',
+    draft: { overtimePay: '1000', bonus: '2000', deduction: '500', confirmationNote: ' 确认 ' },
+  }), {
+    employeeProfileId: employee.employeeProfileId,
+    month: '2026-07',
+    overtimePay: 1000,
+    bonus: 2000,
+    deduction: 500,
+    confirmationNote: '确认',
+    version: 0,
+  })
+  assert.equal(buildMonthlyPayrollPayload({
+    employee: monthlyEmployee,
+    month: '2026-07',
+    draft: { overtimePay: '1.5', bonus: '0', deduction: '0', confirmationNote: '' },
+  }), null)
+  assert.equal(buildMonthlyPayrollPayload({
+    employee: monthlyEmployee,
+    month: '2026-13',
+    draft: { overtimePay: '0', bonus: '0', deduction: '0', confirmationNote: '' },
+  }), null)
+  assert.deepEqual(buildPayrollReopenPayload({
+    employee: { ...monthlyEmployee, payrollId: '61000000-0000-4000-8000-000000000001', version: 3 },
+    reason: ' 更正奖金 ',
+  }), {
+    payrollId: '61000000-0000-4000-8000-000000000001',
+    reason: '更正奖金',
+    version: 3,
+  })
+  assert.equal(buildPayrollReopenPayload({ employee: monthlyEmployee, reason: '   ' }), null)
+
+  assert.deepEqual(buildAttendanceSettingsPayload({
+    form: {
+      effectiveFrom: '2026-07-16',
+      workWeekdays: [6, 1, 4, 2, 5, 3],
+      workStartTime: '08:00',
+      workEndTime: '17:00',
+      breakMinutes: '60',
+      standardDayMinutes: '480',
+    },
+    version: 0,
+  }), {
+    effectiveFrom: '2026-07-16',
+    workWeekdays: [1, 2, 3, 4, 5, 6],
+    workStartTime: '08:00',
+    workEndTime: '17:00',
+    breakMinutes: 60,
+    standardDayMinutes: 480,
+    version: 0,
+  })
+  assert.equal(buildAttendanceSettingsPayload({
+    form: { ...accountingSettings, effectiveFrom: '' }, version: 0,
+  }), null)
+})
+
+test('project requests keep status detail-only and CSV cleanup revokes exactly once on success or failure', () => {
+  const {
+    buildProjectExportRequest,
+    buildProjectReportRequest,
+    downloadProjectLaborCsv,
+  } = moduleFor('project')
+  const filters = {
+    projectId: '', employeeProfileId: '', status: 'pending',
+  }
+  assert.deepEqual(buildProjectReportRequest({ month: '2026-07', filters }), {
+    month: '2026-07', projectId: null, employeeProfileId: null, status: 'pending',
+  })
+  assert.deepEqual(buildProjectExportRequest({ month: '2026-07', filters }), {
+    month: '2026-07', projectId: null, employeeProfileId: null,
+  })
+
+  for (const failure of ['none', 'append', 'click']) {
+    const events = []
+    const anchor = {
+      href: '', download: '',
+      click() { events.push('click'); if (failure === 'click') throw new Error('click blocked') },
+      remove() { events.push('remove') },
+    }
+    class FakeBlob {
+      constructor(parts, options) { this.parts = parts; this.options = options }
+    }
+    const runtime = {
+      Blob: FakeBlob,
+      document: {
+        createElement(name) { events.push(`create:${name}`); return anchor },
+        body: { appendChild(node) {
+          assert.equal(node, anchor)
+          events.push('append')
+          if (failure === 'append') throw new Error('append blocked')
+        } },
+      },
+      URL: {
+        createObjectURL(blob) {
+          assert.equal(blob.options.type, 'text/csv;charset=utf-8')
+          events.push('create-url')
+          return 'blob:test'
+        },
+        revokeObjectURL(url) { assert.equal(url, 'blob:test'); events.push('revoke') },
+      },
+    }
+    if (failure !== 'none') {
+      assert.throws(
+        () => downloadProjectLaborCsv('\uFEFF项目', '2026-07', runtime),
+        new RegExp(`${failure} blocked`, 'u'),
+      )
+    } else {
+      downloadProjectLaborCsv('\uFEFF项目', '2026-07', runtime)
+    }
+    assert.equal(anchor.download, '项目用工费用-2026-07.csv')
+    assert.equal(events.filter((event) => event === 'remove').length, 1)
+    assert.equal(events.filter((event) => event === 'revoke').length, 1)
+  }
+})
+
+test('tab architecture is accessible, lazy, permission-gated, and derives month without local time', () => {
+  const { laborTabsForPermissions, monthFromServerWorkDate } = moduleFor('page')
+  assert.deepEqual(laborTabsForPermissions({ canViewProjectCosts: false }).map((tab) => tab.id), [
+    'daily', 'monthly', 'settings',
+  ])
+  assert.deepEqual(laborTabsForPermissions({ canViewProjectCosts: true }).map((tab) => tab.id), [
+    'daily', 'monthly', 'project', 'settings',
+  ])
+  assert.equal(monthFromServerWorkDate('2026-07-18'), '2026-07')
+  assert.equal(monthFromServerWorkDate(''), '')
+  for (const name of ['monthly', 'project']) {
+    assert.match(sources[name], /optionCacheRef\.current\.month !== month[\s\S]{0,520}setReport\(null\)/u)
+    assert.match(sources[name], /setFilterEpoch\(\(current\) => current \+ 1\)/u)
+  }
+  assert.match(sources.page, /role="tablist"/u)
+  assert.match(sources.page, /aria-controls=/u)
+  assert.match(sources.page, /aria-labelledby=/u)
+  assert.match(sources.page, /activeTab === 'monthly'[\s\S]*<MonthlyPayrollTab/u)
+  assert.match(sources.page, /activeTab === 'project'[\s\S]*canViewProjectCosts[\s\S]*<ProjectLaborCostTab/u)
+  assert.match(sources.page, /activeTab === 'settings'[\s\S]*<AttendanceAccountingSettings/u)
+  assert.match(
+    sources.page,
+    /changeAccountingMonth[\s\S]{0,240}monthInitializedRef\.current = true[\s\S]{0,120}setAccountingMonth\(nextMonth\)/u,
+  )
+  assert.doesNotMatch(sources.page, /new Date\s*\(/u)
+})
+
+test('settings are read-only without update permission and all async tabs guard stale work', () => {
+  const { default: AttendanceAccountingSettings } = moduleFor('settings')
+  const markup = render(AttendanceAccountingSettings, {
+    service: {},
+    canUpdateSettings: false,
+    initialSettings: accountingSettings,
+  })
+  const controls = markup.match(/<(?:input|button)\b[^>]*>/gu) || []
+  assert.ok(controls.length >= 10)
+  assert.ok(controls.every((control) => /disabled=""/u.test(control)))
+  assert.doesNotMatch(markup, /name="weekday-7"[^>]*checked/u)
+  assert.match(
+    sources.settings,
+    /loadState\.status === 'error'[\s\S]{0,180}<button type="button" onClick=\{\(\) => void loadSettings\(\)\}/u,
+  )
+  for (const name of ['monthly', 'project', 'settings']) {
+    assert.match(sources[name], /mountedRef/u)
+    assert.match(sources[name], /GenerationRef/u)
+    assert.match(sources[name], /current/u)
+    assert.match(sources[name], /userMessage/u)
+  }
+  assert.match(sources.monthly, /writeLocked/u)
+  assert.match(sources.project, /exportLocked/u)
+  assert.match(sources.settings, /writeLocked/u)
 })
 
 test('every rendered form control has an accessible label and the page is SSR-safe', () => {

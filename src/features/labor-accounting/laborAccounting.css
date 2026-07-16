@@ -1201,3 +1201,575 @@
     grid-row: 1;
   }
 }
+
+.labor-accounting-page [role='tabpanel'] {
+  min-width: 0;
+}
+
+.labor-accounting-page .labor-report-tab {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+
+.labor-accounting-page .labor-report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 19px 20px;
+  border: 1px solid var(--labor-line);
+  border-radius: 16px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-report-heading > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.labor-accounting-page .labor-report-heading small,
+.labor-accounting-page .labor-report-heading p {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-report-heading small {
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-report-heading h2 {
+  font-size: 1.35rem;
+}
+
+.labor-accounting-page .labor-report-heading p {
+  line-height: 1.5;
+}
+
+.labor-accounting-page .labor-primary-action {
+  border-color: #18150f;
+  background: #18150f;
+  color: #fff;
+}
+
+.labor-accounting-page .labor-primary-action:hover:not(:disabled) {
+  border-color: #403322;
+  background: #403322;
+  color: #fff;
+}
+
+.labor-accounting-page .labor-report-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr)) auto;
+  align-items: end;
+  gap: 11px;
+  padding: 15px;
+  border: 1px solid var(--labor-line);
+  border-radius: 14px;
+  background: var(--labor-panel);
+}
+
+.labor-accounting-page .labor-report-filters > label,
+.labor-accounting-page .labor-settings-grid > label,
+.labor-accounting-page .labor-payroll-money-editor > label,
+.labor-accounting-page .labor-payroll-reopen > label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: #4f4a42;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-report-filters input,
+.labor-accounting-page .labor-report-filters select,
+.labor-accounting-page .labor-settings-grid input,
+.labor-accounting-page .labor-payroll-money-editor input,
+.labor-accounting-page .labor-payroll-reopen input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.labor-accounting-page .labor-live-region,
+.labor-accounting-page .labor-export-status {
+  min-height: 1.4em;
+  color: var(--labor-muted);
+  font-size: 0.82rem;
+}
+
+.labor-accounting-page .labor-live-region:empty,
+.labor-accounting-page .labor-export-status:empty {
+  display: none;
+}
+
+.labor-accounting-page .labor-live-region [role='alert'],
+.labor-accounting-page .labor-export-status [role='alert'] {
+  color: var(--labor-danger);
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-retry-button {
+  justify-self: start;
+  border-color: var(--labor-gold);
+  color: #6f4d16;
+}
+
+.labor-accounting-page .labor-report-summary,
+.labor-accounting-page .labor-project-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.labor-accounting-page .labor-report-summary > article,
+.labor-accounting-page .labor-project-summary > article {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 15px;
+  border: 1px solid var(--labor-line);
+  border-radius: 13px;
+  background: var(--labor-panel);
+  box-shadow: 0 6px 18px rgb(34 27 17 / 5%);
+}
+
+.labor-accounting-page .labor-report-summary small,
+.labor-accounting-page .labor-project-summary small {
+  color: var(--labor-muted);
+  font-weight: 700;
+}
+
+.labor-accounting-page .labor-report-summary strong,
+.labor-accounting-page .labor-project-summary strong {
+  overflow-wrap: anywhere;
+  font-size: 1.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.labor-accounting-page .labor-project-summary > article > span {
+  color: var(--labor-muted);
+  font-size: 0.78rem;
+}
+
+.labor-accounting-page .labor-reconciliation-warning {
+  display: grid;
+  gap: 4px;
+  padding: 13px 15px;
+  border: 1px solid #dfad56;
+  border-radius: 11px;
+  background: var(--labor-warning-soft);
+  color: #765018;
+}
+
+.labor-accounting-page .labor-reconciliation-warning span {
+  font-size: 0.82rem;
+}
+
+.labor-accounting-page .labor-report-table-card,
+.labor-accounting-page .labor-report-card,
+.labor-accounting-page .labor-settings-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--labor-line);
+  border-radius: 15px;
+  background: var(--labor-panel);
+  box-shadow: 0 7px 22px rgb(34 27 17 / 5%);
+}
+
+.labor-accounting-page .labor-report-table-card > .labor-section-heading,
+.labor-accounting-page .labor-report-card > .labor-section-heading,
+.labor-accounting-page .labor-settings-card > .labor-section-heading {
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--labor-line);
+}
+
+.labor-accounting-page .labor-report-desktop-table {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.labor-accounting-page .labor-report-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.labor-accounting-page .labor-report-table th,
+.labor-accounting-page .labor-report-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #eee8de;
+  text-align: left;
+  vertical-align: top;
+}
+
+.labor-accounting-page .labor-report-table thead th {
+  background: #f4f0e8;
+  color: #625b50;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.labor-accounting-page .labor-report-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.labor-accounting-page .labor-report-table tbody th > strong,
+.labor-accounting-page .labor-report-table tbody th > small,
+.labor-accounting-page .labor-report-table td > small,
+.labor-accounting-page .labor-report-table td > strong {
+  display: block;
+}
+
+.labor-accounting-page .labor-report-table tbody th > small,
+.labor-accounting-page .labor-report-table td > small {
+  margin-top: 3px;
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-report-table .labor-status-text,
+.labor-accounting-page .labor-report-table .labor-readonly-badge {
+  margin-top: 7px;
+}
+
+.labor-accounting-page .labor-payroll-counts,
+.labor-accounting-page .labor-payroll-money-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 200px;
+  gap: 5px;
+}
+
+.labor-accounting-page .labor-payroll-counts > div,
+.labor-accounting-page .labor-payroll-money-facts > div {
+  display: grid;
+  gap: 2px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  background: #f7f4ee;
+}
+
+.labor-accounting-page .labor-payroll-counts dt,
+.labor-accounting-page .labor-payroll-money-facts dt {
+  color: var(--labor-muted);
+  font-size: 0.67rem;
+}
+
+.labor-accounting-page .labor-payroll-counts dd,
+.labor-accounting-page .labor-payroll-money-facts dd {
+  overflow-wrap: anywhere;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-payroll-issues {
+  display: block;
+  min-width: 190px;
+  line-height: 1.55;
+}
+
+.labor-accounting-page .labor-payroll-write-area,
+.labor-accounting-page .labor-payroll-reopen {
+  display: grid;
+  min-width: 260px;
+  gap: 8px;
+}
+
+.labor-accounting-page .labor-payroll-money-editor {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(82px, 1fr));
+  gap: 7px;
+}
+
+.labor-accounting-page .labor-payroll-note-field {
+  grid-column: 1 / -1;
+}
+
+.labor-accounting-page .labor-payroll-row-actions,
+.labor-accounting-page .labor-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.labor-accounting-page .labor-row-error {
+  color: var(--labor-danger);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-payroll-mobile-cards,
+.labor-accounting-page .labor-project-mobile-cards {
+  display: none;
+}
+
+.labor-accounting-page .labor-report-mobile-card {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--labor-line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.labor-accounting-page .labor-report-mobile-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.labor-accounting-page .labor-report-mobile-card > header > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.labor-accounting-page .labor-report-mobile-card header small {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-report-mobile-card > dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.labor-accounting-page .labor-report-mobile-card > dl > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f7f4ee;
+}
+
+.labor-accounting-page .labor-report-mobile-card dt {
+  color: var(--labor-muted);
+  font-size: 0.7rem;
+}
+
+.labor-accounting-page .labor-report-mobile-card dd {
+  overflow-wrap: anywhere;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-project-analytics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.labor-accounting-page .labor-trend-chart,
+.labor-accounting-page .labor-composition-list,
+.labor-accounting-page .labor-project-comparison {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+.labor-accounting-page .labor-trend-chart > div,
+.labor-accounting-page .labor-project-comparison > article {
+  display: grid;
+  grid-template-columns: minmax(82px, auto) minmax(90px, 1fr) minmax(90px, auto);
+  align-items: center;
+  gap: 9px;
+}
+
+.labor-accounting-page .labor-trend-chart span,
+.labor-accounting-page .labor-project-comparison small {
+  color: var(--labor-muted);
+  font-size: 0.72rem;
+}
+
+.labor-accounting-page .labor-trend-chart i,
+.labor-accounting-page .labor-project-comparison i {
+  display: block;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ece5d9;
+}
+
+.labor-accounting-page .labor-trend-chart i > b,
+.labor-accounting-page .labor-project-comparison i > b {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--labor-gold), var(--labor-gold-bright));
+}
+
+.labor-accounting-page .labor-trend-chart strong,
+.labor-accounting-page .labor-project-comparison > article > strong {
+  text-align: right;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.labor-accounting-page .labor-composition-list > article {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 9px;
+  background: #f7f4ee;
+}
+
+.labor-accounting-page .labor-composition-list article > span,
+.labor-accounting-page .labor-project-comparison article > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.labor-accounting-page .labor-composition-list small,
+.labor-accounting-page .labor-project-comparison small {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-settings-card {
+  display: grid;
+}
+
+.labor-accounting-page .labor-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 12px;
+  padding: 17px;
+}
+
+.labor-accounting-page .labor-weekday-options {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(70px, 1fr));
+  gap: 8px;
+  margin: 0 17px;
+  border: 0;
+  padding: 0;
+}
+
+.labor-accounting-page .labor-weekday-options legend {
+  margin-bottom: 8px;
+  color: #4f4a42;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-weekday-options label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 7px;
+  border: 1px solid #ddd4c5;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-weekday-options label:has(input:checked) {
+  border-color: var(--labor-gold);
+  background: #fff8e9;
+}
+
+.labor-accounting-page .labor-weekday-options input {
+  width: 17px;
+  min-height: 17px;
+  height: 17px;
+  accent-color: var(--labor-gold);
+}
+
+.labor-accounting-page .labor-settings-actions {
+  margin-top: 17px;
+  padding: 15px 17px;
+  border-top: 1px solid var(--labor-line);
+  background: #faf8f3;
+}
+
+.labor-accounting-page .labor-settings-actions > span {
+  margin-right: auto;
+  color: var(--labor-muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 1180px) {
+  .labor-accounting-page .labor-report-summary,
+  .labor-accounting-page .labor-project-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-report-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labor-accounting-page .labor-weekday-options {
+    grid-template-columns: repeat(4, minmax(70px, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .labor-accounting-page .labor-report-desktop-table {
+    display: none;
+  }
+
+  .labor-accounting-page .labor-payroll-mobile-cards,
+  .labor-accounting-page .labor-project-mobile-cards {
+    display: grid;
+    min-width: 0;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .labor-accounting-page .labor-project-analytics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .labor-accounting-page .labor-report-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .labor-accounting-page .labor-report-heading > button {
+    width: 100%;
+  }
+
+  .labor-accounting-page .labor-report-filters,
+  .labor-accounting-page .labor-report-summary,
+  .labor-accounting-page .labor-project-summary,
+  .labor-accounting-page .labor-settings-grid,
+  .labor-accounting-page .labor-weekday-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .labor-accounting-page .labor-weekday-options label {
+    justify-content: flex-start;
+  }
+
+  .labor-accounting-page .labor-payroll-money-editor,
+  .labor-accounting-page .labor-payroll-counts,
+  .labor-accounting-page .labor-payroll-money-facts,
+  .labor-accounting-page .labor-report-mobile-card > dl,
+  .labor-accounting-page .labor-trend-chart > div,
+  .labor-accounting-page .labor-project-comparison > article {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .labor-accounting-page .labor-trend-chart strong,
+  .labor-accounting-page .labor-project-comparison > article > strong {
+    text-align: left;
+  }
+}

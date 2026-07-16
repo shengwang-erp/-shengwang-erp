@@ -4,8 +4,29 @@ import { laborAccountingService } from '../../services/laborAccountingService.js
 import AttendanceResolutionDialog, {
   useLaborModalFocus,
 } from './AttendanceResolutionDialog.jsx'
+import AttendanceAccountingSettings from './AttendanceAccountingSettings.jsx'
 import DailyAttendanceBoard, { EMPTY_DAILY_FILTERS } from './DailyAttendanceBoard.jsx'
+import MonthlyPayrollTab from './MonthlyPayrollTab.jsx'
+import ProjectLaborCostTab from './ProjectLaborCostTab.jsx'
 import './laborAccounting.css'
+
+const LABOR_TABS = Object.freeze([
+  { id: 'daily', label: '今日看板' },
+  { id: 'monthly', label: '月度工资' },
+  { id: 'project', label: '项目用工费用', requiresProjectCosts: true },
+  { id: 'settings', label: '考勤设置' },
+])
+
+export function laborTabsForPermissions(permissions = {}) {
+  return LABOR_TABS.filter((tab) =>
+    !tab.requiresProjectCosts || permissions.canViewProjectCosts === true)
+}
+
+export function monthFromServerWorkDate(workDate) {
+  return /^\d{4}-(?:0[1-9]|1[0-2])-\d{2}$/u.test(String(workDate ?? ''))
+    ? workDate.slice(0, 7)
+    : ''
+}
 
 function displayError(error, fallback) {
   return typeof error?.userMessage === 'string' && error.userMessage.trim()
@@ -128,8 +149,10 @@ export default function LaborAccountingPage({
   const [detailLoadState, setDetailLoadState] = useState({ status: 'idle', error: '' })
   const [saving, setSaving] = useState(false)
   const [writeError, setWriteError] = useState('')
+  const [accountingMonth, setAccountingMonth] = useState('')
 
   const mountedRef = useRef(true)
+  const monthInitializedRef = useRef(false)
   const initializationGenerationRef = useRef(0)
   const dashboardGenerationRef = useRef(0)
   const detailGenerationRef = useRef(0)
@@ -196,6 +219,11 @@ export default function LaborAccountingPage({
     const nextDashboard = settled.value
     setDashboard(nextDashboard)
     setLoadState({ status: 'success', error: '' })
+    const serverMonth = monthFromServerWorkDate(nextDashboard.workDate)
+    if (serverMonth && !monthInitializedRef.current) {
+      monthInitializedRef.current = true
+      setAccountingMonth(serverMonth)
+    }
     if (nextDashboard.workDate !== date) setWorkDate(nextDashboard.workDate)
     return { status: 'accepted', dashboard: nextDashboard }
   }, [onAuthInvalid, service])
@@ -209,6 +237,13 @@ export default function LaborAccountingPage({
     if (!workDate) return
     void loadDashboard(workDate)
   }, [loadDashboard, workDate])
+
+  const canViewProjectCosts = dashboard?.permissions?.canViewProjectCosts === true
+  const availableTabs = laborTabsForPermissions(dashboard?.permissions)
+
+  useEffect(() => {
+    if (activeTab === 'project' && !canViewProjectCosts) setActiveTab('daily')
+  }, [activeTab, canViewProjectCosts])
 
   const changeWorkDate = (nextDate) => {
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(nextDate)) return
@@ -310,6 +345,19 @@ export default function LaborAccountingPage({
     }
   }
 
+  const handleSettingsSaved = useCallback(async () => {
+    if (!workDate) return { status: 'invalid' }
+    const result = await loadDashboard(workDate)
+    if (mountedRef.current) notifyAlertCountChange(onAlertCountChange)
+    return result
+  }, [loadDashboard, onAlertCountChange, workDate])
+
+  const changeAccountingMonth = useCallback((nextMonth) => {
+    if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(nextMonth ?? ''))) return
+    monthInitializedRef.current = true
+    setAccountingMonth(nextMonth)
+  }, [])
+
   return (
     <main className="labor-accounting-page">
       <header className="labor-page-heading">
@@ -323,72 +371,133 @@ export default function LaborAccountingPage({
         )}
       </header>
 
-      <nav className="labor-tabs" aria-label="人工考勤与工资功能">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'daily'}
-          onClick={() => setActiveTab('daily')}
-        >
-          今日看板
-          {dashboard?.summary?.alertCount > 0 && (
-            <span className="labor-tab-badge" aria-label={`${dashboard.summary.alertCount} 个异常待处理`}>
-              {dashboard.summary.alertCount}
-            </span>
-          )}
-        </button>
+      <nav className="labor-tabs" role="tablist" aria-label="人工考勤与工资功能">
+        {availableTabs.map((tab) => (
+          <button
+            key={tab.id}
+            id={`labor-tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`labor-panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+            {tab.id === 'daily' && dashboard?.summary?.alertCount > 0 && (
+              <span className="labor-tab-badge" aria-label={`${dashboard.summary.alertCount} 个异常待处理`}>
+                {dashboard.summary.alertCount}
+              </span>
+            )}
+          </button>
+        ))}
       </nav>
 
-      <section role="tabpanel" aria-label="今日看板">
-        {loadState.status === 'loading' && !dashboard && (
-          <div className="labor-loading-panel" role="status">
-            <span className="labor-loading-dot" aria-hidden="true" />
-            <strong>{workDate ? '正在加载全员考勤看板…' : '正在取得服务器东京日期…'}</strong>
-          </div>
-        )}
-
-        {loadState.status === 'error' && !dashboard && (
-          <div className="labor-page-error" role="alert">
-            <strong>看板暂时无法显示</strong>
-            <span>{loadState.error}</span>
-            <div>
-              <button
-                type="button"
-                onClick={() => workDate ? void loadDashboard(workDate) : void initializeServerWorkDate()}
-              >
-                重新加载
-              </button>
-              {!workDate && (
-                <label>
-                  <span>手动选择工作日期</span>
-                  <input
-                    type="date"
-                    aria-label="手动选择工作日期"
-                    value=""
-                    onChange={(event) => changeWorkDate(event.target.value)}
-                  />
-                </label>
-              )}
+      {activeTab === 'daily' && (
+        <section
+          id="labor-panel-daily"
+          role="tabpanel"
+          aria-labelledby="labor-tab-daily"
+          tabIndex="0"
+        >
+          {loadState.status === 'loading' && !dashboard && (
+            <div className="labor-loading-panel" role="status">
+              <span className="labor-loading-dot" aria-hidden="true" />
+              <strong>{workDate ? '正在加载全员考勤看板…' : '正在取得服务器东京日期…'}</strong>
             </div>
-          </div>
-        )}
+          )}
 
-        <DashboardLoadNotice
-          loadState={loadState}
-          dashboard={dashboard}
-          onRetry={() => void loadDashboard(workDate)}
-        />
+          {loadState.status === 'error' && !dashboard && (
+            <div className="labor-page-error" role="alert">
+              <strong>看板暂时无法显示</strong>
+              <span>{loadState.error}</span>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => workDate ? void loadDashboard(workDate) : void initializeServerWorkDate()}
+                >
+                  重新加载
+                </button>
+                {!workDate && (
+                  <label>
+                    <span>手动选择工作日期</span>
+                    <input
+                      type="date"
+                      aria-label="手动选择工作日期"
+                      value=""
+                      onChange={(event) => changeWorkDate(event.target.value)}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
 
-        {dashboard && (
-          <DailyAttendanceBoard
+          <DashboardLoadNotice
+            loadState={loadState}
             dashboard={dashboard}
-            filters={filters}
-            onFiltersChange={setFilters}
-            onDateChange={changeWorkDate}
-            onOpenResolution={openResolution}
+            onRetry={() => void loadDashboard(workDate)}
           />
-        )}
-      </section>
+
+          {dashboard && (
+            <DailyAttendanceBoard
+              dashboard={dashboard}
+              filters={filters}
+              onFiltersChange={setFilters}
+              onDateChange={changeWorkDate}
+              onOpenResolution={openResolution}
+            />
+          )}
+        </section>
+      )}
+
+      {activeTab === 'monthly' && (
+        <section
+          id="labor-panel-monthly"
+          role="tabpanel"
+          aria-labelledby="labor-tab-monthly"
+          tabIndex="0"
+        >
+          <MonthlyPayrollTab
+            service={service}
+            month={accountingMonth}
+            onMonthChange={changeAccountingMonth}
+            onAuthInvalid={onAuthInvalid}
+          />
+        </section>
+      )}
+
+      {(activeTab === 'project' && canViewProjectCosts) && (
+        <section
+          id="labor-panel-project"
+          role="tabpanel"
+          aria-labelledby="labor-tab-project"
+          tabIndex="0"
+        >
+          <ProjectLaborCostTab
+            service={service}
+            month={accountingMonth}
+            onMonthChange={changeAccountingMonth}
+            onAuthInvalid={onAuthInvalid}
+          />
+        </section>
+      )}
+
+      {activeTab === 'settings' && (
+        <section
+          id="labor-panel-settings"
+          role="tabpanel"
+          aria-labelledby="labor-tab-settings"
+          tabIndex="0"
+        >
+          <AttendanceAccountingSettings
+            service={service}
+            canUpdateSettings={dashboard?.permissions?.canUpdateSettings === true}
+            onAuthInvalid={onAuthInvalid}
+            onSaved={handleSettingsSaved}
+          />
+        </section>
+      )}
 
       {selectedEmployee && !resolutionDetail && (
         <DetailLoadingDialog
