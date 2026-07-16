@@ -22,7 +22,7 @@ test('contract revenue page and original contract section are independent compon
 })
 
 test('App routes from project details to contract revenue while retaining raw project callbacks', () => {
-  assert.match(appSource, /currentView === 'contractRevenue'/)
+  assert.match(appSource, /authorizedView === 'contractRevenue'/)
   assert.match(appSource, /onOpenContractRevenue=\{openContractRevenue\}/)
   assert.match(appSource, /onProjectChange=\{handleContractRevenueProjectChange\}/)
   assert.match(appSource, /projectService\.createProject/)

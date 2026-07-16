@@ -25,13 +25,15 @@ test('App loads all contract revenue records and memoizes the project snapshot c
   assert.match(appSource, /projectReceipts: CONTRACT_REVENUE_STORAGE_KEYS\.projectReceipts/)
 })
 
-test('read-only revenue models reach display pages while project editing keeps raw projects', () => {
+test('read-only revenue models reach display pages while Home gets only its authorized summary', () => {
   assert.match(
     appSource,
     /<ProjectPage\s+projects=\{projects\}\s+projectRevenueSnapshots=\{projectRevenueSnapshots\}/,
   )
   assert.match(appSource, /<DashboardPage\s+projects=\{projectRevenueProjects\}/)
-  assert.match(appSource, /<HomePage\s+projects=\{projectRevenueProjects\}/)
+  assert.match(appSource, /projects:\s*projectRevenueProjects/)
+  assert.match(appSource, /<HomePage\s+summary=\{homeSummary\}/)
+  assert.doesNotMatch(appSource, /<HomePage\s+projects=/)
   assert.doesNotMatch(appSource, /setProjects\([^\n]*projectRevenue/)
   assert.doesNotMatch(appSource, /setStoredProjects\([^\n]*projectRevenue/)
   assert.doesNotMatch(appSource, /<ProjectPage\s+projects=\{projectRevenueProjects\}/)

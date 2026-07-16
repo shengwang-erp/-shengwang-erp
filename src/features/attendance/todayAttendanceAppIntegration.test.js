@@ -180,10 +180,10 @@ test('legacy project startup clears stale data before any unauthorized list call
   const projectStartup = sliceBetween(
     authenticatedApp,
     'const [storedProjects, setStoredProjects]',
-    '\n  const canViewFinancials',
+    '\n  const contractRevenueAccess',
   )
   const permissionIndex = projectStartup.indexOf(
-    "const canViewProjects = canAccessModule(currentUser, '工程项目')",
+    "const canViewProjects = canAccessView(currentUser, 'projects')",
   )
   const earlyReturnIndex = projectStartup.indexOf('if (!canViewProjects)')
   const clearIndex = projectStartup.indexOf('setStoredProjects([])', earlyReturnIndex)

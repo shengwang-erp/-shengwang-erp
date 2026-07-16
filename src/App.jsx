@@ -62,7 +62,11 @@ import {
   canUpdateProjectFinancials,
   canViewProjectFinancials,
 } from './features/projects/projectPermissions.js'
-import { canAccessView } from './auth/businessAccess.js'
+import {
+  canAccessView,
+  getAccountingAccess,
+  getPurchaseAccess,
+} from './auth/businessAccess.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
 import {
@@ -1820,19 +1824,197 @@ function LaborBridgeStatusNotice({ eligible, state, onRetry }) {
   )
 }
 
-function AuthenticatedApp({ currentUser, onLogout }) {
+export function resolveAuthorizedView(currentUser, currentView) {
+  if (!canAccessView(currentUser, 'home')) return null
+  return canAccessView(currentUser, currentView) ? currentView : 'home'
+}
+
+export function resolveGuardedNavigation({
+  currentUser,
+  currentView,
+  nextView,
+  protectedStateActive = false,
+}) {
+  const authorizedView = resolveAuthorizedView(currentUser, currentView)
+  if (authorizedView === null || !canAccessView(currentUser, nextView)) {
+    return { accepted: false, view: authorizedView }
+  }
+
+  const exitBlocked = shouldBlockPersonnelExit({
+    currentView: authorizedView,
+    protectedStateActive,
+  })
+  if (exitBlocked && nextView !== authorizedView) {
+    return { accepted: false, view: authorizedView }
+  }
+  return { accepted: true, view: nextView }
+}
+
+export function getContractRevenueAccess(currentUser) {
+  const view = canAccessView(currentUser, 'contractRevenue') &&
+    canViewProjectFinancials(currentUser)
+  return {
+    view,
+    update: view && canUpdateProjectFinancials(currentUser),
+  }
+}
+
+function emptyHomeSummary() {
+  return {
+    activeProjects: 0,
+    activeEmployees: 0,
+    totalRecords: 0,
+    pausedProjects: 0,
+    monthlyPurchaseTotal: 0,
+    monthlyCostTotal: 0,
+    moduleCounts: {
+      projects: 0,
+      employees: 0,
+      stockOut: 0,
+      stockReturn: 0,
+      labor: 0,
+      vehicle: 0,
+      toolBorrow: 0,
+    },
+  }
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : []
+}
+
+export function buildAuthorizedHomeSummary(currentUser, sources) {
+  if (!canAccessView(currentUser, 'home')) return emptyHomeSummary()
+
+  const projectAccess = canAccessView(currentUser, 'projects')
+  const employeeAccess = canAccessView(currentUser, 'employees')
+  const stockOutAccess = canAccessView(currentUser, 'stockOut')
+  const stockReturnAccess = canAccessView(currentUser, 'stockReturn')
+  const laborAccess = canAccessView(currentUser, 'labor')
+  const vehicleAccess = canAccessView(currentUser, 'vehicle')
+  const toolAccess = canAccessView(currentUser, 'toolBorrow')
+  const accountingPageAccess = canAccessView(currentUser, 'accounting')
+  const accountingAccess = getAccountingAccess(currentUser)
+  const purchaseAccess = getPurchaseAccess(currentUser)
+
+  const projects = projectAccess ? arrayValue(sources?.projects) : []
+  const personnelEmployees = employeeAccess ? arrayValue(sources?.employees) : []
+  const salaryEmployees = accountingAccess.salary.view
+    ? arrayValue(sources?.employees)
+    : []
+  const stockOutRecords = stockOutAccess
+    ? arrayValue(sources?.records?.stockOut)
+    : []
+  const stockReturnRecords = stockReturnAccess
+    ? arrayValue(sources?.records?.stockReturn)
+    : []
+  const laborRecords = laborAccess ? arrayValue(sources?.records?.labor) : []
+  const vehicleRecords = vehicleAccess ? arrayValue(sources?.records?.vehicle) : []
+  const toolBorrowRecords = toolAccess ? arrayValue(sources?.records?.toolBorrow) : []
+  const toolReturnRecords = toolAccess ? arrayValue(sources?.records?.toolReturn) : []
+  const salaryRecords = accountingAccess.salary.view
+    ? arrayValue(sources?.accountingRecords?.salary)
+    : []
+  const projectCostRecords = accountingAccess.projectCost.view
+    ? arrayValue(sources?.accountingRecords?.projectCost)
+    : []
+  const operatingExpenseRecords = accountingAccess.operatingExpense.view
+    ? arrayValue(sources?.accountingRecords?.operatingExpense)
+    : []
+  const purchaseRecords = purchaseAccess.summary.view
+    ? arrayValue(sources?.accountingRecords?.purchase)
+    : []
+  const vehicleAccountingAccess = accountingPageAccess && vehicleAccess
+  const fuelRecords = vehicleAccountingAccess
+    ? arrayValue(sources?.accountingRecords?.fuel)
+    : []
+  const vehicleExpenseRecords = vehicleAccountingAccess
+    ? arrayValue(sources?.accountingRecords?.vehicleExpense)
+    : []
+  const vehicleIssueRecords = vehicleAccountingAccess
+    ? arrayValue(sources?.accountingRecords?.vehicleIssue)
+    : []
+
+  const activeProjects = projects.filter((project) => project.status === '进行中').length
+  const pausedProjects = projects.filter((project) => project.status === '暂停').length
+  const activeEmployees = personnelEmployees.filter(
+    (employee) => !isHiddenSystemEmployee(employee) && employee.employmentStatus === '在职',
+  ).length
+  const monthlyPurchaseTotal = purchaseRecords
+    .filter(
+      (record) =>
+        monthFromDate(record.purchaseDate) === currentMonthValue() &&
+        record.purchaseStatus !== '作废',
+    )
+    .reduce((total, record) => total + toAmount(record.totalCost), 0)
+  const monthlyCostTotal = accountingPageAccess
+    ? getMonthlySalaryPaidTotal(salaryRecords, salaryEmployees) +
+      projectCostRecords
+        .filter(
+          (record) =>
+            monthFromDate(record.date) === currentMonthValue() &&
+            record.costType !== '人工费',
+        )
+        .reduce((total, record) => total + toAmount(record.amount), 0) +
+      operatingExpenseRecords
+        .filter((record) => monthFromDate(record.date) === currentMonthValue())
+        .reduce((total, record) => total + toAmount(record.amount), 0) +
+      fuelRecords
+        .filter((record) => monthFromDate(record.fuelDate) === currentMonthValue())
+        .reduce((total, record) => total + toAmount(record.fuelAmount), 0) +
+      vehicleExpenseRecords
+        .filter((record) => monthFromDate(record.expenseDate) === currentMonthValue())
+        .reduce((total, record) => total + toAmount(record.amount), 0) +
+      vehicleIssueRecords
+        .filter((record) => monthFromDate(record.issueDate) === currentMonthValue())
+        .reduce((total, record) => total + toAmount(record.repairCost), 0) +
+      (accountingAccess.monthlySummary.purchaseAccrual ? monthlyPurchaseTotal : 0)
+    : 0
+
+  return {
+    activeProjects,
+    activeEmployees,
+    totalRecords:
+      stockOutRecords.length +
+      stockReturnRecords.length +
+      laborRecords.length +
+      vehicleRecords.length +
+      toolBorrowRecords.length +
+      toolReturnRecords.length,
+    pausedProjects,
+    monthlyPurchaseTotal,
+    monthlyCostTotal,
+    moduleCounts: {
+      projects: projects.length,
+      employees: activeEmployees,
+      stockOut: stockOutRecords.length,
+      stockReturn: stockReturnRecords.length,
+      labor: laborRecords.length,
+      vehicle: vehicleRecords.length,
+      toolBorrow: toolBorrowRecords.length,
+    },
+  }
+}
+
+export function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
-  const authorizedView = canAccessView(currentUser, currentView) ? currentView : 'home'
+  const authorizedView = resolveAuthorizedView(currentUser, currentView)
   useEffect(() => {
-    if (authorizedView !== currentView) setCurrentView(authorizedView)
+    if (authorizedView !== null && authorizedView !== currentView) {
+      setCurrentView(authorizedView)
+    }
   }, [authorizedView, currentView])
+  const activeActorId = authorizedView === null ? '' : currentUser.id
+  const activePermissionKeys = authorizedView === null
+    ? []
+    : currentUser.effectivePermissionKeys
   const {
     count: laborAlertCount,
     stale: laborAlertStale,
     refresh: refreshLaborAlertCount,
   } = useLaborAlertCount({
-    actorKey: currentUser.id,
-    effectivePermissionKeys: currentUser.effectivePermissionKeys,
+    actorKey: activeActorId,
+    effectivePermissionKeys: activePermissionKeys,
     onAuthInvalid: onLogout,
   })
   const [accountingMonth, setAccountingMonth] = useState(currentMonthValue())
@@ -1845,17 +2027,17 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     ? accountingMonth
     : currentMonthValue()
   const bridgePermissionFingerprint = useMemo(() => {
-    if (!Array.isArray(currentUser.effectivePermissionKeys)) return ''
+    if (!Array.isArray(activePermissionKeys)) return ''
     return [...new Set(
-      currentUser.effectivePermissionKeys.filter((key) => typeof key === 'string'),
+      activePermissionKeys.filter((key) => typeof key === 'string'),
     )].sort().join('\u001f')
-  }, [currentUser.effectivePermissionKeys])
+  }, [activePermissionKeys])
   const bridgeEligible = canRequestLaborAccountingBridge({
-    actorKey: currentUser.id,
-    effectivePermissionKeys: currentUser.effectivePermissionKeys,
+    actorKey: activeActorId,
+    effectivePermissionKeys: activePermissionKeys,
   })
   const bridgeRequestIdentity = JSON.stringify([
-    currentUser.id,
+    activeActorId,
     bridgePermissionFingerprint,
     bridgeTargetActive && bridgeEligible ? bridgeRequestedMonth : '',
   ])
@@ -1983,7 +2165,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   const [projectContractChanges, setProjectContractChanges] = useState([])
   const [projectPaymentPlans, setProjectPaymentPlans] = useState([])
   const [projectReceipts, setProjectReceipts] = useState([])
-  const canViewProjects = canAccessModule(currentUser, '工程项目')
+  const canViewProjects = canAccessView(currentUser, 'projects')
   useEffect(() => {
     let active = true
     if (!canViewProjects) {
@@ -1995,10 +2177,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     })
     return () => { active = false }
   }, [canViewProjects])
-  const canViewFinancials = canViewProjectFinancials(currentUser)
+  const contractRevenueAccess = getContractRevenueAccess(currentUser)
   useEffect(() => {
     let active = true
-    if (!canViewFinancials) {
+    if (!contractRevenueAccess.view) {
       setProjectContractChanges([])
       setProjectPaymentPlans([])
       setProjectReceipts([])
@@ -2013,7 +2195,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       })
       .catch((error) => { if (active) { setProjectContractChanges([]); setProjectPaymentPlans([]); setProjectReceipts([]); setPersistenceFailure(error) } })
     return () => { active = false }
-  }, [canViewFinancials])
+  }, [contractRevenueAccess.view])
   const [storedEmployees] = usePersistentState(STORAGE_KEYS.employees, [], {
     cloudRead: false,
     cloudPersistence: 'none',
@@ -2200,16 +2382,17 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   }, [synchronizePersonnelProtectionRef])
   const handlePersonnelAwareNavigate = useCallback(
     (nextView) => {
-      if (!canAccessView(currentUser, nextView)) return false
-      const exitBlockedNow = shouldBlockPersonnelExit({
-        currentView: authorizedView,
+      const decision = resolveGuardedNavigation({
+        currentUser,
+        currentView,
+        nextView,
         protectedStateActive: personnelProtectedStateRef.current,
       })
-      if (exitBlockedNow && nextView !== authorizedView) return false
-      setCurrentView(nextView)
+      if (!decision.accepted) return false
+      setCurrentView(decision.view)
       return true
     },
-    [authorizedView, currentUser],
+    [currentUser, currentView],
   )
   const handlePersonnelAwareLogout = useCallback(() => {
     const exitBlockedNow = shouldBlockPersonnelExit({
@@ -2237,7 +2420,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   }, [authorizedView, personnelExitBlocked])
 
   useEffect(() => {
-    if (authorizedView !== 'employees') {
+    if (currentView !== 'employees' || authorizedView !== 'employees') {
       personnelRequestVersion.current += 1
       setPersonnelEmployees([])
       setPersonnelLoadState({ loading: false, error: '' })
@@ -2250,10 +2433,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return () => {
       personnelRequestVersion.current += 1
     }
-  }, [authorizedView, onLogout, refreshPersonnelEmployees])
+  }, [authorizedView, currentView, onLogout, refreshPersonnelEmployees])
 
   useEffect(() => {
-    if (authorizedView !== 'projects') {
+    if (currentView !== 'projects' || authorizedView !== 'projects') {
       projectDirectoryRequestVersion.current += 1
       setProjectEmployeeDirectory([])
       setProjectDirectoryState({ loading: false, error: '' })
@@ -2264,7 +2447,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return () => {
       projectDirectoryRequestVersion.current += 1
     }
-  }, [authorizedView, refreshProjectEmployeeDirectory])
+  }, [authorizedView, currentView, refreshProjectEmployeeDirectory])
 
   const refreshStoredProjectsFromLocal = async () => {
     const rows = await projectService.listProjects()
@@ -2388,6 +2571,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       ),
     [storedToolResponsibilityRecords],
   )
+
+  if (authorizedView === null) return null
 
   if (persistenceFailure) {
     return (
@@ -2594,6 +2779,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     vehicleExpense: vehicleExpenseRecords,
     vehicleIssue: vehicleIssueRecords,
   }
+  const homeSummary = buildAuthorizedHomeSummary(currentUser, {
+    projects: projectRevenueProjects,
+    employees,
+    records: recordGroups,
+    accountingRecords,
+  })
   const contractRevenueProject = projects.find(
     (project) => project.projectId === contractRevenueProjectId,
   )
@@ -2740,8 +2931,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         paymentPlans={projectPaymentPlans}
         receipts={projectReceipts}
         currentUser={currentUser}
-        canViewFinancials={canViewFinancials}
-        canUpdateFinancials={canUpdateProjectFinancials(currentUser)}
+        canViewFinancials={contractRevenueAccess.view}
+        canUpdateFinancials={contractRevenueAccess.update}
         onProjectChange={handleContractRevenueProjectChange}
         onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}
@@ -2959,10 +3150,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   return renderInDesktopShell(
     <HomePage
-      projects={projectRevenueProjects}
-      employees={employees}
-      records={recordGroups}
-      accountingRecords={accountingRecords}
+      summary={homeSummary}
       currentUser={currentUser}
       onLogout={onLogout}
       onOpenView={handlePersonnelAwareNavigate}
@@ -2970,47 +3158,24 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   )
 }
 
-function HomePage({ projects, employees, records, accountingRecords, currentUser, onLogout, onOpenView }) {
+function HomePage({ summary, currentUser, onLogout, onOpenView }) {
   const today = new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',
     weekday: 'short',
   }).format(new Date())
 
-  const activeProjects = projects.filter((project) => project.status === '进行中').length
-  const activeEmployees = employees.filter(
-    (employee) => !isHiddenSystemEmployee(employee) && employee.employmentStatus === '在职',
-  ).length
-  const totalRecords = Object.values(records).reduce((total, list) => total + list.length, 0)
-  const pausedProjects = projects.filter((project) => project.status === '暂停').length
-  const monthlyPurchaseTotal = accountingRecords.purchase
-    .filter(
-      (record) =>
-        monthFromDate(record.purchaseDate) === currentMonthValue() &&
-        record.purchaseStatus !== '作废',
-    )
-    .reduce((total, record) => total + toAmount(record.totalCost), 0)
-  const monthlyCostTotal =
-    getMonthlySalaryPaidTotal(accountingRecords.salary, employees) +
-    accountingRecords.projectCost
-      .filter((record) => monthFromDate(record.date) === currentMonthValue() && record.costType !== '人工费')
-      .reduce((total, record) => total + toAmount(record.amount), 0) +
-    accountingRecords.operatingExpense
-      .filter((record) => monthFromDate(record.date) === currentMonthValue())
-      .reduce((total, record) => total + toAmount(record.amount), 0)
-    +
-    accountingRecords.fuel
-      .filter((record) => monthFromDate(record.fuelDate) === currentMonthValue())
-      .reduce((total, record) => total + toAmount(record.fuelAmount), 0) +
-    accountingRecords.vehicleExpense
-      .filter((record) => monthFromDate(record.expenseDate) === currentMonthValue())
-      .reduce((total, record) => total + toAmount(record.amount), 0) +
-    accountingRecords.vehicleIssue
-      .filter((record) => monthFromDate(record.issueDate) === currentMonthValue())
-      .reduce((total, record) => total + toAmount(record.repairCost), 0) +
-    monthlyPurchaseTotal
+  const {
+    activeProjects,
+    activeEmployees,
+    totalRecords,
+    pausedProjects,
+    monthlyPurchaseTotal,
+    monthlyCostTotal,
+    moduleCounts,
+  } = summary
 
-  const summary = [
+  const overviewItems = [
     { value: activeProjects, label: '进行中项目' },
     { value: totalRecords, label: '业务记录' },
     { value: pausedProjects, label: '暂停项目' },
@@ -3021,7 +3186,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       title: '工程项目',
       code: 'GC',
       color: 'blue',
-      count: projects.length,
+      count: moduleCounts.projects,
       label: '项目主数据',
       view: 'projects',
     },
@@ -3029,7 +3194,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       title: '人员管理',
       code: '人员',
       color: 'violet',
-      count: activeEmployees,
+      count: moduleCounts.employees,
       label: '员工档案・工资・身份',
       view: 'employees',
     },
@@ -3039,7 +3204,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       permissionName: '仓库库存',
       code: '出库',
       color: 'orange',
-      count: records.stockOut.length,
+      count: moduleCounts.stockOut,
       label: '材料领用',
       view: 'stockOut',
     },
@@ -3048,7 +3213,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       permissionName: '仓库库存',
       code: '退回',
       color: 'rose',
-      count: records.stockReturn.length,
+      count: moduleCounts.stockReturn,
       label: '余料退库',
       view: 'stockReturn',
     },
@@ -3056,7 +3221,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       title: '人工记录',
       code: 'RG',
       color: 'violet',
-      count: records.labor.length,
+      count: moduleCounts.labor,
       label: '今日出勤',
       view: 'labor',
     },
@@ -3064,7 +3229,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       title: '车辆管理',
       code: 'CL',
       color: 'cyan',
-      count: records.vehicle.length,
+      count: moduleCounts.vehicle,
       label: '轨迹・费用・异常',
       view: 'vehicle',
     },
@@ -3073,7 +3238,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
       permissionName: '工具管理',
       code: '借',
       color: 'lime',
-      count: records.toolBorrow.length,
+      count: moduleCounts.toolBorrow,
       label: '工具领用',
       view: 'toolBorrow',
     },
@@ -3146,7 +3311,7 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
         </div>
 
         <div className="summary-grid" aria-label="数据概览">
-          {summary.map((item) => (
+          {overviewItems.map((item) => (
             <div className="summary-item" key={item.label}>
               <strong>{item.value}</strong>
               <span>{item.label}</span>

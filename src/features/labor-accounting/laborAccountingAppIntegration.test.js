@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
 
+import { ADMIN_ROUTES } from '../../navigation/adminRoutes.js'
+
 async function read(relativePath) {
   return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '')
 }
@@ -133,16 +135,16 @@ test('App wires one server-identity alert hook and routes labor to the accountin
   assert.equal((authenticatedApp.match(/useLaborAlertCount\(/gu) || []).length, 1)
   assert.match(
     authenticatedApp,
-    /useLaborAlertCount\(\{[\s\S]*?actorKey:\s*currentUser\.id[\s\S]*?effectivePermissionKeys:\s*currentUser\.effectivePermissionKeys[\s\S]*?onAuthInvalid:\s*onLogout[\s\S]*?\}\)/u,
+    /useLaborAlertCount\(\{[\s\S]*?actorKey:\s*activeActorId[\s\S]*?effectivePermissionKeys:\s*activePermissionKeys[\s\S]*?onAuthInvalid:\s*onLogout[\s\S]*?\}\)/u,
   )
   assert.match(authenticatedApp, /laborAlertCount=\{laborAlertCount\}/u)
   assert.match(authenticatedApp, /laborAlertStale=\{laborAlertStale\}/u)
 
-  const route = extractBraceBlock(authenticatedApp, "if (currentView === 'labor')")
+  const route = extractBraceBlock(authenticatedApp, "if (authorizedView === 'labor')")
   assert.match(route, /<LaborAccountingPage/u)
   assert.doesNotMatch(route, /<LaborPage/u)
   assert.match(route, /currentUser=\{currentUser\}/u)
-  assert.match(route, /onBack=\{\(\) => setCurrentView\('home'\)\}/u)
+  assert.match(route, /onBack=\{\(\) => handlePersonnelAwareNavigate\('home'\)\}/u)
   assert.match(route, /onAuthInvalid=\{onLogout\}/u)
   assert.match(route, /onAlertCountChange=\{refreshLaborAlertCount\}/u)
   assert.doesNotMatch(route, /handlePersonnelAwareLogout/u)
@@ -152,10 +154,14 @@ test('desktop shell renders an accessible badge only for positive labor alerts',
   assert.ifError(runtime.shell.error)
   const currentUser = {
     id: 'user-a',
+    employeeId: 'E-LABOR',
     employeeNumber: 'SW-123',
     name: '会计测试员',
     department: '会计',
     position: '会计',
+    employmentStatus: '在职',
+    accountStatus: 'active',
+    mustChangePassword: false,
     effectivePermissionKeys: ['all'],
   }
   const renderShell = (props) => renderToStaticMarkup(createElement(
@@ -188,12 +194,9 @@ test('desktop shell renders an accessible badge only for positive labor alerts',
 })
 
 test('shell integration keeps the thirteen-route menu contract and avoids CSS mutation', () => {
-  const menuSource = sliceBetween(
-    shellSource,
-    'const desktopMenuItems = [',
-    '\n]\n\nfunction getDesktopActiveView',
-  )
-  assert.equal((menuSource.match(/\bview:/gu) || []).length, 13)
+  assert.equal(ADMIN_ROUTES.filter(({ desktop }) => desktop).length, 13)
+  assert.match(shellSource, /getVisibleAdminRoutes\(currentUser\)/u)
+  assert.doesNotMatch(shellSource, /desktopMenuItems/u)
   assert.match(shellSource, /laborAlertCount\s*=\s*0/u)
   assert.match(shellSource, /laborAlertStale\s*=\s*false/u)
   assert.match(shellSource, /item\.view\s*===\s*'labor'/u)
@@ -216,15 +219,15 @@ test('App loads the formal accounting bridge only for exact identity, permission
   )
   assert.match(
     authenticatedApp,
-    /bridgeTargetActive\s*=\s*\['accounting', 'dashboard', 'projects'\]\.includes\(currentView\)/u,
+    /bridgeTargetActive\s*=\s*\['accounting', 'dashboard', 'projects'\]\.includes\(authorizedView\)/u,
   )
   assert.match(
     authenticatedApp,
-    /bridgeRequestedMonth\s*=\s*currentView === 'accounting'[\s\S]*?accountingMonth[\s\S]*?currentMonthValue\(\)/u,
+    /bridgeRequestedMonth\s*=\s*authorizedView === 'accounting'[\s\S]*?accountingMonth[\s\S]*?currentMonthValue\(\)/u,
   )
   assert.match(
     authenticatedApp,
-    /canRequestLaborAccountingBridge\(\{[\s\S]*?actorKey:\s*currentUser\.id[\s\S]*?effectivePermissionKeys:\s*currentUser\.effectivePermissionKeys[\s\S]*?\}\)/u,
+    /canRequestLaborAccountingBridge\(\{[\s\S]*?actorKey:\s*activeActorId[\s\S]*?effectivePermissionKeys:\s*activePermissionKeys[\s\S]*?\}\)/u,
   )
   assert.match(
     authenticatedApp,
@@ -303,7 +306,7 @@ test('accounting month is controlled by AuthenticatedApp and bridge status is vi
 })
 
 test('bridge errors use alert semantics and auth invalidation callback failures stay isolated', () => {
-  const notice = sliceBetween(appSource, 'function LaborBridgeStatusNotice', '\nfunction AuthenticatedApp')
+  const notice = sliceBetween(appSource, 'function LaborBridgeStatusNotice', '\nexport function resolveAuthorizedView')
   const notifier = sliceBetween(appSource, 'function notifyBridgeAuthInvalid', '\nfunction LaborBridgeStatusNotice')
 
   assert.match(notice, /role=\{state\.error \? 'alert' : 'status'\}/u)
