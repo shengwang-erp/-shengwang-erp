@@ -111,6 +111,30 @@ test('manual project costs have one explicit confirmed-or-pending classification
   assert.deepEqual(records, original)
 })
 
+test('manual classification snapshots isolate caller and output mutations in both directions', () => {
+  const records = [
+    {
+      costRecordId: 'M-CONFIRMED', costType: '外包费', amount: 10,
+      projectId: 'P1', date: '2026-07-01', metadata: { source: 'caller' },
+    },
+    {
+      costRecordId: 'M-PENDING', costType: '人工费', amount: 20,
+      projectId: 'P1', date: '2026-07-01', metadata: { source: 'caller' },
+    },
+  ]
+  const classified = classifyManualProjectCosts(records)
+
+  classified.confirmedRows[0].amount = 999
+  classified.confirmedRows[0].metadata.source = 'output'
+  assert.equal(records[0].amount, 10)
+  assert.equal(records[0].metadata.source, 'caller')
+
+  records[1].amount = 888
+  records[1].metadata.source = 'input'
+  assert.equal(classified.manualLaborCosts[0].amount, 20)
+  assert.equal(classified.manualLaborCosts[0].metadata.source, 'caller')
+})
+
 test('canonical July model counts authoritative accrual facts once and keeps estimates pending', () => {
   const model = buildCostAccountingReadModel(julyFixture())
 
@@ -136,6 +160,30 @@ test('canonical July model counts authoritative accrual facts once and keeps est
     total: 442000,
   })
   assert.deepEqual(model.anomalies, [])
+})
+
+test('cost model snapshots isolate pending rows and selected-month sibling branches', () => {
+  const manualProjectCosts = julyFixture().manualProjectCosts.map((row) => ({
+    ...row,
+    metadata: { source: 'caller' },
+  }))
+  const input = julyFixture({ manualProjectCosts })
+  const model = buildCostAccountingReadModel(input)
+
+  model.pending.manualLaborCosts[0].amount = 999
+  model.pending.manualLaborCosts[0].metadata.source = 'output'
+  assert.equal(manualProjectCosts[0].amount, 1000)
+  assert.equal(manualProjectCosts[0].metadata.source, 'caller')
+
+  manualProjectCosts[1].amount = 888
+  manualProjectCosts[1].metadata.source = 'input'
+  assert.equal(model.pending.manualMaterialCosts[0].amount, 2000)
+  assert.equal(model.pending.manualMaterialCosts[0].metadata.source, 'caller')
+
+  model.companyMonthlyTotal.salary = 1
+  assert.equal(model.monthlyByMonth['2026-07'].salary, 300000)
+  model.monthlyByMonth['2026-07'].purchase = 2
+  assert.equal(model.companyMonthlyTotal.purchase, 80000)
 })
 
 test('project composition uses project labor and explicit allocations while company facts stay company-only', () => {
@@ -235,6 +283,26 @@ test('an incomplete labor month remains visibly incomplete instead of fabricatin
   assert.equal(model.selectedComposition.labor, null)
   assert.equal(model.selectedComposition.total, null)
   assert.equal(model.anomalies.some(({ code }) => code === 'incomplete_labor_month'), true)
+})
+
+test('an explicit incomplete marker overrides an otherwise ready labor row exactly once', () => {
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectId: 'P1',
+    laborWindow: laborWindow({
+      incompleteMonths: ['2026-07', '2026-07'],
+    }),
+  }))
+
+  assert.equal(model.companyMonthlyTotal.salary, null)
+  assert.equal(model.companyMonthlyTotal.laborStatus, 'error')
+  assert.equal(model.companyMonthlyTotal.incomplete, true)
+  assert.equal(model.selectedComposition.labor, null)
+  assert.equal(model.selectedComposition.total, null)
+  assert.equal(
+    model.anomalies.filter(({ code, recordId }) =>
+      code === 'incomplete_labor_month' && recordId === '2026-07').length,
+    1,
+  )
 })
 
 test('unsafe, duplicate, inactive, invalid-date, malformed, and overflowing facts fail closed', () => {
@@ -346,6 +414,53 @@ test('a ready labor row with a mismatched project total stays incomplete', () =>
   assert.equal(model.anomalies.some(({ code }) => code === 'incomplete_labor_month'), true)
 })
 
+test('duplicate labor months are deterministic first-wins and reported once', () => {
+  const first = {
+    month: '2026-07', status: 'ready', stale: false,
+    salaryTotal: 0, projectLaborTotal: 0,
+    projectLaborById: { P1: 0 }, source: 'formal', pendingCount: 0,
+  }
+  const second = {
+    ...first,
+    salaryTotal: 300000,
+    projectLaborTotal: 200000,
+    projectLaborById: { P1: 200000 },
+  }
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectId: 'P1',
+    laborWindow: laborWindow({ monthly: [first, second, second] }),
+  }))
+
+  assert.equal(model.companyMonthlyTotal.salary, 0)
+  assert.equal(model.selectedComposition.labor, 0)
+  assert.equal(
+    model.anomalies.filter(({ code, recordId }) =>
+      code === 'duplicate_labor_month' && recordId === '2026-07').length,
+    1,
+  )
+})
+
+test('reserved all is rejected from monthly and lifetime labor allocation maps', () => {
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectId: 'P1',
+    laborWindow: laborWindow({
+      monthly: [{
+        month: '2026-07', status: 'ready', stale: false,
+        salaryTotal: 300000, projectLaborTotal: 200000,
+        projectLaborById: { all: 200000 }, source: 'formal', pendingCount: 0,
+      }],
+      projectLaborLifetimeById: { all: 300000 },
+    }),
+  }))
+
+  assert.equal(model.companyMonthlyTotal.salary, null)
+  assert.equal(model.selectedComposition.labor, null)
+  assert.equal(model.projectLifetimeById.P1.labor, null)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+  assert.equal(model.anomalies.some(({ code }) => code === 'incomplete_labor_month'), true)
+  assert.equal(model.anomalies.some(({ code }) => code === 'incomplete_labor_lifetime'), true)
+})
+
 test('top-level input is an exact own-data contract and never invokes accessors', () => {
   const valid = julyFixture()
   assert.throws(() => buildCostAccountingReadModel(null), TypeError)
@@ -368,6 +483,10 @@ test('top-level input is an exact own-data contract and never invokes accessors'
 
   const symbolInput = { ...valid, [Symbol('expanded')]: true }
   assert.throws(() => buildCostAccountingReadModel(symbolInput), TypeError)
+  assert.throws(() => buildCostAccountingReadModel({
+    ...valid,
+    laborWindow: laborWindow({ incompleteMonths: ['2026-7'] }),
+  }), TypeError)
   assert.throws(() => buildCostAccountingReadModel({
     ...valid,
     activeProjectIds: ['all'],

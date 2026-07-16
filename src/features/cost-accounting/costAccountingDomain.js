@@ -113,6 +113,36 @@ function isSafeRow(value) {
   }
 }
 
+function detachedOwnDataSnapshot(value, seen = new WeakMap()) {
+  if (value === null || typeof value !== 'object') return value
+  if (seen.has(value)) return seen.get(value)
+  const output = Array.isArray(value) ? [] : {}
+  seen.set(value, output)
+  let names
+  try {
+    names = Object.getOwnPropertyNames(value)
+  } catch {
+    return output
+  }
+  for (const key of names) {
+    if (Array.isArray(value) && key === 'length') continue
+    let descriptor
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, key)
+    } catch {
+      continue
+    }
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue
+    Object.defineProperty(output, key, {
+      value: detachedOwnDataSnapshot(descriptor.value, seen),
+      enumerable: descriptor.enumerable,
+      writable: true,
+      configurable: true,
+    })
+  }
+  return output
+}
+
 function validIdentifier(value) {
   return typeof value === 'string' && value.length > 0 &&
     value.length <= MAX_IDENTIFIER_LENGTH && value.replace(POSIX_EDGE_SPACE, '') === value &&
@@ -198,6 +228,13 @@ function normalizeInput(input) {
     LABOR_WINDOW_KEYS,
     'laborWindow must use exact own data fields',
   )
+  const incompleteMonths = snapshotArray(
+    laborWindow.incompleteMonths,
+    'laborWindow.incompleteMonths',
+  )
+  if (incompleteMonths.some((month) => normalizeMonth(month) !== month)) {
+    throw new TypeError('laborWindow.incompleteMonths are invalid')
+  }
   return {
     ...snapshot,
     months,
@@ -205,7 +242,7 @@ function normalizeInput(input) {
     laborWindow: {
       ...laborWindow,
       monthly: snapshotArray(laborWindow.monthly, 'laborWindow.monthly'),
-      incompleteMonths: snapshotArray(laborWindow.incompleteMonths, 'laborWindow.incompleteMonths'),
+      incompleteMonths: [...new Set(incompleteMonths)],
       staleMonths: snapshotArray(laborWindow.staleMonths, 'laborWindow.staleMonths'),
     },
     purchaseRows: snapshotArray(snapshot.purchaseRows, 'purchaseRows'),
@@ -246,7 +283,7 @@ function safeProjectMap(value) {
     for (const key of Object.getOwnPropertyNames(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key)
       if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, 'value') ||
-          !validIdentifier(key)) return null
+          !validIdentifier(key) || key === 'all') return null
       const amount = safeYen(descriptor.value)
       if (amount === null || amount > Number.MAX_SAFE_INTEGER - total) return null
       result.set(key, amount)
@@ -320,8 +357,11 @@ export function classifyManualProjectCosts(records = []) {
   for (const row of rows) {
     if (row === MALFORMED_ROW || !isSafeRow(row)) continue
     const type = safeOwnValue(row, 'costType')
-    if (CONFIRMED_MANUAL_TYPES.has(type)) result.confirmedRows.push(row)
-    else if (PENDING_MANUAL_TYPES.has(type)) result[pendingKeyByType[type]].push(row)
+    if (CONFIRMED_MANUAL_TYPES.has(type)) {
+      result.confirmedRows.push(detachedOwnDataSnapshot(row))
+    } else if (PENDING_MANUAL_TYPES.has(type)) {
+      result[pendingKeyByType[type]].push(detachedOwnDataSnapshot(row))
+    }
   }
   return result
 }
@@ -337,15 +377,29 @@ export function buildCostAccountingReadModel(input) {
     new Map(normalized.activeProjectIds.map((projectId) => [projectId, emptyProjectCost(null)])),
   ]))
   const lifetime = new Map(normalized.activeProjectIds.map((projectId) => [projectId, emptyProjectCost(null)]))
+  const incompleteMonthSet = new Set(normalized.laborWindow.incompleteMonths)
 
   const laborRows = new Map()
+  const duplicateLaborMonths = new Set()
   for (const row of normalized.laborWindow.monthly) {
     if (row === MALFORMED_ROW || !isSafeRow(row)) continue
     const month = safeOwnValue(row, 'month')
-    if (normalizeMonth(month) === month && !laborRows.has(month)) laborRows.set(month, row)
+    if (normalizeMonth(month) !== month) continue
+    if (laborRows.has(month)) {
+      if (!duplicateLaborMonths.has(month)) {
+        duplicateLaborMonths.add(month)
+        anomaly(anomalies, 'laborWindow', month, 'duplicate_labor_month', '重复人工月份已按首条记录处理。')
+      }
+      continue
+    }
+    laborRows.set(month, row)
   }
   for (const month of normalized.months) {
     const target = companyByMonth.get(month)
+    if (incompleteMonthSet.has(month)) {
+      anomaly(anomalies, 'laborWindow', month, 'incomplete_labor_month', '人工月份不完整，未以零值替代。')
+      continue
+    }
     const labor = laborRows.get(month)
     const salary = labor ? safeYen(safeOwnValue(labor, 'salaryTotal')) : null
     const projectLaborTotal = labor ? safeYen(safeOwnValue(labor, 'projectLaborTotal')) : null
@@ -444,7 +498,7 @@ export function buildCostAccountingReadModel(input) {
     if (PENDING_MANUAL_TYPES.has(type)) {
       if (monthSet.has(fact.month) &&
           (normalized.projectId === 'all' || normalized.projectId === projectId)) {
-        pending[pendingKeyByType[type]].push(row)
+        pending[pendingKeyByType[type]].push(detachedOwnDataSnapshot(row))
       }
     } else if (CONFIRMED_MANUAL_TYPES.has(type)) {
       addFact({
@@ -483,7 +537,7 @@ export function buildCostAccountingReadModel(input) {
     }
     if (monthSet.has(fact.month) && (
       normalized.projectId === 'all' || normalized.projectId === allocatedProject
-    )) pending.vehicleRepairEstimates.push(row)
+    )) pending.vehicleRepairEstimates.push(detachedOwnDataSnapshot(row))
   }
 
   const monthlyByMonth = {}
@@ -510,7 +564,9 @@ export function buildCostAccountingReadModel(input) {
     projectLifetimeById[projectId] = { ...value, total }
   }
 
-  const companyMonthlyTotal = monthlyByMonth[normalized.selectedMonth]
+  const companyMonthlyTotal = detachedOwnDataSnapshot(
+    monthlyByMonth[normalized.selectedMonth],
+  )
   const selectedProjectMonth = normalized.projectId === 'all'
     ? null
     : projectByMonth.get(normalized.selectedMonth).get(normalized.projectId)

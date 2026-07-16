@@ -174,6 +174,81 @@ test('coverage-only labor, operating, manual, and repair facts never enter cash 
   )
 })
 
+test('salary coverage excludes a requested month explicitly marked incomplete', () => {
+  const incompleteLaborWindow = {
+    ...laborWindow(),
+    incompleteMonths: ['2026-07', '2026-07'],
+  }
+  const model = buildRecordedCashFlow(cashFixture({
+    receipts: [], purchasePaymentRows: [], fuelRecords: [], vehicleExpenseRecords: [],
+    laborWindow: incompleteLaborWindow,
+    operatingExpenses: [], manualProjectCosts: [], vehicleIssueRecords: [],
+  }))
+
+  const coverage = Object.fromEntries(
+    model.coverage.map(({ code, excludedCount }) => [code, excludedCount]),
+  )
+  assert.equal(coverage.salary_payment_missing, 0)
+  assert.equal(
+    model.anomalies.filter(({ code, recordId }) =>
+      code === 'incomplete_labor_month' && recordId === '2026-07').length,
+    1,
+  )
+})
+
+test('salary coverage uses the first duplicate labor month and reports one anomaly', () => {
+  const first = {
+    month: '2026-07', status: 'ready', stale: false,
+    salaryTotal: 0, projectLaborTotal: 0,
+    projectLaborById: { P1: 0 }, source: 'formal', pendingCount: 0,
+  }
+  const second = {
+    ...first,
+    salaryTotal: 300000,
+    projectLaborTotal: 200000,
+    projectLaborById: { P1: 200000 },
+  }
+  const model = buildRecordedCashFlow(cashFixture({
+    receipts: [], purchasePaymentRows: [], fuelRecords: [], vehicleExpenseRecords: [],
+    laborWindow: { ...laborWindow(), monthly: [first, second, second] },
+    operatingExpenses: [], manualProjectCosts: [], vehicleIssueRecords: [],
+  }))
+
+  const salaryCoverage = model.coverage.find(
+    ({ code }) => code === 'salary_payment_missing',
+  )
+  assert.equal(salaryCoverage.excludedCount, 0)
+  assert.equal(
+    model.anomalies.filter(({ code, recordId }) =>
+      code === 'duplicate_labor_month' && recordId === '2026-07').length,
+    1,
+  )
+})
+
+test('salary coverage rejects reserved all in monthly and lifetime labor maps', () => {
+  const model = buildRecordedCashFlow(cashFixture({
+    projectId: 'all',
+    receipts: [], purchasePaymentRows: [], fuelRecords: [], vehicleExpenseRecords: [],
+    laborWindow: {
+      ...laborWindow(),
+      monthly: [{
+        month: '2026-07', status: 'ready', stale: false,
+        salaryTotal: 300000, projectLaborTotal: 200000,
+        projectLaborById: { all: 200000 }, source: 'formal', pendingCount: 0,
+      }],
+      projectLaborLifetimeById: { all: 300000 },
+    },
+    operatingExpenses: [], manualProjectCosts: [], vehicleIssueRecords: [],
+  }))
+
+  const salaryCoverage = model.coverage.find(
+    ({ code }) => code === 'salary_payment_missing',
+  )
+  assert.equal(salaryCoverage.excludedCount, 0)
+  assert.equal(model.anomalies.some(({ code }) => code === 'invalid_labor_project_map'), true)
+  assert.equal(model.anomalies.some(({ code }) => code === 'invalid_labor_lifetime_map'), true)
+})
+
 test('project coverage and cash scope exclude company-only and other-project facts', () => {
   const projectModel = buildRecordedCashFlow(cashFixture({
     activeProjectIds: ['P1', 'P2'],
@@ -294,6 +369,10 @@ test('top-level cash input is exact own data and rejects accessors without readi
     () => buildRecordedCashFlow({ ...valid, [Symbol('expanded')]: true }),
     TypeError,
   )
+  assert.throws(() => buildRecordedCashFlow({
+    ...valid,
+    laborWindow: { ...laborWindow(), incompleteMonths: ['2026-7'] },
+  }), TypeError)
   assert.throws(() => buildRecordedCashFlow({
     ...valid,
     projectId: 'all',

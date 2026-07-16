@@ -234,6 +234,13 @@ function normalizeInput(input) {
     LABOR_WINDOW_KEYS,
     'laborWindow must use exact own data fields',
   )
+  const incompleteMonths = snapshotArray(
+    laborWindow.incompleteMonths,
+    'laborWindow.incompleteMonths',
+  )
+  if (incompleteMonths.some((month) => normalizeMonth(month) !== month)) {
+    throw new TypeError('laborWindow.incompleteMonths are invalid')
+  }
   return {
     ...snapshot,
     months,
@@ -241,7 +248,7 @@ function normalizeInput(input) {
     laborWindow: {
       ...laborWindow,
       monthly: snapshotArray(laborWindow.monthly, 'laborWindow.monthly'),
-      incompleteMonths: snapshotArray(laborWindow.incompleteMonths, 'laborWindow.incompleteMonths'),
+      incompleteMonths: [...new Set(incompleteMonths)],
       staleMonths: snapshotArray(laborWindow.staleMonths, 'laborWindow.staleMonths'),
     },
     receipts: snapshotArray(snapshot.receipts, 'receipts'),
@@ -279,14 +286,18 @@ function validAmount(row, field, anomalies, source, recordId) {
 function safeProjectMap(value) {
   if (!isPlainRecord(value) || Object.getOwnPropertySymbols(value).length !== 0) return null
   const result = new Map()
+  let total = 0
   try {
     for (const key of Object.getOwnPropertyNames(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key)
       if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, 'value') ||
-          !validIdentifier(key) || safeYen(descriptor.value) === null) return null
-      result.set(key, descriptor.value)
+          !validIdentifier(key) || key === 'all') return null
+      const amount = safeYen(descriptor.value)
+      if (amount === null || amount > Number.MAX_SAFE_INTEGER - total) return null
+      result.set(key, amount)
+      total += amount
     }
-    return result
+    return { values: result, total }
   } catch {
     return null
   }
@@ -369,6 +380,7 @@ export function buildRecordedCashFlow(input) {
   const anomalies = []
   const monthSet = new Set(normalized.months)
   const activeProjects = new Set(normalized.activeProjectIds)
+  const incompleteMonthSet = new Set(normalized.laborWindow.incompleteMonths)
   const monthly = new Map(normalized.months.map((month) => [month, {
     month,
     income: 0,
@@ -461,16 +473,44 @@ export function buildRecordedCashFlow(input) {
     }
   }
 
+  for (const month of normalized.months) {
+    if (incompleteMonthSet.has(month)) {
+      anomaly(anomalies, 'laborWindow', month, 'incomplete_labor_month', '人工月份不完整，工资付款覆盖不计入。')
+    }
+  }
+  if (normalized.laborWindow.lifetimeStatus === 'ready' &&
+      !safeProjectMap(normalized.laborWindow.projectLaborLifetimeById)) {
+    anomaly(anomalies, 'laborWindow', 'lifetime', 'invalid_labor_lifetime_map', '累计人工项目分摊映射无效。')
+  }
+  const laborRowsByMonth = new Map()
+  const duplicateLaborMonths = new Set()
   for (const row of normalized.laborWindow.monthly) {
     if (row === MALFORMED_ROW || !isSafeRow(row)) continue
     const month = safeOwnValue(row, 'month')
-    if (!monthSet.has(month) || safeOwnValue(row, 'status') !== 'ready') continue
+    if (normalizeMonth(month) !== month) continue
+    if (laborRowsByMonth.has(month)) {
+      if (!duplicateLaborMonths.has(month)) {
+        duplicateLaborMonths.add(month)
+        anomaly(anomalies, 'laborWindow', month, 'duplicate_labor_month', '重复人工月份已按首条记录处理。')
+      }
+      continue
+    }
+    laborRowsByMonth.set(month, row)
+  }
+  for (const [month, row] of laborRowsByMonth) {
+    if (!monthSet.has(month) || incompleteMonthSet.has(month) ||
+        safeOwnValue(row, 'status') !== 'ready') continue
+    const map = safeProjectMap(safeOwnValue(row, 'projectLaborById'))
+    const projectLaborTotal = safeYen(safeOwnValue(row, 'projectLaborTotal'))
+    if (!map || projectLaborTotal === null || map.total !== projectLaborTotal) {
+      anomaly(anomalies, 'laborWindow', month, 'invalid_labor_project_map', '月度人工项目分摊映射无效。')
+      continue
+    }
     if (normalized.projectId === 'all') {
       const salary = safeYen(safeOwnValue(row, 'salaryTotal'))
       if (salary !== null && salary > 0) coverageCounts.salary_payment_missing += 1
     } else {
-      const map = safeProjectMap(safeOwnValue(row, 'projectLaborById'))
-      if (map && (map.get(normalized.projectId) || 0) > 0) {
+      if ((map.values.get(normalized.projectId) || 0) > 0) {
         coverageCounts.salary_payment_missing += 1
       }
     }
