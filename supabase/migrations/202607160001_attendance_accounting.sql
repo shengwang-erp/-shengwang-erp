@@ -982,12 +982,33 @@ begin
     where employee.deleted_at is null
       and not employee.is_hidden_system_account
       and employee.employee_number <> 'SW-000'
-      and (employee.hire_date is null or employee.hire_date <= p_work_date)
-      and (employee.resign_date is null or employee.resign_date >= p_work_date)
       and (
-        employee.employment_status <> '离职'
-        or employee.resign_date is not null
-      );
+        (
+          employee.employment_status in ('在职', '休假', '停工')
+          and (
+            employee.hire_date is null
+            or isfinite(employee.hire_date)
+          )
+          and (
+            employee.resign_date is null
+            or isfinite(employee.resign_date)
+          )
+        )
+        or (
+          employee.employment_status = '离职'
+          and employee.hire_date is not null
+          and isfinite(employee.hire_date)
+          and employee.resign_date is not null
+          and isfinite(employee.resign_date)
+        )
+      )
+      and (
+        employee.hire_date is null
+        or employee.resign_date is null
+        or employee.hire_date <= employee.resign_date
+      )
+      and (employee.hire_date is null or employee.hire_date <= p_work_date)
+      and (employee.resign_date is null or employee.resign_date >= p_work_date);
 
   select jsonb_build_object(
       'totalEmployees', count(*),

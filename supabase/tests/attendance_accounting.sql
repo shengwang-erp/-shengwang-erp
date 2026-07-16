@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(69);
+select plan(73);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -1405,7 +1405,7 @@ insert into public.attendance_day_resolutions (
   (
     '6e000000-0000-4000-8000-000000000007',
     '6d000000-0000-4000-8000-000000000005', '2026-07-11', true,
-    'full_day', 1, 'confirmed', '日薪', 12000, 12000, 12000,
+    'full_day', 1, 'month_locked', '日薪', 12000, 12000, 12000,
     '6d000000-0000-4000-8000-000000000001',
     '2026-07-11 13:00:00+00', '2026-07-11 13:00:00+00',
     '2026-07-11 13:00:00+00'
@@ -1453,10 +1453,13 @@ select ok(
         case employee->>'employeeProfileId'
           when '6d000000-0000-4000-8000-000000000005' then
             employee->>'dayStatus' = 'full_day'
+            and employee #>> '{resolution,accountingStatus}' = 'month_locked'
           when '6d000000-0000-4000-8000-000000000013' then
             employee->>'dayStatus' = 'absence'
+            and employee #>> '{resolution,accountingStatus}' = 'confirmed'
           when '6d000000-0000-4000-8000-000000000014' then
             employee->>'dayStatus' = 'half_day'
+            and employee #>> '{resolution,accountingStatus}' = 'confirmed'
           else false
         end
       )
@@ -1466,12 +1469,121 @@ select ok(
           '6d000000-0000-4000-8000-000000000005'
         and (employee->>'hasAbnormalLocation')::boolean
         and jsonb_array_length(employee->'sessions') = 2
-        and employee->>'firstClockInAt' is not null
-        and employee->>'lastClockOutAt' is not null
+        and (employee->>'firstClockInAt')::timestamptz =
+          '2026-07-11 08:15:00+09'::timestamptz
+        and (employee->>'lastClockOutAt')::timestamptz =
+          '2026-07-11 18:30:00+09'::timestamptz
+        and employee #>> '{sessions,0,clockInEvent,result}' = 'abnormal'
+        and employee #>> '{sessions,0,clockInEvent,abnormalReason}' =
+          '定位范围外'
       )
     from resolved
   ),
-  'confirmed resolutions replace issues and status while preserving raw facts'
+  'confirmed and month-locked resolutions take precedence while preserving raw facts'
+);
+
+reset role;
+
+insert into public.employee_profiles (
+  id, employee_number, name, department, position,
+  employment_status, hire_date, resign_date, account_status,
+  must_change_password, is_hidden_system_account
+) values
+  (
+    '6d000000-0000-4000-8000-000000000017', 'SW-6817',
+    '离职缺入职日', '工程部', '小工', '离职', null, '2026-12-31',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000018', 'SW-6818',
+    '离职缺离职日', '工程部', '小工', '离职', '2026-01-01', null,
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000019', 'SW-6819',
+    '离职负无穷入职日', '工程部', '小工', '离职', '-infinity', '2026-12-31',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000020', 'SW-6820',
+    '离职正无穷离职日', '工程部', '小工', '离职', '2026-01-01', 'infinity',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000021', 'SW-6821',
+    '离职正无穷入职日', '工程部', '小工', '离职', 'infinity', '2026-12-31',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000022', 'SW-6822',
+    '离职负无穷离职日', '工程部', '小工', '离职', '2026-01-01', '-infinity',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000023', 'SW-6823',
+    '离职区间倒置', '工程部', '小工', '离职', '2026-07-12', '2026-07-10',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000024', 'SW-6824',
+    '在职负无穷入职日', '工程部', '小工', '在职', '-infinity', null,
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000025', 'SW-6825',
+    '休假正无穷入职日', '工程部', '小工', '休假', 'infinity', null,
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000026', 'SW-6826',
+    '停工正无穷离职日', '工程部', '小工', '停工', null, 'infinity',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000027', 'SW-6827',
+    '在职负无穷离职日', '工程部', '小工', '在职', null, '-infinity',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000028', 'SW-6828',
+    '休假区间倒置', '工程部', '小工', '休假', '2026-07-12', '2026-07-10',
+    'active', true, false
+  ),
+  (
+    '6d000000-0000-4000-8000-000000000029', 'SW-6829',
+    '停工开放入职边界', '工程部', '小工', '停工', null, '2026-12-31',
+    'active', true, false
+  );
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+
+select is(
+  (
+    select count(*)
+    from jsonb_array_elements(
+      public.list_daily_attendance_dashboard_secure('2026-07-11'::date)
+        ->'employees'
+    ) employee
+    where employee->>'employeeProfileId' in (
+      '6d000000-0000-4000-8000-000000000017',
+      '6d000000-0000-4000-8000-000000000018',
+      '6d000000-0000-4000-8000-000000000019',
+      '6d000000-0000-4000-8000-000000000020',
+      '6d000000-0000-4000-8000-000000000021',
+      '6d000000-0000-4000-8000-000000000022',
+      '6d000000-0000-4000-8000-000000000023',
+      '6d000000-0000-4000-8000-000000000024',
+      '6d000000-0000-4000-8000-000000000025',
+      '6d000000-0000-4000-8000-000000000026',
+      '6d000000-0000-4000-8000-000000000027',
+      '6d000000-0000-4000-8000-000000000028'
+    )
+  ),
+  0::bigint,
+  'former missing-bound and all non-finite or reversed intervals fail closed'
 );
 
 select ok(
@@ -1486,11 +1598,15 @@ select ok(
       cross join lateral jsonb_array_elements(result->'employees') employee
     )
     select
-      (select count(*) from employees) = 11
-      and (select count(distinct employee_id) from employees) = 11
+      (select count(*) from employees) = 12
+      and (select count(distinct employee_id) from employees) = 12
       and exists (
         select 1 from employees
         where employee_id = '6d000000-0000-4000-8000-000000000010'
+      )
+      and exists (
+        select 1 from employees
+        where employee_id = '6d000000-0000-4000-8000-000000000029'
       )
       and not exists (
         select 1 from employees
@@ -1500,7 +1616,29 @@ select ok(
         )
       )
   ),
-  'employment interval is inclusive and every employee appears at most once'
+  'finite employment intervals are inclusive and current open bounds remain compatible'
+);
+
+reset role;
+delete from public.employee_profiles
+where id in (
+  '6d000000-0000-4000-8000-000000000017',
+  '6d000000-0000-4000-8000-000000000018',
+  '6d000000-0000-4000-8000-000000000019',
+  '6d000000-0000-4000-8000-000000000020',
+  '6d000000-0000-4000-8000-000000000021',
+  '6d000000-0000-4000-8000-000000000022',
+  '6d000000-0000-4000-8000-000000000023',
+  '6d000000-0000-4000-8000-000000000024',
+  '6d000000-0000-4000-8000-000000000025',
+  '6d000000-0000-4000-8000-000000000026',
+  '6d000000-0000-4000-8000-000000000027',
+  '6d000000-0000-4000-8000-000000000028',
+  '6d000000-0000-4000-8000-000000000029'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
 );
 
 select is(
@@ -1649,6 +1787,85 @@ select ok(
     from dashboard
   ),
   'salary-less callers receive no wage, salary, or employee-cost values anywhere'
+);
+
+reset role;
+insert into public.permission_grants (
+  subject_type, subject_code, permission_key
+) values
+  ('position', '会计', 'sensitive.salary_view'),
+  ('position', '会计', 'sensitive.salary_update'),
+  ('position', '会计', 'module.project_costs.view'),
+  ('position', '会计', 'module.project_costs.update'),
+  ('position', '会计', 'module.settings.update');
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000002', true
+);
+select is(
+  public.list_daily_attendance_dashboard_secure('2026-07-11'::date)
+    ->'permissions',
+  '{
+    "canResolve": false,
+    "canViewSalary": true,
+    "canUpdateSalary": false,
+    "canViewProjectCosts": true,
+    "canUpdateProjectCosts": false,
+    "canUpdateSettings": true
+  }'::jsonb,
+  'missing labor update independently closes both composite update permissions'
+);
+
+reset role;
+insert into public.permission_grants (
+  subject_type, subject_code, permission_key
+) values ('position', '会计', 'module.labor.update');
+delete from public.permission_grants
+where subject_type = 'position'
+  and subject_code = '会计'
+  and permission_key = 'module.project_costs.update';
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000002', true
+);
+select is(
+  public.list_daily_attendance_dashboard_secure('2026-07-11'::date)
+    ->'permissions',
+  '{
+    "canResolve": true,
+    "canViewSalary": true,
+    "canUpdateSalary": true,
+    "canViewProjectCosts": true,
+    "canUpdateProjectCosts": false,
+    "canUpdateSettings": true
+  }'::jsonb,
+  'missing project-cost update closes only its composite update permission'
+);
+
+reset role;
+insert into public.permission_grants (
+  subject_type, subject_code, permission_key
+) values ('position', '会计', 'module.project_costs.update');
+delete from public.permission_grants
+where subject_type = 'position'
+  and subject_code = '会计'
+  and permission_key = 'sensitive.salary_update';
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000002', true
+);
+select is(
+  public.list_daily_attendance_dashboard_secure('2026-07-11'::date)
+    ->'permissions',
+  '{
+    "canResolve": true,
+    "canViewSalary": true,
+    "canUpdateSalary": false,
+    "canViewProjectCosts": true,
+    "canUpdateProjectCosts": false,
+    "canUpdateSettings": true
+  }'::jsonb,
+  'missing salary update independently closes both composite update permissions'
 );
 
 select set_config(
