@@ -43,6 +43,34 @@ test('salary previews use only whole and half-day units', () => {
     overtimePay: 0, bonus: 0, deduction: 0 }).basePay, 30000)
 })
 
+test('salary previews fail closed for fractional, negative, or malformed aggregate day counts', () => {
+  const input = {
+    salaryType: '日薪', baseSalary: 0, dailySalary: 12000, hourlyWage: 0,
+    fullDays: 1, halfDays: 1, overtimePay: 1000, bonus: 500, deduction: 200,
+  }
+  for (const patch of [
+    { fullDays: -1 },
+    { fullDays: 0.5 },
+    { fullDays: Number.NaN },
+    { fullDays: Number.POSITIVE_INFINITY },
+    { fullDays: '1' },
+    { fullDays: null },
+    { halfDays: -1 },
+    { halfDays: 0.5 },
+    { halfDays: Number.NaN },
+    { halfDays: Number.POSITIVE_INFINITY },
+    { halfDays: '1' },
+    { halfDays: undefined },
+  ]) {
+    assert.deepEqual(calculatePayrollPreview({ ...input, ...patch }), {
+      attendanceUnits: 0,
+      basePay: 0,
+      netSalary: 0,
+      valid: false,
+    })
+  }
+})
+
 test('project cost suggestions round yen and allocations must balance', () => {
   assert.equal(suggestProjectCost({ salaryType: '月薪', baseSalary: 320000,
     dailySalary: 0, hourlyWage: 0, attendanceUnits: 0.5 }), 6667)
@@ -51,6 +79,62 @@ test('project cost suggestions round yen and allocations must balance', () => {
   { valid: true, allocatedTotal: 10000, difference: 0 })
   assert.equal(validateProjectAllocations({ finalProjectCost: 10000,
     allocations: [{ projectId: 'P1', amount: 9999 }] }).valid, false)
+})
+
+test('project cost suggestions distinguish valid zero from forbidden daily units', () => {
+  const input = { salaryType: '日薪', baseSalary: 0, dailySalary: 12000, hourlyWage: 0 }
+  assert.equal(suggestProjectCost({ ...input, attendanceUnits: 0 }), 0)
+  assert.equal(suggestProjectCost({ ...input, attendanceUnits: 0.5 }), 6000)
+  assert.equal(suggestProjectCost({ ...input, attendanceUnits: 1 }), 12000)
+  for (const attendanceUnits of [
+    -0.5, 0.25, 1.5, null, undefined, '0.5', Number.NaN, Number.POSITIVE_INFINITY,
+  ]) {
+    assert.equal(suggestProjectCost({ ...input, attendanceUnits }), null)
+  }
+})
+
+test('allocation validation rejects malformed money without coercing it to zero', () => {
+  const malformed = { valid: false, allocatedTotal: null, difference: null }
+  for (const finalProjectCost of [
+    undefined, null, '', ' ', '10000', Number.NaN, Number.POSITIVE_INFINITY, -1, 10000.5,
+  ]) {
+    assert.deepEqual(validateProjectAllocations({ finalProjectCost, allocations: [] }), malformed)
+  }
+  for (const amount of [
+    undefined, null, '', ' ', '10000', Number.NaN, Number.POSITIVE_INFINITY, -1, 10000.5,
+  ]) {
+    assert.deepEqual(validateProjectAllocations({
+      finalProjectCost: 10000,
+      allocations: [{ projectId: 'P1', amount }],
+    }), malformed)
+  }
+  assert.deepEqual(validateProjectAllocations({ finalProjectCost: 0, allocations: [] }), {
+    valid: true,
+    allocatedTotal: 0,
+    difference: 0,
+  })
+})
+
+test('allocation validation requires trimmed IDs and detects duplicates after trimming', () => {
+  const malformed = { valid: false, allocatedTotal: null, difference: null }
+  for (const projectId of [undefined, null, '', ' \t', 123]) {
+    assert.deepEqual(validateProjectAllocations({
+      finalProjectCost: 10000,
+      allocations: [{ projectId, amount: 10000 }],
+    }), malformed)
+  }
+  assert.deepEqual(validateProjectAllocations({
+    finalProjectCost: 10000,
+    allocations: [{ projectId: ' P1 ', amount: 6000 }, { projectId: 'P1', amount: 4000 }],
+  }), { valid: false, allocatedTotal: 10000, difference: 0 })
+  assert.deepEqual(validateProjectAllocations({
+    finalProjectCost: 10000,
+    allocations: [{ projectId: ' P1 ', amount: 10000 }],
+  }), { valid: true, allocatedTotal: 10000, difference: 0 })
+  assert.deepEqual(validateProjectAllocations({
+    finalProjectCost: 0,
+    allocations: null,
+  }), malformed)
 })
 
 test('CSV escapes quotes and starts with an Excel-compatible BOM', () => {
@@ -115,6 +199,45 @@ test('first clock-in and last clock-out drive late, early, and overtime facts', 
     }],
     resolution: null,
   }).issueCodes, ['late', 'early'])
+})
+
+test('multiple sessions use the genuine earliest clock-in and latest clock-out', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T18:30:00+09:00',
+    settings,
+    sessions: [
+      { openedAt: '2026-07-18T00:00:00.000Z', closedAt: '2026-07-18T03:00:00.000Z' },
+      { openedAt: '2026-07-18T04:00:00.000Z', closedAt: '2026-07-18T09:10:00.000Z' },
+      { openedAt: '2026-07-17T22:50:00.000Z', closedAt: '2026-07-17T23:30:00.000Z' },
+    ],
+    resolution: null,
+  }), {
+    scheduleRequired: true,
+    dayStatus: 'completed',
+    issueCodes: ['overtime_pending'],
+  })
+})
+
+test('session timestamps fall through blank and malformed aliases to later valid facts', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T18:30:00+09:00',
+    settings,
+    sessions: [{
+      openedAt: ' ',
+      clockInAt: 'not-a-time',
+      clockInEvent: { serverRecordedAt: '2026-07-17T22:45:00.000Z', result: 'normal' },
+      closedAt: 'not-a-time',
+      clockOutAt: '',
+      clockOutEvent: { serverRecordedAt: '2026-07-18T09:15:00.000Z', result: 'normal' },
+    }],
+    resolution: null,
+  }), {
+    scheduleRequired: true,
+    dayStatus: 'completed',
+    issueCodes: ['overtime_pending'],
+  })
 })
 
 test('open sessions report missing clock-out after shift end in stable issue order', () => {

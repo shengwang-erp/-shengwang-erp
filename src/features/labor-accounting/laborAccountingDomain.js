@@ -13,12 +13,16 @@ const ISSUE_ORDER = Object.freeze([
 ])
 const FINAL_ACCOUNTING_STATUSES = new Set(['confirmed', 'month_locked'])
 const RESOLUTION_TYPE_SET = new Set(ACCOUNTING_RESOLUTION_TYPES)
+const DAILY_ACCOUNTING_UNITS = new Set([0, 0.5, 1])
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u
 const TIME_PATTERN = /^(\d{2}):(\d{2})$/u
 
 const yen = (value) => Math.round(Number(value) || 0)
 const units = (fullDays, halfDays) =>
-  (Number(fullDays) || 0) + (Number(halfDays) || 0) * 0.5
+  fullDays + halfDays * 0.5
+const isNonNegativeInteger = (value) =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const isIntegerYen = isNonNegativeInteger
 
 function validIsoDate(value) {
   const match = ISO_DATE_PATTERN.exec(String(value ?? ''))
@@ -51,18 +55,26 @@ function instant(value) {
   return Number.isFinite(timestamp) ? timestamp : null
 }
 
+function firstValidInstant(...values) {
+  for (const value of values) {
+    const timestamp = instant(value)
+    if (timestamp !== null) return timestamp
+  }
+  return null
+}
+
 function sessionStart(session) {
-  return instant(
-    session?.openedAt ??
-    session?.clockInAt ??
+  return firstValidInstant(
+    session?.openedAt,
+    session?.clockInAt,
     session?.clockInEvent?.serverRecordedAt,
   )
 }
 
 function sessionEnd(session) {
-  return instant(
-    session?.closedAt ??
-    session?.clockOutAt ??
+  return firstValidInstant(
+    session?.closedAt,
+    session?.clockOutAt,
     session?.clockOutEvent?.serverRecordedAt,
   )
 }
@@ -159,6 +171,9 @@ export function classifyAttendanceDay({
 }
 
 export function calculatePayrollPreview(input) {
+  if (!isNonNegativeInteger(input?.fullDays) || !isNonNegativeInteger(input?.halfDays)) {
+    return { attendanceUnits: 0, basePay: 0, netSalary: 0, valid: false }
+  }
   const attendanceUnits = units(input.fullDays, input.halfDays)
   const basePay = input.salaryType === '月薪'
     ? yen(input.baseSalary)
@@ -173,6 +188,7 @@ export function calculatePayrollPreview(input) {
 }
 
 export function suggestProjectCost(input) {
+  if (!DAILY_ACCOUNTING_UNITS.has(input?.attendanceUnits)) return null
   const fullDay = input.salaryType === '月薪'
     ? yen((Number(input.baseSalary) || 0) / 24)
     : input.salaryType === '日薪'
@@ -180,17 +196,27 @@ export function suggestProjectCost(input) {
       : input.salaryType === '时薪'
         ? yen((Number(input.hourlyWage) || 0) * 8)
         : 0
-  return yen(fullDay * Number(input.attendanceUnits || 0))
+  return yen(fullDay * input.attendanceUnits)
 }
 
-export function validateProjectAllocations({ finalProjectCost, allocations }) {
-  const duplicate = new Set(allocations.map((item) => item.projectId)).size !== allocations.length
-  const invalid = allocations.some((item) =>
-    !item.projectId || !Number.isInteger(Number(item.amount)) || Number(item.amount) < 0
-  )
-  const allocatedTotal = allocations.reduce((total, item) => total + Number(item.amount || 0), 0)
-  const difference = yen(finalProjectCost) - allocatedTotal
-  return { valid: !duplicate && !invalid && difference === 0, allocatedTotal, difference }
+export function validateProjectAllocations(input = {}) {
+  const finalProjectCost = input?.finalProjectCost
+  const allocations = input?.allocations
+  const malformed = { valid: false, allocatedTotal: null, difference: null }
+  if (!isIntegerYen(finalProjectCost) || !Array.isArray(allocations)) return malformed
+
+  const normalized = []
+  for (const item of allocations) {
+    const projectId = typeof item?.projectId === 'string' ? item.projectId.trim() : ''
+    if (!projectId || !isIntegerYen(item?.amount)) return malformed
+    normalized.push({ projectId, amount: item.amount })
+  }
+
+  const duplicate = new Set(normalized.map((item) => item.projectId)).size !== normalized.length
+  const allocatedTotal = normalized.reduce((total, item) => total + item.amount, 0)
+  if (!Number.isSafeInteger(allocatedTotal)) return malformed
+  const difference = finalProjectCost - allocatedTotal
+  return { valid: !duplicate && difference === 0, allocatedTotal, difference }
 }
 
 const PROJECT_LABOR_CSV_COLUMNS = Object.freeze([
