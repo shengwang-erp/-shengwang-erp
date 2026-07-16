@@ -229,16 +229,25 @@ const PROJECT_LABOR_CSV_COLUMNS = Object.freeze([
   ['状态', 'accountingStatus'],
 ])
 
-function escapeCsv(value) {
+const SPREADSHEET_FORMULA_PREFIX = /^[=+\-@\t\r\n]/u
+
+function escapeCsv(value, { trustedNumeric = false } = {}) {
   const text = String(value ?? '')
-  return /[",\r\n]/u.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+  const neutralized = !trustedNumeric && SPREADSHEET_FORMULA_PREFIX.test(text)
+    ? `'${text}`
+    : text
+  return /[",\r\n]/u.test(neutralized)
+    ? `"${neutralized.replaceAll('"', '""')}"`
+    : neutralized
 }
 
 export function buildProjectLaborCsv(rows) {
   const header = PROJECT_LABOR_CSV_COLUMNS.map(([label]) => escapeCsv(label)).join(',')
   const body = (Array.isArray(rows) ? rows : []).map((row) =>
     PROJECT_LABOR_CSV_COLUMNS.map(([, key]) =>
-      escapeCsv(key === 'amount' ? yen(row?.[key]) : row?.[key])
+      escapeCsv(key === 'amount' ? yen(row?.[key]) : row?.[key], {
+        trustedNumeric: key === 'amount',
+      })
     ).join(',')
   )
   return `\uFEFF${[header, ...body].join('\r\n')}`

@@ -1027,6 +1027,49 @@ test('tab architecture is accessible, lazy, permission-gated, and derives month 
   assert.doesNotMatch(sources.page, /new Date\s*\(/u)
 })
 
+test('tablist keyboard navigation follows only visible tabs, wraps, focuses, and prevents default', () => {
+  const { handleLaborTabKeyDown, laborTabsForPermissions } = moduleFor('page')
+  const hiddenProjectTabs = laborTabsForPermissions({ canViewProjectCosts: false })
+  const visibleProjectTabs = laborTabsForPermissions({ canViewProjectCosts: true })
+
+  const run = ({ tabs, activeTabId, key }) => {
+    let prevented = 0
+    let selected = ''
+    let focused = ''
+    const handled = handleLaborTabKeyDown({
+      event: { key, preventDefault() { prevented += 1 } },
+      tabs,
+      activeTabId,
+      onSelect(tabId) { selected = tabId },
+      focusTab(tabId) { focused = tabId },
+    })
+    return { handled, prevented, selected, focused }
+  }
+
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'monthly', key: 'ArrowRight' }), {
+    handled: true, prevented: 1, selected: 'settings', focused: 'settings',
+  })
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'settings', key: 'ArrowRight' }), {
+    handled: true, prevented: 1, selected: 'daily', focused: 'daily',
+  })
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'daily', key: 'ArrowLeft' }), {
+    handled: true, prevented: 1, selected: 'settings', focused: 'settings',
+  })
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'settings', key: 'Home' }), {
+    handled: true, prevented: 1, selected: 'daily', focused: 'daily',
+  })
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'daily', key: 'End' }), {
+    handled: true, prevented: 1, selected: 'settings', focused: 'settings',
+  })
+  assert.deepEqual(run({ tabs: visibleProjectTabs, activeTabId: 'monthly', key: 'ArrowRight' }), {
+    handled: true, prevented: 1, selected: 'project', focused: 'project',
+  })
+  assert.deepEqual(run({ tabs: hiddenProjectTabs, activeTabId: 'monthly', key: 'Enter' }), {
+    handled: false, prevented: 0, selected: '', focused: '',
+  })
+  assert.match(sources.page, /onKeyDown=/u)
+})
+
 test('settings are read-only without update permission and all async tabs guard stale work', () => {
   const { default: AttendanceAccountingSettings } = moduleFor('settings')
   const markup = render(AttendanceAccountingSettings, {

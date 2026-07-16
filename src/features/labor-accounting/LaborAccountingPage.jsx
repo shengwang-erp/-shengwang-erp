@@ -28,6 +28,29 @@ export function monthFromServerWorkDate(workDate) {
     : ''
 }
 
+export function handleLaborTabKeyDown({
+  event,
+  tabs,
+  activeTabId,
+  onSelect,
+  focusTab,
+}) {
+  if (!Array.isArray(tabs) || tabs.length === 0) return false
+  const currentIndex = tabs.findIndex((tab) => tab.id === activeTabId)
+  if (currentIndex < 0) return false
+  let targetIndex
+  if (event?.key === 'ArrowRight') targetIndex = (currentIndex + 1) % tabs.length
+  else if (event?.key === 'ArrowLeft') targetIndex = (currentIndex - 1 + tabs.length) % tabs.length
+  else if (event?.key === 'Home') targetIndex = 0
+  else if (event?.key === 'End') targetIndex = tabs.length - 1
+  else return false
+  const targetId = tabs[targetIndex].id
+  event.preventDefault()
+  onSelect?.(targetId)
+  focusTab?.(targetId)
+  return true
+}
+
 function displayError(error, fallback) {
   return typeof error?.userMessage === 'string' && error.userMessage.trim()
     ? error.userMessage
@@ -153,6 +176,7 @@ export default function LaborAccountingPage({
 
   const mountedRef = useRef(true)
   const monthInitializedRef = useRef(false)
+  const tabButtonRefs = useRef(new Map())
   const initializationGenerationRef = useRef(0)
   const dashboardGenerationRef = useRef(0)
   const detailGenerationRef = useRef(0)
@@ -375,6 +399,10 @@ export default function LaborAccountingPage({
         {availableTabs.map((tab) => (
           <button
             key={tab.id}
+            ref={(node) => {
+              if (node) tabButtonRefs.current.set(tab.id, node)
+              else tabButtonRefs.current.delete(tab.id)
+            }}
             id={`labor-tab-${tab.id}`}
             type="button"
             role="tab"
@@ -382,6 +410,13 @@ export default function LaborAccountingPage({
             aria-controls={`labor-panel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
             onClick={() => setActiveTab(tab.id)}
+            onKeyDown={(event) => handleLaborTabKeyDown({
+              event,
+              tabs: availableTabs,
+              activeTabId: activeTab,
+              onSelect: setActiveTab,
+              focusTab: (tabId) => tabButtonRefs.current.get(tabId)?.focus(),
+            })}
           >
             {tab.label}
             {tab.id === 'daily' && dashboard?.summary?.alertCount > 0 && (

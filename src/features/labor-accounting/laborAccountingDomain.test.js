@@ -259,7 +259,7 @@ test('open sessions report missing clock-out after shift end in stable issue ord
   })
 })
 
-test('CSV uses CRLF, integer yen, and RFC 4180 escaping for every field type', () => {
+test('CSV neutralizes formula prefixes before CRLF, integer yen, and RFC 4180 escaping', () => {
   const csv = buildProjectLaborCsv([{
     projectName: 'A\r\nB',
     workDate: '2026-07-16',
@@ -271,8 +271,38 @@ test('CSV uses CRLF, integer yen, and RFC 4180 escaping for every field type', (
   }])
   assert.equal(csv.includes('\n') && !csv.replaceAll('\r\n', '').includes('\n'), true)
   assert.match(csv, /"A\r\nB"/u)
-  assert.match(csv, /"=""unsafe"""/u)
+  assert.match(csv, /"'=""unsafe"""/u)
+  assert.doesNotMatch(csv, /,"=""unsafe""",/u)
   assert.match(csv, /,0\.5,10001,confirmed(?:\r\n)?$/u)
+})
+
+test('CSV neutralizes every spreadsheet formula prefix without changing generated numeric amount', () => {
+  const csv = buildProjectLaborCsv([{
+    projectName: '=project',
+    workDate: '+2026-07-16',
+    employeeNumber: '-SW-001',
+    employeeName: '@employee',
+    attendanceUnits: '\t0.5',
+    amount: -100,
+    accountingStatus: '\rconfirmed',
+  }, {
+    projectName: '\nproject',
+    workDate: '2026-07-17',
+    employeeNumber: 'SW-002',
+    employeeName: 'safe',
+    attendanceUnits: 1,
+    amount: 200,
+    accountingStatus: 'confirmed',
+  }])
+  assert.ok(csv.includes("'=project"))
+  assert.ok(csv.includes("'+2026-07-16"))
+  assert.ok(csv.includes("'-SW-001"))
+  assert.ok(csv.includes("'@employee"))
+  assert.ok(csv.includes("'\t0.5"))
+  assert.ok(csv.includes('"\'\rconfirmed"'))
+  assert.ok(csv.includes('"\'\nproject"'))
+  assert.match(csv, /,'\t0\.5,-100,"'\rconfirmed"/u)
+  assert.doesNotMatch(csv, /,'-100,/u)
 })
 
 assert.deepEqual(ACCOUNTING_RESOLUTION_TYPES,
