@@ -266,9 +266,8 @@ const monthlyReport = Object.freeze({
   permissions: { canViewSalary: true, canUpdateSalary: true },
   summary: {
     employeeCount: 2,
-    confirmedFullDays: 20,
-    confirmedHalfDays: 1,
-    absenceDays: 0,
+    scheduledAttendanceUnits: 42,
+    confirmedAttendanceUnits: 41,
     pendingCount: 0,
     salaryPreviewTotal: 497000,
     projectAllocatedTotal: 492000,
@@ -283,9 +282,8 @@ const redactedMonthlyReport = Object.freeze({
   permissions: { canViewSalary: false, canUpdateSalary: false },
   summary: {
     employeeCount: 1,
-    confirmedFullDays: 20,
-    confirmedHalfDays: 1,
-    absenceDays: 0,
+    scheduledAttendanceUnits: 21,
+    confirmedAttendanceUnits: 20.5,
     pendingCount: 0,
   },
   employees: [Object.fromEntries(Object.entries(monthlyEmployee).filter(([key]) => ![
@@ -294,6 +292,35 @@ const redactedMonthlyReport = Object.freeze({
     'confirmationNote', 'confirmedAt',
   ].includes(key)))],
   reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
+})
+
+const employeeMonthCalendar = Object.freeze({
+  salaryMonth: '2026-07',
+  employee: {
+    employeeProfileId: employee.employeeProfileId,
+    employeeNumber: employee.employeeNumber,
+    employeeName: employee.name,
+    department: employee.department,
+    position: employee.position,
+  },
+  days: [
+    {
+      workDate: '2026-07-01',
+      eligible: false,
+      scheduleRequired: false,
+      dayStatus: 'not_eligible',
+      issueCodes: [],
+      accountingStatus: null,
+    },
+    {
+      workDate: '2026-07-02',
+      eligible: true,
+      scheduleRequired: true,
+      dayStatus: 'completed',
+      issueCodes: ['abnormal_location', 'late'],
+      accountingStatus: 'draft',
+    },
+  ],
 })
 
 const projectReport = Object.freeze({
@@ -826,6 +853,20 @@ test('monthly payroll, project costs, and settings render the approved accountin
   assert.match(monthlyMarkup, /历史人工记录/u)
   assert.match(monthlyMarkup, /历史数据核对/u)
   assert.match(monthlyMarkup, /labor-payroll-mobile-cards/u)
+  const monthlySummaryMarkup = monthlyMarkup.match(
+    /<section class="labor-report-summary"[^>]*>([\s\S]*?)<\/section>/u,
+  )?.[1] || ''
+  for (const label of [
+    '应出勤人天', '已确认人天', '待处理人次', '工资预览总额', '未分摊项目成本',
+  ]) assert.match(monthlySummaryMarkup, new RegExp(label, 'u'))
+  for (const legacyLabel of [
+    '员工人数', '确认整天', '确认半天', '缺勤', '项目已分摊',
+  ]) assert.doesNotMatch(monthlySummaryMarkup, new RegExp(legacyLabel, 'u'))
+  assert.match(monthlyMarkup, /员工工资明细<\/h3><small>2 名员工/u)
+  assert.equal((monthlyMarkup.match(/>查看整月考勤<\/button>/gu) || []).length, 2)
+  assert.equal((monthlyMarkup.match(/历史人工记录无逐日考勤/gu) || []).length, 2)
+  assert.match(monthlyMarkup, /aria-label="查看山田太郎 2026-07 整月考勤"/u)
+  assert.doesNotMatch(monthlyMarkup, /aria-label="查看历史员工 2026-07 整月考勤"/u)
 
   const projectMarkup = render(ProjectLaborCostTab, {
     service: {},
@@ -866,6 +907,13 @@ test('salary and employee-level project data are absent under redacted permissio
   assert.doesNotMatch(monthlyMarkup, /奖金/u)
   assert.doesNotMatch(monthlyMarkup, /扣款/u)
   assert.doesNotMatch(monthlyMarkup, /type="number"/u)
+  const redactedSummaryMarkup = monthlyMarkup.match(
+    /<section class="labor-report-summary"[^>]*>([\s\S]*?)<\/section>/u,
+  )?.[1] || ''
+  for (const label of ['应出勤人天', '已确认人天', '待处理人次']) {
+    assert.match(redactedSummaryMarkup, new RegExp(label, 'u'))
+  }
+  assert.doesNotMatch(redactedSummaryMarkup, /工资预览总额|未分摊项目成本/u)
 
   const projectMarkup = render(ProjectLaborCostTab, {
     service: {}, month: '2026-07', initialReport: redactedProjectReport,
@@ -876,6 +924,141 @@ test('salary and employee-level project data are absent under redacted permissio
   assert.doesNotMatch(projectMarkup, /员工费用构成/u)
   assert.doesNotMatch(projectMarkup, /每日分摊明细/u)
   assert.doesNotMatch(projectMarkup, /导出项目用工明细/u)
+})
+
+test('month calendar grid covers ordinary February, leap year, 31-day months, and Monday-first weeks', () => {
+  const { buildMonthCalendarGrid } = moduleFor('monthly')
+  assert.equal(typeof buildMonthCalendarGrid, 'function')
+  const daysFor = (month, count) => Array.from({ length: count }, (_, index) => ({
+    workDate: `${month}-${String(index + 1).padStart(2, '0')}`,
+    eligible: true,
+    scheduleRequired: true,
+    dayStatus: 'completed',
+    issueCodes: [],
+    accountingStatus: 'confirmed',
+  }))
+
+  const ordinaryFebruary = buildMonthCalendarGrid('2026-02', daysFor('2026-02', 28))
+  assert.equal(ordinaryFebruary.length, 35)
+  assert.equal(ordinaryFebruary.findIndex((cell) => cell?.workDate === '2026-02-01'), 6)
+  assert.equal(ordinaryFebruary.filter(Boolean).length, 28)
+
+  const leapFebruary = buildMonthCalendarGrid('2024-02', daysFor('2024-02', 29))
+  assert.equal(leapFebruary.length, 35)
+  assert.equal(leapFebruary.findIndex((cell) => cell?.workDate === '2024-02-01'), 3)
+  assert.equal(leapFebruary.filter(Boolean).length, 29)
+
+  const august = buildMonthCalendarGrid('2026-08', daysFor('2026-08', 31))
+  assert.equal(august.length, 42)
+  assert.equal(august.findIndex((cell) => cell?.workDate === '2026-08-01'), 5)
+  assert.equal(august.filter(Boolean).at(-1)?.workDate, '2026-08-31')
+  assert.deepEqual(buildMonthCalendarGrid('2026-13', []), [])
+})
+
+test('month calendar dialog exposes daily status, accounting, issues, ineligible days, and safe states', () => {
+  const {
+    EmployeeMonthCalendarDialog,
+    calendarDayPresentation,
+  } = moduleFor('monthly')
+  assert.equal(typeof EmployeeMonthCalendarDialog, 'function')
+  assert.equal(typeof calendarDayPresentation, 'function')
+
+  const eligible = calendarDayPresentation(employeeMonthCalendar.days[1])
+  assert.equal(eligible.dayStatusLabel, '已完成打卡')
+  assert.equal(eligible.accountingStatusLabel, '草稿')
+  assert.equal(eligible.issueLabel, '迟到、定位异常')
+  assert.equal(eligible.scheduleLabel, '应出勤')
+  const ineligible = calendarDayPresentation(employeeMonthCalendar.days[0])
+  assert.equal(ineligible.dayStatusLabel, '不适用')
+  assert.equal(ineligible.accountingStatusLabel, '无需核算')
+
+  const markup = render(EmployeeMonthCalendarDialog, {
+    state: { status: 'success', ...employeeMonthCalendar, error: '' },
+    onClose() {},
+    onRetry() {},
+    onOpenDailyDate() {},
+  })
+  assert.match(markup, /role="dialog"/u)
+  assert.match(markup, /aria-modal="true"/u)
+  assert.match(markup, /山田太郎 · 2026-07 整月考勤/u)
+  assert.match(markup, /周一[\s\S]*周二[\s\S]*周三[\s\S]*周四[\s\S]*周五[\s\S]*周六[\s\S]*周日/u)
+  assert.equal((markup.match(/role="row"/gu) || []).length, 6)
+  assert.match(markup, /data-dialog-initial-focus="true"/u)
+  assert.match(markup, /aria-label="查看 2026-07-02 考勤"/u)
+  assert.match(markup, /不适用/u)
+  assert.match(markup, /已完成打卡/u)
+  assert.match(markup, /核算：草稿/u)
+  assert.match(markup, /异常：迟到、定位异常/u)
+
+  const loadingMarkup = render(EmployeeMonthCalendarDialog, {
+    state: { status: 'loading', ...employeeMonthCalendar, days: [], error: '' },
+    onClose() {}, onRetry() {}, onOpenDailyDate() {},
+  })
+  assert.match(loadingMarkup, /正在加载整月考勤/u)
+  const errorMarkup = render(EmployeeMonthCalendarDialog, {
+    state: { status: 'error', ...employeeMonthCalendar, days: [], error: '读取失败' },
+    onClose() {}, onRetry() {}, onOpenDailyDate() {},
+  })
+  assert.match(errorMarkup, /role="alert">读取失败/u)
+  assert.match(errorMarkup, /重新加载整月考勤/u)
+  const emptyMarkup = render(EmployeeMonthCalendarDialog, {
+    state: { status: 'success', ...employeeMonthCalendar, days: [], error: '' },
+    onClose() {}, onRetry() {}, onOpenDailyDate() {},
+  })
+  assert.match(emptyMarkup, /没有可显示的逐日考勤记录/u)
+})
+
+test('month calendar uses one RPC with stale guards, modal focus, retry, and current-only auth forwarding', () => {
+  assert.equal((sources.monthly.match(/service\.listEmployeeMonthCalendar\s*\(/gu) || []).length, 1)
+  assert.match(sources.monthly, /calendarGenerationRef/u)
+  assert.match(sources.monthly, /calendarPendingRef/u)
+  assert.match(sources.monthly, /calendarOpenRef/u)
+  assert.match(sources.monthly, /monthRef\.current === requestedMonth/u)
+  assert.match(
+    sources.monthly,
+    /current = mountedRef\.current[\s\S]{0,260}generation === calendarGenerationRef\.current[\s\S]{0,260}contextGeneration === contextGenerationRef\.current/u,
+  )
+  assert.match(
+    sources.monthly,
+    /if \(!current\) return[\s\S]{0,160}error\?\.authInvalid === true[\s\S]{0,80}onAuthInvalid/u,
+  )
+  assert.match(sources.monthly, /useLaborModalFocus/u)
+  assert.match(sources.monthly, /data-dialog-initial-focus/u)
+  assert.match(sources.monthly, /onRetry/u)
+  assert.match(sources.monthly, /onOpenDailyDate/u)
+  for (const handler of ['changeMonth', 'changeDepartment', 'changeEmployee', 'changeOnlyPending']) {
+    assert.match(
+      sources.monthly,
+      new RegExp(`const ${handler}[\\s\\S]{0,260}closeMonthCalendar\\(\\)`, 'u'),
+    )
+  }
+})
+
+test('month calendar day action validates the date and returns to the matching daily board', () => {
+  const { openLaborDailyDate } = moduleFor('page')
+  assert.equal(typeof openLaborDailyDate, 'function')
+  const actions = []
+  assert.equal(openLaborDailyDate({
+    workDate: '2026-07-02',
+    setActiveTab: (tabId) => actions.push(`tab:${tabId}`),
+    focusDailyTab: () => actions.push('focus:daily'),
+    changeWorkDate: (workDate) => actions.push(`date:${workDate}`),
+  }), true)
+  assert.deepEqual(actions, ['tab:daily', 'focus:daily', 'date:2026-07-02'])
+  assert.equal(openLaborDailyDate({
+    workDate: '2026-7-2',
+    setActiveTab: () => actions.push('invalid-tab'),
+    changeWorkDate: () => actions.push('invalid-date'),
+  }), false)
+  for (const invalidWorkDate of ['2026-02-30', '1899-12-31', '2101-01-01']) {
+    assert.equal(openLaborDailyDate({
+      workDate: invalidWorkDate,
+      setActiveTab: () => actions.push('invalid-tab'),
+      changeWorkDate: () => actions.push('invalid-date'),
+    }), false)
+  }
+  assert.deepEqual(actions, ['tab:daily', 'focus:daily', 'date:2026-07-02'])
+  assert.match(sources.page, /<MonthlyPayrollTab[\s\S]{0,260}onOpenDailyDate=/u)
 })
 
 test('payroll and settings payload builders enforce exact safe integers and sorted weekdays', () => {
@@ -1024,7 +1207,7 @@ test('tab architecture is accessible, lazy, permission-gated, and derives month 
     sources.page,
     /changeAccountingMonth[\s\S]{0,240}monthInitializedRef\.current = true[\s\S]{0,120}setAccountingMonth\(nextMonth\)/u,
   )
-  assert.doesNotMatch(sources.page, /new Date\s*\(/u)
+  assert.doesNotMatch(sources.page, /new Date\s*\((?!Date\.UTC)/u)
 })
 
 test('tablist keyboard navigation follows only visible tabs, wraps, focuses, and prevents default', () => {
@@ -1141,6 +1324,33 @@ test('styles are fully scoped and turn the desktop table into narrow employee ca
   assert.match(css, /\.labor-accounting-page[^{}]*\.labor-desktop-table[^{]*\{[^}]*display:\s*none/su)
   assert.match(css, /\.labor-accounting-page[^{}]*\.labor-mobile-cards[^{]*\{[^}]*display:\s*grid/su)
   assert.doesNotMatch(css, /\.labor-accounting-page\s*\{[^}]*overflow-x:\s*auto/su)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-month-calendar-dialog\s*\{/u)
+  assert.match(
+    css,
+    /\.labor-accounting-page\s+\.labor-month-calendar-week\s*\{[^}]*grid-template-columns:\s*repeat\(7,/su,
+  )
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*620px\)[\s\S]*\.labor-accounting-page\s+\.labor-month-calendar-dialog/u,
+  )
+  const narrowCss = css.slice(css.lastIndexOf('@media (max-width: 620px)'))
+  assert.match(
+    narrowCss,
+    /\.labor-accounting-page\s+\.labor-month-calendar-grid\s*\{[^}]*min-width:\s*0/su,
+  )
+  assert.match(
+    narrowCss,
+    /\.labor-accounting-page\s+\.labor-month-calendar-wrap\s*\{[^}]*overflow-x:\s*hidden/su,
+  )
+  assert.match(
+    narrowCss,
+    /\.labor-accounting-page\s+\.labor-month-calendar-week\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/su,
+  )
+  assert.match(
+    narrowCss,
+    /\.labor-accounting-page\s+\.labor-month-calendar-weekdays,[\s\S]{0,180}\.labor-month-calendar-spacer\s*\{[^}]*display:\s*none/su,
+  )
+  assert.doesNotMatch(narrowCss, /min-width:\s*(?:770|840)px/u)
 })
 
 test('daily feature uses secure service injection without direct tables or local storage', () => {

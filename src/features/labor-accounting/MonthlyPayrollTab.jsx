@@ -1,4 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+
+import { useLaborModalFocus } from './AttendanceResolutionDialog.jsx'
+import { ATTENDANCE_ISSUE_LABELS } from './AttendanceStatusTable.jsx'
 
 const PAYROLL_STATUS_LABELS = Object.freeze({
   confirmed: '已确认',
@@ -11,6 +14,111 @@ const PAYROLL_STATUS_LABELS = Object.freeze({
 const POSIX_EDGE_SPACE = /^[\u0009-\u000d\u0020]+|[\u0009-\u000d\u0020]+$/gu
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/u
+const WORK_DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
+const CALENDAR_WEEKDAYS = Object.freeze(['周一', '周二', '周三', '周四', '周五', '周六', '周日'])
+const CALENDAR_DAY_STATUS_LABELS = Object.freeze({
+  unconfigured: '未启用',
+  before_activation: '启用前日期',
+  full_day: '整天已确认',
+  half_day: '半天已确认',
+  rest: '休息',
+  leave: '请假',
+  comp_time: '调休',
+  absence: '缺勤',
+  optional_not_worked: '非应出勤日',
+  missing_clock_in: '未打卡',
+  not_started: '尚未到上班时间',
+  working: '正在工作',
+  completed: '已完成打卡',
+})
+const CALENDAR_ACCOUNTING_STATUS_LABELS = Object.freeze({
+  draft: '草稿',
+  confirmed: '已确认',
+  month_locked: '月结已锁定',
+})
+const CALENDAR_ISSUE_ORDER = new Map([
+  'missing_clock_in', 'missing_clock_out', 'late', 'early',
+  'abnormal_location', 'overtime_pending',
+].map((code, index) => [code, index]))
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+}
+
+function monthLength(year, monthNumber) {
+  if (monthNumber === 2) return isLeapYear(year) ? 29 : 28
+  return [4, 6, 9, 11].includes(monthNumber) ? 30 : 31
+}
+
+export function buildMonthCalendarGrid(month, days = []) {
+  if (!MONTH_PATTERN.test(String(month ?? '')) || !Array.isArray(days)) return []
+  const [yearText, monthText] = month.split('-')
+  const year = Number(yearText)
+  const monthNumber = Number(monthText)
+  const firstWeekday = (new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay() + 6) % 7
+  const totalDays = monthLength(year, monthNumber)
+  const byDate = new Map(days
+    .filter((day) => WORK_DATE_PATTERN.test(String(day?.workDate ?? '')) &&
+      day.workDate.startsWith(`${month}-`))
+    .map((day) => [day.workDate, day]))
+  const cells = new Array(firstWeekday).fill(null)
+  for (let dayNumber = 1; dayNumber <= totalDays; dayNumber += 1) {
+    const workDate = `${month}-${String(dayNumber).padStart(2, '0')}`
+    cells.push(byDate.get(workDate) || {
+      workDate,
+      eligible: false,
+      scheduleRequired: false,
+      dayStatus: null,
+      issueCodes: [],
+      accountingStatus: null,
+      missing: true,
+    })
+  }
+  while (cells.length % 7 !== 0) cells.push(null)
+  return cells
+}
+
+export function calendarDayPresentation(day) {
+  if (day?.missing === true) {
+    return {
+      dayStatusLabel: '数据缺失',
+      accountingStatusLabel: '待核对',
+      issueLabel: '无数据',
+      scheduleLabel: '日期数据缺失',
+      tone: 'warning',
+    }
+  }
+  if (day?.eligible !== true) {
+    return {
+      dayStatusLabel: '不适用',
+      accountingStatusLabel: '无需核算',
+      issueLabel: '无异常',
+      scheduleLabel: '非适用日期',
+      tone: 'muted',
+    }
+  }
+  const issueCodes = Array.isArray(day.issueCodes) ? day.issueCodes : []
+  const issueLabel = issueCodes.length > 0
+    ? [...issueCodes]
+      .sort((left, right) =>
+        (CALENDAR_ISSUE_ORDER.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (CALENDAR_ISSUE_ORDER.get(right) ?? Number.MAX_SAFE_INTEGER))
+      .map((code) => ATTENDANCE_ISSUE_LABELS[code] || code).join('、')
+    : '无异常'
+  const dayStatusLabel = CALENDAR_DAY_STATUS_LABELS[day.dayStatus] || '未知状态'
+  const accountingStatusLabel = day.accountingStatus
+    ? CALENDAR_ACCOUNTING_STATUS_LABELS[day.accountingStatus] || day.accountingStatus
+    : '待核算'
+  const danger = issueCodes.length > 0 || ['absence', 'missing_clock_in'].includes(day.dayStatus)
+  const warning = day.accountingStatus === 'draft' || day.dayStatus === 'working'
+  return {
+    dayStatusLabel,
+    accountingStatusLabel,
+    issueLabel,
+    scheduleLabel: day.scheduleRequired === true ? '应出勤' : '非应出勤日',
+    tone: danger ? 'danger' : warning ? 'warning' : 'success',
+  }
+}
 
 function safeError(error, fallback) {
   return typeof error?.userMessage === 'string' && error.userMessage.trim()
@@ -110,6 +218,173 @@ function ReconciliationWarning({ reconciliation }) {
       <strong>历史数据核对</strong>
       <span>启用日期后仍有 {postActivation} 条历史人工记录；另有 {malformed} 条历史数据格式异常。</span>
     </div>
+  )
+}
+
+function EmployeeMonthCalendarDay({ day, onOpenDailyDate }) {
+  const presentation = calendarDayPresentation(day)
+  const content = (
+    <>
+      <span className="labor-month-calendar-date">
+        <time dateTime={day.workDate}>{Number(day.workDate.slice(-2))}日</time>
+        <small>{presentation.scheduleLabel}</small>
+      </span>
+      <strong>{presentation.dayStatusLabel}</strong>
+      <span>核算：{presentation.accountingStatusLabel}</span>
+      <span>异常：{presentation.issueLabel}</span>
+    </>
+  )
+  return (
+    <article
+      className="labor-month-calendar-day"
+      data-tone={presentation.tone}
+      data-eligible={day.eligible === true}
+      role="gridcell"
+    >
+      {day.eligible === true ? (
+        <button
+          type="button"
+          aria-label={`查看 ${day.workDate} 考勤`}
+          onClick={() => onOpenDailyDate?.(day.workDate)}
+        >
+          {content}
+        </button>
+      ) : content}
+    </article>
+  )
+}
+
+export function EmployeeMonthCalendarDialog({
+  state,
+  onClose,
+  onRetry,
+  onOpenDailyDate,
+}) {
+  const dialogRef = useRef(null)
+  const titleId = useId()
+  useLaborModalFocus(dialogRef, { onClose, saving: false })
+  const salaryMonth = state?.salaryMonth || ''
+  const employeeName = state?.employee?.employeeName || '员工'
+  const days = Array.isArray(state?.days) ? state.days : []
+  const calendarCells = useMemo(
+    () => buildMonthCalendarGrid(salaryMonth, days),
+    [days, salaryMonth],
+  )
+  const calendarRows = useMemo(() => {
+    const rows = []
+    for (let index = 0; index < calendarCells.length; index += 7) {
+      rows.push(calendarCells.slice(index, index + 7))
+    }
+    return rows
+  }, [calendarCells])
+
+  return (
+    <div className="labor-dialog-backdrop">
+      <section
+        ref={dialogRef}
+        className="labor-month-calendar-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex="-1"
+      >
+        <header className="labor-dialog-heading">
+          <span>
+            <small>员工月度考勤明细</small>
+            <h2 id={titleId}>{employeeName} · {salaryMonth} 整月考勤</h2>
+            <p>{state?.employee?.employeeNumber || '工号未记录'} · {state?.employee?.department || '部门未记录'}</p>
+          </span>
+          <button
+            type="button"
+            className="labor-dialog-close"
+            aria-label="关闭整月考勤"
+            data-dialog-initial-focus
+            onClick={() => onClose?.()}
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="labor-month-calendar-scroll">
+          {state?.status === 'loading' && (
+            <div className="labor-month-calendar-state" role="status">
+              <span className="labor-loading-dot" aria-hidden="true" />
+              <strong>正在加载整月考勤…</strong>
+              <span>正在取得 {employeeName} 的 {salaryMonth} 逐日核算状态。</span>
+            </div>
+          )}
+          {state?.status === 'error' && (
+            <div className="labor-month-calendar-state">
+              <strong>整月考勤暂时无法显示</strong>
+              <p role="alert">{state.error || '整月考勤读取失败，请稍后重试。'}</p>
+              <button type="button" onClick={() => onRetry?.()}>重新加载整月考勤</button>
+            </div>
+          )}
+          {state?.status === 'success' && days.length === 0 && (
+            <div className="labor-month-calendar-state" role="status">
+              <strong>没有可显示的逐日考勤记录</strong>
+              <span>当前员工与月份没有返回逐日数据，请重新加载。</span>
+              <button type="button" onClick={() => onRetry?.()}>重新加载整月考勤</button>
+            </div>
+          )}
+          {state?.status === 'success' && days.length > 0 && (
+            <div className="labor-month-calendar-wrap">
+              <div
+                className="labor-month-calendar-grid"
+                role="grid"
+                aria-label={`${employeeName} ${salaryMonth} 整月考勤日历`}
+              >
+                <div className="labor-month-calendar-weekdays" role="row">
+                  {CALENDAR_WEEKDAYS.map((weekday) => (
+                    <span key={weekday} role="columnheader">{weekday}</span>
+                  ))}
+                </div>
+                {calendarRows.map((week, weekIndex) => (
+                  <div className="labor-month-calendar-week" role="row" key={`week-${weekIndex}`}>
+                    {week.map((day, dayIndex) => day ? (
+                      <EmployeeMonthCalendarDay
+                        key={day.workDate}
+                        day={day}
+                        onOpenDailyDate={onOpenDailyDate}
+                      />
+                    ) : (
+                      <span
+                        className="labor-month-calendar-spacer"
+                        role="gridcell"
+                        aria-label="本月以外日期"
+                        key={`spacer-${weekIndex}-${dayIndex}`}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <footer className="labor-dialog-actions">
+          <button type="button" onClick={() => onClose?.()}>取消</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function MonthCalendarAction({ employee, month, disabled, onOpen }) {
+  const canonical = employee.source !== 'legacy' && Boolean(employee.employeeProfileId)
+  if (!canonical) {
+    return <span className="labor-month-calendar-unavailable">历史人工记录无逐日考勤</span>
+  }
+  return (
+    <button
+      type="button"
+      className="labor-row-action labor-month-calendar-action"
+      aria-label={`查看${employee.employeeName} ${month} 整月考勤`}
+      disabled={disabled}
+      onClick={() => onOpen?.(employee)}
+    >
+      查看整月考勤
+    </button>
   )
 }
 
@@ -273,6 +548,7 @@ export default function MonthlyPayrollTab({
   month,
   onMonthChange,
   onAuthInvalid,
+  onOpenDailyDate,
   initialReport = null,
 }) {
   const [department, setDepartment] = useState('')
@@ -286,6 +562,7 @@ export default function MonthlyPayrollTab({
   const [reopenReasons, setReopenReasons] = useState({})
   const [rowErrors, setRowErrors] = useState({})
   const [writeLocked, setWriteLocked] = useState({})
+  const [monthCalendar, setMonthCalendar] = useState(null)
   const [filterEpoch, setFilterEpoch] = useState(0)
   const initialOptions = optionsFromReport(initialReport)
   const [departmentOptions, setDepartmentOptions] = useState(initialOptions.departments)
@@ -296,10 +573,22 @@ export default function MonthlyPayrollTab({
   const contextGenerationRef = useRef(0)
   const writeGenerationRef = useRef(new Map())
   const writeLockedRef = useRef(new Set())
+  const calendarGenerationRef = useRef(0)
+  const calendarPendingRef = useRef(false)
+  const calendarOpenRef = useRef(false)
+  const monthRef = useRef(month)
   const optionCacheRef = useRef({ month, ...initialOptions })
   const canUpdateSalaryRef = useRef(initialReport?.permissions?.canUpdateSalary === true)
   const reportCurrentRef = useRef(Boolean(initialReport))
+  monthRef.current = month
   canUpdateSalaryRef.current = report?.permissions?.canUpdateSalary === true
+
+  const closeMonthCalendar = useCallback(() => {
+    calendarGenerationRef.current += 1
+    calendarPendingRef.current = false
+    calendarOpenRef.current = false
+    setMonthCalendar(null)
+  }, [])
 
   useEffect(() => {
     mountedRef.current = true
@@ -309,8 +598,15 @@ export default function MonthlyPayrollTab({
       contextGenerationRef.current += 1
       writeGenerationRef.current.clear()
       writeLockedRef.current.clear()
+      calendarGenerationRef.current += 1
+      calendarPendingRef.current = false
+      calendarOpenRef.current = false
     }
   }, [])
+
+  useEffect(() => {
+    closeMonthCalendar()
+  }, [closeMonthCalendar, month])
 
   useEffect(() => {
     contextGenerationRef.current += 1
@@ -359,6 +655,111 @@ export default function MonthlyPayrollTab({
     }
   }, [department, employeeProfileId, month, onAuthInvalid, onlyPending, service])
 
+  const requestMonthCalendar = useCallback(async ({ employee, requestedMonth }) => {
+    const employeeProfileId = employee?.employeeProfileId
+    if (!UUID_PATTERN.test(String(employeeProfileId ?? '')) ||
+        !MONTH_PATTERN.test(String(requestedMonth ?? ''))) return { status: 'invalid' }
+    if (calendarPendingRef.current || !calendarOpenRef.current) return { status: 'locked' }
+    calendarPendingRef.current = true
+    const generation = ++calendarGenerationRef.current
+    const contextGeneration = contextGenerationRef.current
+    setMonthCalendar({
+      status: 'loading',
+      salaryMonth: requestedMonth,
+      employee,
+      days: [],
+      error: '',
+    })
+    try {
+      const value = await service.listEmployeeMonthCalendar({
+        employeeProfileId,
+        month: requestedMonth,
+      })
+      const current = mountedRef.current &&
+        calendarOpenRef.current &&
+        generation === calendarGenerationRef.current &&
+        contextGeneration === contextGenerationRef.current &&
+        monthRef.current === requestedMonth
+      if (!current) return { status: 'stale' }
+      if (value?.salaryMonth !== requestedMonth ||
+          value?.employee?.employeeProfileId !== employeeProfileId) {
+        setMonthCalendar({
+          status: 'error',
+          salaryMonth: requestedMonth,
+          employee,
+          days: [],
+          error: '返回的整月考勤与当前员工或月份不一致，请重新加载。',
+        })
+        return { status: 'invalid-response' }
+      }
+      setMonthCalendar({
+        status: 'success',
+        salaryMonth: value.salaryMonth,
+        employee: value.employee,
+        days: Array.isArray(value.days) ? value.days : [],
+        error: '',
+      })
+      return { status: 'success', value }
+    } catch (error) {
+      const current = mountedRef.current &&
+        calendarOpenRef.current &&
+        generation === calendarGenerationRef.current &&
+        contextGeneration === contextGenerationRef.current &&
+        monthRef.current === requestedMonth
+      if (!current) return { status: 'stale' }
+      if (error?.authInvalid === true) onAuthInvalid?.(error)
+      setMonthCalendar({
+        status: 'error',
+        salaryMonth: requestedMonth,
+        employee,
+        days: [],
+        error: safeError(error, '整月考勤加载失败，请稍后重试。'),
+      })
+      return { status: 'error' }
+    } finally {
+      const current = mountedRef.current &&
+        calendarOpenRef.current &&
+        generation === calendarGenerationRef.current &&
+        contextGeneration === contextGenerationRef.current &&
+        monthRef.current === requestedMonth
+      if (current) calendarPendingRef.current = false
+    }
+  }, [onAuthInvalid, service])
+
+  const openMonthCalendar = (employee) => {
+    if (calendarOpenRef.current || calendarPendingRef.current ||
+        employee?.source === 'legacy' ||
+        !UUID_PATTERN.test(String(employee?.employeeProfileId ?? '')) ||
+        !MONTH_PATTERN.test(String(month ?? ''))) return
+    calendarOpenRef.current = true
+    const identity = {
+      employeeProfileId: employee.employeeProfileId,
+      employeeNumber: employee.employeeNumber,
+      employeeName: employee.employeeName,
+      department: employee.department,
+      position: employee.position,
+    }
+    void requestMonthCalendar({ employee: identity, requestedMonth: month })
+  }
+
+  const retryMonthCalendar = () => {
+    if (!calendarOpenRef.current || !monthCalendar?.employee ||
+        monthCalendar.salaryMonth !== monthRef.current) return
+    void requestMonthCalendar({
+      employee: monthCalendar.employee,
+      requestedMonth: monthCalendar.salaryMonth,
+    })
+  }
+
+  const openDailyDateFromCalendar = (nextWorkDate) => {
+    const eligible = monthCalendar?.status === 'success' &&
+      monthCalendar.days.some((day) =>
+        day?.eligible === true && day.workDate === nextWorkDate)
+    if (!eligible || !WORK_DATE_PATTERN.test(String(nextWorkDate ?? ''))) return
+    closeMonthCalendar()
+    onOpenDailyDate?.(nextWorkDate)
+  }
+
   useEffect(() => {
     if (optionCacheRef.current.month !== month) {
       optionCacheRef.current = { month, departments: [], employees: [] }
@@ -383,6 +784,7 @@ export default function MonthlyPayrollTab({
   }, [filterEpoch, loadReport, month])
 
   const changeMonth = (nextMonth) => {
+    closeMonthCalendar()
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
@@ -391,6 +793,7 @@ export default function MonthlyPayrollTab({
   }
 
   const changeDepartment = (value) => {
+    closeMonthCalendar()
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
@@ -399,6 +802,7 @@ export default function MonthlyPayrollTab({
   }
 
   const changeEmployee = (value) => {
+    closeMonthCalendar()
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
@@ -407,6 +811,7 @@ export default function MonthlyPayrollTab({
   }
 
   const changeOnlyPending = (value) => {
+    closeMonthCalendar()
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
@@ -488,11 +893,9 @@ export default function MonthlyPayrollTab({
   const filtersDisabled = !month || loadState.status === 'loading'
   const stale = Boolean(report) && loadState.status === 'error'
   const summaryCards = useMemo(() => report ? [
-    ['员工人数', report.summary.employeeCount],
-    ['确认整天', report.summary.confirmedFullDays],
-    ['确认半天', report.summary.confirmedHalfDays],
-    ['缺勤', report.summary.absenceDays],
-    ['待处理', report.summary.pendingCount],
+    ['应出勤人天', report.summary.scheduledAttendanceUnits],
+    ['已确认人天', report.summary.confirmedAttendanceUnits],
+    ['待处理人次', report.summary.pendingCount],
   ] : [], [report])
 
   return (
@@ -583,8 +986,7 @@ export default function MonthlyPayrollTab({
             {permissions.canViewSalary && (
               <>
                 <article><small>工资预览总额</small><strong>{yen(report.summary.salaryPreviewTotal)}</strong></article>
-                <article><small>项目已分摊</small><strong>{yen(report.summary.projectAllocatedTotal)}</strong></article>
-                <article><small>项目未分摊</small><strong>{yen(report.summary.projectUnallocatedTotal)}</strong></article>
+                <article><small>未分摊项目成本</small><strong>{yen(report.summary.projectUnallocatedTotal)}</strong></article>
               </>
             )}
           </section>
@@ -592,7 +994,7 @@ export default function MonthlyPayrollTab({
           {!permissions.canViewSalary && (
             <div className="labor-redacted-note" role="note">
               <strong>工资金额已按权限隐藏</strong>
-              <span>仍可查看整天、半天、缺勤和待处理统计。</span>
+              <span>仍可查看应出勤、已确认与待处理统计。</span>
             </div>
           )}
           <ReconciliationWarning reconciliation={report.reconciliation} />
@@ -611,6 +1013,7 @@ export default function MonthlyPayrollTab({
                       <th scope="col">员工 / 状态</th>
                       <th scope="col">确认出勤</th>
                       <th scope="col">异常参考</th>
+                      <th scope="col">逐日考勤</th>
                       {permissions.canViewSalary && <th scope="col">工资与项目金额</th>}
                       {permissions.canViewSalary && <th scope="col">会计操作</th>}
                     </tr></thead>
@@ -631,6 +1034,14 @@ export default function MonthlyPayrollTab({
                             </th>
                             <td><PayrollCountFacts employee={row} /></td>
                             <td><PayrollIssueFacts employee={row} /></td>
+                            <td>
+                              <MonthCalendarAction
+                                employee={row}
+                                month={month}
+                                disabled={loadState.status !== 'success'}
+                                onOpen={openMonthCalendar}
+                              />
+                            </td>
                             {permissions.canViewSalary && <td><PayrollMoneyFacts employee={row} /></td>}
                             {permissions.canViewSalary && (
                               <td>
@@ -669,6 +1080,12 @@ export default function MonthlyPayrollTab({
                         {row.source === 'legacy' && <span className="labor-readonly-badge">历史人工记录</span>}
                         <PayrollCountFacts employee={row} />
                         <PayrollIssueFacts employee={row} />
+                        <MonthCalendarAction
+                          employee={row}
+                          month={month}
+                          disabled={loadState.status !== 'success'}
+                          onOpen={openMonthCalendar}
+                        />
                         {permissions.canViewSalary && <PayrollMoneyFacts employee={row} />}
                         {permissions.canViewSalary && (
                           <PayrollActions
@@ -693,6 +1110,14 @@ export default function MonthlyPayrollTab({
             )}
           </section>
         </>
+      )}
+      {monthCalendar && (
+        <EmployeeMonthCalendarDialog
+          state={monthCalendar}
+          onClose={closeMonthCalendar}
+          onRetry={retryMonthCalendar}
+          onOpenDailyDate={openDailyDateFromCalendar}
+        />
       )}
     </div>
   )

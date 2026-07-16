@@ -16,6 +16,18 @@ const LABOR_TABS = Object.freeze([
   { id: 'project', label: '项目用工费用', requiresProjectCosts: true },
   { id: 'settings', label: '考勤设置' },
 ])
+const LABOR_WORK_DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
+
+export function isValidLaborWorkDate(workDate) {
+  const normalized = String(workDate ?? '')
+  if (!LABOR_WORK_DATE_PATTERN.test(normalized)) return false
+  const [year, month, day] = normalized.split('-').map(Number)
+  if (year < 1900 || year > 2100) return false
+  const roundTrip = new Date(Date.UTC(year, month - 1, day))
+  return roundTrip.getUTCFullYear() === year &&
+    roundTrip.getUTCMonth() === month - 1 &&
+    roundTrip.getUTCDate() === day
+}
 
 export function laborTabsForPermissions(permissions = {}) {
   return LABOR_TABS.filter((tab) =>
@@ -23,9 +35,22 @@ export function laborTabsForPermissions(permissions = {}) {
 }
 
 export function monthFromServerWorkDate(workDate) {
-  return /^\d{4}-(?:0[1-9]|1[0-2])-\d{2}$/u.test(String(workDate ?? ''))
-    ? workDate.slice(0, 7)
+  return isValidLaborWorkDate(workDate)
+    ? String(workDate).slice(0, 7)
     : ''
+}
+
+export function openLaborDailyDate({
+  workDate,
+  setActiveTab,
+  focusDailyTab,
+  changeWorkDate,
+}) {
+  if (!isValidLaborWorkDate(workDate)) return false
+  setActiveTab?.('daily')
+  focusDailyTab?.()
+  changeWorkDate?.(workDate)
+  return true
 }
 
 export function handleLaborTabKeyDown({
@@ -270,7 +295,7 @@ export default function LaborAccountingPage({
   }, [activeTab, canViewProjectCosts])
 
   const changeWorkDate = (nextDate) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/u.test(nextDate)) return
+    if (!isValidLaborWorkDate(nextDate)) return
     initializationGenerationRef.current += 1
     dashboardGenerationRef.current += 1
     detailGenerationRef.current += 1
@@ -279,6 +304,13 @@ export default function LaborAccountingPage({
     setDashboard(null)
     setWorkDate(nextDate)
   }
+
+  const openDailyDate = (nextDate) => openLaborDailyDate({
+    workDate: nextDate,
+    setActiveTab,
+    focusDailyTab: () => tabButtonRefs.current.get('daily')?.focus(),
+    changeWorkDate,
+  })
 
   const closeResolution = () => {
     if (writeLockedRef.current) return
@@ -498,6 +530,7 @@ export default function LaborAccountingPage({
             month={accountingMonth}
             onMonthChange={changeAccountingMonth}
             onAuthInvalid={onAuthInvalid}
+            onOpenDailyDate={openDailyDate}
           />
         </section>
       )}

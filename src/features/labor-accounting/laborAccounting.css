@@ -1559,6 +1559,161 @@
   font-weight: 800;
 }
 
+.labor-accounting-page .labor-month-calendar-action {
+  width: 100%;
+}
+
+.labor-accounting-page .labor-month-calendar-unavailable {
+  display: block;
+  max-width: 180px;
+  color: var(--labor-muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.labor-accounting-page .labor-month-calendar-dialog {
+  display: grid;
+  width: min(1060px, 100%);
+  max-height: calc(100dvh - 48px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgb(185 138 54 / 65%);
+  border-radius: 18px;
+  background: var(--labor-canvas);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 36%);
+}
+
+.labor-accounting-page .labor-month-calendar-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.labor-accounting-page .labor-month-calendar-state {
+  display: grid;
+  justify-items: start;
+  gap: 9px;
+  min-height: 250px;
+  align-content: center;
+  padding: 28px;
+}
+
+.labor-accounting-page .labor-month-calendar-state > span,
+.labor-accounting-page .labor-month-calendar-state > p {
+  color: var(--labor-muted);
+}
+
+.labor-accounting-page .labor-month-calendar-state > [role='alert'] {
+  color: var(--labor-danger);
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-month-calendar-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 16px;
+}
+
+.labor-accounting-page .labor-month-calendar-grid {
+  display: grid;
+  min-width: 840px;
+  gap: 7px;
+}
+
+.labor-accounting-page .labor-month-calendar-weekdays,
+.labor-accounting-page .labor-month-calendar-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.labor-accounting-page .labor-month-calendar-weekdays > span {
+  padding: 7px 5px;
+  color: var(--labor-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.labor-accounting-page .labor-month-calendar-day,
+.labor-accounting-page .labor-month-calendar-spacer {
+  min-width: 0;
+  min-height: 124px;
+  overflow: hidden;
+  border: 1px solid var(--labor-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.labor-accounting-page .labor-month-calendar-spacer {
+  border-style: dashed;
+  background: #ece8e0;
+  opacity: 0.48;
+}
+
+.labor-accounting-page .labor-month-calendar-day,
+.labor-accounting-page .labor-month-calendar-day > button {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 9px;
+  text-align: left;
+}
+
+.labor-accounting-page .labor-month-calendar-day > button {
+  width: 100%;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-weight: inherit;
+}
+
+.labor-accounting-page .labor-month-calendar-day > button:hover {
+  background: #fff9ed;
+}
+
+.labor-accounting-page .labor-month-calendar-day[data-eligible='false'] {
+  background: #f0ede7;
+  color: #777168;
+}
+
+.labor-accounting-page .labor-month-calendar-day[data-tone='danger'] {
+  border-color: rgb(180 59 53 / 44%);
+  background: var(--labor-danger-soft);
+}
+
+.labor-accounting-page .labor-month-calendar-day[data-tone='warning'] {
+  border-color: rgb(185 138 54 / 55%);
+  background: var(--labor-warning-soft);
+}
+
+.labor-accounting-page .labor-month-calendar-date {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.labor-accounting-page .labor-month-calendar-date time {
+  font-size: 0.92rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.labor-accounting-page .labor-month-calendar-date small,
+.labor-accounting-page .labor-month-calendar-day > span,
+.labor-accounting-page .labor-month-calendar-day > button > span {
+  color: var(--labor-muted);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.labor-accounting-page .labor-month-calendar-day > strong,
+.labor-accounting-page .labor-month-calendar-day > button > strong {
+  overflow-wrap: anywhere;
+  font-size: 0.77rem;
+}
+
 .labor-accounting-page .labor-project-analytics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1771,5 +1926,52 @@
   .labor-accounting-page .labor-trend-chart strong,
   .labor-accounting-page .labor-project-comparison > article > strong {
     text-align: left;
+  }
+
+  .labor-accounting-page .labor-month-calendar-dialog {
+    width: 100%;
+    max-height: 96dvh;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .labor-accounting-page .labor-month-calendar-dialog .labor-dialog-heading h2 {
+    font-size: 1.05rem;
+  }
+
+  .labor-accounting-page .labor-month-calendar-wrap {
+    overflow-x: hidden;
+    padding: 9px;
+  }
+
+  .labor-accounting-page .labor-month-calendar-grid {
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .labor-accounting-page .labor-month-calendar-week {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .labor-accounting-page .labor-month-calendar-weekdays,
+  .labor-accounting-page .labor-month-calendar-spacer {
+    display: none;
+  }
+
+  .labor-accounting-page .labor-month-calendar-day {
+    min-height: auto;
+  }
+
+  .labor-accounting-page .labor-month-calendar-day,
+  .labor-accounting-page .labor-month-calendar-day > button {
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .labor-accounting-page .labor-month-calendar-date {
+    grid-row: 1 / span 3;
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
   }
 }
