@@ -816,7 +816,7 @@ function validateMonthlyEmployee(value, canViewSalary) {
   return result
 }
 
-function validateMonthlyPayroll(value) {
+function validateMonthlyPayroll(value, expectedMonth) {
   const row = objectShape(value, [
     'salaryMonth', 'permissions', 'summary', 'employees', 'reconciliation',
   ])
@@ -860,8 +860,10 @@ function validateMonthlyPayroll(value) {
   }
   if (summary.pendingCount !== pendingCount ||
       summary.confirmedAttendanceUnits !== confirmedAttendanceUnits) throw invalidResponse()
+  const salaryMonth = dtoMonth(row.salaryMonth)
+  if (salaryMonth !== expectedMonth) throw invalidResponse()
   return {
-    salaryMonth: dtoMonth(row.salaryMonth),
+    salaryMonth,
     permissions,
     summary,
     employees,
@@ -911,6 +913,22 @@ function validateEmployeeMonthCalendar(value, employeeProfileId, month) {
     if (!eligible && (scheduleRequired || dayStatus !== 'not_eligible' ||
         issueCodes.length !== 0 || accountingStatus !== null)) throw invalidResponse()
     if (eligible && dayStatus === 'not_eligible') throw invalidResponse()
+    if (['unconfigured', 'before_activation'].includes(dayStatus) &&
+        (scheduleRequired || issueCodes.length !== 0 || accountingStatus !== null)) {
+      throw invalidResponse()
+    }
+    const resolutionDay = RESOLUTION_TYPE_SET.has(dayStatus)
+    const confirmedResolution = ['confirmed', 'month_locked'].includes(accountingStatus)
+    if (resolutionDay !== confirmedResolution ||
+        (dayStatus === 'optional_not_worked' &&
+          (scheduleRequired || issueCodes.length !== 0)) ||
+        (dayStatus === 'not_started' &&
+          (!scheduleRequired || issueCodes.length !== 0)) ||
+        (dayStatus === 'missing_clock_in' &&
+          (!scheduleRequired || issueCodes.length !== 1 ||
+            issueCodes[0] !== 'missing_clock_in'))) {
+      throw invalidResponse()
+    }
     return {
       workDate,
       eligible,
@@ -1498,7 +1516,7 @@ export function createLaborAccountingService(client = supabase, options) {
         p_search: inputText(row.department, { max: MAX_SEARCH_LENGTH }),
         p_employee_profile_id: inputUuid(row.employeeProfileId, { nullable: true }),
         p_only_pending: booleanValue(row.onlyPending, invalidInput),
-      }))
+      }), month)
     },
     async listEmployeeMonthCalendar(input) {
       exactArguments(arguments, 1)

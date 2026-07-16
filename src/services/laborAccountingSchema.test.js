@@ -20,6 +20,7 @@ test('accounting migration defines normalized tables and secure boundaries', () 
 test('daily dashboard RPCs keep time, identity, salary, and execution authority server-owned', () => {
   for (const signature of [
     String.raw`private\.attendance_accounting_settings_json\(\)`,
+    String.raw`private\.attendance_fact_issue_codes\(\s*p_employee_profile_id\s+uuid,\s*p_work_date\s+date,\s*p_now_tokyo\s+timestamp\s+without\s+time\s+zone\s*\)`,
     String.raw`private\.attendance_issue_codes\(\s*p_employee_profile_id\s+uuid,\s*p_work_date\s+date,\s*p_now_tokyo\s+timestamp\s+without\s+time\s+zone\s*\)`,
     String.raw`private\.attendance_dashboard_employee_json\(\s*p_employee_profile_id\s+uuid,\s*p_work_date\s+date,\s*p_can_view_salary\s+boolean\s*\)`,
     String.raw`public\.list_daily_attendance_dashboard_secure\(\s*p_work_date\s+date\s*\)`,
@@ -149,6 +150,7 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     'attendance_employee_is_eligible',
     'attendance_schedule_required',
     'attendance_salary_json',
+    'attendance_fact_issue_codes',
     'attendance_resolution_snapshot',
     'attendance_payroll_snapshot',
     'attendance_write_resolution',

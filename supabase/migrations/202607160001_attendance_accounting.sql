@@ -80,6 +80,7 @@ create table public.attendance_day_resolutions (
   hourly_wage_snapshot numeric,
   suggested_project_cost numeric not null,
   final_project_cost numeric not null,
+  issue_codes_snapshot text[] not null default array[]::text[],
   resolution_note text not null default '',
   confirmed_by_employee_profile_id uuid
     references public.employee_profiles(id) on delete restrict,
@@ -157,6 +158,28 @@ create table public.attendance_day_resolutions (
     )
     and final_project_cost >= 0
     and final_project_cost = trunc(final_project_cost)
+  ),
+  constraint attendance_day_resolutions_issue_codes_snapshot_check check (
+    issue_codes_snapshot <@ array[
+      'abnormal_location', 'missing_clock_in', 'missing_clock_out',
+      'late', 'early', 'overtime_pending'
+    ]::text[]
+    and array_position(issue_codes_snapshot, null::text) is null
+    and cardinality(issue_codes_snapshot) <= 6
+    and cardinality(array_positions(
+      issue_codes_snapshot, 'abnormal_location'
+    )) <= 1
+    and cardinality(array_positions(
+      issue_codes_snapshot, 'missing_clock_in'
+    )) <= 1
+    and cardinality(array_positions(
+      issue_codes_snapshot, 'missing_clock_out'
+    )) <= 1
+    and cardinality(array_positions(issue_codes_snapshot, 'late')) <= 1
+    and cardinality(array_positions(issue_codes_snapshot, 'early')) <= 1
+    and cardinality(array_positions(
+      issue_codes_snapshot, 'overtime_pending'
+    )) <= 1
   ),
   constraint attendance_day_resolutions_note_check check (
     resolution_note = btrim(resolution_note)
@@ -247,6 +270,7 @@ create table public.attendance_monthly_payrolls (
   full_days numeric not null,
   half_days numeric not null,
   absence_days numeric not null,
+  scheduled_attendance_units integer not null default 0,
   base_pay numeric not null,
   overtime_pay numeric not null default 0,
   bonus numeric not null default 0,
@@ -298,6 +322,9 @@ create table public.attendance_monthly_payrolls (
     )
     and absence_days >= 0
     and absence_days = trunc(absence_days)
+  ),
+  constraint attendance_monthly_payrolls_scheduled_units_check check (
+    scheduled_attendance_units between 0 and 31
   ),
   constraint attendance_monthly_payrolls_base_pay_yen_check check (
     base_pay not in (
@@ -539,7 +566,7 @@ $$;
 revoke all on function private.attendance_accounting_settings_json()
   from public, anon, authenticated, service_role;
 
-create or replace function private.attendance_issue_codes(
+create or replace function private.attendance_fact_issue_codes(
   p_employee_profile_id uuid,
   p_work_date date,
   p_now_tokyo timestamp without time zone
@@ -579,19 +606,6 @@ begin
     where setting.settings_key = 'default';
 
   if not found or p_work_date < settings.effective_from then
-    return issue_codes;
-  end if;
-
-  if exists (
-    select 1
-    from public.attendance_day_resolutions resolution
-    where resolution.employee_profile_id = p_employee_profile_id
-      and resolution.work_date = p_work_date
-      and resolution.accounting_status in ('confirmed', 'month_locked')
-      and resolution.resolution_type in (
-        'full_day', 'half_day', 'rest', 'leave', 'comp_time', 'absence'
-      )
-  ) then
     return issue_codes;
   end if;
 
@@ -665,6 +679,37 @@ begin
   end if;
 
   return issue_codes;
+end;
+$$;
+
+revoke all on function private.attendance_fact_issue_codes(
+  uuid, date, timestamp without time zone
+) from public, anon, authenticated, service_role;
+
+create or replace function private.attendance_issue_codes(
+  p_employee_profile_id uuid,
+  p_work_date date,
+  p_now_tokyo timestamp without time zone
+)
+returns text[]
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if exists (
+    select 1
+    from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id = p_employee_profile_id
+      and resolution.work_date = p_work_date
+      and resolution.accounting_status in ('confirmed', 'month_locked')
+  ) then
+    return array[]::text[];
+  end if;
+  return private.attendance_fact_issue_codes(
+    p_employee_profile_id, p_work_date, p_now_tokyo
+  );
 end;
 $$;
 
@@ -1648,6 +1693,7 @@ as $$
     'hourlyWageSnapshot', resolution.hourly_wage_snapshot,
     'suggestedProjectCost', resolution.suggested_project_cost,
     'finalProjectCost', resolution.final_project_cost,
+    'issueCodesSnapshot', to_jsonb(resolution.issue_codes_snapshot),
     'resolutionNote', resolution.resolution_note,
     'confirmedByEmployeeProfileId', resolution.confirmed_by_employee_profile_id,
     'confirmedAt', resolution.confirmed_at,
@@ -1686,6 +1732,7 @@ as $$
     'fullDays', payroll.full_days,
     'halfDays', payroll.half_days,
     'absenceDays', payroll.absence_days,
+    'scheduledAttendanceUnits', payroll.scheduled_attendance_units,
     'basePay', payroll.base_pay,
     'overtimePay', payroll.overtime_pay,
     'bonus', payroll.bonus,
@@ -1933,6 +1980,7 @@ declare
   before_snapshot jsonb;
   after_snapshot jsonb;
   computed_schedule_required boolean;
+  computed_issue_codes text[];
   normalized_note text;
   allocated_total numeric := 0;
   money_in_scope boolean;
@@ -2199,7 +2247,18 @@ begin
       message = 'project allocations do not balance',
       hint = 'ATTENDANCE_ACCOUNTING_ALLOCATION_UNBALANCED';
   end if;
-  computed_schedule_required := private.attendance_schedule_required(p_work_date);
+  if p_confirm
+      and existing_resolution.accounting_status in ('confirmed', 'month_locked') then
+    computed_schedule_required := existing_resolution.schedule_required;
+    computed_issue_codes := existing_resolution.issue_codes_snapshot;
+  else
+    computed_schedule_required := private.attendance_schedule_required(p_work_date);
+    computed_issue_codes := private.attendance_fact_issue_codes(
+      p_employee_profile_id,
+      p_work_date,
+      statement_timestamp() at time zone 'Asia/Tokyo'
+    );
+  end if;
 
   if existing_resolution.resolution_id is null then
     insert into public.attendance_day_resolutions (
@@ -2207,7 +2266,8 @@ begin
       resolution_type, attendance_units, accounting_status,
       salary_type_snapshot, base_salary_snapshot, daily_salary_snapshot,
       hourly_wage_snapshot, suggested_project_cost, final_project_cost,
-      resolution_note, confirmed_by_employee_profile_id, confirmed_at, version
+      issue_codes_snapshot, resolution_note,
+      confirmed_by_employee_profile_id, confirmed_at, version
     ) values (
       p_employee_profile_id, p_work_date, computed_schedule_required,
       p_resolution_type, p_attendance_units,
@@ -2217,7 +2277,7 @@ begin
       (salary->>'dailySalary')::numeric,
       (salary->>'hourlyWage')::numeric,
       (salary->>'suggestedProjectCost')::numeric,
-      p_final_project_cost, normalized_note,
+      p_final_project_cost, computed_issue_codes, normalized_note,
       case when p_confirm then actor.id else null end,
       case when p_confirm then statement_timestamp() else null end,
       1
@@ -2234,6 +2294,7 @@ begin
         hourly_wage_snapshot = (salary->>'hourlyWage')::numeric,
         suggested_project_cost = (salary->>'suggestedProjectCost')::numeric,
         final_project_cost = p_final_project_cost,
+        issue_codes_snapshot = computed_issue_codes,
         resolution_note = normalized_note,
         confirmed_by_employee_profile_id = case when p_confirm then actor.id else null end,
         confirmed_at = case when p_confirm then statement_timestamp() else null end,
@@ -2370,6 +2431,7 @@ declare
   pending_days integer := 0;
   allocated_amount numeric := 0;
   final_cost numeric := 0;
+  confirmed_payroll_scheduled_units integer;
 begin
   select
     count(*) filter (where resolution.resolution_type = 'full_day'),
@@ -2388,31 +2450,41 @@ begin
       and resolution.work_date < (p_month + interval '1 month')::date
       and resolution.accounting_status in ('confirmed', 'month_locked');
 
-  select count(*)::integer
-    into scheduled_attendance_units
-    from generate_series(
-      p_month::timestamp,
-      (p_month + interval '1 month - 1 day')::timestamp,
-      interval '1 day'
-    ) generated(day_value)
-    where case
-      when exists (
-        select 1
-        from public.attendance_day_resolutions resolution
-        where resolution.employee_profile_id = p_employee_profile_id
-          and resolution.work_date = generated.day_value::date
-          and resolution.accounting_status in ('confirmed', 'month_locked')
-      ) then coalesce((
-        select resolution.schedule_required
-        from public.attendance_day_resolutions resolution
-        where resolution.employee_profile_id = p_employee_profile_id
-          and resolution.work_date = generated.day_value::date
-          and resolution.accounting_status in ('confirmed', 'month_locked')
-      ), false)
-      else private.attendance_employee_is_eligible(
-          p_employee_profile_id, generated.day_value::date
-        ) and private.attendance_schedule_required(generated.day_value::date)
-    end;
+  select payroll.scheduled_attendance_units
+    into confirmed_payroll_scheduled_units
+    from public.attendance_monthly_payrolls payroll
+    where payroll.employee_profile_id = p_employee_profile_id
+      and payroll.salary_month = p_month
+      and payroll.status = 'confirmed';
+  if found then
+    scheduled_attendance_units := confirmed_payroll_scheduled_units;
+  else
+    select count(*)::integer
+      into scheduled_attendance_units
+      from generate_series(
+        p_month::timestamp,
+        (p_month + interval '1 month - 1 day')::timestamp,
+        interval '1 day'
+      ) generated(day_value)
+      where case
+        when exists (
+          select 1
+          from public.attendance_day_resolutions resolution
+          where resolution.employee_profile_id = p_employee_profile_id
+            and resolution.work_date = generated.day_value::date
+            and resolution.accounting_status in ('confirmed', 'month_locked')
+        ) then coalesce((
+          select resolution.schedule_required
+          from public.attendance_day_resolutions resolution
+          where resolution.employee_profile_id = p_employee_profile_id
+            and resolution.work_date = generated.day_value::date
+            and resolution.accounting_status in ('confirmed', 'month_locked')
+        ), false)
+        else private.attendance_employee_is_eligible(
+            p_employee_profile_id, generated.day_value::date
+          ) and private.attendance_schedule_required(generated.day_value::date)
+      end;
+  end if;
 
   select coalesce(sum(allocation.amount), 0)
     into allocated_amount
@@ -2800,6 +2872,7 @@ begin
     insert into public.attendance_monthly_payrolls (
       employee_profile_id, salary_month, salary_type_snapshot,
       base_salary_snapshot, full_days, half_days, absence_days,
+      scheduled_attendance_units,
       base_pay, overtime_pay, bonus, deduction, net_salary,
       status, confirmation_note, confirmed_by_employee_profile_id,
       confirmed_at, version
@@ -2809,6 +2882,7 @@ begin
       (preview->>'fullDays')::numeric,
       (preview->>'halfDays')::numeric,
       (preview->>'absenceDays')::numeric,
+      (preview->>'scheduledAttendanceUnits')::integer,
       (preview->>'basePay')::numeric,
       p_overtime_pay, p_bonus, p_deduction,
       (preview->>'netSalary')::numeric,
@@ -2825,6 +2899,8 @@ begin
         full_days = (preview->>'fullDays')::numeric,
         half_days = (preview->>'halfDays')::numeric,
         absence_days = (preview->>'absenceDays')::numeric,
+        scheduled_attendance_units =
+          (preview->>'scheduledAttendanceUnits')::integer,
         base_pay = (preview->>'basePay')::numeric,
         overtime_pay = p_overtime_pay,
         bonus = p_bonus,
@@ -3231,6 +3307,17 @@ begin
           where existing.employee_profile_id = employee.id
             and existing.salary_month = p_month
         )
+        or exists (
+          select 1
+          from public.attendance_day_resolutions historical_resolution
+          where historical_resolution.employee_profile_id = employee.id
+            and historical_resolution.work_date >= p_month
+            and historical_resolution.work_date
+              < (p_month + interval '1 month')::date
+            and historical_resolution.accounting_status in (
+              'confirmed', 'month_locked'
+            )
+        )
         or (
           employee.deleted_at is null
           and exists (
@@ -3308,19 +3395,27 @@ begin
         )
       ) into issue_counts
       from (
-        select private.attendance_issue_codes(
-          employee_record.id,
-          generated.day_value::date,
-          statement_timestamp() at time zone 'Asia/Tokyo'
-        ) issue_codes
+        select case
+          when resolution.accounting_status in ('confirmed', 'month_locked')
+            then resolution.issue_codes_snapshot
+          else private.attendance_issue_codes(
+            employee_record.id,
+            generated.day_value::date,
+            statement_timestamp() at time zone 'Asia/Tokyo'
+          )
+        end issue_codes
         from generate_series(
           p_month::timestamp,
           (p_month + interval '1 month - 1 day')::timestamp,
           interval '1 day'
         ) generated(day_value)
-        where private.attendance_employee_is_eligible(
-          employee_record.id, generated.day_value::date
-        )
+        left join public.attendance_day_resolutions resolution
+          on resolution.employee_profile_id = employee_record.id
+          and resolution.work_date = generated.day_value::date
+        where resolution.accounting_status in ('confirmed', 'month_locked')
+          or private.attendance_employee_is_eligible(
+            employee_record.id, generated.day_value::date
+          )
       ) issue_rows;
 
     row_result := jsonb_build_object(
@@ -3473,6 +3568,7 @@ as $$
 declare
   actor public.employee_profiles%rowtype;
   employee public.employee_profiles%rowtype;
+  day_resolution public.attendance_day_resolutions%rowtype;
   generated record;
   eligible boolean;
   dashboard_employee jsonb;
@@ -3516,6 +3612,23 @@ begin
     ) day_value
     order by day_value
   loop
+    day_resolution := null;
+    select resolution.*
+      into day_resolution
+      from public.attendance_day_resolutions resolution
+      where resolution.employee_profile_id = employee.id
+        and resolution.work_date = generated.work_date;
+    if day_resolution.accounting_status in ('confirmed', 'month_locked') then
+      days_result := days_result || jsonb_build_array(jsonb_build_object(
+        'workDate', generated.work_date,
+        'eligible', true,
+        'scheduleRequired', day_resolution.schedule_required,
+        'dayStatus', day_resolution.resolution_type,
+        'issueCodes', to_jsonb(day_resolution.issue_codes_snapshot),
+        'accountingStatus', day_resolution.accounting_status
+      ));
+      continue;
+    end if;
     eligible := private.attendance_employee_is_eligible(
       employee.id, generated.work_date
     );

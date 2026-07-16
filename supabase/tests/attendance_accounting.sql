@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(230);
+select plan(238);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -772,6 +772,11 @@ select has_function(
   'closed settings projection helper exists'
 );
 select has_function(
+  'private', 'attendance_fact_issue_codes',
+  array['uuid', 'date', 'timestamp without time zone']::text[],
+  'closed deterministic attendance fact classifier exists'
+);
+select has_function(
   'private', 'attendance_issue_codes',
   array['uuid', 'date', 'timestamp without time zone']::text[],
   'closed deterministic attendance classifier exists'
@@ -844,7 +849,7 @@ select ok(
 
 select ok(
   (
-    select count(*) = 3
+    select count(*) = 4
       and bool_and(procedure.prosecdef)
       and bool_and(procedure.provolatile = 's')
       and bool_and(
@@ -870,6 +875,7 @@ select ok(
     where schema.nspname = 'private'
       and procedure.proname in (
         'attendance_accounting_settings_json',
+        'attendance_fact_issue_codes',
         'attendance_issue_codes',
         'attendance_dashboard_employee_json'
       )
@@ -1988,6 +1994,44 @@ reset role;
 select has_column(
   'public', 'attendance_accounting_settings', 'version',
   'settings carry an optimistic concurrency version'
+);
+
+select has_column(
+  'public', 'attendance_day_resolutions', 'issue_codes_snapshot',
+  'confirmed attendance resolutions freeze fact issue codes'
+);
+
+select has_column(
+  'public', 'attendance_monthly_payrolls', 'scheduled_attendance_units',
+  'confirmed monthly payrolls freeze scheduled attendance units'
+);
+
+select ok(
+  (
+    select count(*) = 2
+      and bool_and(attribute.attnotnull)
+      and (
+        select count(*) = 2
+        from pg_catalog.pg_constraint constraint_definition
+        where constraint_definition.conname in (
+          'attendance_day_resolutions_issue_codes_snapshot_check',
+          'attendance_monthly_payrolls_scheduled_units_check'
+        )
+          and constraint_definition.contype = 'c'
+      )
+    from pg_catalog.pg_attribute attribute
+    join pg_catalog.pg_class relation on relation.oid = attribute.attrelid
+    join pg_catalog.pg_namespace schema on schema.oid = relation.relnamespace
+    where schema.nspname = 'public'
+      and (
+        (relation.relname = 'attendance_day_resolutions'
+          and attribute.attname = 'issue_codes_snapshot')
+        or (relation.relname = 'attendance_monthly_payrolls'
+          and attribute.attname = 'scheduled_attendance_units')
+      )
+      and not attribute.attisdropped
+  ),
+  'frozen attendance facts are mandatory persisted snapshots'
 );
 
 select is(
@@ -4597,6 +4641,122 @@ select ok(
     from calendar
   ),
   'eligible Sunday attendance remains optional while preserving its clock-derived status'
+);
+
+reset role;
+create or replace function pg_temp.task7_frozen_facts_probe()
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  pre_payroll_report jsonb;
+  locked_report jsonb;
+  calendar_report jsonb;
+  result_value jsonb;
+  caught_message text;
+begin
+  begin
+    update public.project_attendance_sessions
+    set work_date = '2026-08-08',
+        opened_at = '2026-08-08 08:30:00+09',
+        closed_at = '2026-08-08 16:30:00+09'
+    where session_id = '75100000-0000-4000-8000-000000000002';
+    update public.employee_profiles
+    set hire_date = '2026-08-08', resign_date = '2026-08-09'
+    where id = '75000000-0000-4000-8000-000000000010';
+
+    perform public.confirm_attendance_resolution_secure(
+      '75000000-0000-4000-8000-000000000010', '2026-08-08',
+      'full_day', 1, 0, '[]'::jsonb, '', 0
+    );
+
+    update public.employee_profiles
+    set deleted_at = statement_timestamp()
+    where id = '75000000-0000-4000-8000-000000000010';
+    pre_payroll_report := public.list_monthly_payroll_secure(
+      '2026-08-01', '', '75000000-0000-4000-8000-000000000010', false
+    );
+    update public.employee_profiles
+    set deleted_at = null
+    where id = '75000000-0000-4000-8000-000000000010';
+
+    perform public.confirm_monthly_payroll_secure(
+      '75000000-0000-4000-8000-000000000010', '2026-08-01',
+      0, 0, 0, '', 0
+    );
+    update public.attendance_accounting_settings
+    set work_weekdays = array[7]::smallint[],
+        work_start_time = '09:00'::time,
+        work_end_time = '16:00'::time,
+        standard_day_minutes = 360;
+    locked_report := public.list_monthly_payroll_secure(
+      '2026-08-01', '', '75000000-0000-4000-8000-000000000010', false
+    );
+    update public.employee_profiles
+    set deleted_at = statement_timestamp()
+    where id = '75000000-0000-4000-8000-000000000010';
+    calendar_report := public.list_employee_attendance_calendar_secure(
+      '75000000-0000-4000-8000-000000000010', '2026-08-01'
+    );
+
+    result_value := jsonb_build_object(
+      'prePayrollEmployeeCount',
+        pre_payroll_report#>'{summary,employeeCount}',
+      'lockedScheduledAttendanceUnits',
+        locked_report#>'{summary,scheduledAttendanceUnits}',
+      'lockedIssueCounts',
+        locked_report#>'{employees,0,issueCounts}',
+      'calendarDay', calendar_report#>'{days,7}'
+    );
+    raise exception using errcode = 'PT419', message = result_value::text;
+  exception when sqlstate 'PT419' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message::jsonb;
+  end;
+end;
+$$;
+
+create temporary table task7_frozen_facts_result as
+select pg_temp.task7_frozen_facts_probe() result;
+
+select is(
+  (select (result->>'prePayrollEmployeeCount')::integer
+   from task7_frozen_facts_result),
+  1,
+  'confirmed historical days keep soft-deleted employees in monthly reports before payroll exists'
+);
+
+select is(
+  (select (result->>'lockedScheduledAttendanceUnits')::numeric
+   from task7_frozen_facts_result),
+  1::numeric,
+  'locked payroll scheduled units ignore later work-week and HR range changes'
+);
+
+select is(
+  (select result->'lockedIssueCounts' from task7_frozen_facts_result),
+  '{"late":1,"early":1,"abnormalLocation":0,"overtimePending":0}'::jsonb,
+  'monthly reports retain confirmation-time attendance fact issues after settings drift'
+);
+
+select is(
+  (select result->'calendarDay' from task7_frozen_facts_result),
+  '{
+    "workDate":"2026-08-08",
+    "eligible":true,
+    "scheduleRequired":true,
+    "dayStatus":"full_day",
+    "issueCodes":["late","early"],
+    "accountingStatus":"month_locked"
+  }'::jsonb,
+  'calendar prefers immutable confirmed facts over current settings and HR eligibility'
+);
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
 );
 
 select throws_ok(

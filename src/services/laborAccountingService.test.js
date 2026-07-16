@@ -782,6 +782,7 @@ test('monthly payroll validates canonical and legacy rows with salary-redacted a
     (() => { const row = monthlyPayroll(); row.summary.confirmedAttendanceUnits = 20; return row })(),
     (() => { const row = monthlyPayroll(); row.summary.scheduledAttendanceUnits = 2.5; return row })(),
     (() => { const row = monthlyPayroll(); row.summary.confirmedFullDays = 20; return row })(),
+    (() => { const row = monthlyPayroll(); row.salaryMonth = '2026-08-01'; return row })(),
   ]) {
     const { service } = serviceWithResponder(() => malformed)
     await assert.rejects(
@@ -803,6 +804,44 @@ test('employee month calendar validates exact identity, month coverage, order, a
   assert.equal(result.days[17].accountingStatus, 'confirmed')
   assert.equal(result.days[18].scheduleRequired, false)
 
+  const frozenIssueCalendar = employeeMonthCalendar()
+  frozenIssueCalendar.days[17].issueCodes = ['late']
+  const frozenIssueService = serviceWithResponder(() => frozenIssueCalendar).service
+  const frozenIssueResult = await frozenIssueService.listEmployeeMonthCalendar({
+    employeeProfileId: EMPLOYEE_ID,
+    month: MONTH,
+  })
+  assert.deepEqual(frozenIssueResult.days[17].issueCodes, ['late'])
+
+  for (const dayStatus of ['before_activation', 'unconfigured']) {
+    const inactiveCalendar = employeeMonthCalendar()
+    Object.assign(inactiveCalendar.days[18], {
+      scheduleRequired: false,
+      dayStatus,
+      issueCodes: [],
+      accountingStatus: null,
+    })
+    const inactiveService = serviceWithResponder(() => inactiveCalendar).service
+    const inactiveResult = await inactiveService.listEmployeeMonthCalendar({
+      employeeProfileId: EMPLOYEE_ID,
+      month: MONTH,
+    })
+    assert.equal(inactiveResult.days[18].eligible, true)
+    assert.equal(inactiveResult.days[18].dayStatus, dayStatus)
+  }
+
+  const missingClockCalendar = employeeMonthCalendar()
+  Object.assign(missingClockCalendar.days[19], {
+    dayStatus: 'missing_clock_in',
+    issueCodes: ['missing_clock_in'],
+  })
+  const missingClockService = serviceWithResponder(() => missingClockCalendar).service
+  const missingClockResult = await missingClockService.listEmployeeMonthCalendar({
+    employeeProfileId: EMPLOYEE_ID,
+    month: MONTH,
+  })
+  assert.equal(missingClockResult.days[19].dayStatus, 'missing_clock_in')
+
   const malformedRows = [
     (() => { const row = employeeMonthCalendar(); row.salaryMonth = '2026-08'; return row })(),
     (() => { const row = employeeMonthCalendar(); row.employee.employeeProfileId = EMPLOYEE_ID_2; return row })(),
@@ -816,6 +855,16 @@ test('employee month calendar validates exact identity, month coverage, order, a
     (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'not_eligible'; return row })(),
     (() => { const row = employeeMonthCalendar(); row.days[18].accountingStatus = 'approved'; return row })(),
     (() => { const row = employeeMonthCalendar(); row.days[18].issueCodes = ['late', 'abnormal_location']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'full_day'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[17].dayStatus = 'completed'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[19].dayStatus = 'before_activation'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'before_activation'; row.days[18].issueCodes = ['late']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'unconfigured'; row.days[18].accountingStatus = 'draft'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[19].dayStatus = 'missing_clock_in'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[19].dayStatus = 'missing_clock_in'; row.days[19].issueCodes = ['missing_clock_in', 'late']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].dayStatus = 'not_started'; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[19].issueCodes = ['late']; return row })(),
+    (() => { const row = employeeMonthCalendar(); row.days[18].issueCodes = ['late']; return row })(),
     (() => { const row = employeeMonthCalendar(); row.days[18].unexpected = true; return row })(),
   ]
   for (const data of malformedRows) {
