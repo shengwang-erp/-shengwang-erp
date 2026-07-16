@@ -289,6 +289,7 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
     ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
     ['infinity', Number.POSITIVE_INFINITY],
     ['negative', -1],
+    ['fractional negative', -0.4],
     ['blank', '   '],
   ]) {
     const normalized = appLoaded.module.normalizePurchaseRecord({

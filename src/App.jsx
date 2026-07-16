@@ -1190,6 +1190,7 @@ function normalizePurchaseRecord(record) {
   const hasOpeningPaidAmount = record.openingPaidAmount !== undefined &&
     record.openingPaidAmount !== null &&
     !(typeof record.openingPaidAmount === 'string' && record.openingPaidAmount.trim() === '') &&
+    openingPaidAmount >= 0 &&
     Number.isSafeInteger(normalizedOpeningPaidAmount) &&
     normalizedOpeningPaidAmount >= 0
 
