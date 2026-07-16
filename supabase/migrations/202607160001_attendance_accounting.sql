@@ -3719,7 +3719,7 @@ revoke all on function private.attendance_official_project_rows()
 
 create or replace function public.list_project_labor_costs_secure(
   p_month date,
-  p_search text,
+  p_status text,
   p_employee_profile_id uuid,
   p_project_id text
 )
@@ -3731,7 +3731,7 @@ set search_path = pg_catalog, public
 as $$
 declare
   actor public.employee_profiles%rowtype;
-  normalized_search text;
+  normalized_status text;
   normalized_project_id text;
   can_view_salary boolean;
   month_end date;
@@ -3772,9 +3772,13 @@ begin
     raise exception using
       errcode = '22023', message = 'salary month must be a finite month-first date';
   end if;
-  normalized_search := btrim(coalesce(p_search, ''));
-  if char_length(normalized_search) > 200 then
-    raise exception using errcode = '22023', message = 'valid project labor search required';
+  normalized_status := btrim(coalesce(p_status, ''));
+  if normalized_status = '' then
+    normalized_status := 'all';
+  end if;
+  if normalized_status not in ('all', 'confirmed', 'pending') then
+    raise exception using
+      errcode = '22023', message = 'valid project labor status required';
   end if;
   normalized_project_id := nullif(btrim(coalesce(p_project_id, '')), '');
   if normalized_project_id is not null
@@ -3797,16 +3801,7 @@ begin
     from private.attendance_official_project_rows() row
     where (normalized_project_id is null or row.project_id = normalized_project_id)
       and (p_employee_profile_id is null
-        or row.employee_profile_id = p_employee_profile_id)
-      and (
-        normalized_search = ''
-        or row.project_id ilike '%' || normalized_search || '%'
-        or row.project_name ilike '%' || normalized_search || '%'
-        or (can_view_salary and (
-          row.employee_number ilike '%' || normalized_search || '%'
-          or row.employee_name ilike '%' || normalized_search || '%'
-        ))
-      );
+        or row.employee_profile_id = p_employee_profile_id);
 
   select trim_scale(private.attendance_require_safe_aggregate(
       coalesce(sum(unit.attendance_units), 0)
@@ -3818,15 +3813,6 @@ begin
       and (normalized_project_id is null or row.project_id = normalized_project_id)
       and (p_employee_profile_id is null
         or row.employee_profile_id = p_employee_profile_id)
-      and (
-        normalized_search = ''
-        or row.project_id ilike '%' || normalized_search || '%'
-        or row.project_name ilike '%' || normalized_search || '%'
-        or (can_view_salary and (
-          row.employee_number ilike '%' || normalized_search || '%'
-          or row.employee_name ilike '%' || normalized_search || '%'
-        ))
-      )
     group by row.work_unit_key
   ) unit;
 
@@ -3845,16 +3831,7 @@ begin
       and resolution.work_date <= month_end
       and (effective_from is null or resolution.work_date >= effective_from)
       and (normalized_project_id is null or allocation.project_id = normalized_project_id)
-      and (p_employee_profile_id is null or employee.id = p_employee_profile_id)
-      and (
-        normalized_search = ''
-        or allocation.project_id ilike '%' || normalized_search || '%'
-        or allocation.project_name_snapshot ilike '%' || normalized_search || '%'
-        or (can_view_salary and (
-          employee.employee_number ilike '%' || normalized_search || '%'
-          or employee.name ilike '%' || normalized_search || '%'
-        ))
-      );
+      and (p_employee_profile_id is null or employee.id = p_employee_profile_id);
 
   select coalesce(jsonb_agg(jsonb_build_object(
       'salaryMonth', to_char(month_series.month_value, 'YYYY-MM'),
@@ -3873,15 +3850,6 @@ begin
             and (normalized_project_id is null or row.project_id = normalized_project_id)
             and (p_employee_profile_id is null
               or row.employee_profile_id = p_employee_profile_id)
-            and (
-              normalized_search = ''
-              or row.project_id ilike '%' || normalized_search || '%'
-              or row.project_name ilike '%' || normalized_search || '%'
-              or (can_view_salary and (
-                row.employee_number ilike '%' || normalized_search || '%'
-                or row.employee_name ilike '%' || normalized_search || '%'
-              ))
-            )
         ) amount
       from generate_series(
         (p_month - interval '5 months')::timestamp,
@@ -3916,13 +3884,6 @@ begin
               or row.project_id = normalized_project_id)
             and (p_employee_profile_id is null
               or row.employee_profile_id = p_employee_profile_id)
-            and (
-              normalized_search = ''
-              or row.project_id ilike '%' || normalized_search || '%'
-              or row.project_name ilike '%' || normalized_search || '%'
-              or row.employee_number ilike '%' || normalized_search || '%'
-              or row.employee_name ilike '%' || normalized_search || '%'
-            )
         ), amounts as (
           select filtered.identity_key,
             max(filtered.employee_profile_id::text)::uuid
@@ -3953,6 +3914,87 @@ begin
         from amounts
         join units using (identity_key)
       ) composition;
+    with confirmed_details as (
+      select row.source_key, row.source, row.work_date,
+        row.project_id, row.project_name, row.employee_profile_id,
+        row.employee_number, row.employee_name, row.attendance_units,
+        row.amount, row.accounting_status
+      from private.attendance_official_project_rows() row
+      where normalized_status in ('all', 'confirmed')
+        and row.work_date >= p_month and row.work_date <= month_end
+        and (normalized_project_id is null
+          or row.project_id = normalized_project_id)
+        and (p_employee_profile_id is null
+          or row.employee_profile_id = p_employee_profile_id)
+    ), pending_allocated as (
+      select allocation.allocation_id::text source_key,
+        'attendance'::text source,
+        resolution.work_date,
+        allocation.project_id,
+        allocation.project_name_snapshot project_name,
+        employee.id employee_profile_id,
+        employee.employee_number,
+        employee.name employee_name,
+        resolution.attendance_units,
+        private.attendance_require_safe_aggregate(allocation.amount) amount,
+        'draft'::text accounting_status
+      from public.attendance_project_allocations allocation
+      join public.attendance_day_resolutions resolution
+        on resolution.resolution_id = allocation.resolution_id
+      join public.employee_profiles employee
+        on employee.id = resolution.employee_profile_id
+      where normalized_status in ('all', 'pending')
+        and resolution.accounting_status = 'draft'
+        and resolution.work_date >= p_month
+        and resolution.work_date <= month_end
+        and (effective_from is null
+          or resolution.work_date >= effective_from)
+        and (normalized_project_id is null
+          or allocation.project_id = normalized_project_id)
+        and (p_employee_profile_id is null
+          or employee.id = p_employee_profile_id)
+    ), pending_unallocated as (
+      select 'draft-unallocated:' || resolution.resolution_id::text
+          source_key,
+        'attendance'::text source,
+        resolution.work_date,
+        null::text project_id,
+        '未分摊'::text project_name,
+        employee.id employee_profile_id,
+        employee.employee_number,
+        employee.name employee_name,
+        resolution.attendance_units,
+        private.attendance_require_safe_aggregate(
+          resolution.final_project_cost - allocated.amount
+        ) amount,
+        'draft'::text accounting_status
+      from public.attendance_day_resolutions resolution
+      join public.employee_profiles employee
+        on employee.id = resolution.employee_profile_id
+      cross join lateral (
+        select private.attendance_require_safe_aggregate(
+          coalesce(sum(allocation.amount), 0)
+        ) amount
+        from public.attendance_project_allocations allocation
+        where allocation.resolution_id = resolution.resolution_id
+      ) allocated
+      where normalized_status in ('all', 'pending')
+        and normalized_project_id is null
+        and resolution.accounting_status = 'draft'
+        and resolution.work_date >= p_month
+        and resolution.work_date <= month_end
+        and (effective_from is null
+          or resolution.work_date >= effective_from)
+        and (p_employee_profile_id is null
+          or employee.id = p_employee_profile_id)
+        and resolution.final_project_cost > allocated.amount
+    ), detail_rows as (
+      select * from confirmed_details
+      union all
+      select * from pending_allocated
+      union all
+      select * from pending_unallocated
+    )
     select coalesce(jsonb_agg(jsonb_build_object(
         'source', row.source,
         'sourceKey', row.source_key,
@@ -3965,20 +4007,10 @@ begin
         'attendanceUnits', row.attendance_units,
         'amount', row.amount,
         'accountingStatus', row.accounting_status
-      ) order by row.work_date, row.project_id, row.employee_number, row.source_key), '[]'::jsonb)
+      ) order by row.work_date, row.project_id nulls last,
+        row.employee_number, row.source, row.source_key), '[]'::jsonb)
       into details_result
-      from private.attendance_official_project_rows() row
-      where row.work_date >= p_month and row.work_date <= month_end
-        and (normalized_project_id is null or row.project_id = normalized_project_id)
-        and (p_employee_profile_id is null
-          or row.employee_profile_id = p_employee_profile_id)
-        and (
-          normalized_search = ''
-          or row.project_id ilike '%' || normalized_search || '%'
-          or row.project_name ilike '%' || normalized_search || '%'
-          or row.employee_number ilike '%' || normalized_search || '%'
-          or row.employee_name ilike '%' || normalized_search || '%'
-        );
+      from detail_rows row;
   end if;
 
   select coalesce(jsonb_agg(jsonb_build_object(
@@ -4003,15 +4035,6 @@ begin
       where row.work_date <= month_end
         and (p_employee_profile_id is null
           or row.employee_profile_id = p_employee_profile_id)
-        and (
-          normalized_search = ''
-          or row.project_id ilike '%' || normalized_search || '%'
-          or row.project_name ilike '%' || normalized_search || '%'
-          or (can_view_salary and (
-            row.employee_number ilike '%' || normalized_search || '%'
-            or row.employee_name ilike '%' || normalized_search || '%'
-          ))
-        )
       group by row.project_id
     ) comparison;
 
@@ -4035,21 +4058,6 @@ begin
       and (
         p_employee_profile_id is null
         or employee.id = p_employee_profile_id
-      )
-      and (
-        normalized_search = ''
-        or parsed.value->>'projectId'
-          ilike '%' || normalized_search || '%'
-        or parsed.value->>'projectName'
-          ilike '%' || normalized_search || '%'
-        or (can_view_salary and (
-          coalesce(employee.employee_number,
-            parsed.value->>'employeeId')
-              ilike '%' || normalized_search || '%'
-          or coalesce(nullif(parsed.value->>'employeeName', ''),
-            employee.name, '')
-              ilike '%' || normalized_search || '%'
-        ))
       );
   end if;
   -- Global quarantine count: malformed rows may not expose a usable date.

@@ -74,7 +74,7 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     String.raw`public\.save_monthly_payroll_draft_secure\(\s*p_employee_profile_id\s+uuid,\s*p_month\s+date,\s*p_overtime_pay\s+numeric,\s*p_bonus\s+numeric,\s*p_deduction\s+numeric,\s*p_confirmation_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.confirm_monthly_payroll_secure\(\s*p_employee_profile_id\s+uuid,\s*p_month\s+date,\s*p_overtime_pay\s+numeric,\s*p_bonus\s+numeric,\s*p_deduction\s+numeric,\s*p_confirmation_note\s+text,\s*p_version\s+integer\s*\)`,
     String.raw`public\.reopen_monthly_payroll_secure\(\s*p_payroll_id\s+uuid,\s*p_reason\s+text,\s*p_version\s+integer\s*\)`,
-    String.raw`public\.list_project_labor_costs_secure\(\s*p_month\s+date,\s*p_search\s+text,\s*p_employee_profile_id\s+uuid,\s*p_project_id\s+text\s*\)`,
+    String.raw`public\.list_project_labor_costs_secure\(\s*p_month\s+date,\s*p_status\s+text,\s*p_employee_profile_id\s+uuid,\s*p_project_id\s+text\s*\)`,
     String.raw`public\.export_project_labor_costs_secure\(\s*p_month\s+date,\s*p_project_id\s+text,\s*p_employee_profile_id\s+uuid\s*\)`,
     String.raw`public\.get_attendance_accounting_settings_secure\(\s*\)`,
     String.raw`public\.update_attendance_accounting_settings_secure\(\s*p_effective_from\s+date,\s*p_work_weekdays\s+smallint\[\],\s*p_work_start_time\s+time(?:\s+without\s+time\s+zone)?,\s*p_work_end_time\s+time(?:\s+without\s+time\s+zone)?,\s*p_break_minutes\s+integer,\s*p_standard_day_minutes\s+integer,\s*p_version\s+integer\s*\)`,
@@ -128,6 +128,12 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     assert.doesNotMatch(definition, /execute\s+format|\bexecute\s+/iu)
     assert.doesNotMatch(definition, /p_(?:actor|salary_type|base_salary|daily_salary|hourly_wage|confirmed_by|server_time)/iu)
   }
+
+  const projectLaborDefinition = definitions.find((definition) =>
+    /function public\.list_project_labor_costs_secure/iu.test(definition))
+  assert.ok(projectLaborDefinition)
+  assert.match(projectLaborDefinition, /p_status\s+text/iu)
+  assert.doesNotMatch(projectLaborDefinition, /p_search|normalized_search/iu)
 
   const privateHelperNames = [
     'attendance_valid_yen',

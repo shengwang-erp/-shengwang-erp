@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(206);
+select plan(214);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -2014,6 +2014,17 @@ select is(
   ),
   12::bigint,
   'all twelve Task 4 public RPCs have the exact approved input signatures'
+);
+
+select is(
+  (
+    select procedure.proargnames[2]
+    from pg_catalog.pg_proc procedure
+    where procedure.oid =
+      'public.list_project_labor_costs_secure(date,text,uuid,text)'::regprocedure
+  ),
+  'p_status',
+  'project labor report exposes status rather than free-text search as its second named argument'
 );
 
 select ok(
@@ -4434,12 +4445,166 @@ $$;
 select is(
   public.save_attendance_resolution_draft_secure(
     '75000000-0000-4000-8000-000000000009', '2026-07-17',
-    'full_day', 1, 4000,
+    'full_day', 1, 5000,
     '[{"projectId":"P-T4-A","amount":4000,"allocationNote":"草稿"}]'::jsonb,
     '', 0
   )#>>'{resolution,accountingStatus}',
   'draft',
-  'balanced draft allocation remains nonofficial until confirmation'
+  'partially allocated draft remains nonofficial until confirmation'
+);
+
+select ok(
+  public.list_project_labor_costs_secure(
+    '2026-07-01', null, null, null
+  ) = public.list_project_labor_costs_secure(
+    '2026-07-01', '', null, null
+  )
+  and public.list_project_labor_costs_secure(
+    '2026-07-01', '', null, null
+  ) = public.list_project_labor_costs_secure(
+    '2026-07-01', 'all', null, null
+  ),
+  'null and blank project detail status normalize exactly to all'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', 'confirmed', null, null
+      ) result
+    )
+    select jsonb_array_length(result->'dailyDetails') = 3
+      and result#>>'{dailyDetails,0,source}' = 'legacy'
+      and result#>>'{dailyDetails,0,accountingStatus}' = 'legacy'
+      and result#>>'{dailyDetails,0,projectId}' = 'P-T4-A'
+      and result#>>'{dailyDetails,1,source}' = 'legacy'
+      and result#>>'{dailyDetails,1,projectId}' = 'P-T4-B'
+      and result#>>'{dailyDetails,2,source}' = 'attendance'
+      and result#>>'{dailyDetails,2,accountingStatus}' = 'month_locked'
+      and result#>>'{dailyDetails,2,amount}' = '3000'
+    from report
+  ),
+  'confirmed project details include valid legacy and finalized normalized rows with preserved source labels'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', 'pending', null, null
+      ) result
+    )
+    select jsonb_array_length(result->'dailyDetails') = 2
+      and (
+        select array_agg(key order by key)
+        from jsonb_object_keys(result#>'{dailyDetails,0}') key
+      ) = array[
+        'accountingStatus', 'amount', 'attendanceUnits', 'employeeName',
+        'employeeNumber', 'employeeProfileId', 'projectId', 'projectName',
+        'source', 'sourceKey', 'workDate'
+      ]::text[]
+      and result#>>'{dailyDetails,0,source}' = 'attendance'
+      and result#>>'{dailyDetails,0,accountingStatus}' = 'draft'
+      and result#>>'{dailyDetails,0,projectId}' = 'P-T4-A'
+      and result#>>'{dailyDetails,0,employeeProfileId}' =
+        '75000000-0000-4000-8000-000000000009'
+      and result#>>'{dailyDetails,0,amount}' = '4000'
+      and result#>>'{dailyDetails,1,source}' = 'attendance'
+      and result#>>'{dailyDetails,1,accountingStatus}' = 'draft'
+      and result#>'{dailyDetails,1,projectId}' = 'null'::jsonb
+      and result#>>'{dailyDetails,1,projectName}' = '未分摊'
+      and result#>>'{dailyDetails,1,amount}' = '1000'
+      and result#>>'{dailyDetails,1,sourceKey}'
+        like 'draft-unallocated:%'
+    from report
+  ),
+  'pending project details expose allocated drafts and one stable unallocated remainder row'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', 'pending', null, 'P-T4-A'
+      ) result
+    )
+    select jsonb_array_length(result->'dailyDetails') = 1
+      and result#>>'{dailyDetails,0,projectId}' = 'P-T4-A'
+      and result#>>'{dailyDetails,0,amount}' = '4000'
+      and result::text !~ '未分摊|draft-unallocated:'
+    from report
+  ),
+  'project-filtered pending details omit the unattributed draft remainder'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', 'all', null, null
+      ) result
+    )
+    select jsonb_array_length(result->'dailyDetails') = 5
+      and result#>>'{dailyDetails,0,accountingStatus}' = 'legacy'
+      and result#>>'{dailyDetails,1,accountingStatus}' = 'legacy'
+      and result#>>'{dailyDetails,2,accountingStatus}' = 'month_locked'
+      and result#>>'{dailyDetails,3,accountingStatus}' = 'draft'
+      and result#>>'{dailyDetails,3,projectId}' = 'P-T4-A'
+      and result#>>'{dailyDetails,4,accountingStatus}' = 'draft'
+      and result#>'{dailyDetails,4,projectId}' = 'null'::jsonb
+    from report
+  ),
+  'all project details deterministically combine confirmed and pending membership'
+);
+
+select ok(
+  (
+    with baseline as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', null, null, null
+      ) result
+    ), reports as (
+      select status.value,
+        public.list_project_labor_costs_secure(
+          '2026-07-01', status.value, null, null
+        ) result
+      from unnest(array['all', 'confirmed', 'pending']) status(value)
+    )
+    select bool_and(reports.result->'summary' = baseline.result->'summary'
+      and reports.result->'trend' = baseline.result->'trend'
+      and reports.result->'employeeComposition' =
+        baseline.result->'employeeComposition'
+      and reports.result->'projectComparison' =
+        baseline.result->'projectComparison'
+      and reports.result->'reconciliation' =
+        baseline.result->'reconciliation')
+    from reports cross join baseline
+  ),
+  'detail status never changes authoritative metrics or reconciliation counts'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_project_labor_costs_secure(
+        '2026-07-01', 'all', null, null
+      ) result
+    )
+    select result#>>'{summary,monthlyConfirmedCost}' = '6000'
+      and result#>>'{summary,confirmedAttendanceUnits}' = '2'
+      and result#>>'{summary,pendingAllocationCount}' = '1'
+      and result#>>'{summary,pendingAllocationAmount}' = '4000'
+      and result#>>'{trend,5,amount}' = '6000'
+      and (result->'employeeComposition')::text
+        !~ 'SW-7509|草稿项目员工'
+      and (
+        select sum((item->>'monthlyConfirmedCost')::numeric)
+        from jsonb_array_elements(result->'projectComparison') item
+      ) = 6000
+    from report
+  ),
+  'draft detail rows never enter official totals, trend, composition, or comparison metrics'
 );
 
 select set_config(
@@ -4455,6 +4620,12 @@ select ok(
     select result#>>'{summary,monthlyConfirmedCost}' = '4000'
       and result->'employeeComposition' = '[]'::jsonb
       and result->'dailyDetails' = '[]'::jsonb
+      and public.list_project_labor_costs_secure(
+        '2026-07-01', 'confirmed', null, 'P-T4-A'
+      )->'dailyDetails' = '[]'::jsonb
+      and public.list_project_labor_costs_secure(
+        '2026-07-01', 'pending', null, 'P-T4-A'
+      )->'dailyDetails' = '[]'::jsonb
       and result::text !~ '(SW-7508|启用边界月薪员工|3000|9999)'
     from report
   ),
@@ -4467,12 +4638,12 @@ select throws_ok(
   '42501', 'salary view permission required for employee project filter',
   'project viewers without salary view cannot recover employee costs by UUID filter'
 );
-select is(
-  public.list_project_labor_costs_secure(
+select throws_ok(
+  $$select public.list_project_labor_costs_secure(
     '2026-07-01', 'SW-7508', null, null
-  )#>>'{summary,monthlyConfirmedCost}',
-  '0',
-  'project viewers without salary view cannot recover employee costs by search oracle'
+  )$$,
+  '22023', 'valid project labor status required',
+  'project report rejects former free-text search values instead of treating status as search'
 );
 select throws_ok(
   $$select public.export_project_labor_costs_secure(
@@ -4500,7 +4671,7 @@ select ok(
   (
     with report as (
       select public.list_project_labor_costs_secure(
-        '2026-07-01', '项目', null, null
+        '2026-07-01', 'all', null, null
       ) result
     )
     select
@@ -4514,7 +4685,7 @@ select ok(
       and result#>>'{summary,confirmedAttendanceUnits}' = '2'
       and result#>>'{summary,pendingAllocationCount}' = '1'
       and result#>>'{summary,pendingAllocationAmount}' = '4000'
-      and result#>>'{reconciliation,postActivationLegacyRows}' = '0'
+      and result#>>'{reconciliation,postActivationLegacyRows}' = '1'
       and result#>>'{reconciliation,globalMalformedLegacyRows}' = '2'
       and result::text !~ '9999|7777|8888'
     from report
@@ -4527,10 +4698,20 @@ select ok(
     '2026-07-01', '', null, 'P-T4-A'
   )#>>'{reconciliation,postActivationLegacyRows}' = '1'
   and public.list_project_labor_costs_secure(
+    '2026-07-01', 'confirmed', null, 'P-T4-A'
+  )#>>'{reconciliation,postActivationLegacyRows}' = '1'
+  and public.list_project_labor_costs_secure(
+    '2026-07-01', 'pending', null, 'P-T4-A'
+  )#>>'{reconciliation,postActivationLegacyRows}' = '1'
+  and public.list_project_labor_costs_secure(
     '2026-07-01', '', null, 'P-T4-B'
   )#>>'{reconciliation,postActivationLegacyRows}' = '0'
   and public.list_project_labor_costs_secure(
     '2026-07-01', '', '75000000-0000-4000-8000-000000000008', 'P-T4-A'
+  )#>>'{reconciliation,postActivationLegacyRows}' = '0'
+  and public.list_project_labor_costs_secure(
+    '2026-07-01', 'pending',
+    '75000000-0000-4000-8000-000000000008', 'P-T4-A'
   )#>>'{reconciliation,postActivationLegacyRows}' = '0',
   'project reconciliation follows project and employee report filters'
 );
@@ -4552,18 +4733,21 @@ select ok(
   (
     with report as (
       select public.list_project_labor_costs_secure(
-        '2026-07-01', '构成项目', null, null
+        '2026-07-01', 'all', null, 'P-T4-COMP'
       ) result
     )
     select result#>>'{summary,monthlyConfirmedCost}' = '0'
       and result#>>'{summary,lifetimeConfirmedCost}' = '300'
-      and jsonb_array_length(result->'projectComparison') = 1
-      and result#>>'{projectComparison,0,projectId}' = 'P-T4-COMP'
-      and result#>>'{projectComparison,0,monthlyConfirmedCost}' = '0'
-      and result#>>'{projectComparison,0,lifetimeConfirmedCost}' = '300'
+      and exists (
+        select 1
+        from jsonb_array_elements(result->'projectComparison') item
+        where item->>'projectId' = 'P-T4-COMP'
+          and item->>'monthlyConfirmedCost' = '0'
+          and item->>'lifetimeConfirmedCost' = '300'
+      )
     from report
   ),
-  'project comparison retains lifetime-only projects through the selected month'
+  'project comparison retains lifetime-only projects through the selected month without search semantics'
 );
 
 select set_config(
