@@ -19,6 +19,9 @@ create table public.attendance_accounting_settings (
   constraint attendance_accounting_settings_key_check check (
     settings_key = 'default'
   ),
+  constraint attendance_accounting_settings_effective_from_finite_check check (
+    isfinite(effective_from)
+  ),
   constraint attendance_accounting_settings_weekdays_check check (
     cardinality(work_weekdays) between 1 and 7
     and work_weekdays <@ array[1, 2, 3, 4, 5, 6, 7]::smallint[]
@@ -46,6 +49,12 @@ create table public.attendance_accounting_settings (
       extract(epoch from (work_end_time - work_start_time)) / 60
       - break_minutes
     )
+  ),
+  constraint attendance_accounting_settings_created_at_finite_check check (
+    isfinite(created_at)
+  ),
+  constraint attendance_accounting_settings_updated_at_finite_check check (
+    isfinite(updated_at)
   ),
   constraint attendance_accounting_settings_timestamps_check check (
     updated_at >= created_at
@@ -76,6 +85,9 @@ create table public.attendance_day_resolutions (
   updated_at timestamptz not null default statement_timestamp(),
   constraint attendance_day_resolutions_employee_day_unique
     unique (employee_profile_id, work_date),
+  constraint attendance_day_resolutions_work_date_finite_check check (
+    isfinite(work_date)
+  ),
   constraint attendance_day_resolutions_type_check check (
     resolution_type in (
       'full_day', 'half_day', 'rest', 'leave', 'comp_time', 'absence'
@@ -155,9 +167,21 @@ create table public.attendance_day_resolutions (
       and confirmed_at is not null)
   ),
   constraint attendance_day_resolutions_version_check check (version >= 1),
+  constraint attendance_day_resolutions_confirmed_at_finite_check check (
+    confirmed_at is null or isfinite(confirmed_at)
+  ),
+  constraint attendance_day_resolutions_created_at_finite_check check (
+    isfinite(created_at)
+  ),
+  constraint attendance_day_resolutions_updated_at_finite_check check (
+    isfinite(updated_at)
+  ),
   constraint attendance_day_resolutions_timestamps_check check (
     updated_at >= created_at
-    and (confirmed_at is null or confirmed_at >= created_at)
+    and (
+      confirmed_at is null
+      or confirmed_at between created_at and updated_at
+    )
   )
 );
 
@@ -195,6 +219,12 @@ create table public.attendance_project_allocations (
     allocation_note = btrim(allocation_note)
     and char_length(allocation_note) <= 2000
   ),
+  constraint attendance_project_allocations_created_at_finite_check check (
+    isfinite(created_at)
+  ),
+  constraint attendance_project_allocations_updated_at_finite_check check (
+    isfinite(updated_at)
+  ),
   constraint attendance_project_allocations_timestamps_check check (
     updated_at >= created_at
   )
@@ -228,6 +258,9 @@ create table public.attendance_monthly_payrolls (
   updated_at timestamptz not null default statement_timestamp(),
   constraint attendance_monthly_payrolls_employee_month_unique
     unique (employee_profile_id, salary_month),
+  constraint attendance_monthly_payrolls_salary_month_finite_check check (
+    isfinite(salary_month)
+  ),
   constraint attendance_monthly_payrolls_month_start_check check (
     salary_month = date_trunc('month', salary_month)::date
   ),
@@ -306,16 +339,33 @@ create table public.attendance_monthly_payrolls (
     and char_length(confirmation_note) <= 2000
   ),
   constraint attendance_monthly_payrolls_confirmation_check check (
-    status <> 'confirmed'
-    or (
-      confirmed_by_employee_profile_id is not null
+    (
+      status = 'confirmed'
+      and confirmed_by_employee_profile_id is not null
       and confirmed_at is not null
+    )
+    or (
+      status in ('draft', 'reopened')
+      and confirmed_by_employee_profile_id is null
+      and confirmed_at is null
     )
   ),
   constraint attendance_monthly_payrolls_version_check check (version >= 1),
+  constraint attendance_monthly_payrolls_confirmed_at_finite_check check (
+    confirmed_at is null or isfinite(confirmed_at)
+  ),
+  constraint attendance_monthly_payrolls_created_at_finite_check check (
+    isfinite(created_at)
+  ),
+  constraint attendance_monthly_payrolls_updated_at_finite_check check (
+    isfinite(updated_at)
+  ),
   constraint attendance_monthly_payrolls_timestamps_check check (
     updated_at >= created_at
-    and (confirmed_at is null or confirmed_at >= created_at)
+    and (
+      confirmed_at is null
+      or confirmed_at between created_at and updated_at
+    )
   )
 );
 
@@ -354,6 +404,9 @@ create table public.attendance_accounting_audit_log (
   ),
   constraint attendance_accounting_audit_reason_check check (
     reason = btrim(reason) and char_length(reason) <= 2000
+  ),
+  constraint attendance_accounting_audit_occurred_at_finite_check check (
+    isfinite(occurred_at)
   )
 );
 
