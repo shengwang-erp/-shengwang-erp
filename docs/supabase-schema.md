@@ -1,11 +1,12 @@
 # Supabase 数据库字段说明
 
 新环境和已有环境都以 [`supabase/migrations/`](../supabase/migrations/) 中按文件名排序的
-迁移为唯一规范路径，依次执行 `202607140001`、`202607140002`、`202607140003`、
-`202607140004`、`202607150001`，不可跳过或交换顺序。
-[supabase-schema.sql](./supabase-schema.sql) 仅是 `202607140001` 的历史基础快照；它没有
-`003/004` 的私有依赖，也没有 `005` 的替换函数和策略，不能作为最终 bootstrap，不能在
-已执行有序迁移的数据库上再次运行。
+迁移为唯一规范路径，并按目录内实际文件名排序执行，不可跳过或交换顺序。本功能的直接链为
+`202607140001`、`202607140002`、`202607140003`、`202607140004`、`202607150001`、
+`202607150003`、`202607160001`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
+[supabase-schema.sql](./supabase-schema.sql) 包含 `202607140001` 历史基础快照和
+`202607160001` 考勤核算审查快照；它仍不包含中间迁移的完整依赖，不能作为最终 bootstrap，
+也不能在已执行有序迁移的数据库上再次运行。
 
 业务模块暂时继续使用“每模块一张表 + `payload jsonb` + 公共审计字段”的兼容结构，
 但员工身份的可信来源已经改为规范化的 `employee_profiles`。旧 `employees.payload`
@@ -106,6 +107,36 @@ NFKC、trim 和空白折叠。担当只接受当前在职、启用且属于准�
 - `operator_id text`
 - `operator_name text`
 - `remark text`
+
+### attendance_accounting 人工考勤核算
+
+`202607160001_attendance_accounting.sql` 在不可变“今日打卡”事实之上增加五张规范表：
+
+- `attendance_accounting_settings`：启用日期、星期一至星期六、08:00–17:00、60 分钟休息和 480 分钟标准工时；
+- `attendance_day_resolutions`：会计对整天、半天、休息、请假、调休或缺勤的版本化日结；
+- `attendance_project_allocations`：按日、按项目保存整数日元分摊，合计必须等于当日最终项目人工成本；
+- `attendance_monthly_payrolls`：月工资草稿、确认和重开，并在确认时锁定对应日结；
+- `attendance_accounting_audit_log`：设置、日结和月工资变更的服务端身份与前后快照。
+
+所有基表启用 RLS，`anon` 和 `authenticated` 没有直接表访问。浏览器只调用显式授权的
+security-definer RPC；服务不可用、响应形状不合法、会话切换或权限不足时失败关闭，不从
+localStorage、旧页面缓存或角色名称恢复工资和项目金额。
+
+权限按能力组合：`module.labor.view` 只读取脱敏考勤；工资金额还要求
+`sensitive.salary_view`；日结更新要求 `module.labor.update`；含金额的项目分摊还要求
+`module.project_costs.view/update` 与 `sensitive.salary_update`；月工资确认要求
+`module.labor.update`、`sensitive.salary_view/update`。向会计成本、老板驾驶舱和工程项目提供
+正式金额的桥接 RPC 必须同时具备 `module.labor.view`、`sensitive.salary_view` 和
+`module.project_costs.view`，缺一项都不请求。
+
+启用日期以前保留旧 `labor_records`/`salary_records` 作为历史来源；启用日期及以后项目
+人工只统计已确认分摊，启用月份及以后工资只统计已确认月工资。启用后的旧记录进入核对清单，
+不与新金额叠加。星期一至星期六默认应出勤，超过上班时间仍未打卡才提醒；星期日无场次时为
+可选且不标红，但仍允许正常打卡和会计核对。
+
+项目费用页支持按月和整个项目累计查询。CSV 由受控 RPC 返回明细，前端输出 UTF-8 BOM、
+稳定列顺序并中和公式起始字符；含员工维度的导出要求工资查看权限。部署、启用、历史核对和
+回滚步骤见 [人工考勤核算运维手册](./attendance-accounting-operations.md)。
 
 ### purchase_records 采购记录
 

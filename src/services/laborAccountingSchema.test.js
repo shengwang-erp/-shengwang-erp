@@ -3,6 +3,57 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const migration = await readFile(new URL('../../supabase/migrations/202607160001_attendance_accounting.sql', import.meta.url), 'utf8').catch(() => '')
+const baseline = await readFile(new URL('../../docs/supabase-schema.sql', import.meta.url), 'utf8').catch(() => '')
+const operations = await readFile(new URL('../../docs/attendance-accounting-operations.md', import.meta.url), 'utf8').catch(() => '')
+
+test('baseline schema and operations runbook cover attendance accounting deployment', () => {
+  const accountingMarker = '-- ATTENDANCE ACCOUNTING REFERENCE SNAPSHOT'
+  assert.ok(baseline.includes(accountingMarker))
+  const accountingReference = baseline.slice(baseline.indexOf(accountingMarker))
+  const migrationStart = '-- Normalized, RPC-only attendance accounting state.'
+  const migrationOffset = accountingReference.indexOf(migrationStart)
+  assert.ok(migrationOffset >= 0)
+  assert.equal(accountingReference.slice(migrationOffset).trim(), migration.trim())
+
+  for (const table of [
+    'attendance_accounting_settings',
+    'attendance_day_resolutions',
+    'attendance_project_allocations',
+    'attendance_monthly_payrolls',
+    'attendance_accounting_audit_log',
+  ]) {
+    assert.match(baseline, new RegExp(`create table public\\.${table}`, 'iu'))
+  }
+
+  for (const rpc of [
+    'list_daily_attendance_dashboard_secure',
+    'get_labor_alert_count_secure',
+    'get_attendance_resolution_detail_secure',
+    'confirm_attendance_resolution_secure',
+    'list_monthly_payroll_secure',
+    'list_employee_attendance_calendar_secure',
+    'confirm_monthly_payroll_secure',
+    'list_project_labor_costs_secure',
+    'export_project_labor_costs_secure',
+    'get_attendance_accounting_bridge_secure',
+  ]) {
+    assert.match(baseline, new RegExp(`create or replace function\\s+public\\.${rpc}\\b`, 'iu'))
+  }
+
+  for (const heading of ['启用日期', '权限矩阵', '历史数据核对', '回滚边界', '验收清单']) {
+    assert.match(operations, new RegExp(`^##\\s+${heading}\\s*$`, 'mu'))
+  }
+
+  for (const command of [
+    'npm test',
+    'npm run build',
+    'npx supabase db reset --local --workdir /private/tmp/kaobeierp-attendance-accounting-db',
+    'npx supabase test db supabase/tests/attendance_accounting.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db',
+    'npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-accounting-db',
+  ]) {
+    assert.ok(operations.includes(command), `missing runbook command: ${command}`)
+  }
+})
 
 test('accounting migration defines normalized tables and secure boundaries', () => {
   for (const table of ['attendance_accounting_settings', 'attendance_day_resolutions',
