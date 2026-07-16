@@ -391,6 +391,176 @@ test('purchase cash is derived only from validated purchase-linked recorded paym
   assert.equal(selectedProject.cashFlow.data.series.at(-1).purchaseOutflow, 10)
 })
 
+test('cash uses only its four authorized sources and isolates unavailable purchase accrual', () => {
+  const unavailableStates = [
+    {
+      status: 'loading', data: null, code: '', message: '采购加载中',
+      stale: false, updatedAt: null,
+    },
+    {
+      status: 'error', data: null, code: 'ACCRUAL_DOWN', message: '采购读取失败',
+      stale: false, updatedAt: null,
+    },
+  ]
+  const scopes = [
+    { projectId: 'P1', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10 },
+    { projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10 },
+  ]
+
+  for (const filters of scopes) {
+    const baseline = buildExecutiveDashboardReadModel(input({ filters }))
+    assert.deepEqual(baseline.cashFlow.requiredSources,
+      ['receipts', 'purchasePayments', 'fuel', 'vehicleExpenses'])
+
+    for (const purchaseAccrual of unavailableStates) {
+      const model = buildExecutiveDashboardReadModel(input({
+        filters,
+        sources: sourceFixture({ purchaseAccrual }),
+      }))
+      const selected = model.cashFlow.data?.series.at(-1)
+      assert.equal(model.cashFlow.status, 'ready', `${filters.projectId}:${purchaseAccrual.status}`)
+      assert.deepEqual(model.cashFlow.requiredSources,
+        ['receipts', 'purchasePayments', 'fuel', 'vehicleExpenses'])
+      assert.equal(selected.income, 600)
+      assert.equal(selected.vehicleOutflow, 15)
+      assert.equal(selected.purchaseOutflow, null)
+      assert.equal(selected.outflow, null)
+      assert.equal(selected.net, null)
+      assert.deepEqual(model.cashFlow.data.componentStatus, {
+        income: 'ready',
+        purchaseOutflow: purchaseAccrual.status,
+        vehicleOutflow: 'ready',
+        outflow: purchaseAccrual.status,
+        net: purchaseAccrual.status,
+      })
+    }
+  }
+})
+
+test('inactive facts across every source family are removed before amounts counts health and alerts', () => {
+  const base = sourceFixture()
+  const cases = [
+    ['purchaseAccrual', {
+      purchaseId: '', projectId: 'P1', purchaseDate: 'not-a-date',
+      purchaseSource: '中国采购', purchaseStatus: '作废', totalCost: -1,
+    }],
+    ['purchasePayments', {
+      paymentId: 'PP-INACTIVE', purchaseId: 'PO-JULY', paymentDate: '2026-07-03',
+      paymentDateSource: 'recorded', jpyAmount: 900000, status: 'void',
+    }],
+    ['receipts', {
+      receiptId: 'R-INACTIVE', projectId: 'P1', receivedDate: '2026-07-10',
+      taxInclusiveAmount: 900000, receiptStatus: '取消',
+    }],
+    ['projectCosts', {
+      costRecordId: 'PC-INACTIVE', projectId: 'P1', date: '2026-07-04',
+      costType: '人工费', amount: 900000, recordStatus: 'deleted',
+    }],
+    ['operatingExpenses', {
+      operatingExpenseId: 'OE-INACTIVE', projectId: 'P1', date: '2026-07-06',
+      allocateToProject: true, amount: 900000, statusCode: 'inactive',
+    }],
+    ['vehicleUsage', {
+      usageId: 'VU-INACTIVE', vehicleId: 'V1', projectId: 'P1',
+      usageDate: '2026-07-07', dailyMileage: 900000, status: 'void',
+    }],
+    ['fuel', {
+      fuelRecordId: 'F-INACTIVE', projectId: 'P1', fuelDate: '2026-07-08',
+      fuelDateSource: 'recorded', paymentMethod: '现金', paymentMethodSource: 'recorded',
+      allocateToProject: true, fuelAmount: 900000, statusCode: 'deleted',
+    }],
+    ['vehicleExpenses', {
+      vehicleExpenseId: 'VE-INACTIVE', projectId: 'P1', expenseDate: '2026-07-09',
+      expenseDateSource: 'recorded', paymentMethod: '卡', paymentMethodSource: 'recorded',
+      allocateToProject: true, amount: 900000, recordStatus: 'inactive',
+    }],
+    ['vehicleIssues', {
+      issueId: 'VI-INACTIVE', projectId: 'P1', issueDate: '2026-07-10',
+      allocateToProject: true, issueStatus: '未处理', repairCost: 900000, status: 'void',
+    }],
+    ['attendance', {
+      attendanceId: 'A-INACTIVE', projectId: 'P1', employeeId: 'E-INACTIVE',
+      workDate: '2026-07-11', status: '异常', recordStatus: 'deleted',
+    }],
+    ['inventoryItems', {
+      inventoryId: 'I-INACTIVE', projectId: 'P1', currentStatus: '库存不足',
+      totalCost: 900000, statusCode: 'inactive',
+    }],
+    ['stockInRecords', {
+      stockInId: 'SI-INACTIVE', projectId: 'P1', stockInDate: '2026-07-12',
+      amount: 900000, status: 'void',
+    }],
+    ['stockOutRecords', {
+      stockOutId: 'SO-INACTIVE', projectId: 'P1', stockOutDate: '2026-07-13',
+      amount: 900000, statusCode: 'deleted',
+    }],
+    ['stockReturnRecords', {
+      stockReturnId: 'SR-INACTIVE', projectId: 'P1', returnDate: '2026-07-13',
+      amount: 900000, recordStatus: 'inactive',
+    }],
+    ['toolRecords', {
+      toolId: 'T-INACTIVE', currentStatus: '借出', totalCost: 900000, statusCode: 'deleted',
+    }],
+    ['toolBorrowRecords', {
+      borrowRecordId: 'TB-INACTIVE', toolId: 'T1', projectId: 'P1',
+      borrowDate: '2026-07-14', borrowType: '临时借用', status: 'void',
+    }],
+    ['toolReturnRecords', {
+      toolReturnId: 'TR-INACTIVE', borrowRecordId: 'TB-JULY', statusCode: 'deleted',
+    }],
+    ['lifelongToolAssignments', {
+      assignmentId: 'TA-INACTIVE', toolId: 'T1', projectId: 'P1', recordStatus: 'inactive',
+    }],
+    ['toolResponsibilityRecords', {
+      responsibilityRecordId: 'RESP-INACTIVE', toolId: 'T1', projectId: 'P1',
+      compensationStatus: '未赔偿', compensationAmount: 900000, status: 'void',
+    }],
+  ]
+  const overrides = Object.create(null)
+  for (const [source, row] of cases) {
+    overrides[source] = ready([...base[source].data, row])
+  }
+
+  const baseline = buildExecutiveDashboardReadModel(input({ sources: base }))
+  const withInactive = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture(overrides),
+  }))
+  assert.deepEqual(withInactive, baseline)
+
+  const redactedToolAccess = fullAccess({ tools: { view: true, amounts: false } })
+  assert.deepEqual(
+    buildExecutiveDashboardReadModel(input({
+      access: redactedToolAccess,
+      sources: sourceFixture(overrides),
+    })),
+    buildExecutiveDashboardReadModel(input({ access: redactedToolAccess, sources: base })),
+  )
+})
+
+test('payments linked only to an inactive purchase are ignored without cash health or alert effects', () => {
+  const base = sourceFixture()
+  const sources = sourceFixture({
+    purchaseAccrual: ready([
+      ...base.purchaseAccrual.data,
+      {
+        purchaseId: 'PO-VOID-LINK', projectId: 'P1', purchaseDate: '2026-07-02',
+        purchaseSource: '中国采购', purchaseStatus: '作废', totalCost: 900000,
+      },
+    ]),
+    purchasePayments: ready([
+      ...base.purchasePayments.data,
+      {
+        paymentId: 'PP-VOID-LINK', purchaseId: 'PO-VOID-LINK', paymentDate: '2026-07-03',
+        paymentDateSource: 'recorded', jpyAmount: 900000,
+      },
+    ]),
+  })
+  assert.deepEqual(
+    buildExecutiveDashboardReadModel(input({ sources })),
+    buildExecutiveDashboardReadModel(input({ sources: base })),
+  )
+})
+
 test('required-source and sensitive-permission truth tables block only dependent facts', () => {
   const inventoryIndependent = buildExecutiveDashboardReadModel(input({
     sources: sourceFixture({ toolRecords: forbidden() }),
@@ -726,7 +896,13 @@ test('malformed ready payloads become isolated source errors across every dashbo
       name: 'purchase accrual', sources: { purchaseAccrual: ready([null]) },
       check(model) {
         assert.equal(model.purchaseOperations.status, 'error')
-        assert.equal(model.cashFlow.status, 'error')
+        assert.equal(model.cashFlow.status, 'ready')
+        assert.equal(model.cashFlow.data.componentStatus.purchaseOutflow, 'error')
+        assert.equal(model.cashFlow.data.series.at(-1).income, 600)
+        assert.equal(model.cashFlow.data.series.at(-1).vehicleOutflow, 15)
+        assert.equal(model.cashFlow.data.series.at(-1).purchaseOutflow, null)
+        assert.equal(model.cashFlow.data.series.at(-1).outflow, null)
+        assert.equal(model.cashFlow.data.series.at(-1).net, null)
         assert.equal(model.costs.status, 'error')
         assert.equal(model.inventoryOperations.status, 'ready')
       },
@@ -971,7 +1147,9 @@ test('invalid monetary contributors fail closed without suppressing independent 
     }),
   }))
   assert.equal(purchaseInvalid.purchaseOperations.status, 'error')
-  assert.equal(purchaseInvalid.cashFlow.status, 'error')
+  assert.equal(purchaseInvalid.cashFlow.status, 'ready')
+  assert.equal(purchaseInvalid.cashFlow.data.componentStatus.purchaseOutflow, 'ready')
+  assert.equal(purchaseInvalid.cashFlow.data.series.at(-1).purchaseOutflow, 25)
   assert.equal(purchaseInvalid.costs.status, 'error')
   assert.equal(purchaseInvalid.projectRanking.status, 'error')
   assert.equal(purchaseInvalid.projectRows.status, 'error')
@@ -1058,7 +1236,7 @@ test('invalid monetary contributors fail closed without suppressing independent 
       })),
     }),
   }))
-  assert.equal(lifetimeOverflow.costs.status, 'error')
+  assert.equal(lifetimeOverflow.costs.status, 'ready')
   assert.equal(lifetimeOverflow.projectRanking.status, 'error')
   assert.equal(lifetimeOverflow.projectRows.status, 'error')
   assert.equal(kpi(lifetimeOverflow, 'estimatedProfitTaxExclusive').status, 'error')
@@ -1092,9 +1270,9 @@ test('invalid monetary contributors fail closed without suppressing independent 
       })),
     }),
   }))
-  assert.equal(laborInvalid.laborOperations.data.labor.status, 'error')
-  assert.equal(laborInvalid.costs.status, 'error')
-  assert.equal(laborInvalid.projectRanking.status, 'error')
+  assert.equal(laborInvalid.laborOperations.data.labor.status, 'ready')
+  assert.equal(laborInvalid.costs.status, 'ready')
+  assert.equal(laborInvalid.projectRanking.status, 'ready')
   assert.equal(laborInvalid.inventoryOperations.status, 'ready')
 
   const inventoryInvalid = buildExecutiveDashboardReadModel(input({
@@ -1119,6 +1297,209 @@ test('invalid monetary contributors fail closed without suppressing independent 
   assert.equal(toolInvalid.toolOperations.status, 'error')
   assert.equal(toolInvalid.inventoryOperations.status, 'ready')
   assert.equal(toolInvalid.costs.status, 'ready')
+})
+
+test('selected project validation ignores invalid contributors explicitly bound to another project', () => {
+  const base = sourceFixture()
+  const cases = [
+    {
+      name: 'purchase',
+      sources: {
+        purchaseAccrual: ready([...base.purchaseAccrual.data, {
+          purchaseId: 'PO-P2-INVALID', projectId: 'P2', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+        }]),
+      },
+      blocks: ['purchaseOperations', 'costs', 'projectRanking'],
+    },
+    {
+      name: 'payment linked through purchase',
+      sources: {
+        purchaseAccrual: ready([...base.purchaseAccrual.data, {
+          purchaseId: 'PO-P2', projectId: 'P2', purchaseDate: '2026-07-15',
+          purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: 10,
+        }]),
+        purchasePayments: ready([...base.purchasePayments.data, {
+          paymentId: 'PP-P2-INVALID', purchaseId: 'PO-P2', paymentDate: '2026-07-15',
+          paymentDateSource: 'recorded', jpyAmount: 0.5,
+        }]),
+      },
+      blocks: ['purchaseOperations', 'cashFlow', 'costs', 'projectRanking'],
+    },
+    {
+      name: 'receipt',
+      sources: { receipts: ready([...base.receipts.data, {
+        receiptId: 'R-P2-INVALID', projectId: 'P2', receivedDate: '2026-07-15',
+        taxInclusiveAmount: -1, statusCode: 'active',
+      }]) },
+      blocks: ['cashFlow', 'purchaseOperations', 'costs'],
+    },
+    {
+      name: 'project cost',
+      sources: { projectCosts: ready([...base.projectCosts.data, {
+        costRecordId: 'PC-P2-INVALID', projectId: 'P2', date: '2026-07-15',
+        costType: '外包费', amount: -1,
+      }]) },
+      blocks: ['costs', 'projectRanking', 'purchaseOperations'],
+    },
+    {
+      name: 'fuel',
+      sources: { fuel: ready([...base.fuel.data, {
+        fuelRecordId: 'F-P2-INVALID', projectId: 'P2', fuelDate: '2026-07-15',
+        fuelDateSource: 'recorded', paymentMethod: '现金', paymentMethodSource: 'recorded',
+        allocateToProject: true, fuelAmount: -1,
+      }]) },
+      blocks: ['cashFlow', 'costs', 'vehicleOperations'],
+    },
+    {
+      name: 'inventory',
+      sources: { inventoryItems: ready([...base.inventoryItems.data, {
+        inventoryId: 'I-P2-INVALID', projectId: 'P2', currentStatus: '库存不足', totalCost: -1,
+      }]) },
+      blocks: ['inventoryOperations', 'toolOperations', 'costs'],
+    },
+    {
+      name: 'tool responsibility',
+      sources: { toolResponsibilityRecords: ready([...base.toolResponsibilityRecords.data, {
+        responsibilityRecordId: 'RESP-P2-INVALID', toolId: 'T1', projectId: 'P2',
+        compensationStatus: '未赔偿', compensationAmount: -1,
+      }]) },
+      blocks: ['toolOperations', 'inventoryOperations', 'costs'],
+    },
+  ]
+
+  for (const item of cases) {
+    const model = buildExecutiveDashboardReadModel(input({
+      sources: sourceFixture(item.sources),
+    }))
+    for (const block of item.blocks) assert.equal(model[block].status, 'ready', `${item.name}:${block}`)
+  }
+
+  const sameProject = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      receipts: ready([...base.receipts.data, {
+        receiptId: 'R-P1-INVALID', projectId: 'P1', receivedDate: '2026-07-15',
+        taxInclusiveAmount: -1, statusCode: 'active',
+      }]),
+      projectCosts: ready([...base.projectCosts.data, {
+        costRecordId: 'PC-P1-INVALID', projectId: 'P1', date: '2026-07-15',
+        costType: '外包费', amount: -1,
+      }]),
+    }),
+  }))
+  assert.equal(sameProject.cashFlow.status, 'error')
+  assert.equal(sameProject.costs.status, 'error')
+  assert.equal(sameProject.projectRanking.status, 'error')
+})
+
+test('window current and lifetime consumers validate only their exact date horizon', () => {
+  const base = sourceFixture()
+  const outsideReceipt = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ receipts: ready([...base.receipts.data, {
+      receiptId: 'R-OLD-INVALID', projectId: 'P1', receivedDate: '2020-01-15',
+      taxInclusiveAmount: -1, statusCode: 'active',
+    }]) }),
+  }))
+  assert.equal(outsideReceipt.cashFlow.status, 'ready')
+  assert.deepEqual(outsideReceipt.cashFlow.data.series,
+    buildExecutiveDashboardReadModel(input()).cashFlow.data.series)
+
+  const insideReceipt = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ receipts: ready([...base.receipts.data, {
+      receiptId: 'R-WINDOW-INVALID', projectId: 'P1', receivedDate: '2026-01-15',
+      taxInclusiveAmount: -1, statusCode: 'active',
+    }]) }),
+  }))
+  assert.equal(insideReceipt.cashFlow.status, 'error')
+
+  const ambiguousReceiptDate = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ receipts: ready([...base.receipts.data, {
+      receiptId: 'R-DATE-INVALID', projectId: 'P1', receivedDate: 'not-a-date',
+      taxInclusiveAmount: 1, statusCode: 'active',
+    }]) }),
+  }))
+  assert.equal(ambiguousReceiptDate.cashFlow.status, 'error')
+
+  const invalidPrimaryUsageDate = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ vehicleUsage: ready([...base.vehicleUsage.data, {
+      usageId: 'VU-DATE-INVALID', vehicleId: 'V1', projectId: 'P1',
+      usageDate: 'not-a-date', date: '2026-07-15', dailyMileage: 1,
+    }]) }),
+  }))
+  assert.equal(invalidPrimaryUsageDate.vehicleOperations.status, 'error')
+
+  const historicalCost = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ projectCosts: ready([...base.projectCosts.data, {
+      costRecordId: 'PC-OLD-INVALID', projectId: 'P1', date: '2020-01-15',
+      costType: '外包费', amount: -1,
+    }]) }),
+  }))
+  assert.equal(historicalCost.costs.status, 'ready')
+  assert.equal(historicalCost.projectRanking.status, 'error')
+  assert.equal(historicalCost.projectRows.status, 'error')
+
+  const historicalFuel = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ fuel: ready([...base.fuel.data, {
+      fuelRecordId: 'F-OLD-INVALID', projectId: 'P1', fuelDate: '2020-01-15',
+      fuelDateSource: 'recorded', paymentMethod: '现金', paymentMethodSource: 'recorded',
+      allocateToProject: true, fuelAmount: -1,
+    }]) }),
+  }))
+  assert.equal(historicalFuel.cashFlow.status, 'ready')
+  assert.equal(historicalFuel.vehicleOperations.status, 'ready')
+  assert.equal(historicalFuel.costs.status, 'ready')
+  assert.equal(historicalFuel.projectRanking.status, 'error')
+
+  const historicalPurchase = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ purchaseAccrual: ready([...base.purchaseAccrual.data, {
+      purchaseId: 'PO-OLD-INVALID', projectId: 'P1', purchaseDate: '2020-01-15',
+      purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: -1,
+    }]) }),
+  }))
+  assert.equal(historicalPurchase.purchaseOperations.status, 'error')
+  assert.equal(historicalPurchase.costs.status, 'ready')
+  assert.equal(historicalPurchase.projectRanking.status, 'error')
+})
+
+test('labor validation separates selected project current window and lifetime scopes', () => {
+  const monthlyFor = (projectId) => laborWindow().monthly.map((row) => row.month === '2026-07'
+    ? { ...row, projectLaborById: { ...row.projectLaborById, [projectId]: -1 } }
+    : row)
+  const lifetimeFor = (projectId) => ({
+    ...laborWindow().projectLaborLifetimeById,
+    [projectId]: -1,
+  })
+
+  const otherCurrent = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ laborWindow: ready(laborWindow({ monthly: monthlyFor('P2') })) }),
+  }))
+  assert.equal(otherCurrent.costs.status, 'ready')
+  assert.equal(otherCurrent.laborOperations.data.labor.status, 'ready')
+  assert.equal(otherCurrent.projectRanking.status, 'ready')
+
+  const selectedCurrent = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({ laborWindow: ready(laborWindow({ monthly: monthlyFor('P1') })) }),
+  }))
+  assert.equal(selectedCurrent.costs.status, 'error')
+  assert.equal(selectedCurrent.laborOperations.data.labor.status, 'error')
+  assert.equal(selectedCurrent.projectRanking.status, 'ready')
+
+  const otherLifetime = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      laborWindow: ready(laborWindow({ projectLaborLifetimeById: lifetimeFor('P2') })),
+    }),
+  }))
+  assert.equal(otherLifetime.costs.status, 'ready')
+  assert.equal(otherLifetime.projectRanking.status, 'ready')
+
+  const selectedLifetime = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      laborWindow: ready(laborWindow({ projectLaborLifetimeById: lifetimeFor('P1') })),
+    }),
+  }))
+  assert.equal(selectedLifetime.costs.status, 'ready')
+  assert.equal(selectedLifetime.laborOperations.data.labor.status, 'ready')
+  assert.equal(selectedLifetime.projectRanking.status, 'error')
 })
 
 test('source arrays require exact dense canonical indexes and reject expanded or accessor entries', () => {

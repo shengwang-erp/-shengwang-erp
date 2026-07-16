@@ -335,7 +335,7 @@ function safeAdd(total, value) {
 
 function isInactive(row) {
   if (row?.deleted === true || row?.isDeleted === true) return true
-  return ['statusCode', 'recordStatus', 'purchaseStatus'].some((field) => {
+  return ['status', 'statusCode', 'recordStatus', 'purchaseStatus', 'receiptStatus'].some((field) => {
     const value = row?.[field]
     return typeof value === 'string' && INACTIVE_VALUES.has(value.toLowerCase())
   })
@@ -446,11 +446,17 @@ function rowsForScope(rows, scopeIds, projectId) {
   })
 }
 
-function dateInMonth(row, fields, month) {
+function recordMonth(row, fields) {
   for (const field of fields) {
-    if (monthOfDate(row?.[field]) === month) return true
+    const value = row?.[field]
+    if (value === undefined || value === null || value === '') continue
+    return monthOfDate(value) || null
   }
-  return false
+  return null
+}
+
+function dateInMonth(row, fields, month) {
+  return recordMonth(row, fields) === month
 }
 
 function recordId(row, fields) {
@@ -458,25 +464,37 @@ function recordId(row, fields) {
   return ''
 }
 
-function sanitizeMoneyRows(rows, {
-  source, idFields, amountField, allowMissingAmount = false,
-}) {
+function prepareRows(rows, { source, idFields }) {
   const output = []
   const anomalies = []
   const seen = new Set()
-  let aggregate = 0
-  let blocking = false
   rows.forEach((row, index) => {
+    if (isPlainRecord(row) && isInactive(row)) return
     const id = isPlainRecord(row) ? recordId(row, idFields) : ''
     if (!id || seen.has(id)) {
-      anomalies.push({ source, code: seen.has(id) ? 'duplicate_record' : 'invalid_record', recordId: id || `row-${index + 1}` })
+      anomalies.push({
+        source,
+        code: seen.has(id) ? 'duplicate_record' : 'invalid_record',
+        recordId: id || `row-${index + 1}`,
+        projectId: isPlainRecord(row) && safeIdentifier(row.projectId) ? row.projectId : '',
+      })
       return
     }
     seen.add(id)
-    if (isInactive(row)) {
-      output.push(row)
-      return
-    }
+    output.push(row)
+  })
+  return { rows: output, anomalies }
+}
+
+function validateMoneyRows(rows, {
+  source, amountField, allowMissingAmount = false, groupBy = () => 'all',
+}) {
+  const output = []
+  const anomalies = []
+  const aggregates = new Map()
+  let blocking = false
+  for (const row of rows) {
+    const id = recordId(row, []) || ''
     const rawAmount = row[amountField]
     const amount = safeYen(rawAmount)
     const missingAllowed = allowMissingAmount &&
@@ -484,44 +502,111 @@ function sanitizeMoneyRows(rows, {
     if (amount === null && !missingAllowed) {
       anomalies.push({ source, code: 'invalid_amount', recordId: id })
       blocking = true
-      return
+      continue
     }
     if (amount !== null) {
+      const group = groupBy(row)
+      const aggregate = aggregates.get(group) || 0
       const next = safeAdd(aggregate, amount)
       if (next === null) {
         anomalies.push({ source, code: 'amount_overflow', recordId: id })
         blocking = true
-        return
+        continue
       }
-      aggregate = next
+      aggregates.set(group, next)
     }
     output.push(row)
-  })
+  }
   return { rows: output, anomalies, blocking }
 }
 
-function laborMoneyIsBlocking(value) {
-  let salaryAggregate = 0
+function datedRows(rows, { source, dateFields, months = null }) {
+  const output = []
+  const anomalies = []
+  let blocking = false
+  for (const row of rows) {
+    const month = recordMonth(row, dateFields)
+    if (!month) {
+      anomalies.push({ source, code: 'invalid_date', recordId: '' })
+      blocking = true
+      continue
+    }
+    if (months === null || months.has(month)) output.push(row)
+  }
+  return { rows: output, anomalies, blocking }
+}
+
+function validateDatedMoneyRows(prepared, {
+  source, amountField, dateFields, months = null, allowMissingAmount = false,
+}) {
+  const dated = datedRows(prepared.rows, { source, dateFields, months })
+  const money = validateMoneyRows(dated.rows, {
+    source,
+    amountField,
+    allowMissingAmount,
+    groupBy: months === null
+      ? () => 'all'
+      : (row) => recordMonth(row, dateFields) || '',
+  })
+  return {
+    rows: money.rows,
+    anomalies: [...prepared.anomalies, ...dated.anomalies, ...money.anomalies],
+    blocking: dated.blocking || money.blocking,
+  }
+}
+
+function validateCurrentMoneyRows(prepared, options) {
+  const money = validateMoneyRows(prepared.rows, options)
+  return {
+    rows: money.rows,
+    anomalies: [...prepared.anomalies, ...money.anomalies],
+    blocking: money.blocking,
+  }
+}
+
+function laborScopeProjectIds(projects, filters) {
+  return filters.projectId === 'all' && filters.projectStatus === 'all'
+    ? null
+    : new Set(projects.map((project) => project.projectId))
+}
+
+function laborMonthlyMoneyIsBlocking(value, projects, filters, months) {
+  const projectIds = laborScopeProjectIds(projects, filters)
   for (const row of value.monthly) {
+    if (!months.has(row.month)) continue
     if (row.status !== 'ready') continue
-    const salary = safeYen(row.salaryTotal)
-    const projectTotal = safeYen(row.projectLaborTotal)
     const pending = safeYen(row.pendingCount)
-    if (salary === null || projectTotal === null || pending === null) return true
-    const nextSalary = safeAdd(salaryAggregate, salary)
-    if (nextSalary === null) return true
-    salaryAggregate = nextSalary
+    if (pending === null) return true
     let mapTotal = 0
-    for (const amount of Object.values(row.projectLaborById)) {
+    const amounts = projectIds === null
+      ? Object.values(row.projectLaborById)
+      : [...projectIds].map((projectId) => row.projectLaborById[projectId] ?? 0)
+    for (const rawAmount of amounts) {
+      const amount = safeYen(rawAmount)
+      if (amount === null) return true
       const next = safeAdd(mapTotal, amount)
       if (next === null) return true
       mapTotal = next
     }
-    if (mapTotal !== projectTotal) return true
+    if (projectIds === null) {
+      const salary = safeYen(row.salaryTotal)
+      const projectTotal = safeYen(row.projectLaborTotal)
+      if (salary === null || projectTotal === null || mapTotal !== projectTotal) return true
+    }
   }
+  return false
+}
+
+function laborLifetimeMoneyIsBlocking(value, projects, filters) {
   if (value.lifetimeStatus === 'ready') {
+    const projectIds = laborScopeProjectIds(projects, filters)
+    const amounts = projectIds === null
+      ? Object.values(value.projectLaborLifetimeById)
+      : [...projectIds].map((projectId) => value.projectLaborLifetimeById[projectId] ?? 0)
     let lifetimeTotal = 0
-    for (const amount of Object.values(value.projectLaborLifetimeById)) {
+    for (const rawAmount of amounts) {
+      const amount = safeYen(rawAmount)
+      if (amount === null) return true
       const next = safeAdd(lifetimeTotal, amount)
       if (next === null) return true
       lifetimeTotal = next
@@ -731,23 +816,35 @@ function scopedLaborWindow(value, projects, filters) {
   const monthly = value.monthly.map((row) => {
     const projectLaborById = {}
     let projectLaborTotal = 0
+    let invalidAmount = false
     for (const projectId of ids) {
-      const amount = safeYen(row?.projectLaborById?.[projectId]) || 0
+      const rawAmount = row?.projectLaborById?.[projectId]
+      const amount = rawAmount === undefined ? 0 : safeYen(rawAmount)
+      if (amount === null) {
+        projectLaborById[projectId] = rawAmount
+        invalidAmount = true
+        continue
+      }
       const next = safeAdd(projectLaborTotal, amount)
-      if (next === null) throw new TypeError('scoped labor overflow')
+      if (next === null) {
+        invalidAmount = true
+        continue
+      }
       projectLaborTotal = next
       projectLaborById[projectId] = amount
     }
     return {
       ...row,
-      salaryTotal: projectLaborTotal,
-      projectLaborTotal,
+      salaryTotal: invalidAmount ? null : projectLaborTotal,
+      projectLaborTotal: invalidAmount ? null : projectLaborTotal,
       projectLaborById,
     }
   })
   const projectLaborLifetimeById = {}
   for (const projectId of ids) {
-    projectLaborLifetimeById[projectId] = value.projectLaborLifetimeById?.[projectId] ?? 0
+    const rawAmount = value.projectLaborLifetimeById?.[projectId]
+    const amount = rawAmount === undefined ? 0 : safeYen(rawAmount)
+    projectLaborLifetimeById[projectId] = amount === null ? rawAmount : amount
   }
   return {
     monthly,
@@ -816,91 +913,238 @@ export function buildExecutiveDashboardReadModel(input) {
     ? buildContractMap(states.contractRevenue.data, allProjects, contractAnomalies)
     : new Map()
 
-  const purchaseSanitized = states.purchaseAccrual.status === 'ready'
-    ? sanitizeMoneyRows(states.purchaseAccrual.data, {
-        source: 'purchaseAccrual', idFields: ['purchaseId'], amountField: 'totalCost',
+  const emptyPrepared = { rows: [], anomalies: [] }
+  const emptyValidated = { rows: [], anomalies: [], blocking: false }
+  const purchasePrepared = states.purchaseAccrual.status === 'ready'
+    ? prepareRows(states.purchaseAccrual.data, {
+        source: 'purchaseAccrual', idFields: ['purchaseId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const paymentSanitized = states.purchasePayments.status === 'ready'
-    ? sanitizeMoneyRows(states.purchasePayments.data, {
-        source: 'purchasePayments', idFields: ['paymentId'], amountField: 'jpyAmount',
+    : emptyPrepared
+  const inactivePurchaseIds = new Set(states.purchaseAccrual.status === 'ready'
+    ? states.purchaseAccrual.data
+        .filter((row) => isInactive(row))
+        .map((row) => row.purchaseId)
+        .filter(safeIdentifier)
+    : [])
+  const paymentPrepared = states.purchasePayments.status === 'ready'
+    ? prepareRows(states.purchasePayments.data.filter((row) =>
+        !inactivePurchaseIds.has(row.purchaseId)), {
+        source: 'purchasePayments', idFields: ['paymentId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const receiptSanitized = states.receipts.status === 'ready'
-    ? sanitizeMoneyRows(states.receipts.data, {
-        source: 'receipts', idFields: ['receiptId'], amountField: 'taxInclusiveAmount',
+    : emptyPrepared
+  const receiptPrepared = states.receipts.status === 'ready'
+    ? prepareRows(states.receipts.data, {
+        source: 'receipts', idFields: ['receiptId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const projectCostSanitized = states.projectCosts.status === 'ready'
-    ? sanitizeMoneyRows(states.projectCosts.data, {
-        source: 'projectCosts', idFields: ['costRecordId'], amountField: 'amount',
+    : emptyPrepared
+  const projectCostPrepared = states.projectCosts.status === 'ready'
+    ? prepareRows(states.projectCosts.data, {
+        source: 'projectCosts', idFields: ['costRecordId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const operatingSanitized = states.operatingExpenses.status === 'ready'
-    ? sanitizeMoneyRows(states.operatingExpenses.data, {
+    : emptyPrepared
+  const operatingPrepared = states.operatingExpenses.status === 'ready'
+    ? prepareRows(states.operatingExpenses.data, {
         source: 'operatingExpenses',
-        idFields: ['operatingExpenseId', 'expenseRecordId'], amountField: 'amount',
+        idFields: ['operatingExpenseId', 'expenseRecordId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const fuelSanitized = states.fuel.status === 'ready'
-    ? sanitizeMoneyRows(states.fuel.data, {
-        source: 'fuel', idFields: ['fuelRecordId'], amountField: 'fuelAmount',
+    : emptyPrepared
+  const fuelPrepared = states.fuel.status === 'ready'
+    ? prepareRows(states.fuel.data, {
+        source: 'fuel', idFields: ['fuelRecordId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const vehicleExpenseSanitized = states.vehicleExpenses.status === 'ready'
-    ? sanitizeMoneyRows(states.vehicleExpenses.data, {
-        source: 'vehicleExpenses', idFields: ['vehicleExpenseId'], amountField: 'amount',
+    : emptyPrepared
+  const vehicleExpensePrepared = states.vehicleExpenses.status === 'ready'
+    ? prepareRows(states.vehicleExpenses.data, {
+        source: 'vehicleExpenses', idFields: ['vehicleExpenseId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const vehicleIssueSanitized = states.vehicleIssues.status === 'ready'
-    ? sanitizeMoneyRows(states.vehicleIssues.data, {
-        source: 'vehicleIssues', idFields: ['issueId'], amountField: 'repairCost',
+    : emptyPrepared
+  const vehicleIssuePrepared = states.vehicleIssues.status === 'ready'
+    ? prepareRows(states.vehicleIssues.data, {
+        source: 'vehicleIssues', idFields: ['issueId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const vehicleUsageSanitized = states.vehicleUsage.status === 'ready'
-    ? sanitizeMoneyRows(states.vehicleUsage.data, {
-        source: 'vehicleUsage', idFields: ['usageId'], amountField: 'dailyMileage',
+    : emptyPrepared
+  const vehicleUsagePrepared = states.vehicleUsage.status === 'ready'
+    ? prepareRows(states.vehicleUsage.data, {
+        source: 'vehicleUsage', idFields: ['usageId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const inventorySanitized = states.inventoryItems.status === 'ready'
-    ? sanitizeMoneyRows(states.inventoryItems.data, {
-        source: 'inventoryItems', idFields: ['inventoryId', 'itemId'], amountField: 'totalCost',
+    : emptyPrepared
+  const inventoryPrepared = states.inventoryItems.status === 'ready'
+    ? prepareRows(states.inventoryItems.data, {
+        source: 'inventoryItems', idFields: ['inventoryId', 'itemId'],
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const responsibilitySanitized = states.toolResponsibilityRecords.status === 'ready'
-    ? sanitizeMoneyRows(states.toolResponsibilityRecords.data.filter((row) =>
-        row.compensationStatus === '未赔偿' && !isInactive(row)), {
+    : emptyPrepared
+  const responsibilityPrepared = states.toolResponsibilityRecords.status === 'ready'
+    ? prepareRows(states.toolResponsibilityRecords.data.filter((row) =>
+        row.compensationStatus === '未赔偿'), {
         source: 'toolResponsibilityRecords',
         idFields: ['responsibilityId', 'responsibilityRecordId'],
-        amountField: 'compensationAmount',
       })
-    : { rows: [], anomalies: [], blocking: false }
-  const laborMoneyBlocking = states.laborWindow.status === 'ready' &&
-    laborMoneyIsBlocking(states.laborWindow.data)
-  const scopedPurchases = rowsForScope(purchaseSanitized.rows, scopeIds, filters.projectId)
-  const scopedProjectCosts = rowsForScope(
-    projectCostSanitized.rows,
-    scopeIds,
-    filters.projectId,
-  )
-  const scopedOperating = rowsForScope(
-    operatingSanitized.rows,
-    scopeIds,
-    filters.projectId,
-  )
-  const scopedFuel = rowsForScope(
-    fuelSanitized.rows, scopeIds, filters.projectId,
-  )
-  const scopedVehicleExpenses = rowsForScope(
-    vehicleExpenseSanitized.rows,
-    scopeIds,
-    filters.projectId,
-  )
-  const scopedVehicleIssues = rowsForScope(
-    vehicleIssueSanitized.rows,
-    scopeIds,
-    filters.projectId,
-  )
+    : emptyPrepared
+
+  const scopePrepared = (prepared) => ({
+    rows: rowsForScope(prepared.rows, scopeIds, filters.projectId),
+    anomalies: prepared.anomalies.filter((issue) => {
+      if (!issue.projectId) return true
+      if (filters.projectId !== 'all') return issue.projectId === filters.projectId
+      return scopeIds.has(issue.projectId)
+    }),
+  })
+  const scopedPurchasePrepared = scopePrepared(purchasePrepared)
+  const purchasesById = new Map(purchasePrepared.rows.map((row) => [row.purchaseId, row]))
+  const scopedPaymentPrepared = {
+    rows: paymentPrepared.rows.filter((row) => {
+      const purchase = purchasesById.get(row.purchaseId)
+      if (purchase) return !purchase.projectId || scopeIds.has(purchase.projectId)
+      return filters.projectId === 'all' && filters.projectStatus === 'all'
+    }),
+    anomalies: paymentPrepared.anomalies,
+  }
+  const scopedReceiptPrepared = scopePrepared(receiptPrepared)
+  const scopedProjectCostPrepared = scopePrepared(projectCostPrepared)
+  const scopedOperatingPrepared = scopePrepared(operatingPrepared)
+  const scopedFuelPrepared = scopePrepared(fuelPrepared)
+  const scopedVehicleExpensePrepared = scopePrepared(vehicleExpensePrepared)
+  const scopedVehicleIssuePrepared = scopePrepared(vehicleIssuePrepared)
+  const scopedVehicleUsagePrepared = scopePrepared(vehicleUsagePrepared)
+  const scopedInventoryPrepared = scopePrepared(inventoryPrepared)
+  const scopedResponsibilityPrepared = scopePrepared(responsibilityPrepared)
+  const windowMonths = new Set(months)
+  const selectedMonths = new Set([selectedMonth])
+
+  const purchaseSanitized = states.purchaseAccrual.status === 'ready'
+    ? validateDatedMoneyRows(scopedPurchasePrepared, {
+        source: 'purchaseAccrual', amountField: 'totalCost', dateFields: ['purchaseDate'],
+      })
+    : emptyValidated
+  const purchaseWindow = states.purchaseAccrual.status === 'ready'
+    ? validateDatedMoneyRows(scopedPurchasePrepared, {
+        source: 'purchaseAccrual', amountField: 'totalCost', dateFields: ['purchaseDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const paymentSanitized = states.purchasePayments.status === 'ready'
+    ? validateDatedMoneyRows(scopedPaymentPrepared, {
+        source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
+      })
+    : emptyValidated
+  const paymentWindow = states.purchasePayments.status === 'ready'
+    ? validateDatedMoneyRows(scopedPaymentPrepared, {
+        source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const receiptSanitized = states.receipts.status === 'ready'
+    ? validateDatedMoneyRows(scopedReceiptPrepared, {
+        source: 'receipts', amountField: 'taxInclusiveAmount', dateFields: ['receivedDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const projectCostSanitized = states.projectCosts.status === 'ready'
+    ? validateDatedMoneyRows(scopedProjectCostPrepared, {
+        source: 'projectCosts', amountField: 'amount', dateFields: ['date'],
+      })
+    : emptyValidated
+  const projectCostWindow = states.projectCosts.status === 'ready'
+    ? validateDatedMoneyRows(scopedProjectCostPrepared, {
+        source: 'projectCosts', amountField: 'amount', dateFields: ['date'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const operatingSanitized = states.operatingExpenses.status === 'ready'
+    ? validateDatedMoneyRows(scopedOperatingPrepared, {
+        source: 'operatingExpenses', amountField: 'amount', dateFields: ['date'],
+      })
+    : emptyValidated
+  const operatingWindow = states.operatingExpenses.status === 'ready'
+    ? validateDatedMoneyRows(scopedOperatingPrepared, {
+        source: 'operatingExpenses', amountField: 'amount', dateFields: ['date'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const fuelSanitized = states.fuel.status === 'ready'
+    ? validateDatedMoneyRows(scopedFuelPrepared, {
+        source: 'fuel', amountField: 'fuelAmount', dateFields: ['fuelDate'],
+      })
+    : emptyValidated
+  const fuelWindow = states.fuel.status === 'ready'
+    ? validateDatedMoneyRows(scopedFuelPrepared, {
+        source: 'fuel', amountField: 'fuelAmount', dateFields: ['fuelDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const fuelMonth = states.fuel.status === 'ready'
+    ? validateDatedMoneyRows(scopedFuelPrepared, {
+        source: 'fuel', amountField: 'fuelAmount', dateFields: ['fuelDate'],
+        months: selectedMonths,
+      })
+    : emptyValidated
+  const vehicleExpenseSanitized = states.vehicleExpenses.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleExpensePrepared, {
+        source: 'vehicleExpenses', amountField: 'amount', dateFields: ['expenseDate'],
+      })
+    : emptyValidated
+  const vehicleExpenseWindow = states.vehicleExpenses.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleExpensePrepared, {
+        source: 'vehicleExpenses', amountField: 'amount', dateFields: ['expenseDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const vehicleExpenseMonth = states.vehicleExpenses.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleExpensePrepared, {
+        source: 'vehicleExpenses', amountField: 'amount', dateFields: ['expenseDate'],
+        months: selectedMonths,
+      })
+    : emptyValidated
+  const vehicleIssueSanitized = states.vehicleIssues.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleIssuePrepared, {
+        source: 'vehicleIssues', amountField: 'repairCost', dateFields: ['issueDate'],
+      })
+    : emptyValidated
+  const vehicleIssueWindow = states.vehicleIssues.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleIssuePrepared, {
+        source: 'vehicleIssues', amountField: 'repairCost', dateFields: ['issueDate'],
+        months: windowMonths,
+      })
+    : emptyValidated
+  const vehicleIssueMonth = states.vehicleIssues.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleIssuePrepared, {
+        source: 'vehicleIssues', amountField: 'repairCost', dateFields: ['issueDate'],
+        months: selectedMonths,
+      })
+    : emptyValidated
+  const vehicleUsageSanitized = states.vehicleUsage.status === 'ready'
+    ? validateDatedMoneyRows(scopedVehicleUsagePrepared, {
+        source: 'vehicleUsage', amountField: 'dailyMileage', dateFields: ['usageDate', 'date'],
+        months: selectedMonths,
+      })
+    : emptyValidated
+  const inventorySanitized = states.inventoryItems.status === 'ready'
+    ? validateCurrentMoneyRows(scopedInventoryPrepared, {
+        source: 'inventoryItems', amountField: 'totalCost',
+      })
+    : emptyValidated
+  const responsibilitySanitized = states.toolResponsibilityRecords.status === 'ready'
+    ? validateCurrentMoneyRows(scopedResponsibilityPrepared, {
+        source: 'toolResponsibilityRecords', amountField: 'compensationAmount',
+      })
+    : emptyValidated
+
+  const laborWindowBlocking = states.laborWindow.status === 'ready' &&
+    laborMonthlyMoneyIsBlocking(
+      states.laborWindow.data, filteredProjects, filters, windowMonths,
+    )
+  const laborCurrentBlocking = states.laborWindow.status === 'ready' &&
+    laborMonthlyMoneyIsBlocking(
+      states.laborWindow.data, filteredProjects, filters, selectedMonths,
+    )
+  const laborLifetimeBlocking = states.laborWindow.status === 'ready' &&
+    laborLifetimeMoneyIsBlocking(states.laborWindow.data, filteredProjects, filters)
+  const scopedPurchases = purchaseSanitized.rows
+  const scopedProjectCosts = projectCostSanitized.rows
+  const scopedOperating = operatingSanitized.rows
+  const scopedFuel = fuelSanitized.rows
+  const scopedVehicleExpenses = vehicleExpenseSanitized.rows
+  const scopedVehicleIssues = vehicleIssueSanitized.rows
 
   const contractAmountAccess = access.contracts.view && access.contracts.amounts
   const completeCostAccess = Object.values(access.costCategories).every(Boolean) &&
@@ -911,15 +1155,17 @@ export function buildExecutiveDashboardReadModel(input) {
   const dashboardCostAccess = completeCostAccess && access.profit.view
   const dashboardProfitAccess = dashboardCostAccess && contractAmountAccess
   const costSourceBlock = blockResolution(states, COST_REQUIRED)
-  const costContributorBlocking = laborMoneyBlocking || purchaseSanitized.blocking ||
+  const costWindowBlocking = laborWindowBlocking || purchaseWindow.blocking ||
+    projectCostWindow.blocking || operatingWindow.blocking || fuelWindow.blocking ||
+    vehicleExpenseWindow.blocking || vehicleIssueWindow.blocking
+  const financialCostBlocking = laborLifetimeBlocking || purchaseSanitized.blocking ||
     projectCostSanitized.blocking || operatingSanitized.blocking || fuelSanitized.blocking ||
     vehicleExpenseSanitized.blocking || vehicleIssueSanitized.blocking
   let costModel = null
   let costModelError = ''
+  let financialCostModelError = ''
   if (dashboardCostAccess && !costSourceBlock) {
-    if (costContributorBlocking) {
-      costModelError = '成本金额不完整或超出安全范围，未发布部分合计。'
-    } else try {
+    try {
       const laborForScope = scopedLaborWindow(states.laborWindow.data, filteredProjects, filters)
       const domainProjectId = filters.projectId !== 'all' && scopeIds.has(filters.projectId)
         ? filters.projectId
@@ -937,12 +1183,19 @@ export function buildExecutiveDashboardReadModel(input) {
         manualProjectCosts: scopedProjectCosts,
         operatingExpenses: scopedOperating,
       })
-      const hasUnsafeAggregate = costModel.selectedComposition.total === null ||
+      const hasUnsafeWindowAggregate = costModel.selectedComposition.total === null
+      const hasUnsafeLifetimeAggregate =
         costModel.anomalies.some((issue) =>
           typeof issue.code === 'string' && issue.code.includes('overflow'))
-      if (hasUnsafeAggregate) costModelError = '成本金额不完整或超出安全范围，未发布部分合计。'
+      if (costWindowBlocking || hasUnsafeWindowAggregate) {
+        costModelError = '成本金额不完整或超出安全范围，未发布部分合计。'
+      }
+      if (financialCostBlocking || hasUnsafeLifetimeAggregate) {
+        financialCostModelError = '成本金额不完整或超出安全范围，未发布部分合计。'
+      }
     } catch {
       costModelError = '成本来源格式无效，未发布部分成本。'
+      financialCostModelError = costModelError
     }
   }
 
@@ -1023,12 +1276,12 @@ export function buildExecutiveDashboardReadModel(input) {
     profitAggregate = {
       status: financialSourceBlock.status, value: null, message: financialSourceBlock.message,
     }
-  } else if (!lifetimeReady || !costModel || costModelError || pendingCostResult.blocking) {
+  } else if (!lifetimeReady || !costModel || financialCostModelError || pendingCostResult.blocking) {
     const message = !lifetimeReady
       ? '当前累计人工快照不完整，未发布累计成本与利润。'
       : pendingCostResult.blocking
         ? '待确认成本累计超出安全范围，未发布部分累计成本与利润。'
-        : costModelError
+        : financialCostModelError
     projectRanking = errorBlock(FINANCIAL_REQUIRED, message)
     projectRows = errorBlock(FINANCIAL_REQUIRED, message)
     profitAggregate = { status: 'error', value: null, message }
@@ -1195,24 +1448,64 @@ export function buildExecutiveDashboardReadModel(input) {
   const cashPurchaseAllowed = access.purchase.accrual && access.purchase.payments
   const cashVehicleAllowed = access.vehicle.view && access.vehicle.amounts
   if (cashIncomeAllowed) cashRequired.push('receipts')
-  if (cashPurchaseAllowed) cashRequired.push('purchaseAccrual', 'purchasePayments')
+  if (cashPurchaseAllowed) cashRequired.push('purchasePayments')
   if (cashVehicleAllowed) cashRequired.push('fuel', 'vehicleExpenses')
   const cashContributorBlocking =
     (cashIncomeAllowed && receiptSanitized.blocking) ||
-    (cashPurchaseAllowed && (purchaseSanitized.blocking || paymentSanitized.blocking)) ||
-    (cashVehicleAllowed && (fuelSanitized.blocking || vehicleExpenseSanitized.blocking))
+    (cashPurchaseAllowed && paymentWindow.blocking) ||
+    (cashVehicleAllowed && (fuelWindow.blocking || vehicleExpenseWindow.blocking))
   let cashFlow
   if (cashRequired.length === 0) cashFlow = forbiddenBlock([])
   else {
     const blocked = blockResolution(states, cashRequired)
     if (blocked) cashFlow = blocked
-    else if (cashContributorBlocking || (cashPurchaseAllowed && !purchaseAccounting)) {
+    else if (cashContributorBlocking) {
       cashFlow = errorBlock(
         cashRequired, '现金金额不完整或超出安全范围，未发布部分合计。',
       )
     }
     else {
       try {
+        let purchaseComponentStatus = cashPurchaseAllowed
+          ? states.purchaseAccrual.status
+          : 'forbidden'
+        let purchasePaymentRows = []
+        let purchaseAnomalies = []
+        if (cashPurchaseAllowed && states.purchaseAccrual.status === 'ready' &&
+            scopedPurchasePrepared.anomalies.some((issue) => issue.code === 'invalid_record')) {
+          purchaseComponentStatus = 'error'
+        } else if (cashPurchaseAllowed && states.purchaseAccrual.status === 'ready') {
+          try {
+            const paymentTotals = new Map()
+            for (const payment of paymentWindow.rows) {
+              const total = safeAdd(
+                paymentTotals.get(payment.purchaseId) || 0,
+                payment.jpyAmount,
+              )
+              if (total === null) throw new TypeError('purchase payment overflow')
+              paymentTotals.set(payment.purchaseId, total)
+            }
+            const linkPurchases = scopedPurchasePrepared.rows.map((row) => ({
+              ...row,
+              totalCost: safeYen(row.totalCost) ?? paymentTotals.get(row.purchaseId) ?? 0,
+              openingPaidAmount: 0,
+            }))
+            const cashPurchaseAccounting = buildPurchaseAccountingReadModel({
+              purchaseRecords: linkPurchases,
+              paymentRecords: paymentWindow.rows,
+              paymentState: { status: 'ready', data: paymentWindow.rows },
+              month: selectedMonth,
+              projectId: filters.projectId === 'all' || !scopeIds.has(filters.projectId)
+                ? ''
+                : filters.projectId,
+            })
+            purchasePaymentRows = cashPurchaseAccounting.cashPaymentRows
+            purchaseAnomalies = cashPurchaseAccounting.anomalies
+            purchaseComponentStatus = 'ready'
+          } catch {
+            purchaseComponentStatus = 'error'
+          }
+        }
         const raw = buildRecordedCashFlow({
           months,
           projectId: filters.projectId !== 'all' && scopeIds.has(filters.projectId)
@@ -1220,11 +1513,11 @@ export function buildExecutiveDashboardReadModel(input) {
             : 'all',
           activeProjectIds: filteredProjects.map((project) => project.projectId),
           receipts: cashIncomeAllowed
-            ? rowsForScope(receiptSanitized.rows, scopeIds, filters.projectId)
+            ? receiptSanitized.rows
             : [],
-          purchasePaymentRows: cashPurchaseAllowed ? purchaseAccounting.cashPaymentRows : [],
-          fuelRecords: cashVehicleAllowed ? scopedFuel : [],
-          vehicleExpenseRecords: cashVehicleAllowed ? scopedVehicleExpenses : [],
+          purchasePaymentRows: purchaseComponentStatus === 'ready' ? purchasePaymentRows : [],
+          fuelRecords: cashVehicleAllowed ? fuelWindow.rows : [],
+          vehicleExpenseRecords: cashVehicleAllowed ? vehicleExpenseWindow.rows : [],
           laborWindow: internalEmptyLaborWindow(),
           operatingExpenses: [],
           manualProjectCosts: [],
@@ -1232,21 +1525,35 @@ export function buildExecutiveDashboardReadModel(input) {
         })
         const unsafeCash = raw.series.some((row) =>
           (cashIncomeAllowed && safeYen(row.income) === null) ||
-          (cashPurchaseAllowed && safeYen(row.purchaseOutflow) === null) ||
+          (purchaseComponentStatus === 'ready' && safeYen(row.purchaseOutflow) === null) ||
           (cashVehicleAllowed && safeYen(row.vehicleOutflow) === null) ||
-          (cashPurchaseAllowed && cashVehicleAllowed && safeYen(row.totalOutflow) === null),
+          (purchaseComponentStatus === 'ready' && cashVehicleAllowed &&
+            safeYen(row.totalOutflow) === null),
         ) || raw.anomalies.some((issue) =>
           typeof issue.code === 'string' &&
           (issue.code.includes('overflow') || issue.code.includes('invalid_amount')),
         )
         if (unsafeCash) throw new TypeError('unsafe cash aggregate')
+        const incomeStatus = cashIncomeAllowed ? 'ready' : 'forbidden'
+        const vehicleStatus = cashVehicleAllowed ? 'ready' : 'forbidden'
+        const outflowStatus = purchaseComponentStatus === 'ready' && vehicleStatus === 'ready'
+          ? 'ready'
+          : purchaseComponentStatus !== 'ready'
+            ? purchaseComponentStatus
+            : vehicleStatus
+        const netStatus = incomeStatus === 'ready' && outflowStatus === 'ready'
+          ? 'ready'
+          : incomeStatus !== 'ready'
+            ? incomeStatus
+            : outflowStatus
         const series = raw.series.map((row) => {
-          const outflowComplete = cashPurchaseAllowed && cashVehicleAllowed
           const income = cashIncomeAllowed ? row.income : null
-          const purchaseOutflow = cashPurchaseAllowed ? row.purchaseOutflow : null
+          const purchaseOutflow = purchaseComponentStatus === 'ready'
+            ? row.purchaseOutflow
+            : null
           const vehicleOutflow = cashVehicleAllowed ? row.vehicleOutflow : null
-          const outflow = outflowComplete ? row.totalOutflow : null
-          const net = income !== null && outflow !== null ? safeSignedYen(income - outflow) : null
+          const outflow = outflowStatus === 'ready' ? row.totalOutflow : null
+          const net = netStatus === 'ready' ? safeSignedYen(income - outflow) : null
           return {
             month: row.month, income, outflow, net, purchaseOutflow, vehicleOutflow,
           }
@@ -1257,7 +1564,14 @@ export function buildExecutiveDashboardReadModel(input) {
           series,
           points: series.map(({ month, income, outflow, net }) => ({ month, income, outflow, net })),
           coverage: raw.coverage,
-          anomalies: raw.anomalies,
+          anomalies: [...purchaseAnomalies, ...raw.anomalies],
+          componentStatus: {
+            income: incomeStatus,
+            purchaseOutflow: purchaseComponentStatus,
+            vehicleOutflow: vehicleStatus,
+            outflow: outflowStatus,
+            net: netStatus,
+          },
           comparison: {
             income: comparison(selected.income, prior.income),
             outflow: comparison(selected.outflow, prior.outflow),
@@ -1276,6 +1590,7 @@ export function buildExecutiveDashboardReadModel(input) {
       ? mini(states.attendance.status, null)
       : (() => {
           const rows = rowsForScope(states.attendance.data, scopeIds, filters.projectId)
+            .filter((row) => !isInactive(row))
             .filter((row) => dateInMonth(row, ['workDate', 'attendanceDate', 'date'], selectedMonth))
           const statusCounts = Object.create(null)
           for (const row of rows) {
@@ -1289,7 +1604,7 @@ export function buildExecutiveDashboardReadModel(input) {
     ? mini('forbidden', null)
     : states.laborWindow.status !== 'ready'
       ? mini(states.laborWindow.status, null)
-      : access.labor.amounts && laborMoneyBlocking
+      : access.labor.amounts && laborCurrentBlocking
         ? mini('error', null)
       : (() => {
           const rows = states.laborWindow.data.monthly.filter((row) => row?.month === selectedMonth)
@@ -1337,8 +1652,8 @@ export function buildExecutiveDashboardReadModel(input) {
     const blocked = blockResolution(states, VEHICLE_REQUIRED)
     if (blocked) vehicleOperations = blocked
     else if (vehicleUsageSanitized.blocking || (access.vehicle.amounts && (
-      fuelSanitized.blocking || vehicleExpenseSanitized.blocking ||
-      vehicleIssueSanitized.blocking
+      fuelMonth.blocking || vehicleExpenseMonth.blocking ||
+      vehicleIssueMonth.blocking
     ))) {
       vehicleOperations = errorBlock(
         VEHICLE_REQUIRED, '车辆金额或里程不完整，未发布部分合计。',
@@ -1347,13 +1662,9 @@ export function buildExecutiveDashboardReadModel(input) {
     else {
       const usage = rowsForScope(vehicleUsageSanitized.rows, scopeIds, filters.projectId)
         .filter((row) => dateInMonth(row, ['usageDate', 'date'], selectedMonth))
-      const fuel = scopedFuel.filter((row) => dateInMonth(row, ['fuelDate'], selectedMonth))
-      const expenses = scopedVehicleExpenses.filter((row) =>
-        dateInMonth(row, ['expenseDate'], selectedMonth),
-      )
-      const issues = scopedVehicleIssues.filter((row) =>
-        dateInMonth(row, ['issueDate'], selectedMonth) && row.issueStatus !== '已处理',
-      )
+      const fuel = fuelMonth.rows
+      const expenses = vehicleExpenseMonth.rows
+      const issues = vehicleIssueMonth.rows.filter((row) => row.issueStatus !== '已处理')
       const opAnomalies = []
       const fee = access.vehicle.amounts
         ? safeAdd(
@@ -1407,7 +1718,7 @@ export function buildExecutiveDashboardReadModel(input) {
         statusCounts[status] = (statusCounts[status] || 0) + 1
       }
       const countMonth = (name, fields) => rowsForScope(states[name].data, scopeIds, filters.projectId)
-        .filter((row) => dateInMonth(row, fields, selectedMonth)).length
+        .filter((row) => !isInactive(row) && dateInMonth(row, fields, selectedMonth)).length
       inventoryOperations = readyBlock(states, INVENTORY_REQUIRED, {
         itemCount: items.length,
         statusCounts,
@@ -1439,10 +1750,11 @@ export function buildExecutiveDashboardReadModel(input) {
         const status = normalizedStatusKey(row.currentStatus || row.status, TOOL_STATUS_KEYS)
         statusCounts[status] = (statusCounts[status] || 0) + 1
       }
-      const returned = new Set(states.toolReturnRecords.data
+      const returned = new Set(states.toolReturnRecords.data.filter((row) => !isInactive(row))
         .map((row) => row.borrowRecordId).filter(safeIdentifier))
       const monthBorrows = rowsForScope(states.toolBorrowRecords.data, scopeIds, filters.projectId)
-        .filter((row) => dateInMonth(row, ['borrowDate', 'date'], selectedMonth))
+        .filter((row) => !isInactive(row) &&
+          dateInMonth(row, ['borrowDate', 'date'], selectedMonth))
       const openTemporary = monthBorrows.filter((row) =>
         row.borrowType === '临时借用' && safeIdentifier(row.borrowRecordId) &&
         !returned.has(row.borrowRecordId),
@@ -1501,7 +1813,7 @@ export function buildExecutiveDashboardReadModel(input) {
   }
   if (attendanceState.status === 'ready' && attendanceState.data.abnormalCount > 0) {
     const row = states.attendance.data.find((item) =>
-      rowsForScope([item], scopeIds, filters.projectId).length > 0 &&
+      !isInactive(item) && rowsForScope([item], scopeIds, filters.projectId).length > 0 &&
       dateInMonth(item, ['workDate', 'attendanceDate', 'date'], selectedMonth) &&
       !NORMAL_ATTENDANCE.has(item.status),
     )
@@ -1618,7 +1930,7 @@ export function buildExecutiveDashboardReadModel(input) {
         filters.projectId,
       )
     : []) {
-    if (row.compensationStatus !== '未赔偿') continue
+    if (isInactive(row) || row.compensationStatus !== '未赔偿') continue
     const id = recordId(row, ['responsibilityId', 'responsibilityRecordId'])
     if (!id) continue
     pushAlert({
