@@ -63,12 +63,24 @@ async function loadAppModule() {
             'export function normalizeFuelRecord(record) {',
           )
           .replace(
+            'function normalizeSubmittedFuelRecord(record) {',
+            'export function normalizeSubmittedFuelRecord(record) {',
+          )
+          .replace(
             'function normalizeVehicleExpenseRecord(record) {',
             'export function normalizeVehicleExpenseRecord(record) {',
           )
           .replace(
+            'function normalizeSubmittedVehicleExpenseRecord(record) {',
+            'export function normalizeSubmittedVehicleExpenseRecord(record) {',
+          )
+          .replace(
             'function normalizePurchasePaymentRecord(record) {',
             'export function normalizePurchasePaymentRecord(record) {',
+          )
+          .replace(
+            'function normalizeSubmittedPurchasePaymentRecord(record) {',
+            'export function normalizeSubmittedPurchasePaymentRecord(record) {',
           )
           .replace(
             'async function commitPurchasePaymentMutation({',
@@ -501,7 +513,7 @@ test('purchase payment mutation orchestration executes durable writes before loc
   })
 })
 
-test('App cash normalizers preserve provenance and submit handlers mark raw forms', () => {
+test('App cash normalizers preserve loaded provenance and fail closed for null records', () => {
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.normalizeFuelRecord)
   assert.ok(appLoaded.module?.normalizeVehicleExpenseRecord)
@@ -522,6 +534,9 @@ test('App cash normalizers preserve provenance and submit handlers mark raw form
     paymentAmount: 1000,
     currency: 'JPY',
   })
+  const safeFuel = appLoaded.module.normalizeFuelRecord(null)
+  const safeExpense = appLoaded.module.normalizeVehicleExpenseRecord(null)
+  const safePayment = appLoaded.module.normalizePurchasePaymentRecord(null)
 
   assert.equal(defaultedFuel.fuelDateSource, 'defaulted')
   assert.equal(defaultedFuel.paymentMethodSource, 'defaulted')
@@ -531,6 +546,60 @@ test('App cash normalizers preserve provenance and submit handlers mark raw form
   assert.equal(legacyExpense.paymentMethodLegacyInferred, true)
   assert.equal(legacyPayment.paymentDateSource, 'recorded')
   assert.equal(legacyPayment.paymentDateLegacyInferred, true)
+  assert.equal(safeFuel.fuelDateSource, 'defaulted')
+  assert.equal(safeFuel.paymentMethodSource, 'defaulted')
+  assert.equal(safeExpense.expenseDateSource, 'defaulted')
+  assert.equal(safeExpense.paymentMethodSource, 'defaulted')
+  assert.equal(safePayment.paymentDateSource, 'defaulted')
+})
+
+test('submitted cash record builders execute recorded and defaulted provenance', () => {
+  assert.ifError(appLoaded.error)
+  assert.ok(appLoaded.module?.normalizeSubmittedFuelRecord)
+  assert.ok(appLoaded.module?.normalizeSubmittedVehicleExpenseRecord)
+  assert.ok(appLoaded.module?.normalizeSubmittedPurchasePaymentRecord)
+
+  const purchase = appLoaded.module.normalizeSubmittedPurchasePaymentRecord({
+    paymentDate: ' 2026-07-14 ',
+    paymentAmount: 1000,
+    currency: 'JPY',
+  })
+  const invalidPurchase = appLoaded.module.normalizeSubmittedPurchasePaymentRecord({
+    paymentDate: '2026-02-31',
+    paymentAmount: 1000,
+    currency: 'JPY',
+  })
+  const fuel = appLoaded.module.normalizeSubmittedFuelRecord({
+    fuelDate: '2026-07-15',
+    paymentMethod: '现金',
+  })
+  const fuelWithoutMethod = appLoaded.module.normalizeSubmittedFuelRecord({
+    fuelDate: '2026-07-15',
+    paymentMethod: '',
+  })
+  const expense = appLoaded.module.normalizeSubmittedVehicleExpenseRecord({
+    expenseDate: '2026-07-16',
+    paymentMethod: '公司账户',
+  })
+  const expenseWithoutDate = appLoaded.module.normalizeSubmittedVehicleExpenseRecord({
+    expenseDate: '',
+    paymentMethod: '公司账户',
+  })
+
+  assert.equal(purchase.paymentDate, '2026-07-14')
+  assert.equal(purchase.paymentDateSource, 'recorded')
+  assert.equal(purchase.paymentDateLegacyInferred, false)
+  assert.equal(invalidPurchase.paymentDateSource, 'defaulted')
+  assert.equal(fuel.fuelDateSource, 'recorded')
+  assert.equal(fuel.paymentMethodSource, 'recorded')
+  assert.equal(fuel.fuelDateLegacyInferred, false)
+  assert.equal(fuel.paymentMethodLegacyInferred, false)
+  assert.equal(fuelWithoutMethod.paymentMethodSource, 'defaulted')
+  assert.equal(expense.expenseDateSource, 'recorded')
+  assert.equal(expense.paymentMethodSource, 'recorded')
+  assert.equal(expense.expenseDateLegacyInferred, false)
+  assert.equal(expense.paymentMethodLegacyInferred, false)
+  assert.equal(expenseWithoutDate.expenseDateSource, 'defaulted')
 
   const fuelSection = sliceBetween(
     appSource,
@@ -554,15 +623,15 @@ test('App cash normalizers preserve provenance and submit handlers mark raw form
   )
   assert.match(
     fuelSection,
-    /normalizeFuelRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, VEHICLE_FUEL_CASH_SCHEMA\)\)/u,
+    /const record = normalizeSubmittedFuelRecord\(\{/u,
   )
   assert.match(
     expenseSection,
-    /normalizeVehicleExpenseRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, VEHICLE_EXPENSE_CASH_SCHEMA\)\)/u,
+    /const record = normalizeSubmittedVehicleExpenseRecord\(\{/u,
   )
   assert.match(
     paymentSection,
-    /normalizePurchasePaymentRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, PURCHASE_PAYMENT_CASH_SCHEMA\)\)/u,
+    /const payment = normalizeSubmittedPurchasePaymentRecord\(\{/u,
   )
 })
 

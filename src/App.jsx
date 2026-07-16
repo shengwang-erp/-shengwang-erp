@@ -931,32 +931,36 @@ function normalizeFuelRecord(record) {
     defaultDate: todayValue(),
     defaultPaymentMethod: '现金',
   })
-  const allocateToProject = Boolean(record.allocateToProject)
+  const allocateToProject = Boolean(cashFact.allocateToProject)
 
   return {
-    fuelRecordId: record.fuelRecordId || '',
+    fuelRecordId: cashFact.fuelRecordId || '',
     fuelDate: cashFact.fuelDate,
     fuelDateSource: cashFact.fuelDateSource,
     fuelDateLegacyInferred: cashFact.fuelDateLegacyInferred,
-    vehicleId: record.vehicleId || '',
-    plateNumber: record.plateNumber || '',
-    vehicleName: record.vehicleName || '',
-    employeeId: record.employeeId || '',
-    employeeName: record.employeeName || '',
-    fuelStation: record.fuelStation || '',
-    fuelType: record.fuelType || '汽油',
-    fuelLiters: Number(record.fuelLiters) || 0,
-    fuelAmount: toAmount(record.fuelAmount),
-    mileageAtFuel: Number(record.mileageAtFuel) || 0,
+    vehicleId: cashFact.vehicleId || '',
+    plateNumber: cashFact.plateNumber || '',
+    vehicleName: cashFact.vehicleName || '',
+    employeeId: cashFact.employeeId || '',
+    employeeName: cashFact.employeeName || '',
+    fuelStation: cashFact.fuelStation || '',
+    fuelType: cashFact.fuelType || '汽油',
+    fuelLiters: Number(cashFact.fuelLiters) || 0,
+    fuelAmount: toAmount(cashFact.fuelAmount),
+    mileageAtFuel: Number(cashFact.mileageAtFuel) || 0,
     paymentMethod: cashFact.paymentMethod,
     paymentMethodSource: cashFact.paymentMethodSource,
     paymentMethodLegacyInferred: cashFact.paymentMethodLegacyInferred,
     allocateToProject,
-    projectId: allocateToProject ? record.projectId || '' : '',
-    projectName: allocateToProject ? record.projectName || '' : '',
-    remark: record.remark || '',
-    createdAt: record.createdAt || todayValue(),
+    projectId: allocateToProject ? cashFact.projectId || '' : '',
+    projectName: allocateToProject ? cashFact.projectName || '' : '',
+    remark: cashFact.remark || '',
+    createdAt: cashFact.createdAt || todayValue(),
   }
+}
+
+function normalizeSubmittedFuelRecord(record) {
+  return normalizeFuelRecord(markCashFactAsRecorded(record, VEHICLE_FUEL_CASH_SCHEMA))
 }
 
 function normalizeVehicleExpenseRecord(record) {
@@ -964,29 +968,35 @@ function normalizeVehicleExpenseRecord(record) {
     defaultDate: todayValue(),
     defaultPaymentMethod: '现金',
   })
-  const allocateToProject = Boolean(record.allocateToProject)
+  const allocateToProject = Boolean(cashFact.allocateToProject)
 
   return {
-    vehicleExpenseId: record.vehicleExpenseId || '',
+    vehicleExpenseId: cashFact.vehicleExpenseId || '',
     expenseDate: cashFact.expenseDate,
     expenseDateSource: cashFact.expenseDateSource,
     expenseDateLegacyInferred: cashFact.expenseDateLegacyInferred,
-    vehicleId: record.vehicleId || '',
-    plateNumber: record.plateNumber || '',
-    vehicleName: record.vehicleName || '',
-    expenseType: record.expenseType || '停车费',
-    amount: toAmount(record.amount),
+    vehicleId: cashFact.vehicleId || '',
+    plateNumber: cashFact.plateNumber || '',
+    vehicleName: cashFact.vehicleName || '',
+    expenseType: cashFact.expenseType || '停车费',
+    amount: toAmount(cashFact.amount),
     paymentMethod: cashFact.paymentMethod,
     paymentMethodSource: cashFact.paymentMethodSource,
     paymentMethodLegacyInferred: cashFact.paymentMethodLegacyInferred,
-    employeeId: record.employeeId || '',
-    employeeName: record.employeeName || '',
+    employeeId: cashFact.employeeId || '',
+    employeeName: cashFact.employeeName || '',
     allocateToProject,
-    projectId: allocateToProject ? record.projectId || '' : '',
-    projectName: allocateToProject ? record.projectName || '' : '',
-    remark: record.remark || '',
-    createdAt: record.createdAt || todayValue(),
+    projectId: allocateToProject ? cashFact.projectId || '' : '',
+    projectName: allocateToProject ? cashFact.projectName || '' : '',
+    remark: cashFact.remark || '',
+    createdAt: cashFact.createdAt || todayValue(),
   }
+}
+
+function normalizeSubmittedVehicleExpenseRecord(record) {
+  return normalizeVehicleExpenseRecord(
+    markCashFactAsRecorded(record, VEHICLE_EXPENSE_CASH_SCHEMA),
+  )
 }
 
 function normalizeVehicleIssueRecord(record) {
@@ -1262,25 +1272,31 @@ function normalizePurchasePaymentRecord(record) {
   const cashFact = normalizeCashFactProvenance(record, PURCHASE_PAYMENT_CASH_SCHEMA, {
     defaultDate: todayValue(),
   })
-  const paymentAmount = Number(record.paymentAmount) || 0
-  const exchangeRate = Number(record.exchangeRate) || 0.048
-  const jpyAmount = record.currency === 'CNY' ? paymentAmount / exchangeRate : paymentAmount
+  const paymentAmount = Number(cashFact.paymentAmount) || 0
+  const exchangeRate = Number(cashFact.exchangeRate) || 0.048
+  const jpyAmount = cashFact.currency === 'CNY' ? paymentAmount / exchangeRate : paymentAmount
 
   return {
-    paymentId: record.paymentId,
-    purchaseId: record.purchaseId || '',
+    paymentId: cashFact.paymentId,
+    purchaseId: cashFact.purchaseId || '',
     paymentDate: cashFact.paymentDate,
     paymentDateSource: cashFact.paymentDateSource,
     paymentDateLegacyInferred: cashFact.paymentDateLegacyInferred,
     paymentAmount,
-    currency: record.currency || 'JPY',
+    currency: cashFact.currency || 'JPY',
     exchangeRate,
     jpyAmount: Math.round(jpyAmount),
-    paymentMethod: record.paymentMethod || '银行转账',
-    employeeId: record.employeeId || '',
-    employeeName: record.employeeName || '',
-    remark: record.remark || '',
+    paymentMethod: cashFact.paymentMethod || '银行转账',
+    employeeId: cashFact.employeeId || '',
+    employeeName: cashFact.employeeName || '',
+    remark: cashFact.remark || '',
   }
+}
+
+function normalizeSubmittedPurchasePaymentRecord(record) {
+  return normalizePurchasePaymentRecord(
+    markCashFactAsRecorded(record, PURCHASE_PAYMENT_CASH_SCHEMA),
+  )
 }
 
 function normalizeStockInRecord(record) {
@@ -4242,7 +4258,7 @@ function VehicleFuelSection({ projects, employees, vehicles, records, setRecords
       return
     }
 
-    const record = normalizeFuelRecord(markCashFactAsRecorded({
+    const record = normalizeSubmittedFuelRecord({
       ...form,
       fuelRecordId: nextId('VF', records, 'fuelRecordId'),
       plateNumber: selectedVehicle.plateNumber,
@@ -4250,7 +4266,7 @@ function VehicleFuelSection({ projects, employees, vehicles, records, setRecords
       employeeName: selectedEmployee.name,
       projectName: form.allocateToProject ? selectedProject.projectName : '',
       createdAt: todayValue(),
-    }, VEHICLE_FUEL_CASH_SCHEMA))
+    })
     setRecords((current) => [record, ...current])
     setForm(createEmptyFuelForm())
   }
@@ -4310,7 +4326,7 @@ function VehicleExpenseSection({ projects, employees, vehicles, records, setReco
       return
     }
 
-    const record = normalizeVehicleExpenseRecord(markCashFactAsRecorded({
+    const record = normalizeSubmittedVehicleExpenseRecord({
       ...form,
       vehicleExpenseId: nextId('VE', records, 'vehicleExpenseId'),
       plateNumber: selectedVehicle.plateNumber,
@@ -4318,7 +4334,7 @@ function VehicleExpenseSection({ projects, employees, vehicles, records, setReco
       employeeName: selectedEmployee.name,
       projectName: form.allocateToProject ? selectedProject.projectName : '',
       createdAt: todayValue(),
-    }, VEHICLE_EXPENSE_CASH_SCHEMA))
+    })
     setRecords((current) => [record, ...current])
     setForm(createEmptyVehicleExpenseForm())
   }
@@ -6759,12 +6775,12 @@ function PurchasePaymentSection({
     }
 
     const personName = selectedEmployee?.name || form.externalPersonName.trim()
-    const payment = normalizePurchasePaymentRecord(markCashFactAsRecorded({
+    const payment = normalizeSubmittedPurchasePaymentRecord({
       ...form,
       paymentId: nextId('PP', records, 'paymentId'),
       employeeId: selectedEmployee?.employeeId || '',
       employeeName: personName,
-    }, PURCHASE_PAYMENT_CASH_SCHEMA))
+    })
 
     if (!canApplyPurchasePayment(selectedPurchase, records, payment.jpyAmount)) {
       window.alert('付款金额必须为有效正数，且不能超过当前未付款金额')

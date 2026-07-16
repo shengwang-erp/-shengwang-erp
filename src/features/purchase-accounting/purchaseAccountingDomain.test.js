@@ -87,6 +87,22 @@ test('defaulted payment dates affect payable balance but never month cash', () =
   assert.deepEqual(model.cashPaymentRows, [])
 })
 
+test('trimmed recorded payment dates contribute to their canonical month', () => {
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-07',
+    purchaseRecords: [purchase({ totalCost: 1000 })],
+    paymentRecords: [payment({
+      paymentDate: ' 2026-07-16 ',
+      paymentDateSource: 'recorded',
+      jpyAmount: 400,
+    })],
+  })
+
+  assert.equal(model.paymentRows[0].paymentDate, '2026-07-16')
+  assert.equal(model.cashPaymentRows[0].paymentDate, '2026-07-16')
+  assert.equal(model.summary.monthPaymentCash, 400)
+})
+
 test('keeps project-use purchases without a project in company cost and reports allocation health', () => {
   const readModel = buildPurchaseAccountingReadModel({
     purchaseRecords: [purchase({

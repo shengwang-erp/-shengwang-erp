@@ -31,16 +31,34 @@ function hasText(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function asPlainRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null ? value : {}
+}
+
 function validDate(value) {
   return monthOfDate(value) !== ''
 }
 
+function canonicalDate(value) {
+  return validDate(value) ? value.trim() : value
+}
+
 function resolveSource(record, valueField, sourceField, legacyField, validator) {
-  if (record?.[sourceField] === RECORDED || record?.[sourceField] === DEFAULTED) {
+  if (Object.hasOwn(record, sourceField)) {
+    const source = record[sourceField]
+    if (source !== RECORDED && source !== DEFAULTED) {
+      return {
+        source: DEFAULTED,
+        legacyInferred: record?.[legacyField] === true,
+      }
+    }
+
     return {
-      source: record[sourceField] === RECORDED && !validator(record?.[valueField])
+      source: source === RECORDED && !validator(record?.[valueField])
         ? DEFAULTED
-        : record[sourceField],
+        : source,
       legacyInferred: record?.[legacyField] === true,
     }
   }
@@ -54,25 +72,27 @@ export function normalizeCashFactProvenance(record = {}, schema, {
   defaultDate = '',
   defaultPaymentMethod = '',
 } = {}) {
+  const safeRecord = asPlainRecord(record)
   const date = resolveSource(
-    record,
+    safeRecord,
     schema.dateField,
     schema.dateSourceField,
     schema.dateLegacyField,
     validDate,
   )
+  const dateValue = hasText(safeRecord[schema.dateField])
+    ? safeRecord[schema.dateField]
+    : defaultDate
   const next = {
-    ...record,
-    [schema.dateField]: hasText(record[schema.dateField])
-      ? record[schema.dateField]
-      : defaultDate,
+    ...safeRecord,
+    [schema.dateField]: canonicalDate(dateValue),
     [schema.dateSourceField]: date.source,
     [schema.dateLegacyField]: date.legacyInferred,
   }
 
   if (schema.methodField) {
     const method = resolveSource(
-      record,
+      safeRecord,
       schema.methodField,
       schema.methodSourceField,
       schema.methodLegacyField,
@@ -80,8 +100,8 @@ export function normalizeCashFactProvenance(record = {}, schema, {
     )
     next[schema.methodSourceField] = method.source
     next[schema.methodLegacyField] = method.legacyInferred
-    next[schema.methodField] = hasText(record[schema.methodField])
-      ? record[schema.methodField]
+    next[schema.methodField] = hasText(safeRecord[schema.methodField])
+      ? safeRecord[schema.methodField]
       : defaultPaymentMethod
   }
 
@@ -89,33 +109,38 @@ export function normalizeCashFactProvenance(record = {}, schema, {
 }
 
 export function markCashFactAsRecorded(record = {}, schema) {
+  const safeRecord = asPlainRecord(record)
   const next = {
-    ...record,
-    [schema.dateSourceField]: validDate(record[schema.dateField]) ? RECORDED : DEFAULTED,
-    [schema.dateLegacyField]: record[schema.dateLegacyField] === true,
+    ...safeRecord,
+    [schema.dateField]: canonicalDate(safeRecord[schema.dateField]),
+    [schema.dateSourceField]: validDate(safeRecord[schema.dateField]) ? RECORDED : DEFAULTED,
+    [schema.dateLegacyField]: safeRecord[schema.dateLegacyField] === true,
   }
 
   if (schema.methodField) {
-    next[schema.methodSourceField] = hasText(record[schema.methodField])
+    next[schema.methodSourceField] = hasText(safeRecord[schema.methodField])
       ? RECORDED
       : DEFAULTED
-    next[schema.methodLegacyField] = record[schema.methodLegacyField] === true
+    next[schema.methodLegacyField] = safeRecord[schema.methodLegacyField] === true
   }
 
   return next
 }
 
 export function isRecordedCashFact(record = {}, schema) {
-  if (record[schema.dateSourceField] !== RECORDED || !validDate(record[schema.dateField])) {
+  const safeRecord = asPlainRecord(record)
+  if (safeRecord[schema.dateSourceField] !== RECORDED ||
+      !validDate(safeRecord[schema.dateField])) {
     return false
   }
 
   return !schema.methodField || (
-    record[schema.methodSourceField] === RECORDED && hasText(record[schema.methodField])
+    safeRecord[schema.methodSourceField] === RECORDED && hasText(safeRecord[schema.methodField])
   )
 }
 
 export function isLegacyInferredCashFact(record = {}, schema) {
-  return record[schema.dateLegacyField] === true ||
-    Boolean(schema.methodLegacyField && record[schema.methodLegacyField] === true)
+  const safeRecord = asPlainRecord(record)
+  return safeRecord[schema.dateLegacyField] === true ||
+    Boolean(schema.methodLegacyField && safeRecord[schema.methodLegacyField] === true)
 }

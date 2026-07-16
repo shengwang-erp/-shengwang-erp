@@ -90,3 +90,93 @@ test('recorded metadata cannot make compatibility defaults cash eligible', () =>
   assert.equal(normalized.paymentMethodSource, 'defaulted')
   assert.equal(isRecordedCashFact(normalized, VEHICLE_FUEL_CASH_SCHEMA), false)
 })
+
+test('explicit invalid date-source metadata fails closed instead of legacy inference', () => {
+  for (const source of ['corrupt', null, undefined]) {
+    const normalized = normalizeCashFactProvenance({
+      paymentDate: '2026-07-12',
+      paymentDateSource: source,
+    }, PURCHASE_PAYMENT_CASH_SCHEMA)
+
+    assert.equal(normalized.paymentDateSource, 'defaulted')
+    assert.equal(normalized.paymentDateLegacyInferred, false)
+    assert.equal(isRecordedCashFact(normalized, PURCHASE_PAYMENT_CASH_SCHEMA), false)
+  }
+})
+
+test('explicit invalid vehicle-method source metadata fails closed', () => {
+  const normalized = normalizeCashFactProvenance({
+    fuelDate: '2026-07-12',
+    fuelDateSource: 'recorded',
+    paymentMethod: '现金',
+    paymentMethodSource: 'corrupt',
+  }, VEHICLE_FUEL_CASH_SCHEMA)
+
+  assert.equal(normalized.fuelDateSource, 'recorded')
+  assert.equal(normalized.paymentMethodSource, 'defaulted')
+  assert.equal(normalized.paymentMethodLegacyInferred, false)
+  assert.equal(isRecordedCashFact(normalized, VEHICLE_FUEL_CASH_SCHEMA), false)
+})
+
+function malformedRecords() {
+  const array = Object.assign([], {
+    paymentDate: '2026-07-12',
+    paymentDateSource: 'recorded',
+    paymentDateLegacyInferred: true,
+  })
+  const nonPlain = Object.assign(new Date('2026-07-12T00:00:00Z'), {
+    paymentDate: '2026-07-12',
+    paymentDateSource: 'recorded',
+    paymentDateLegacyInferred: true,
+  })
+  return [null, array, 'x', 42, nonPlain]
+}
+
+test('normalization coerces non-plain record inputs to an empty record', () => {
+  for (const record of malformedRecords()) {
+    const normalized = normalizeCashFactProvenance(
+      record,
+      PURCHASE_PAYMENT_CASH_SCHEMA,
+      { defaultDate: '2026-07-16' },
+    )
+
+    assert.equal(normalized.paymentDate, '2026-07-16')
+    assert.equal(normalized.paymentDateSource, 'defaulted')
+    assert.equal(normalized.paymentDateLegacyInferred, false)
+    assert.equal(Object.hasOwn(normalized, '0'), false)
+  }
+})
+
+test('explicit recording coerces non-plain record inputs to an empty record', () => {
+  for (const record of malformedRecords()) {
+    const marked = markCashFactAsRecorded(record, PURCHASE_PAYMENT_CASH_SCHEMA)
+
+    assert.equal(marked.paymentDate, undefined)
+    assert.equal(marked.paymentDateSource, 'defaulted')
+    assert.equal(marked.paymentDateLegacyInferred, false)
+    assert.equal(Object.hasOwn(marked, '0'), false)
+  }
+})
+
+test('cash-fact predicates fail closed for non-plain record inputs', () => {
+  for (const record of malformedRecords()) {
+    assert.equal(isRecordedCashFact(record, PURCHASE_PAYMENT_CASH_SCHEMA), false)
+    assert.equal(isLegacyInferredCashFact(record, PURCHASE_PAYMENT_CASH_SCHEMA), false)
+  }
+})
+
+test('accepted recorded dates are canonicalized to YYYY-MM-DD', () => {
+  const marked = markCashFactAsRecorded(
+    { paymentDate: ' 2026-07-12 ' },
+    PURCHASE_PAYMENT_CASH_SCHEMA,
+  )
+  const normalized = normalizeCashFactProvenance(
+    marked,
+    PURCHASE_PAYMENT_CASH_SCHEMA,
+  )
+
+  assert.equal(marked.paymentDate, '2026-07-12')
+  assert.equal(normalized.paymentDate, '2026-07-12')
+  assert.equal(normalized.paymentDateSource, 'recorded')
+  assert.equal(isRecordedCashFact(normalized, PURCHASE_PAYMENT_CASH_SCHEMA), true)
+})
