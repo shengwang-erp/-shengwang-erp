@@ -122,6 +122,39 @@ function deepFreeze(value) {
   return value
 }
 
+function snapshotDenseArray(value) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+  if (Object.getOwnPropertySymbols(value).length !== 0) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(value)
+  const lengthDescriptor = descriptors.length
+  const length = lengthDescriptor && Object.hasOwn(lengthDescriptor, 'value')
+    ? lengthDescriptor.value
+    : -1
+  if (!Number.isSafeInteger(length) || length < 0) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+
+  const keys = Object.keys(descriptors)
+  if (keys.length !== length + 1 || !Object.hasOwn(descriptors, 'length')) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+
+  const snapshot = new Array(length)
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[String(index)]
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      fail('PURCHASE_RESPONSE_INVALID')
+    }
+    snapshot[index] = descriptor.value
+  }
+  return snapshot
+}
+
 function supplierField(error, key) {
   if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
     return undefined
@@ -150,7 +183,7 @@ function validatePurchaseId(value, errorCode = 'PURCHASE_INPUT_INVALID') {
   return value
 }
 
-function cloneMutationPayload(record) {
+function cloneBoundMutationPayload(record, idField, expectedRecordKey) {
   let payload
   try {
     payload = cloneJson(record)
@@ -159,7 +192,8 @@ function cloneMutationPayload(record) {
     throw error
   }
   if (!isPlainObject(payload)) fail('PURCHASE_INPUT_INVALID')
-  validatePurchaseId(payload.purchaseId)
+  const recordKey = validatePurchaseId(payload[idField])
+  if (expectedRecordKey && recordKey !== expectedRecordKey) fail('PURCHASE_INPUT_INVALID')
   for (const field of CLIENT_AUDIT_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(payload, field)) fail('PURCHASE_INPUT_INVALID')
   }
@@ -171,7 +205,11 @@ function cloneMutationPayload(record) {
   return payload
 }
 
-function validateEnvelope(row, expectedRecordKey) {
+function cloneMutationPayload(record) {
+  return cloneBoundMutationPayload(record, 'purchaseId')
+}
+
+function validateBoundEnvelope(row, idField, expectedRecordKey) {
   if (!isPlainObject(row)) fail('PURCHASE_RESPONSE_INVALID')
   const recordKey = readOwnData(row, 'record_key')
   const payloadSource = readOwnData(row, 'payload')
@@ -183,12 +221,87 @@ function validateEnvelope(row, expectedRecordKey) {
   }
   const payload = cloneJson(payloadSource)
   if (!isPlainObject(payload)) fail('PURCHASE_RESPONSE_INVALID')
-  const purchaseId = readOwnData(payload, 'purchaseId')
-  validatePurchaseId(purchaseId, 'PURCHASE_RESPONSE_INVALID')
-  if (recordKey !== purchaseId || (expectedRecordKey && recordKey !== expectedRecordKey)) {
+  const payloadRecordKey = readOwnData(payload, idField)
+  validatePurchaseId(payloadRecordKey, 'PURCHASE_RESPONSE_INVALID')
+  if (recordKey !== payloadRecordKey || (expectedRecordKey && recordKey !== expectedRecordKey)) {
     fail('PURCHASE_RESPONSE_INVALID')
   }
   return payload
+}
+
+function validateEnvelope(row, expectedRecordKey) {
+  return validateBoundEnvelope(row, 'purchaseId', expectedRecordKey)
+}
+
+function cloneStockInCommitInput(input) {
+  let request
+  try {
+    request = cloneJson(input)
+  } catch (error) {
+    if (error instanceof PurchaseServiceError) fail('PURCHASE_INPUT_INVALID')
+    throw error
+  }
+  if (!isPlainObject(request)) fail('PURCHASE_INPUT_INVALID')
+  const expectedKeys = [
+    'purchaseRecordKey',
+    'purchasePatch',
+    'stockInRecordKey',
+    'stockInPayload',
+    'inventoryRecordKey',
+    'inventoryPayload',
+  ]
+  const keys = Object.keys(request)
+  if (keys.length !== expectedKeys.length ||
+      expectedKeys.some((key) => !Object.hasOwn(request, key))) {
+    fail('PURCHASE_INPUT_INVALID')
+  }
+  const purchaseRecordKey = validatePurchaseId(request.purchaseRecordKey)
+  const stockInRecordKey = validatePurchaseId(request.stockInRecordKey)
+  const inventoryRecordKey = validatePurchaseId(request.inventoryRecordKey)
+  const purchasePatch = cloneBoundMutationPayload(
+    request.purchasePatch, 'purchaseId', purchaseRecordKey,
+  )
+  const stockInPayload = cloneBoundMutationPayload(
+    request.stockInPayload, 'stockInId', stockInRecordKey,
+  )
+  const inventoryPayload = cloneBoundMutationPayload(
+    request.inventoryPayload, 'inventoryId', inventoryRecordKey,
+  )
+  if (stockInPayload.sourcePurchaseId !== purchaseRecordKey) {
+    fail('PURCHASE_INPUT_INVALID')
+  }
+  return {
+    purchaseRecordKey,
+    purchasePatch,
+    stockInRecordKey,
+    stockInPayload,
+    inventoryRecordKey,
+    inventoryPayload,
+  }
+}
+
+function validateStockInCommitResponse(data, request) {
+  if (!isPlainObject(data) || Object.getOwnPropertySymbols(data).length !== 0) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(data)
+  const expectedKeys = ['purchase', 'stock_in', 'inventory_item']
+  if (Object.keys(descriptors).length !== expectedKeys.length ||
+      expectedKeys.some((key) => !descriptors[key]?.enumerable ||
+        !Object.hasOwn(descriptors[key], 'value'))) {
+    fail('PURCHASE_RESPONSE_INVALID')
+  }
+  return deepFreeze({
+    purchase: validateBoundEnvelope(
+      descriptors.purchase.value, 'purchaseId', request.purchaseRecordKey,
+    ),
+    stockIn: validateBoundEnvelope(
+      descriptors.stock_in.value, 'stockInId', request.stockInRecordKey,
+    ),
+    inventoryItem: validateBoundEnvelope(
+      descriptors.inventory_item.value, 'inventoryId', request.inventoryRecordKey,
+    ),
+  })
 }
 
 const defaultPaymentAdapter = Object.freeze({
@@ -233,10 +346,11 @@ export function createPurchaseService(
 
   async function getList() {
     const data = await call('list_purchase_records_secure', {})
-    if (!Array.isArray(data) || Object.getPrototypeOf(data) !== Array.prototype) {
-      fail('PURCHASE_RESPONSE_INVALID')
+    const rows = snapshotDenseArray(data)
+    const records = new Array(rows.length)
+    for (let index = 0; index < rows.length; index += 1) {
+      records[index] = validateEnvelope(rows[index])
     }
-    const records = data.map((row) => validateEnvelope(row))
     return deepFreeze(records)
   }
 
@@ -272,6 +386,18 @@ export function createPurchaseService(
       const deletedId = await call('soft_delete_purchase_record_secure', { p_record_key: id })
       if (deletedId !== id) fail('PURCHASE_RESPONSE_INVALID')
       return deletedId
+    },
+    async commitStockIn(input) {
+      const request = cloneStockInCommitInput(input)
+      const data = await call('commit_purchase_stock_in_secure', {
+        p_purchase_record_key: request.purchaseRecordKey,
+        p_purchase_patch: request.purchasePatch,
+        p_stock_in_record_key: request.stockInRecordKey,
+        p_stock_in_payload: request.stockInPayload,
+        p_inventory_record_key: request.inventoryRecordKey,
+        p_inventory_payload: request.inventoryPayload,
+      })
+      return validateStockInCommitResponse(data, request)
     },
     async getPaymentList() {
       return paymentAdapter.getList(PAYMENT_STORAGE_KEY)

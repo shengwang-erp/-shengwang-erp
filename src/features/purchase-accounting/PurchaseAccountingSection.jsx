@@ -41,6 +41,21 @@ const ANOMALY_LABELS = {
   purchase_payment_cache_mismatch: '采购付款缓存与流水不一致',
 }
 
+const PAYMENT_SOURCE_LOADING = Object.freeze({ status: 'loading', data: null })
+
+function failClosedPaymentState(paymentState) {
+  if (paymentState === undefined) return PAYMENT_SOURCE_LOADING
+  if (paymentState === null || typeof paymentState !== 'object' || Array.isArray(paymentState)) {
+    return paymentState
+  }
+  const staleDescriptor = Object.getOwnPropertyDescriptor(paymentState, 'stale')
+  if (!staleDescriptor) return paymentState
+  if (!staleDescriptor.enumerable || !Object.hasOwn(staleDescriptor, 'value')) {
+    return PAYMENT_SOURCE_LOADING
+  }
+  return staleDescriptor.value === true ? PAYMENT_SOURCE_LOADING : paymentState
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : []
 }
@@ -101,17 +116,18 @@ export default function PurchaseAccountingSection({
   const [sourceFilter, setSourceFilter] = useState('')
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('')
 
+  const effectivePaymentState = failClosedPaymentState(paymentState)
   const readModel = useMemo(() => buildPurchaseAccountingReadModel({
     purchaseRecords,
     paymentRecords: purchasePaymentRecords,
-    paymentState,
+    paymentState: effectivePaymentState,
     month: monthFilter,
     projectId: projectFilter,
     source: sourceFilter,
   }), [
     purchaseRecords,
     purchasePaymentRecords,
-    paymentState,
+    effectivePaymentState,
     monthFilter,
     projectFilter,
     sourceFilter,

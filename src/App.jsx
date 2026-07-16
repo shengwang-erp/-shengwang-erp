@@ -3080,21 +3080,21 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const persistPurchasePaymentCache = (record) => localDemoMode
     ? Promise.resolve(record)
     : purchaseService.update(record.purchaseId, record)
-  const setStockInRecords = (nextRecords) => {
+  const setStockInRecords = (nextRecords, updateOptions = {}) => {
     setStoredStockInRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) => normalizeStockInRecord(record))
       const resolvedRecords =
         typeof nextRecords === 'function' ? nextRecords(normalizedCurrent) : nextRecords
       return resolvedRecords.map((record) => normalizeStockInRecord(record))
-    })
+    }, updateOptions)
   }
-  const setInventoryItems = (nextItems) => {
+  const setInventoryItems = (nextItems, updateOptions = {}) => {
     setStoredInventoryItems((currentItems) => {
       const normalizedCurrent = currentItems.map((item) => normalizeInventoryItem(item))
       const resolvedItems =
         typeof nextItems === 'function' ? nextItems(normalizedCurrent) : nextItems
       return resolvedItems.map((item) => normalizeInventoryItem(item))
-    })
+    }, updateOptions)
   }
   const setToolRecords = (nextRecords) => {
     setStoredToolRecords((currentRecords) => {
@@ -3472,6 +3472,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     return renderInDesktopShell(
       <DashboardPage
         projects={projectRevenueProjects}
+        access={dashboardAccess}
         employees={employees}
         records={recordGroups}
         projectCostRecords={projectCostRecords}
@@ -3581,6 +3582,8 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     return renderInDesktopShell(
       <AccountingCostPage
         access={accountingAccess}
+        vehicleAccess={canAccessView(currentUser, 'vehicle')}
+        sourceStates={dashboardSourceStates}
         projects={projects}
         employees={employees}
         salaryRecords={salaryRecords}
@@ -6074,6 +6077,8 @@ function ToolResponsibilityList({ records }) {
 
 export function AccountingCostPage({
   access,
+  vehicleAccess,
+  sourceStates,
   projects,
   employees,
   salaryRecords,
@@ -6179,6 +6184,8 @@ export function AccountingCostPage({
       {visibleSection === 'monthlySummary' && (
         <MonthlySummarySection
           access={resolvedAccess.monthlySummary}
+          vehicleAccess={vehicleAccess}
+          sourceStates={sourceStates}
           salaryRecords={salaryRecords}
           employees={employees}
           laborRecords={laborRecords}
@@ -6806,6 +6813,8 @@ function OperatingExpenseSection({ access, projects, employees, records, setReco
 
 export function MonthlySummarySection({
   access,
+  vehicleAccess = false,
+  sourceStates,
   salaryRecords,
   employees,
   laborRecords,
@@ -6828,9 +6837,49 @@ export function MonthlySummarySection({
     purchaseAccrual: true,
     purchasePayments: true,
   }
-  const laborAllocationInfo = resolvedAccess.salary
+  const resolveArraySource = (key, allowed) => {
+    if (!allowed) return { status: 'forbidden', data: null }
+    const state = sourceStates?.[key]
+    if (state?.stale === true) return { status: 'loading', data: null }
+    if (state?.status !== 'ready' || !Array.isArray(state.data)) {
+      return { status: state?.status || 'loading', data: null }
+    }
+    return { status: 'ready', data: state.data }
+  }
+  const combineStates = (states) => {
+    const status = ['forbidden', 'error', 'loading'].find((candidate) =>
+      states.some((state) => state.status === candidate)) || 'ready'
+    return { status, data: null }
+  }
+  const salaryState = resolveArraySource('salary', resolvedAccess.salary)
+  const projectCostState = resolveArraySource(
+    'projectCost', resolvedAccess.projectCost,
+  )
+  const operatingExpenseState = resolveArraySource(
+    'operatingExpense', resolvedAccess.operatingExpense,
+  )
+  const purchaseAccrualState = resolveArraySource(
+    'purchaseAccrual', resolvedAccess.purchaseAccrual,
+  )
+  const fuelState = resolveArraySource('fuel', vehicleAccess)
+  const vehicleExpenseState = resolveArraySource(
+    'vehicleExpense', vehicleAccess,
+  )
+  const vehicleIssueState = resolveArraySource(
+    'vehicleIssue', vehicleAccess,
+  )
+  const vehicleState = combineStates([fuelState, vehicleExpenseState, vehicleIssueState])
+  const blockingVisibleSource = [
+    salaryState,
+    projectCostState,
+    operatingExpenseState,
+    purchaseAccrualState,
+    vehicleState,
+  ].some((state) => state.status === 'loading' || state.status === 'error')
+
+  const laborAllocationInfo = salaryState.status === 'ready'
     ? getLaborAllocationInfo(
-        salaryRecords,
+        salaryState.data,
         employees,
         laborRecords,
         monthFilter,
@@ -6844,17 +6893,17 @@ export function MonthlySummarySection({
         isOverAllocated: false,
       }
   const totalSalary = laborAllocationInfo.salaryPaidTotal
-  const totalProjectCost = (resolvedAccess.projectCost ? projectCostRecords : [])
+  const totalProjectCost = (projectCostState.data || [])
     .filter((record) => monthFromDate(record.date) === monthFilter)
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const companyProjectCost = (resolvedAccess.projectCost ? projectCostRecords : [])
+  const companyProjectCost = (projectCostState.data || [])
     .filter((record) => monthFromDate(record.date) === monthFilter && record.costType !== '人工费')
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const totalOperatingExpense = (resolvedAccess.operatingExpense ? operatingExpenseRecords : [])
+  const totalOperatingExpense = (operatingExpenseState.data || [])
     .filter((record) => monthFromDate(record.date) === monthFilter)
     .reduce((total, record) => total + toAmount(record.amount), 0)
   const purchaseAccounting = buildPurchaseAccountingReadModel({
-    purchaseRecords: resolvedAccess.purchaseAccrual ? purchaseRecords : [],
+    purchaseRecords: purchaseAccrualState.data || [],
     paymentRecords: resolvedAccess.purchasePayments ? purchasePaymentRecords : [],
     paymentState: resolvedAccess.purchasePayments
       ? purchasePaymentState
@@ -6871,11 +6920,12 @@ export function MonthlySummarySection({
       .reduce((total, record) => total + toAmount(record.totalCost), 0)
   const unpaidPurchaseCost = purchaseAccounting.summary.currentOutstanding
   const monthPaymentCash = purchaseAccounting.summary.monthPaymentCash
-  const monthlyFuelRecords = fuelRecords.filter((record) => monthFromDate(record.fuelDate) === monthFilter)
-  const monthlyVehicleExpenses = vehicleExpenseRecords.filter(
+  const monthlyFuelRecords = (fuelState.data || [])
+    .filter((record) => monthFromDate(record.fuelDate) === monthFilter)
+  const monthlyVehicleExpenses = (vehicleExpenseState.data || []).filter(
     (record) => monthFromDate(record.expenseDate) === monthFilter,
   )
-  const monthlyVehicleIssues = vehicleIssueRecords.filter(
+  const monthlyVehicleIssues = (vehicleIssueState.data || []).filter(
     (record) => monthFromDate(record.issueDate) === monthFilter,
   )
   const totalFuelCost = monthlyFuelRecords.reduce((total, record) => total + toAmount(record.fuelAmount), 0)
@@ -6892,15 +6942,25 @@ export function MonthlySummarySection({
     monthlyVehicleExpenses.reduce((total, record) => total + toAmount(record.amount), 0) +
     monthlyVehicleIssues.reduce((total, record) => total + toAmount(record.repairCost), 0)
   const completeTotalVisible = resolvedAccess.salary && resolvedAccess.projectCost &&
-    resolvedAccess.operatingExpense && resolvedAccess.purchaseAccrual
-  const totalCost = completeTotalVisible
+    resolvedAccess.operatingExpense && resolvedAccess.purchaseAccrual && vehicleAccess
+  const companySourceState = completeTotalVisible
+    ? combineStates([
+        salaryState,
+        projectCostState,
+        operatingExpenseState,
+        purchaseAccrualState,
+        vehicleState,
+      ])
+    : { status: 'forbidden', data: null }
+  const totalCost = companySourceState.status === 'ready'
     ? totalSalary + companyProjectCost + totalOperatingExpense +
       totalPurchaseCost + totalVehicleCost
     : null
-  const companyTotal = completeTotalVisible
+  const companyTotal = companySourceState.status === 'ready'
     ? { status: 'ready', data: totalCost }
-    : { status: 'forbidden', data: null }
+    : { status: companySourceState.status, data: null }
   const purchasePaymentVisible = resolvedAccess.purchasePayments &&
+    purchasePaymentState?.stale !== true &&
     purchaseAccounting.currentPayable.status === 'ready'
 
   return (
@@ -6909,8 +6969,14 @@ export function MonthlySummarySection({
       <div className="filter-panel">
         <Field label="统计月份" type="month" value={monthFilter} onChange={onMonthFilterChange} />
       </div>
-      <div className="stats-grid">
-        {resolvedAccess.salary && (
+      {vehicleAccess && vehicleState.status === 'loading' && (
+        <EmptyState text="车辆成本数据正在加载" />
+      )}
+      {vehicleAccess && vehicleState.status === 'error' && (
+        <EmptyState text="车辆成本数据暂不可用" />
+      )}
+      {!blockingVisibleSource && <div className="stats-grid">
+        {salaryState.status === 'ready' && (
           <>
             <div className="stat-card money">
               <strong>{formatYen(totalSalary)}</strong>
@@ -6930,47 +6996,47 @@ export function MonthlySummarySection({
             </div>
           </>
         )}
-        {resolvedAccess.projectCost && (
+        {projectCostState.status === 'ready' && (
           <div className="stat-card money">
             <strong>{formatYen(totalProjectCost)}</strong>
             <span>项目成本记录合计</span>
           </div>
         )}
-        {resolvedAccess.operatingExpense && (
+        {operatingExpenseState.status === 'ready' && (
           <div className="stat-card money">
             <strong>{formatYen(totalOperatingExpense)}</strong>
             <span>经营费用合计</span>
           </div>
         )}
-        {resolvedAccess.purchaseAccrual && (
+        {purchaseAccrualState.status === 'ready' && (
           <div className="stat-card money">
             <strong>{formatYen(totalPurchaseCost)}</strong>
             <span>本月采购确认成本</span>
           </div>
         )}
-        <div className="stat-card money">
+        {vehicleState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(totalVehicleCost)}</strong>
           <span>车辆费用合计</span>
-        </div>
+        </div>}
         {companyTotal.status === 'ready' && (
           <div className="stat-card money">
             <strong>{formatYen(companyTotal.data)}</strong>
             <span>公司总成本</span>
           </div>
         )}
-        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
+        {purchaseAccrualState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('中国采购'))}</strong>
           <span>中国采购金额</span>
         </div>}
-        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
+        {purchaseAccrualState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('Amazon'))}</strong>
           <span>Amazon 采购金额</span>
         </div>}
-        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
+        {purchaseAccrualState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('Yahoo拍卖'))}</strong>
           <span>Yahoo拍卖采购金额</span>
         </div>}
-        {resolvedAccess.purchaseAccrual && <div className="stat-card money">
+        {purchaseAccrualState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(purchaseBySource('东鹏株式会社'))}</strong>
           <span>东鹏株式会社采购金额</span>
         </div>}
@@ -6982,25 +7048,25 @@ export function MonthlySummarySection({
           <strong>{formatYen(monthPaymentCash)}</strong>
           <span>本月采购付款现金流</span>
         </div>}
-        <div className="stat-card money">
+        {vehicleState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(totalFuelCost)}</strong>
           <span>加油费用</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {vehicleState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(totalParkingTollCost)}</strong>
           <span>停车/高速费用</span>
-        </div>
-        <div className="stat-card money">
+        </div>}
+        {vehicleState.status === 'ready' && <div className="stat-card money">
           <strong>{formatYen(totalVehicleMaintenanceCost)}</strong>
           <span>维修/保养/车检/保险</span>
-        </div>
-      </div>
-      <div className="empty-state cost-note">
+        </div>}
+      </div>}
+      {!blockingVisibleSource && <div className="empty-state cost-note">
         {completeTotalVisible
           ? '工资发放是公司实际支出；项目人工成本是工资向工程项目的分摊，不重复计入公司总成本。采购确认成本按采购日期计入公司总成本，采购付款现金流仅单独展示；请避免再手工重复录入同一笔采购费用。'
           : '已按当前账号可见的成本分类分别展示，不提供不完整的合计。'}
-      </div>
-      {resolvedAccess.salary && laborAllocationInfo.isOverAllocated && (
+      </div>}
+      {salaryState.status === 'ready' && laborAllocationInfo.isOverAllocated && (
         <div className="empty-state cost-note warning-note">
           项目人工分摊成本超过工资发放总额，请检查人工记录是否重复或工资标准是否错误。
         </div>
@@ -7100,11 +7166,16 @@ export function PurchaseManagementPage({
     stockIn: { view: true, create: true, update: true, delete: true },
     summary: { view: true },
   }
+  const paymentReady = resolvedAccess.payments.view &&
+    purchasePaymentState?.status === 'ready' &&
+    purchasePaymentState.stale !== true &&
+    Array.isArray(purchasePaymentState.data)
+  const readyPaymentRecords = paymentReady ? purchasePaymentState.data : []
   const sections = [
     ...(resolvedAccess.records.create ? [{ id: 'create', title: '新增采购' }] : []),
     ...(resolvedAccess.records.view ? [{ id: 'list', title: '采购列表' }] : []),
     ...(resolvedAccess.stockIn.view ? [{ id: 'stockIn', title: '到货入库' }] : []),
-    ...(resolvedAccess.payments.view ? [{ id: 'payment', title: '付款记录' }] : []),
+    ...(paymentReady ? [{ id: 'payment', title: '付款记录' }] : []),
     ...(resolvedAccess.summary.view ? [{ id: 'summary', title: '采购汇总' }] : []),
   ]
   const [section, setSection] = useState(() => sections[0]?.id || '')
@@ -7118,6 +7189,9 @@ export function PurchaseManagementPage({
   return (
     <PageShell title="采购管理" subtitle="国内・日本・关系单位" onBack={onBack}>
       {sections.length === 0 && <EmptyState text="当前账号无可用功能" />}
+      {resolvedAccess.payments.view && !paymentReady && (
+        <EmptyState text="当前付款数据不可用" />
+      )}
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
@@ -7138,7 +7212,7 @@ export function PurchaseManagementPage({
           records={purchaseRecords}
           setRecords={setPurchaseRecords}
           onCreate={onCreatePurchase}
-          canUpdatePayments={resolvedAccess.payments.update}
+          canUpdatePayments={paymentReady && resolvedAccess.payments.update}
         />
       )}
       {visibleSection === 'list' && (
@@ -7146,10 +7220,10 @@ export function PurchaseManagementPage({
           projects={projects}
           records={purchaseRecords}
           setRecords={setPurchaseRecords}
-          paymentRecords={purchasePaymentRecords}
+          paymentRecords={readyPaymentRecords}
           stockInRecords={stockInRecords}
           access={resolvedAccess.records}
-          paymentVisible={resolvedAccess.payments.view}
+          paymentVisible={paymentReady}
           onUpdate={onUpdatePurchase}
           onDelete={onDeletePurchase}
         />
@@ -7164,7 +7238,7 @@ export function PurchaseManagementPage({
           inventoryItems={inventoryItems}
           setInventoryItems={setInventoryItems}
           access={resolvedAccess.stockIn}
-          onUpdatePurchase={onUpdatePurchase}
+          onPersistenceError={onPersistenceError}
         />
       )}
       {visibleSection === 'payment' && (
@@ -7172,10 +7246,11 @@ export function PurchaseManagementPage({
           employees={employees}
           purchaseRecords={purchaseRecords}
           setPurchaseRecords={setPurchaseRecords}
-          records={purchasePaymentRecords}
+          records={readyPaymentRecords}
           setRecords={setPurchasePaymentRecords}
           onPersistenceError={onPersistenceError}
           access={resolvedAccess.payments}
+          paymentReady={paymentReady}
           persistPurchase={persistPurchasePaymentCache}
         />
       )}
@@ -7184,7 +7259,7 @@ export function PurchaseManagementPage({
           purchaseRecords={purchaseRecords}
           stockInRecords={stockInRecords}
           inventoryItems={inventoryItems}
-          paymentVisible={resolvedAccess.payments.view}
+          paymentVisible={paymentReady}
           paymentState={purchasePaymentState}
         />
       )}
@@ -7401,7 +7476,7 @@ function PurchaseListSection({
               stockInStatus={getPurchaseStockInStatus(record, stockInRecords)}
               showPayments={paymentVisible}
               canVoid={access.update}
-              canDelete={access.delete}
+              canDelete={access.delete && paymentVisible}
               onVoid={async () => {
                 const nextRecord = normalizePurchaseRecord({
                   ...record,
@@ -7414,8 +7489,10 @@ function PurchaseListSection({
                 ))
               }}
               onDelete={async () => {
-                const hasPayment = paymentVisible &&
-                  paymentRecords.some((item) => item.purchaseId === record.purchaseId)
+                if (!paymentVisible) return
+                const hasPayment = paymentRecords.some(
+                  (item) => item.purchaseId === record.purchaseId,
+                )
                 const hasStockIn = stockInRecords.some((item) => item.sourcePurchaseId === record.purchaseId)
                 if (hasPayment || hasStockIn) {
                   window.alert('该采购已有付款或入库记录，建议作废，不建议删除。')
@@ -7435,6 +7512,36 @@ function PurchaseListSection({
   )
 }
 
+async function commitPurchaseStockInMutation({
+  transactionInput,
+  persistTransaction,
+  nextPurchaseRecords,
+  nextStockInRecords,
+  nextInventoryItems,
+  setPurchaseRecords,
+  setStockInRecords,
+  setInventoryItems,
+  onPersistenceError,
+  demoMode,
+}) {
+  if (!demoMode) {
+    try {
+      await persistTransaction(transactionInput)
+    } catch (error) {
+      onPersistenceError?.(error)
+      return false
+    }
+  }
+
+  const stateUpdateOptions = demoMode
+    ? {}
+    : { stateOnly: true, syncLocal: true }
+  setPurchaseRecords(nextPurchaseRecords, stateUpdateOptions)
+  setStockInRecords(nextStockInRecords, stateUpdateOptions)
+  setInventoryItems(nextInventoryItems, stateUpdateOptions)
+  return true
+}
+
 function PurchaseStockInSection({
   access,
   employees,
@@ -7444,7 +7551,7 @@ function PurchaseStockInSection({
   setStockInRecords,
   inventoryItems,
   setInventoryItems,
-  onUpdatePurchase,
+  onPersistenceError,
 }) {
   const [form, setForm] = useState(createEmptyStockInForm)
   const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
@@ -7480,21 +7587,51 @@ function PurchaseStockInSection({
       employeeName: personName,
     })
 
-    setStockInRecords((currentRecords) => [stockIn, ...currentRecords])
-    setInventoryItems((currentItems) =>
-      mergeInventoryItem(currentItems, selectedPurchase, stockIn, inventoryItems),
-    )
-
     const nextStockIns = [stockIn, ...stockInRecords]
+    const nextInventoryItems = mergeInventoryItem(
+      inventoryItems, selectedPurchase, stockIn, inventoryItems,
+    )
+    const inventoryToSave = nextInventoryItems.find((item) => {
+      const previous = inventoryItems.find(
+        (candidate) => candidate.inventoryId === item.inventoryId,
+      )
+      return !previous || previous.quantity !== item.quantity ||
+        previous.totalCost !== item.totalCost ||
+        previous.averageCost !== item.averageCost ||
+        previous.updatedAt !== item.updatedAt
+    })
+    if (!inventoryToSave) {
+      onPersistenceError?.(new Error('库存合并结果无效'))
+      return
+    }
     const updatedPurchase = normalizePurchaseRecord({
       ...selectedPurchase,
       stockInStatus: getPurchaseStockInStatus(selectedPurchase, nextStockIns),
       updatedAt: todayValue(),
     })
-    if (onUpdatePurchase) await onUpdatePurchase(updatedPurchase)
-    else setPurchaseRecords((currentRecords) => currentRecords.map((record) =>
+    const nextPurchaseRecords = purchaseRecords.map((record) =>
       record.purchaseId === selectedPurchase.purchaseId ? updatedPurchase : record
-    ))
+    )
+    const committed = await commitPurchaseStockInMutation({
+      transactionInput: {
+        purchaseRecordKey: updatedPurchase.purchaseId,
+        purchasePatch: updatedPurchase,
+        stockInRecordKey: stockIn.stockInId,
+        stockInPayload: stockIn,
+        inventoryRecordKey: inventoryToSave.inventoryId,
+        inventoryPayload: inventoryToSave,
+      },
+      persistTransaction: (input) => purchaseService.commitStockIn(input),
+      nextPurchaseRecords,
+      nextStockInRecords: nextStockIns,
+      nextInventoryItems,
+      setPurchaseRecords,
+      setStockInRecords,
+      setInventoryItems,
+      onPersistenceError,
+      demoMode: localDemoMode,
+    })
+    if (!committed) return
     setForm(createEmptyStockInForm())
   }
 
@@ -7545,6 +7682,7 @@ function PurchaseStockInSection({
 }
 
 async function commitPurchasePaymentMutation({
+  paymentReady,
   purchaseToSave,
   persistPurchase,
   persistLedger,
@@ -7555,6 +7693,7 @@ async function commitPurchasePaymentMutation({
   onPersistenceError,
   demoMode,
 }) {
+  if (!paymentReady) return false
   if (!demoMode) {
     try {
       if (purchaseToSave) await persistPurchase(purchaseToSave)
@@ -7575,6 +7714,7 @@ async function commitPurchasePaymentMutation({
 
 function PurchasePaymentSection({
   access,
+  paymentReady,
   employees,
   purchaseRecords,
   setPurchaseRecords,
@@ -7596,7 +7736,7 @@ function PurchasePaymentSection({
 
   const handleSubmit = async (event) => {
     event.preventDefault()
-    if (!access.create) return
+    if (!paymentReady || !access.create) return
 
     if (!selectedPurchase) {
       window.alert('请选择采购记录')
@@ -7639,6 +7779,7 @@ function PurchasePaymentSection({
     )
 
     const committed = await commitPurchasePaymentMutation({
+      paymentReady,
       purchaseToSave,
       persistPurchase: (purchase) =>
         persistPurchase?.(purchase) || purchaseService.update(purchase.purchaseId, purchase),
@@ -7658,7 +7799,7 @@ function PurchasePaymentSection({
   return (
     <>
       <SectionTitle title="付款记录" note="支持分批付款" />
-      {access.create && <form className="form-panel" onSubmit={handleSubmit}>
+      {paymentReady && access.create && <form className="form-panel" onSubmit={handleSubmit}>
         <label className="field full-width">
           <span>采购记录</span>
           <select value={form.purchaseId} onChange={(event) => setForm({ ...form, purchaseId: event.target.value, currency: activePurchases.find((item) => item.purchaseId === event.target.value)?.currency || 'JPY' })}>
@@ -7693,8 +7834,8 @@ function PurchasePaymentSection({
         </div>
       </form>}
       <AccountingRecordList
-        canEdit={access.update}
-        canDelete={access.delete}
+        canEdit={paymentReady && access.update}
+        canDelete={paymentReady && access.delete}
         emptyText="暂无采购付款记录"
         records={records}
         idField="paymentId"
@@ -7708,6 +7849,7 @@ function PurchasePaymentSection({
         ]}
         onEdit={() => window.alert('付款记录暂不支持编辑，请作废采购或补充付款记录。')}
         onDelete={async (record) => {
+          if (!paymentReady) return
           if (window.confirm('确定删除这条付款记录吗？')) {
             const remainingPayments = records.filter(
               (item) => item.paymentId !== record.paymentId,
@@ -7729,6 +7871,7 @@ function PurchasePaymentSection({
             )
 
             await commitPurchasePaymentMutation({
+              paymentReady,
               purchaseToSave,
               persistPurchase: (purchase) =>
                 persistPurchase?.(purchase) || purchaseService.update(purchase.purchaseId, purchase),
@@ -8660,7 +8803,524 @@ function ToolDashboardDetail({
   )
 }
 
+function projectDashboardSource(sourceStates, key, allowed, { array = true } = {}) {
+  if (!allowed) return { status: 'forbidden', data: null }
+  const state = sourceStates?.[key]
+  if (state?.stale === true) return { status: 'loading', data: null }
+  if (state?.status !== 'ready') {
+    return { status: state?.status || 'loading', data: null }
+  }
+  if (array && !Array.isArray(state.data)) return { status: 'error', data: null }
+  return { status: 'ready', data: state.data }
+}
+
+function combineDashboardSources(states) {
+  const status = ['forbidden', 'error', 'loading'].find((candidate) =>
+    states.some((state) => state.status === candidate)) || 'ready'
+  return { status, data: null }
+}
+
+function buildReadyDashboardPurchaseAccounting({
+  purchaseRecords,
+  paymentRecords,
+  paymentState,
+  month,
+}) {
+  return buildPurchaseAccountingReadModel({
+    purchaseRecords,
+    paymentRecords,
+    paymentState,
+    month,
+  })
+}
+
 function DashboardPage({
+  access,
+  sourceStates,
+  bridgeStatusNotice,
+  laborAlertCount,
+  onBack,
+  ...untrustedProps
+}) {
+  const pageAllowed = access?.page === true
+  if (!pageAllowed) {
+    return (
+      <PageShell title="老板驾驶舱" subtitle="经营看板 · 利润统计" onBack={onBack}>
+        <EmptyState text="当前权限下暂无可显示的驾驶舱数据" />
+      </PageShell>
+    )
+  }
+
+  const projectDataAllowed = access.projectSnapshot || access.contracts?.view || access.profit?.view
+  const employeeDataAllowed = access.attendance?.identities || access.labor?.amounts
+  const laborDataAllowed = access.labor?.view || access.profit?.view
+  const purchaseDataAllowed = access.purchase?.accrual || access.profit?.view
+  const paymentDataAllowed = access.purchase?.payments || access.purchase?.payable ||
+    access.purchase?.anomalies
+  const vehicleDataAllowed = access.vehicle?.view || access.profit?.view
+  const inventoryDataAllowed = access.inventory?.view
+  const toolDataAllowed = access.tools?.view
+
+  const projectsState = projectDashboardSource(
+    sourceStates, 'projects', projectDataAllowed,
+  )
+  const contractRevenueState = projectDashboardSource(
+    sourceStates, 'contractRevenue', access.contracts?.view || access.profit?.view,
+    { array: false },
+  )
+  const employeesState = projectDashboardSource(
+    sourceStates, 'employees', employeeDataAllowed,
+  )
+  const salaryState = projectDashboardSource(
+    sourceStates, 'salary', access.labor?.amounts || access.profit?.view,
+  )
+  const projectCostState = projectDashboardSource(
+    sourceStates, 'projectCost', access.costCategories?.manualSupplement || access.profit?.view,
+  )
+  const operatingExpenseState = projectDashboardSource(
+    sourceStates, 'operatingExpense', access.costCategories?.operatingExpense || access.profit?.view,
+  )
+  const purchaseState = projectDashboardSource(
+    sourceStates, 'purchaseAccrual', purchaseDataAllowed,
+  )
+  const paymentState = projectDashboardSource(
+    sourceStates, 'purchasePayments', paymentDataAllowed,
+  )
+  const stockInState = projectDashboardSource(
+    sourceStates, 'stockIn', inventoryDataAllowed,
+  )
+  const inventoryState = projectDashboardSource(
+    sourceStates, 'inventory', inventoryDataAllowed,
+  )
+  const laborRecordsState = projectDashboardSource(
+    sourceStates, 'laborRecords', laborDataAllowed,
+  )
+  const laborBridgeState = projectDashboardSource(
+    sourceStates, 'labor', access.labor?.amounts || access.profit?.view,
+    { array: false },
+  )
+  const vehiclesState = projectDashboardSource(
+    sourceStates, 'vehicles', vehicleDataAllowed,
+  )
+  const vehicleUsageState = projectDashboardSource(
+    sourceStates, 'vehicleUsage', vehicleDataAllowed,
+  )
+  const fuelState = projectDashboardSource(sourceStates, 'fuel', vehicleDataAllowed)
+  const vehicleExpenseState = projectDashboardSource(
+    sourceStates, 'vehicleExpense', vehicleDataAllowed,
+  )
+  const vehicleIssueState = projectDashboardSource(
+    sourceStates, 'vehicleIssue', vehicleDataAllowed,
+  )
+  const toolsState = projectDashboardSource(sourceStates, 'tools', toolDataAllowed)
+  const toolBorrowState = projectDashboardSource(
+    sourceStates, 'toolBorrow', toolDataAllowed,
+  )
+  const toolReturnState = projectDashboardSource(
+    sourceStates, 'toolReturn', toolDataAllowed,
+  )
+  const lifelongToolsState = projectDashboardSource(
+    sourceStates, 'lifelongTools', toolDataAllowed,
+  )
+  const toolResponsibilityState = projectDashboardSource(
+    sourceStates, 'toolResponsibility', toolDataAllowed,
+  )
+  const stockOutState = projectDashboardSource(
+    sourceStates, 'stockOut', access.projectSnapshot,
+  )
+  const stockReturnState = projectDashboardSource(
+    sourceStates, 'stockReturn', access.projectSnapshot,
+  )
+
+  const costCategoryFlags = [
+    access.costCategories?.labor,
+    access.costCategories?.purchase,
+    access.costCategories?.vehicle,
+    access.costCategories?.manualSupplement,
+    access.costCategories?.operatingExpense,
+  ]
+  const allPermissionFlags = [
+    access.projectSnapshot,
+    access.contracts?.view,
+    access.contracts?.amounts,
+    access.profit?.view,
+    access.attendance?.view,
+    access.attendance?.identities,
+    access.labor?.view,
+    access.labor?.amounts,
+    access.purchase?.accrual,
+    access.purchase?.payments,
+    access.purchase?.payable,
+    access.purchase?.anomalies,
+    access.vehicle?.view,
+    access.vehicle?.amounts,
+    access.inventory?.view,
+    access.inventory?.amounts,
+    access.tools?.view,
+    access.tools?.amounts,
+    ...costCategoryFlags,
+  ]
+  const fullSourceStates = [
+    projectsState,
+    contractRevenueState,
+    employeesState,
+    salaryState,
+    projectCostState,
+    operatingExpenseState,
+    purchaseState,
+    paymentState,
+    stockInState,
+    inventoryState,
+    laborRecordsState,
+    laborBridgeState,
+    vehiclesState,
+    vehicleUsageState,
+    fuelState,
+    vehicleExpenseState,
+    vehicleIssueState,
+    toolsState,
+    toolBorrowState,
+    toolReturnState,
+    lifelongToolsState,
+    toolResponsibilityState,
+    stockOutState,
+    stockReturnState,
+  ]
+  const fullDashboardReady = allPermissionFlags.every(Boolean) &&
+    fullSourceStates.every((state) => state.status === 'ready')
+
+  if (fullDashboardReady) {
+    return (
+      <DashboardFullPage
+        {...untrustedProps}
+        projects={projectsState.data}
+        employees={employeesState.data}
+        records={{
+          stockOut: stockOutState.data,
+          stockReturn: stockReturnState.data,
+          labor: laborRecordsState.data,
+          vehicle: [],
+          toolBorrow: toolBorrowState.data,
+          toolReturn: toolReturnState.data,
+        }}
+        projectCostRecords={projectCostState.data}
+        purchaseRecords={purchaseState.data}
+        purchasePaymentRecords={paymentState.data}
+        stockInRecords={stockInState.data}
+        inventoryItems={inventoryState.data}
+        salaryRecords={salaryState.data}
+        vehicles={vehiclesState.data}
+        vehicleUsageRecords={vehicleUsageState.data}
+        fuelRecords={fuelState.data}
+        vehicleExpenseRecords={vehicleExpenseState.data}
+        vehicleIssueRecords={vehicleIssueState.data}
+        toolRecords={toolsState.data}
+        toolBorrowRecords={toolBorrowState.data}
+        toolReturnRecords={toolReturnState.data}
+        lifelongToolAssignments={lifelongToolsState.data}
+        toolResponsibilityRecords={toolResponsibilityState.data}
+        laborBridge={laborBridgeState.data}
+        sourceStates={sourceStates}
+        bridgeStatusNotice={bridgeStatusNotice}
+        laborAlertCount={laborAlertCount}
+        onBack={onBack}
+      />
+    )
+  }
+
+  const projects = projectsState.data || []
+  const employees = employeesState.data || []
+  const laborRecords = laborRecordsState.data || []
+  const purchaseRecords = purchaseState.data || []
+  const vehicleComposite = combineDashboardSources([
+    vehiclesState,
+    vehicleUsageState,
+    fuelState,
+    vehicleExpenseState,
+    vehicleIssueState,
+  ])
+  const inventoryComposite = combineDashboardSources([stockInState, inventoryState])
+  const toolComposite = combineDashboardSources([
+    toolsState,
+    toolBorrowState,
+    toolReturnState,
+    lifelongToolsState,
+    toolResponsibilityState,
+  ])
+  const laborAmountComposite = combineDashboardSources([
+    laborRecordsState,
+    salaryState,
+    employeesState,
+    laborBridgeState,
+  ])
+  const profitComposite = combineDashboardSources([
+    projectsState,
+    contractRevenueState,
+    laborRecordsState,
+    laborBridgeState,
+    salaryState,
+    projectCostState,
+    operatingExpenseState,
+    purchaseState,
+    fuelState,
+    vehicleExpenseState,
+    vehicleIssueState,
+  ])
+  const projectSnapshotReady = access.projectSnapshot && projectsState.status === 'ready'
+  const contractAmountsReady = access.contracts?.view && access.contracts?.amounts &&
+    projectsState.status === 'ready' && contractRevenueState.status === 'ready'
+  const attendanceIdentitiesReady = access.attendance?.view && access.attendance?.identities &&
+    employeesState.status === 'ready'
+  const laborReady = access.labor?.view && laborRecordsState.status === 'ready'
+  const laborAmountsReady = access.labor?.view && access.labor?.amounts &&
+    laborAmountComposite.status === 'ready'
+  const purchaseReady = access.purchase?.accrual && purchaseState.status === 'ready'
+  const paymentReady = purchaseReady && access.purchase?.payments &&
+    paymentState.status === 'ready'
+  const payableReady = purchaseReady && access.purchase?.payable &&
+    paymentState.status === 'ready'
+  const anomalyReady = purchaseReady && access.purchase?.anomalies &&
+    paymentState.status === 'ready'
+  const vehicleReady = access.vehicle?.view && vehicleComposite.status === 'ready'
+  const inventoryReady = access.inventory?.view && inventoryComposite.status === 'ready'
+  const toolsReady = access.tools?.view && toolComposite.status === 'ready'
+  const completeCostAccess = costCategoryFlags.every(Boolean)
+  const profitReady = access.profit?.view && completeCostAccess && profitComposite.status === 'ready'
+
+  const currentMonth = currentMonthValue()
+  const laborAllocationInfo = laborAmountsReady
+    ? getLaborAllocationInfo(
+        salaryState.data,
+        employeesState.data,
+        laborRecordsState.data,
+        currentMonthValue(),
+        laborBridgeState.data,
+      )
+    : null
+  const purchaseAccounting = purchaseReady
+    ? buildReadyDashboardPurchaseAccounting({
+        purchaseRecords,
+        paymentRecords: paymentState.status === 'ready' ? paymentState.data : [],
+        paymentState: paymentState.status === 'ready'
+          ? { ...sourceStates.purchasePayments, data: paymentState.data }
+          : { status: 'forbidden', data: null },
+        month: currentMonth,
+      })
+    : null
+  const contractAmount = contractAmountsReady
+    ? projects.reduce((total, project) => total + toAmount(project.adjustedTaxInclusiveAmount), 0)
+    : null
+  const receivedAmount = contractAmountsReady
+    ? projects.reduce((total, project) => total + toAmount(project.totalReceivedTaxInclusiveAmount), 0)
+    : null
+  const vehicleAmount = vehicleReady && access.vehicle?.amounts
+    ? getVehicleCostTotal(fuelState.data, vehicleExpenseState.data, vehicleIssueState.data)
+    : null
+  const inventoryAmount = inventoryReady && access.inventory?.amounts
+    ? inventoryState.data.reduce((total, item) => total + toAmount(item.totalCost), 0)
+    : null
+  const toolAmount = toolsReady && access.tools?.amounts
+    ? getToolUnpaidCompensation(toolResponsibilityState.data)
+    : null
+  const profitStats = profitReady
+    ? (() => {
+        const income = projects.reduce(
+          (total, project) => total + getProfitAnchorTaxExclusiveAmount(project), 0,
+        )
+        const projectCosts = projects.reduce((total, project) => total +
+          getProjectCostTotal(
+            project.projectId,
+            projectCostState.data,
+            laborRecordsState.data,
+            laborBridgeState.data,
+            currentMonthValue(),
+          ) +
+          purchaseState.data
+            .filter((record) => record.projectId === project.projectId)
+            .reduce((subtotal, record) => subtotal + toAmount(record.totalCost), 0) +
+          getProjectVehicleCostTotal(
+            project.projectId,
+            fuelState.data,
+            vehicleExpenseState.data,
+            vehicleIssueState.data,
+          ), 0)
+        const operatingCosts = operatingExpenseState.data.reduce(
+          (total, record) => total + toAmount(record.amount), 0,
+        )
+        const cost = projectCosts + operatingCosts
+        return { income, cost, profit: income - cost }
+      })()
+    : null
+
+  const visibleBlocks = [
+    projectSnapshotReady,
+    contractAmountsReady,
+    attendanceIdentitiesReady,
+    laborReady,
+    purchaseReady,
+    paymentReady,
+    payableReady,
+    anomalyReady,
+    vehicleReady,
+    inventoryReady,
+    toolsReady,
+    profitReady,
+  ]
+  const allowedSourceStates = [
+    projectsState,
+    contractRevenueState,
+    employeesState,
+    salaryState,
+    projectCostState,
+    operatingExpenseState,
+    purchaseState,
+    paymentState,
+    stockInState,
+    inventoryState,
+    laborRecordsState,
+    laborBridgeState,
+    vehiclesState,
+    vehicleUsageState,
+    fuelState,
+    vehicleExpenseState,
+    vehicleIssueState,
+    toolsState,
+    toolBorrowState,
+    toolReturnState,
+    lifelongToolsState,
+    toolResponsibilityState,
+  ].filter((state) => state.status !== 'forbidden')
+  const hasLoading = allowedSourceStates.some((state) => state.status === 'loading')
+  const hasError = allowedSourceStates.some((state) => state.status === 'error')
+
+  return (
+    <PageShell title="老板驾驶舱" subtitle="经营看板 · 利润统计" onBack={onBack}>
+      {access.labor?.view && laborRecordsState.status === 'ready' && bridgeStatusNotice}
+      {access.projectSnapshot && projectsState.status === 'loading' && (
+        <EmptyState text="项目数据正在加载" />
+      )}
+      {hasError && <EmptyState text="部分驾驶舱数据暂不可用" />}
+      {hasLoading && projectsState.status !== 'loading' && (
+        <EmptyState text="部分驾驶舱数据正在加载" />
+      )}
+      {!visibleBlocks.some(Boolean) && !hasLoading && !hasError && (
+        <EmptyState text="当前权限下暂无可显示的驾驶舱数据" />
+      )}
+
+      {projectSnapshotReady && (
+        <>
+          <SectionTitle title="项目概览" note={`${projects.length} 个项目`} />
+          <div className="record-list">
+            {projects.map((project) => (
+              <article className="record-card" key={project.projectId}>
+                <div className="record-header">
+                  <div>
+                    <strong>{project.projectName}</strong>
+                    <span>{project.address || '未填写地址'}</span>
+                  </div>
+                  <span className="amount-pill">{project.status}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+
+      {contractAmountsReady && (
+        <>
+          <SectionTitle title="收款总览" note="全部项目" />
+          <div className="stats-grid">
+            <div className="stat-card money"><strong>{formatYen(contractAmount)}</strong><span>合同金额合计</span></div>
+            <div className="stat-card money"><strong>{formatYen(receivedAmount)}</strong><span>已收款金额合计</span></div>
+            <div className="stat-card money"><strong>{formatYen(contractAmount - receivedAmount)}</strong><span>未收款金额合计</span></div>
+          </div>
+        </>
+      )}
+
+      {profitStats && (
+        <>
+          <SectionTitle title="成本与利润" note="完整成本口径" />
+          <div className="stats-grid">
+            <div className="stat-card money"><strong>{formatYen(profitStats.income)}</strong><span>利润计算收入（税抜）</span></div>
+            <div className="stat-card money"><strong>{formatYen(profitStats.cost)}</strong><span>项目成本合计</span></div>
+            <div className="stat-card money"><strong>{formatYen(profitStats.profit)}</strong><span>预估毛利润</span></div>
+          </div>
+        </>
+      )}
+
+      {laborReady && (
+        <>
+          <SectionTitle title="人工记录" note={currentMonth} />
+          <div className="stats-grid">
+            <div className="stat-card"><strong>{laborRecords.length}</strong><span>人工记录数量</span></div>
+            <div className="stat-card"><strong>{Number.isSafeInteger(laborAlertCount) ? laborAlertCount : 0}</strong><span>正式考勤待处理</span></div>
+            {laborAllocationInfo && (
+              <div className="stat-card money"><strong>{formatYen(laborAllocationInfo.allocatedLaborCostTotal)}</strong><span>本月项目人工分摊</span></div>
+            )}
+          </div>
+        </>
+      )}
+
+      {attendanceIdentitiesReady && (
+        <>
+          <SectionTitle title="人员身份资料" note={`${employees.length} 人`} />
+          <div className="record-list">
+            {employees.filter((employee) => !isHiddenSystemEmployee(employee)).map((employee) => (
+              <article className="record-card" key={employee.employeeId}>
+                <div className="record-header">
+                  <div><strong>{employee.name}</strong><span>{employee.department}｜{employee.position}</span></div>
+                  <span className="amount-pill">{employee.employmentStatus}</span>
+                </div>
+                <dl className="detail-list compact">
+                  <div><dt>在留资格</dt><dd>{employee.visaType || '未填写'}</dd></div>
+                  <div><dt>联系电话</dt><dd>{employee.phone || '未填写'}</dd></div>
+                </dl>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(purchaseReady || paymentReady || payableReady || anomalyReady || inventoryReady) && (
+        <>
+          <SectionTitle title="采购与库存" note={currentMonth} />
+          <div className="stats-grid">
+            {purchaseReady && <div className="stat-card money"><strong>{formatYen(purchaseAccounting.summary.monthPurchaseCost)}</strong><span>本月采购总额</span></div>}
+            {paymentReady && <div className="stat-card money"><strong>{formatYen(purchaseAccounting.summary.monthPaymentCash)}</strong><span>本月实际付款</span></div>}
+            {payableReady && <div className="stat-card money"><strong>{formatYen(purchaseAccounting.summary.currentOutstanding)}</strong><span>当前采购应付余额</span></div>}
+            {anomalyReady && <div className="stat-card"><strong>{purchaseAccounting.summary.anomalyCount}</strong><span>采购数据异常数量</span></div>}
+            {inventoryReady && <div className="stat-card"><strong>{stockInState.data.length}</strong><span>入库记录数量</span></div>}
+            {inventoryAmount !== null && <div className="stat-card money"><strong>{formatYen(inventoryAmount)}</strong><span>仓库库存总成本</span></div>}
+          </div>
+        </>
+      )}
+
+      {vehicleReady && (
+        <>
+          <SectionTitle title="车辆管理" note={currentMonth} />
+          <div className="stats-grid">
+            <div className="stat-card"><strong>{vehiclesState.data.length}</strong><span>车辆数量</span></div>
+            <div className="stat-card"><strong>{vehicleUsageState.data.length}</strong><span>车辆使用记录数量</span></div>
+            {vehicleAmount !== null && <div className="stat-card money"><strong>{formatYen(vehicleAmount)}</strong><span>车辆费用合计</span></div>}
+          </div>
+        </>
+      )}
+
+      {toolsReady && (
+        <>
+          <SectionTitle title="工具管理" note="当前数据" />
+          <div className="stats-grid">
+            <div className="stat-card"><strong>{toolsState.data.length}</strong><span>工具数量</span></div>
+            <div className="stat-card"><strong>{toolBorrowState.data.length}</strong><span>借工具数量</span></div>
+            {toolAmount !== null && <div className="stat-card money"><strong>{formatYen(toolAmount)}</strong><span>未赔偿金额</span></div>}
+          </div>
+        </>
+      )}
+    </PageShell>
+  )
+}
+
+function DashboardFullPage({
   projects,
   employees,
   records,

@@ -541,16 +541,13 @@ select results_eq(
   $$values (1::bigint)$$,
   'labor pay update requires both module and sensitive permission'
 );
-select results_eq(
-  $$with changed as (
-      update public.purchase_records
-      set payload = payload || '{"reviewed":true}'::jsonb
-      where record_key = 'PURCHASE-RLS-1'
-      returning 1
-    )
-    select count(*)::bigint from changed$$,
-  $$values (1::bigint)$$,
-  'purchase payment update requires both module and sensitive permission'
+select throws_ok(
+  $$update public.purchase_records
+    set payload = payload || '{"reviewed":true}'::jsonb
+    where record_key = 'PURCHASE-RLS-1'$$,
+  '42501',
+  'direct purchase record writes are not allowed',
+  'purchase payment updates must use the guarded secure RPC'
 );
 
 select throws_like(

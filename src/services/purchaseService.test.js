@@ -91,6 +91,132 @@ test('purchase records use only the three secure RPCs while payments keep their 
   ])
 })
 
+test('stock-in commits purchase, stock-in, and inventory through one bound atomic RPC', async () => {
+  const purchasePatch = purchase({ stockInStatus: '部分入库' })
+  const stockInPayload = {
+    stockInId: 'SI-SECURE-1',
+    sourcePurchaseId: 'PO-SECURE-1',
+    stockInQuantity: 2,
+  }
+  const inventoryPayload = {
+    inventoryId: 'INV-SECURE-1',
+    sourcePurchaseId: 'PO-OLDER-AGGREGATE',
+    quantity: 2,
+  }
+  const supplier = {
+    purchase: envelope(purchasePatch),
+    stock_in: {
+      record_key: stockInPayload.stockInId,
+      payload: stockInPayload,
+      status: 'active',
+      updated_at: '2026-07-17T00:00:00.000Z',
+    },
+    inventory_item: {
+      record_key: inventoryPayload.inventoryId,
+      payload: inventoryPayload,
+      status: 'active',
+      updated_at: '2026-07-17T00:00:00.000Z',
+    },
+  }
+  const calls = []
+  const service = createPurchaseService({
+    rpc: async (name, args) => {
+      calls.push([name, args])
+      return { data: supplier, error: null }
+    },
+  }, { configured: true })
+
+  const result = await service.commitStockIn({
+    purchaseRecordKey: 'PO-SECURE-1',
+    purchasePatch,
+    stockInRecordKey: 'SI-SECURE-1',
+    stockInPayload,
+    inventoryRecordKey: 'INV-SECURE-1',
+    inventoryPayload,
+  })
+
+  assert.deepEqual(calls, [[
+    'commit_purchase_stock_in_secure',
+    {
+      p_purchase_record_key: 'PO-SECURE-1',
+      p_purchase_patch: purchasePatch,
+      p_stock_in_record_key: 'SI-SECURE-1',
+      p_stock_in_payload: stockInPayload,
+      p_inventory_record_key: 'INV-SECURE-1',
+      p_inventory_payload: inventoryPayload,
+    },
+  ]])
+  assert.deepEqual(result, {
+    purchase: purchasePatch,
+    stockIn: stockInPayload,
+    inventoryItem: inventoryPayload,
+  })
+  assert.equal(Object.isFrozen(result), true)
+  assert.equal(Object.isFrozen(result.purchase), true)
+  assert.equal(Object.isFrozen(result.stockIn), true)
+  assert.equal(Object.isFrozen(result.inventoryItem), true)
+
+  supplier.purchase.payload.itemName = '供应方后改'
+  supplier.stock_in.payload.stockInQuantity = 999
+  assert.equal(result.purchase.itemName, '安全采购')
+  assert.equal(result.stockIn.stockInQuantity, 2)
+})
+
+test('stock-in atomic RPC rejects mismatched inputs and malformed bound response envelopes', async () => {
+  const stockInPayload = {
+    stockInId: 'SI-SECURE-1', sourcePurchaseId: 'PO-SECURE-1', stockInQuantity: 1,
+  }
+  const inventoryPayload = {
+    inventoryId: 'INV-SECURE-1', sourcePurchaseId: 'PO-SECURE-1', quantity: 1,
+  }
+  let rpcCalls = 0
+  const service = createPurchaseService({
+    rpc: async () => {
+      rpcCalls += 1
+      return {
+        data: {
+          purchase: envelope(),
+          stock_in: {
+            record_key: 'SI-WRONG', payload: stockInPayload,
+            status: 'active', updated_at: '2026-07-17T00:00:00.000Z',
+          },
+          inventory_item: {
+            record_key: inventoryPayload.inventoryId, payload: inventoryPayload,
+            status: 'active', updated_at: '2026-07-17T00:00:00.000Z',
+          },
+        },
+        error: null,
+      }
+    },
+  }, { configured: true })
+
+  await assert.rejects(
+    () => service.commitStockIn({
+      purchaseRecordKey: 'PO-SECURE-1',
+      purchasePatch: purchase(),
+      stockInRecordKey: 'SI-WRONG-INPUT',
+      stockInPayload,
+      inventoryRecordKey: 'INV-SECURE-1',
+      inventoryPayload,
+    }),
+    (error) => error.code === 'PURCHASE_INPUT_INVALID',
+  )
+  assert.equal(rpcCalls, 0)
+
+  await assert.rejects(
+    () => service.commitStockIn({
+      purchaseRecordKey: 'PO-SECURE-1',
+      purchasePatch: purchase(),
+      stockInRecordKey: 'SI-SECURE-1',
+      stockInPayload,
+      inventoryRecordKey: 'INV-SECURE-1',
+      inventoryPayload,
+    }),
+    (error) => error.code === 'PURCHASE_RESPONSE_INVALID',
+  )
+  assert.equal(rpcCalls, 1)
+})
+
 test('secure list data is validated, detached, and deeply immutable', async () => {
   const source = envelope()
   const service = createPurchaseService({
@@ -107,6 +233,80 @@ test('secure list data is validated, detached, and deeply immutable', async () =
   source.payload.details.supplier = '被供应方篡改'
   assert.equal(records[0].itemName, '安全采购')
   assert.equal(records[0].details.supplier, '供应商')
+})
+
+test('secure list snapshots a dense plain outer array without invoking supplier iteration hooks', async (t) => {
+  let invoked = 0
+  const cases = []
+
+  const accessorIndex = []
+  Object.defineProperty(accessorIndex, '0', {
+    enumerable: true,
+    get() {
+      invoked += 1
+      return envelope()
+    },
+  })
+  Object.defineProperty(accessorIndex, 'length', { value: 1 })
+  cases.push(['accessor index', accessorIndex])
+
+  const ownMap = [envelope()]
+  Object.defineProperty(ownMap, 'map', {
+    enumerable: true,
+    value() {
+      invoked += 1
+      return []
+    },
+  })
+  cases.push(['own map override', ownMap])
+
+  const ownIterator = [envelope()]
+  Object.defineProperty(ownIterator, Symbol.iterator, {
+    value() {
+      invoked += 1
+      return [][Symbol.iterator]()
+    },
+  })
+  cases.push(['own iterator override', ownIterator])
+
+  const inheritedHooks = Object.create(Array.prototype)
+  Object.defineProperty(inheritedHooks, 'map', {
+    get() {
+      invoked += 1
+      return Array.prototype.map
+    },
+  })
+  Object.defineProperty(inheritedHooks, Symbol.iterator, {
+    get() {
+      invoked += 1
+      return Array.prototype[Symbol.iterator]
+    },
+  })
+  const inheritedArray = [envelope()]
+  Object.setPrototypeOf(inheritedArray, inheritedHooks)
+  cases.push(['custom inherited hooks', inheritedArray])
+
+  const sparse = new Array(1)
+  cases.push(['sparse array', sparse])
+
+  const extraKey = [envelope()]
+  extraKey.extra = envelope()
+  cases.push(['extra string key', extraKey])
+
+  for (const [name, data] of cases) {
+    await t.test(name, async () => {
+      const service = createPurchaseService({
+        rpc: async () => ({ data, error: null }),
+      }, { configured: true })
+      await assert.rejects(
+        () => service.getList(),
+        (error) => error instanceof PurchaseServiceError &&
+          error.code === 'PURCHASE_RESPONSE_INVALID',
+      )
+    })
+  }
+
+  assert.equal(invoked, 0)
 })
 
 test('malformed, accessor, and inherited supplier source/data fail closed without invoking getters', async (t) => {

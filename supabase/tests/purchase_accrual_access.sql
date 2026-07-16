@@ -1,6 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
+create extension if not exists dblink with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
 select no_plan();
@@ -16,6 +17,24 @@ select has_function(
   'purchase_client_audit_payload_keys',
   array[]::text[],
   'purchase client audit rejection key helper exists'
+);
+select has_function(
+  'private',
+  'purchase_payload_has_unsafe_keys',
+  array['jsonb'],
+  'recursive unsafe purchase payload key helper exists'
+);
+select has_function(
+  'private',
+  'lock_purchase_record_key',
+  array['text'],
+  'purchase record advisory lock helper exists'
+);
+select has_function(
+  'private',
+  'guard_purchase_records_direct_write',
+  array[]::text[],
+  'purchase direct-write trigger guard exists'
 );
 select has_function(
   'public',
@@ -34,6 +53,12 @@ select has_function(
   'soft_delete_purchase_record_secure',
   array['text'],
   'secure purchase soft-delete RPC exists'
+);
+select has_function(
+  'public',
+  'commit_purchase_stock_in_secure',
+  array['text', 'jsonb', 'text', 'jsonb', 'text', 'jsonb'],
+  'transactional purchase stock-in RPC exists with the approved signature'
 );
 
 create temporary table task7_helper_results (
@@ -95,13 +120,14 @@ select is(
       and procedure.proname in (
         'list_purchase_records_secure',
         'upsert_purchase_record_secure',
-        'soft_delete_purchase_record_secure'
+        'soft_delete_purchase_record_secure',
+        'commit_purchase_stock_in_secure'
       )
       and procedure.prosecdef
       and procedure.proconfig =
         array['search_path=pg_catalog, public, private']::text[]
   ),
-  3::bigint,
+  4::bigint,
   'all purchase RPCs are security definer functions with a pinned search path'
 );
 
@@ -113,12 +139,13 @@ select is(
       and routine_name in (
         'list_purchase_records_secure',
         'upsert_purchase_record_secure',
-        'soft_delete_purchase_record_secure'
+        'soft_delete_purchase_record_secure',
+        'commit_purchase_stock_in_secure'
       )
       and grantee in ('PUBLIC', 'anon', 'authenticated', 'service_role')
       and privilege_type = 'EXECUTE'
   ),
-  6::bigint,
+  8::bigint,
   'purchase RPC execution is granted only to authenticated and service_role'
 );
 
@@ -129,13 +156,56 @@ select is(
     where specific_schema = 'private'
       and routine_name in (
         'purchase_payment_payload_keys',
-        'purchase_client_audit_payload_keys'
+        'purchase_client_audit_payload_keys',
+        'purchase_payload_has_unsafe_keys',
+        'lock_purchase_record_key',
+        'guard_purchase_records_direct_write'
       )
       and grantee in ('PUBLIC', 'anon', 'authenticated', 'service_role')
       and privilege_type = 'EXECUTE'
   ),
   0::bigint,
   'private purchase helpers expose no execution grant to browser or service roles'
+);
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_proc as procedure
+    join pg_catalog.pg_namespace as namespace
+      on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'private'
+      and procedure.proname = 'guard_purchase_records_direct_write'
+      and not procedure.prosecdef
+      and procedure.proconfig = array['search_path=pg_catalog']::text[]
+  ),
+  1::bigint,
+  'purchase direct-write guard is SECURITY INVOKER with a pinned pg_catalog path'
+);
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_trigger as trigger
+    join pg_catalog.pg_class as relation
+      on relation.oid = trigger.tgrelid
+    join pg_catalog.pg_namespace as relation_namespace
+      on relation_namespace.oid = relation.relnamespace
+    join pg_catalog.pg_proc as procedure
+      on procedure.oid = trigger.tgfoid
+    join pg_catalog.pg_namespace as procedure_namespace
+      on procedure_namespace.oid = procedure.pronamespace
+    where relation_namespace.nspname = 'public'
+      and relation.relname = 'purchase_records'
+      and trigger.tgname = 'block_purchase_records_direct_write'
+      and not trigger.tgisinternal
+      and trigger.tgenabled = 'O'
+      and trigger.tgtype = 31
+      and procedure_namespace.nspname = 'private'
+      and procedure.proname = 'guard_purchase_records_direct_write'
+  ),
+  1::bigint,
+  'purchase_records has one enabled row-level BEFORE INSERT/UPDATE/DELETE guard'
 );
 
 select is(
@@ -148,17 +218,42 @@ select is(
   3::bigint,
   'purchase_records retains its three existing direct-table RLS policies'
 );
-select results_eq(
-  $$select policyname, cmd
+select is(
+  (
+    select jsonb_agg(
+      jsonb_build_object(
+        'policyname', policyname,
+        'cmd', cmd,
+        'qual', qual,
+        'with_check', with_check
+      )
+      order by policyname
+    )
     from pg_catalog.pg_policies
     where schemaname = 'public'
       and tablename = 'purchase_records'
-    order by policyname$$,
-  $$values
-    ('purchase_records authenticated insert'::name, 'INSERT'::text),
-    ('purchase_records authenticated select'::name, 'SELECT'::text),
-    ('purchase_records authenticated update'::name, 'UPDATE'::text)$$,
-  'purchase_records policy names and commands are unchanged'
+  ),
+  '[
+    {
+      "policyname":"purchase_records authenticated insert",
+      "cmd":"INSERT",
+      "qual":null,
+      "with_check":"(is_current_employee_active() AND has_current_permission(''module.purchases.create''::text) AND has_current_permission(''sensitive.purchase_payments_update''::text) AND (status = ''active''::text))"
+    },
+    {
+      "policyname":"purchase_records authenticated select",
+      "cmd":"SELECT",
+      "qual":"(is_current_employee_active() AND has_current_permission(''module.purchases.view''::text) AND has_current_permission(''sensitive.purchase_payments_view''::text))",
+      "with_check":null
+    },
+    {
+      "policyname":"purchase_records authenticated update",
+      "cmd":"UPDATE",
+      "qual":"(is_current_employee_active() AND (has_current_permission(''module.purchases.update''::text) OR has_current_permission(''module.purchases.delete''::text)) AND has_current_permission(''sensitive.purchase_payments_update''::text))",
+      "with_check":"(is_current_employee_active() AND (has_current_permission(''module.purchases.update''::text) OR has_current_permission(''module.purchases.delete''::text)) AND has_current_permission(''sensitive.purchase_payments_update''::text))"
+    }
+  ]'::jsonb,
+  'purchase_records policy names, commands, qual, and with_check are exactly unchanged'
 );
 select ok(
   has_table_privilege('authenticated', 'public.purchase_records', 'SELECT')
@@ -167,6 +262,128 @@ select ok(
     and not has_table_privilege('authenticated', 'public.purchase_records', 'DELETE')
     and not has_table_privilege('authenticated', 'public.purchase_records', 'TRUNCATE'),
   'purchase_records direct table privileges remain SELECT, INSERT, and UPDATE only'
+);
+
+create or replace function pg_temp.purchase_same_key_lock_serializes()
+returns boolean
+language plpgsql
+set search_path = pg_catalog, extensions
+as $function$
+declare
+  lock_was_blocked boolean := false;
+  released_lock_key bigint;
+  poll_attempt integer;
+  connection_names text[];
+begin
+  if to_regprocedure('private.lock_purchase_record_key(text)') is null then
+    return false;
+  end if;
+
+  perform extensions.dblink_connect(
+    'task7_purchase_lock_a',
+    format(
+      'host=db port=5432 dbname=%L user=postgres password=postgres',
+      current_database()
+    )
+  );
+  perform extensions.dblink_connect(
+    'task7_purchase_lock_b',
+    format(
+      'host=db port=5432 dbname=%L user=postgres password=postgres',
+      current_database()
+    )
+  );
+  perform extensions.dblink_exec('task7_purchase_lock_a', 'begin');
+  perform extensions.dblink_exec(
+    'task7_purchase_lock_a',
+    'do $remote$ begin perform private.lock_purchase_record_key(''PO-TASK7-CONCURRENCY''); end $remote$'
+  );
+
+  if extensions.dblink_send_query(
+    'task7_purchase_lock_b',
+    'select private.lock_purchase_record_key(''PO-TASK7-CONCURRENCY'') as lock_key'
+  ) <> 1 then
+    raise exception 'could not dispatch competing purchase lock query';
+  end if;
+
+  perform pg_sleep(0.1);
+  lock_was_blocked :=
+    extensions.dblink_is_busy('task7_purchase_lock_b') = 1;
+  perform extensions.dblink_exec('task7_purchase_lock_a', 'commit');
+
+  for poll_attempt in 1..100 loop
+    exit when extensions.dblink_is_busy('task7_purchase_lock_b') = 0;
+    perform pg_sleep(0.01);
+  end loop;
+
+  select result.lock_key
+    into released_lock_key
+    from extensions.dblink_get_result('task7_purchase_lock_b')
+      as result(lock_key bigint);
+
+  perform extensions.dblink_disconnect('task7_purchase_lock_a');
+  perform extensions.dblink_disconnect('task7_purchase_lock_b');
+
+  return lock_was_blocked
+    and released_lock_key = hashtextextended(
+      'public.purchase_records:PO-TASK7-CONCURRENCY',
+      0
+    );
+exception when others then
+  raise notice 'purchase concurrency probe failed: %', sqlerrm;
+  connection_names := coalesce(
+    extensions.dblink_get_connections(),
+    array[]::text[]
+  );
+  if 'task7_purchase_lock_a' = any(connection_names) then
+    begin
+      perform extensions.dblink_exec('task7_purchase_lock_a', 'rollback');
+    exception when others then
+      null;
+    end;
+    perform extensions.dblink_disconnect('task7_purchase_lock_a');
+  end if;
+  connection_names := coalesce(
+    extensions.dblink_get_connections(),
+    array[]::text[]
+  );
+  if 'task7_purchase_lock_b' = any(connection_names) then
+    perform extensions.dblink_disconnect('task7_purchase_lock_b');
+  end if;
+  return false;
+end;
+$function$;
+
+select ok(
+  pg_temp.purchase_same_key_lock_serializes(),
+  'two real database sessions serialize on the same purchase advisory key'
+);
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_proc as procedure
+    join pg_catalog.pg_namespace as namespace
+      on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'public'
+      and (
+        (
+          procedure.proname in (
+            'upsert_purchase_record_secure',
+            'soft_delete_purchase_record_secure'
+          )
+          and pg_catalog.pg_get_functiondef(procedure.oid)
+            like '%private.lock_purchase_record_key(p_record_key)%'
+        )
+        or (
+          procedure.proname = 'commit_purchase_stock_in_secure'
+          and pg_catalog.pg_get_functiondef(procedure.oid)
+            like '%private.lock_purchase_record_key(p_purchase_record_key)%'
+        )
+      )
+  ),
+  3::bigint,
+  'every purchase mutation RPC uses the shared same-key lock helper'
 );
 
 create temporary table task7_list_results (
@@ -230,6 +447,7 @@ where subject_type = 'department'
   and subject_code in ('采购部', '财务部', '电商部', '仓库管理部', '后勤部', '事务部')
   and (
     permission_key like 'module.purchases.%'
+    or permission_key like 'module.inventory.%'
     or permission_key like 'sensitive.purchase_payments_%'
   );
 
@@ -242,6 +460,8 @@ insert into public.permission_grants (
   ('department', '采购部', 'module.purchases.create'),
   ('department', '采购部', 'module.purchases.update'),
   ('department', '采购部', 'module.purchases.delete'),
+  ('department', '采购部', 'module.inventory.create'),
+  ('department', '采购部', 'module.inventory.update'),
   ('department', '财务部', 'module.purchases.view'),
   ('department', '财务部', 'module.purchases.create'),
   ('department', '财务部', 'module.purchases.update'),
@@ -293,7 +513,85 @@ insert into public.purchase_records (
     '种子创建人',
     'seed-updater',
     '种子更新人'
+  ),
+  (
+    'PO-TASK7-STOCK',
+    '{
+      "purchaseId":"PO-TASK7-STOCK",
+      "itemName":"库存测试铜管",
+      "specification":"20米",
+      "quantity":10,
+      "unit":"卷",
+      "totalCost":10000,
+      "stockInStatus":"未入库",
+      "paidAmount":4000,
+      "unpaidAmount":6000,
+      "paymentStatus":"部分付款"
+    }'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'PO-TASK7-GUARD-UPDATE',
+    '{"purchaseId":"PO-TASK7-GUARD-UPDATE","itemName":"直接更新守卫"}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'PO-TASK7-GUARD-DELETE',
+    '{"purchaseId":"PO-TASK7-GUARD-DELETE","itemName":"直接删除守卫"}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
   );
+
+insert into public.stock_in_records (
+  record_key,
+  payload,
+  status,
+  created_by_employee_id,
+  created_by_employee_name,
+  updated_by_employee_id,
+  updated_by_employee_name
+) values (
+  'SI-TASK7-DELETED',
+  '{
+    "stockInId":"SI-TASK7-DELETED",
+    "sourcePurchaseId":"PO-TASK7-STOCK",
+    "stockInQuantity":1
+  }'::jsonb,
+  'deleted',
+  'seed-creator',
+  '种子创建人',
+  'seed-updater',
+  '种子更新人'
+);
+
+insert into public.inventory_items (
+  record_key,
+  payload,
+  status,
+  created_by_employee_id,
+  created_by_employee_name,
+  updated_by_employee_id,
+  updated_by_employee_name
+) values (
+  'INV-TASK7-DELETED',
+  '{"inventoryId":"INV-TASK7-DELETED","itemName":"已删除库存"}'::jsonb,
+  'deleted',
+  'seed-creator',
+  '种子创建人',
+  'seed-updater',
+  '种子更新人'
+);
 
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
@@ -310,7 +608,7 @@ select lives_ok(
 );
 select is(
   (select count(*) from task7_list_results where scenario = 'accrual-list'),
-  1::bigint,
+  4::bigint,
   'the secure list excludes deleted records'
 );
 select ok(
@@ -378,6 +676,75 @@ select throws_ok(
   '22023',
   'valid purchase record key required',
   'purchase upsert rejects a record key that differs from its trimmed form'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7;SELECT-pg_sleep',
+      '{"purchaseId":"PO-TASK7;SELECT-pg_sleep"}'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'valid purchase record key required',
+  'purchase upsert rejects a semicolon injection-shaped record key'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7-''-DROP',
+      '{"purchaseId":"PO-TASK7-''-DROP"}'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'valid purchase record key required',
+  'purchase upsert rejects a quote injection-shaped record key'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7/../../AUTH',
+      '{"purchaseId":"PO-TASK7/../../AUTH"}'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'valid purchase record key required',
+  'purchase upsert rejects a path traversal-shaped record key'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7-UNSAFE-PROTO',
+      '{
+        "purchaseId":"PO-TASK7-UNSAFE-PROTO",
+        "__proto__":{"polluted":true}
+      }'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'purchase upsert rejects a top-level __proto__ key'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7-UNSAFE-CONSTRUCTOR',
+      '{
+        "purchaseId":"PO-TASK7-UNSAFE-CONSTRUCTOR",
+        "nested":{"constructor":{"polluted":true}}
+      }'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'purchase upsert rejects a nested constructor key'
+);
+select throws_ok(
+  $$select public.upsert_purchase_record_secure(
+      'PO-TASK7-UNSAFE-PROTOTYPE',
+      '{
+        "purchaseId":"PO-TASK7-UNSAFE-PROTOTYPE",
+        "nested":[{"prototype":{"polluted":true}}]
+      }'::jsonb,
+      'active'
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'purchase upsert rejects a prototype key nested through an array'
 );
 select lives_ok(
   $$insert into pg_temp.task7_mutation_results (scenario, result)
@@ -655,6 +1022,438 @@ select ok(
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '[]'::jsonb,
+      'SI-TASK7-OBJECT-PURCHASE',
+      '{"stockInId":"SI-TASK7-OBJECT-PURCHASE","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-OBJECT-PURCHASE',
+      '{"inventoryId":"INV-TASK7-OBJECT-PURCHASE"}'::jsonb
+    )$$,
+  '22023',
+  'purchase payload must be a JSON object',
+  'stock-in commit requires an object purchase patch'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-OBJECT-STOCK',
+      '[]'::jsonb,
+      'INV-TASK7-OBJECT-STOCK',
+      '{"inventoryId":"INV-TASK7-OBJECT-STOCK"}'::jsonb
+    )$$,
+  '22023',
+  'stock-in payload must be a JSON object',
+  'stock-in commit requires an object stock-in payload'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-OBJECT-INVENTORY',
+      '{"stockInId":"SI-TASK7-OBJECT-INVENTORY","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-OBJECT-INVENTORY',
+      '[]'::jsonb
+    )$$,
+  '22023',
+  'inventory payload must be a JSON object',
+  'stock-in commit requires an object inventory payload'
+);
+
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-OTHER"}'::jsonb,
+      'SI-TASK7-MISMATCH-PURCHASE',
+      '{"stockInId":"SI-TASK7-MISMATCH-PURCHASE","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-MISMATCH-PURCHASE',
+      '{"inventoryId":"INV-TASK7-MISMATCH-PURCHASE"}'::jsonb
+    )$$,
+  '22023',
+  'purchase record key mismatch',
+  'stock-in commit binds the purchase patch ID to its record key'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-MISMATCH-STOCK',
+      '{"stockInId":"SI-TASK7-OTHER","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-MISMATCH-STOCK',
+      '{"inventoryId":"INV-TASK7-MISMATCH-STOCK"}'::jsonb
+    )$$,
+  '22023',
+  'stock-in record key mismatch',
+  'stock-in commit binds the stock-in payload ID to its record key'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-MISMATCH-INVENTORY',
+      '{"stockInId":"SI-TASK7-MISMATCH-INVENTORY","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-MISMATCH-INVENTORY',
+      '{"inventoryId":"INV-TASK7-OTHER"}'::jsonb
+    )$$,
+  '22023',
+  'inventory record key mismatch',
+  'stock-in commit binds the inventory payload ID to its record key'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-MISMATCH-SOURCE',
+      '{"stockInId":"SI-TASK7-MISMATCH-SOURCE","sourcePurchaseId":"PO-TASK7-OTHER"}'::jsonb,
+      'INV-TASK7-MISMATCH-SOURCE',
+      '{"inventoryId":"INV-TASK7-MISMATCH-SOURCE"}'::jsonb
+    )$$,
+  '22023',
+  'stock-in purchase key mismatch',
+  'stock-in commit binds the stock-in source to the purchase key'
+);
+
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","__proto__":{"polluted":true}}'::jsonb,
+      'SI-TASK7-UNSAFE-PURCHASE',
+      '{"stockInId":"SI-TASK7-UNSAFE-PURCHASE","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-UNSAFE-PURCHASE',
+      '{"inventoryId":"INV-TASK7-UNSAFE-PURCHASE"}'::jsonb
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'stock-in commit rejects unsafe purchase patch keys'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-UNSAFE-STOCK',
+      '{
+        "stockInId":"SI-TASK7-UNSAFE-STOCK",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "nested":{"constructor":{"polluted":true}}
+      }'::jsonb,
+      'INV-TASK7-UNSAFE-STOCK',
+      '{"inventoryId":"INV-TASK7-UNSAFE-STOCK"}'::jsonb
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'stock-in commit rejects unsafe stock-in payload keys recursively'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-UNSAFE-INVENTORY',
+      '{"stockInId":"SI-TASK7-UNSAFE-INVENTORY","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-UNSAFE-INVENTORY',
+      '{
+        "inventoryId":"INV-TASK7-UNSAFE-INVENTORY",
+        "nested":[{"prototype":{"polluted":true}}]
+      }'::jsonb
+    )$$,
+  '22023',
+  'unsafe purchase payload key',
+  'stock-in commit rejects unsafe inventory payload keys recursively'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-AUDIT-STOCK',
+      '{
+        "stockInId":"SI-TASK7-AUDIT-STOCK",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "updated_by_employee_id":"forged"
+      }'::jsonb,
+      'INV-TASK7-AUDIT-STOCK',
+      '{"inventoryId":"INV-TASK7-AUDIT-STOCK"}'::jsonb
+    )$$,
+  '22023',
+  'client audit fields are not accepted',
+  'stock-in commit rejects audit identity in the stock-in payload'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-AUDIT-INVENTORY',
+      '{"stockInId":"SI-TASK7-AUDIT-INVENTORY","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-AUDIT-INVENTORY',
+      '{
+        "inventoryId":"INV-TASK7-AUDIT-INVENTORY",
+        "createdByEmployeeName":"forged"
+      }'::jsonb
+    )$$,
+  '22023',
+  'client audit fields are not accepted',
+  'stock-in commit rejects audit identity in the inventory payload'
+);
+
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-DELETED',
+      '{"stockInId":"SI-TASK7-DELETED","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-DELETED-STOCK',
+      '{"inventoryId":"INV-TASK7-DELETED-STOCK"}'::jsonb
+    )$$,
+  'P0002',
+  'stock-in record not found',
+  'stock-in commit cannot resurrect a deleted stock-in row'
+);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-DELETED-INVENTORY',
+      '{"stockInId":"SI-TASK7-DELETED-INVENTORY","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-DELETED',
+      '{"inventoryId":"INV-TASK7-DELETED"}'::jsonb
+    )$$,
+  'P0002',
+  'inventory record not found',
+  'stock-in commit cannot resurrect a deleted inventory row'
+);
+
+select lives_ok(
+  $$insert into pg_temp.task7_mutation_results (scenario, result)
+    values (
+      'stock-in-create',
+      public.commit_purchase_stock_in_secure(
+        'PO-TASK7-STOCK',
+        '{
+          "purchaseId":"PO-TASK7-STOCK",
+          "stockInStatus":"部分入库",
+          "paidAmount":999999
+        }'::jsonb,
+        'SI-TASK7-001',
+        '{
+          "stockInId":"SI-TASK7-001",
+          "sourcePurchaseId":"PO-TASK7-STOCK",
+          "stockInQuantity":2,
+          "warehouseLocation":"A区"
+        }'::jsonb,
+        'INV-TASK7-001',
+        '{
+          "inventoryId":"INV-TASK7-001",
+          "itemName":"库存测试铜管",
+          "quantity":2,
+          "averageCost":1000,
+          "totalCost":2000
+        }'::jsonb
+      )
+    )$$,
+  'stock-in commit atomically inserts stock-in and inventory rows and patches purchase accrual state'
+);
+select ok(
+  (
+    select result->'purchase'->>'record_key' = 'PO-TASK7-STOCK'
+      and result->'purchase'->'payload'->>'stockInStatus' = '部分入库'
+      and not (result->'purchase'->'payload') ?| array[
+        'openingPaidAmount', 'paidAmount', 'unpaidAmount', 'paymentStatus'
+      ]::text[]
+      and result->'stock_in'->>'record_key' = 'SI-TASK7-001'
+      and result->'stock_in'->'payload'->>'sourcePurchaseId' = 'PO-TASK7-STOCK'
+      and result->'inventory_item'->>'record_key' = 'INV-TASK7-001'
+      and result->'inventory_item'->'payload'->>'inventoryId' = 'INV-TASK7-001'
+    from task7_mutation_results
+    where scenario = 'stock-in-create'
+  ),
+  'stock-in commit returns the approved three envelopes with purchase payment redaction'
+);
+
+reset role;
+select ok(
+  (
+    select purchase.payload->>'stockInStatus' = '部分入库'
+      and purchase.payload->>'paidAmount' = '4000'
+      and purchase.updated_by_employee_id = '72000000-0000-4000-8000-000000000001'
+      and stock_in.payload->>'stockInId' = 'SI-TASK7-001'
+      and stock_in.status = 'active'
+      and stock_in.created_by_employee_id = '72000000-0000-4000-8000-000000000001'
+      and inventory.payload->>'inventoryId' = 'INV-TASK7-001'
+      and inventory.status = 'active'
+      and inventory.created_by_employee_id = '72000000-0000-4000-8000-000000000001'
+    from public.purchase_records as purchase
+    cross join public.stock_in_records as stock_in
+    cross join public.inventory_items as inventory
+    where purchase.record_key = 'PO-TASK7-STOCK'
+      and stock_in.record_key = 'SI-TASK7-001'
+      and inventory.record_key = 'INV-TASK7-001'
+  ),
+  'stock-in commit persists all three rows with server audit and preserves payment data'
+);
+
+delete from public.permission_grants
+where subject_type = 'department'
+  and subject_code = '采购部'
+  and permission_key = 'module.inventory.update';
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"禁止保存"}'::jsonb,
+      'SI-TASK7-001',
+      '{
+        "stockInId":"SI-TASK7-001",
+        "sourcePurchaseId":"PO-TASK7-STOCK",
+        "stockInQuantity":3
+      }'::jsonb,
+      'INV-TASK7-001',
+      '{"inventoryId":"INV-TASK7-001","quantity":3}'::jsonb
+    )$$,
+  '42501',
+  'inventory update permission required',
+  'stock-in commit cannot update existing inventory rows without inventory update permission'
+);
+
+reset role;
+insert into public.permission_grants (
+  subject_type,
+  subject_code,
+  permission_key
+) values (
+  'department',
+  '采购部',
+  'module.inventory.update'
+);
+select is(
+  (
+    select payload->>'stockInStatus'
+    from public.purchase_records
+    where record_key = 'PO-TASK7-STOCK'
+  ),
+  '部分入库'::text,
+  'a denied inventory update rolls back the purchase patch'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+select lives_ok(
+  $$insert into pg_temp.task7_mutation_results (scenario, result)
+    values (
+      'stock-in-update',
+      public.commit_purchase_stock_in_secure(
+        'PO-TASK7-STOCK',
+        '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"已入库"}'::jsonb,
+        'SI-TASK7-001',
+        '{
+          "stockInId":"SI-TASK7-001",
+          "sourcePurchaseId":"PO-TASK7-STOCK",
+          "stockInQuantity":10
+        }'::jsonb,
+        'INV-TASK7-001',
+        '{"inventoryId":"INV-TASK7-001","quantity":10,"totalCost":10000}'::jsonb
+      )
+    )$$,
+  'stock-in commit updates all three existing active rows with update permissions'
+);
+
+reset role;
+select ok(
+  (select payload->>'stockInStatus' = '已入库'
+    from public.purchase_records where record_key = 'PO-TASK7-STOCK')
+    and (select count(*) = 1 and max((payload->>'stockInQuantity')::numeric) = 10
+      from public.stock_in_records where record_key = 'SI-TASK7-001')
+    and (select count(*) = 1 and max((payload->>'quantity')::numeric) = 10
+      from public.inventory_items where record_key = 'INV-TASK7-001'),
+  'stock-in upsert updates in place without duplicating stock or inventory rows'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"禁止保存"}'::jsonb,
+      'SI-TASK7-NO-CREATE',
+      '{"stockInId":"SI-TASK7-NO-CREATE","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-NO-CREATE',
+      '{"inventoryId":"INV-TASK7-NO-CREATE"}'::jsonb
+    )$$,
+  '42501',
+  'inventory create permission required',
+  'stock-in commit cannot insert either inventory row without inventory create permission'
+);
+
+reset role;
+select ok(
+  (select payload->>'stockInStatus' = '已入库'
+    from public.purchase_records where record_key = 'PO-TASK7-STOCK')
+    and not exists (
+      select 1 from public.stock_in_records where record_key = 'SI-TASK7-NO-CREATE'
+    )
+    and not exists (
+      select 1 from public.inventory_items where record_key = 'INV-TASK7-NO-CREATE'
+    ),
+  'a denied inventory create leaves all three durable rows unchanged'
+);
+
+create or replace function pg_temp.force_task7_inventory_failure()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $function$
+begin
+  if new.record_key = 'INV-TASK7-FORCED-FAILURE' then
+    raise exception using
+      errcode = 'P0001',
+      message = 'forced inventory failure';
+  end if;
+  return new;
+end;
+$function$;
+create trigger task7_force_inventory_failure
+before insert on public.inventory_items
+for each row execute function pg_temp.force_task7_inventory_failure();
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+select throws_ok(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK","stockInStatus":"不应提交"}'::jsonb,
+      'SI-TASK7-FORCED-FAILURE',
+      '{"stockInId":"SI-TASK7-FORCED-FAILURE","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-FORCED-FAILURE',
+      '{"inventoryId":"INV-TASK7-FORCED-FAILURE"}'::jsonb
+    )$$,
+  'P0001',
+  'forced inventory failure',
+  'a late inventory failure aborts the transactional stock-in RPC'
+);
+
+reset role;
+select ok(
+  (select payload->>'stockInStatus' = '已入库'
+    from public.purchase_records where record_key = 'PO-TASK7-STOCK')
+    and not exists (
+      select 1 from public.stock_in_records where record_key = 'SI-TASK7-FORCED-FAILURE'
+    )
+    and not exists (
+      select 1 from public.inventory_items where record_key = 'INV-TASK7-FORCED-FAILURE'
+    ),
+  'a late inventory failure rolls back the earlier purchase and stock-in writes'
+);
+drop trigger task7_force_inventory_failure on public.inventory_items;
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
 select is(
   (select count(*) from public.purchase_records),
   0::bigint,
@@ -671,15 +1470,80 @@ select results_eq(
   $$values (0::bigint)$$,
   'module-only purchase access still cannot update the direct sensitive table'
 );
-select throws_like(
+select throws_ok(
   $$insert into public.purchase_records (record_key, payload, status)
     values (
       'PO-TASK7-DIRECT',
       '{"purchaseId":"PO-TASK7-DIRECT"}'::jsonb,
       'active'
     )$$,
-  '%violates row-level security policy%',
-  'module-only purchase access still cannot insert through direct table RLS'
+  '42501',
+  'direct purchase record writes are not allowed',
+  'module-only purchase access cannot insert around the direct-write guard'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+select throws_ok(
+  $$insert into public.purchase_records (record_key, payload, status)
+    values (
+      'PO-TASK7-SENSITIVE-DIRECT',
+      '{"purchaseId":"PO-TASK7-SENSITIVE-DIRECT"}'::jsonb,
+      'active'
+    )$$,
+  '42501',
+  'direct purchase record writes are not allowed',
+  'even a payment-sensitive creator cannot directly insert a purchase row'
+);
+select throws_ok(
+  $$update public.purchase_records
+    set payload = payload || '{"directSensitiveBypass":true}'::jsonb
+    where record_key = 'PO-TASK7-GUARD-UPDATE'$$,
+  '42501',
+  'direct purchase record writes are not allowed',
+  'even a payment-sensitive updater cannot directly update a purchase row'
+);
+select throws_ok(
+  $$update public.purchase_records
+    set status = 'deleted'
+    where record_key = 'PO-TASK7-GUARD-DELETE'$$,
+  '42501',
+  'direct purchase record writes are not allowed',
+  'even a payment-sensitive deleter cannot directly soft-delete a purchase row'
+);
+
+select set_config('request.jwt.claim.role', 'service_role', true);
+select throws_ok(
+  $$update public.purchase_records
+    set status = 'deleted'
+    where record_key = 'PO-TASK7-GUARD-DELETE'$$,
+  '42501',
+  'direct purchase record writes are not allowed',
+  'forging the JWT role GUC cannot bypass the current_user purchase guard'
+);
+
+reset role;
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select set_config('request.jwt.claim.sub', '', true);
+select lives_ok(
+  $$insert into public.purchase_records (record_key, payload, status)
+    values (
+      'PO-TASK7-SERVICE-DIRECT',
+      '{"purchaseId":"PO-TASK7-SERVICE-DIRECT"}'::jsonb,
+      'active'
+    )$$,
+  'the actual service_role may directly insert a purchase row'
+);
+select lives_ok(
+  $$update public.purchase_records
+    set payload = payload || '{"serviceUpdated":true}'::jsonb
+    where record_key = 'PO-TASK7-SERVICE-DIRECT'$$,
+  'the actual service_role may directly update a purchase row'
+);
+select lives_ok(
+  $$delete from public.purchase_records
+    where record_key = 'PO-TASK7-SERVICE-DIRECT'$$,
+  'the actual service_role may directly delete a purchase row'
 );
 
 reset role;
@@ -704,6 +1568,18 @@ select throws_like(
   $$select public.soft_delete_purchase_record_secure('PO-TASK7-001')$$,
   '%permission denied for function soft_delete_purchase_record_secure%',
   'anon cannot execute the purchase soft-delete RPC'
+);
+select throws_like(
+  $$select public.commit_purchase_stock_in_secure(
+      'PO-TASK7-STOCK',
+      '{"purchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'SI-TASK7-ANON',
+      '{"stockInId":"SI-TASK7-ANON","sourcePurchaseId":"PO-TASK7-STOCK"}'::jsonb,
+      'INV-TASK7-ANON',
+      '{"inventoryId":"INV-TASK7-ANON"}'::jsonb
+    )$$,
+  '%permission denied for function commit_purchase_stock_in_secure%',
+  'anon cannot execute the transactional purchase stock-in RPC'
 );
 
 reset role;
