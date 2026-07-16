@@ -75,7 +75,13 @@ function normalizePurchases(purchaseRecords, anomalies) {
     const purchase = {
       ...record,
       purchaseId,
+      projectId: normalizedId(record?.projectId),
       totalCost: normalizedTotal.amount,
+    }
+    if (purchase.purchaseStatus !== VOID_PURCHASE_STATUS &&
+        normalizedId(record?.purchasePurpose) === '项目使用' &&
+        !purchase.projectId) {
+      pushAnomaly(anomalies, 'missing_project_allocation', { purchaseId, record: purchase })
     }
     purchases.push(purchase)
     purchasesById.set(purchaseId, purchase)
@@ -151,6 +157,25 @@ function sumPaymentAmounts(payments) {
   return payments.reduce((total, payment) => total + payment.jpyAmount, 0)
 }
 
+function paymentCacheMismatchFields(purchase, derivedCache) {
+  const mismatches = []
+
+  for (const field of ['paidAmount', 'unpaidAmount']) {
+    if (!Object.hasOwn(purchase, field)) continue
+    const normalized = normalizeYen(purchase[field], { blankIsZero: false })
+    if (!normalized.valid || normalized.amount !== derivedCache[field]) {
+      mismatches.push(field)
+    }
+  }
+
+  if (Object.hasOwn(purchase, 'paymentStatus') &&
+      purchase.paymentStatus !== derivedCache.paymentStatus) {
+    mismatches.push('paymentStatus')
+  }
+
+  return mismatches
+}
+
 function derivePurchaseRow(purchase, payments, anomalies) {
   const ledgerPaidAmount = sumPaymentAmounts(payments)
   const hasOpeningSnapshot = purchase.openingPaidAmount !== undefined &&
@@ -158,10 +183,12 @@ function derivePurchaseRow(purchase, payments, anomalies) {
     !(typeof purchase.openingPaidAmount === 'string' && purchase.openingPaidAmount.trim() === '')
   let openingPaidAmount = 0
   let legacyOpeningEstimated = false
+  let openingSnapshotReliable = false
 
   if (hasOpeningSnapshot) {
     const normalizedOpening = normalizeYen(purchase.openingPaidAmount)
     openingPaidAmount = normalizedOpening.amount
+    openingSnapshotReliable = normalizedOpening.valid
     if (!normalizedOpening.valid) {
       pushAnomaly(anomalies, 'invalid_purchase_amount', {
         purchaseId: purchase.purchaseId,
@@ -191,6 +218,21 @@ function derivePurchaseRow(purchase, payments, anomalies) {
 
   const paidAmount = openingPaidAmount + ledgerPaidAmount
   const unpaidAmount = Math.max(purchase.totalCost - paidAmount, 0)
+  const derivedPaymentStatus = paymentStatus(purchase.totalCost, paidAmount)
+  if (openingSnapshotReliable) {
+    const mismatchFields = paymentCacheMismatchFields(purchase, {
+      paidAmount,
+      unpaidAmount,
+      paymentStatus: derivedPaymentStatus,
+    })
+    if (mismatchFields.length > 0) {
+      pushAnomaly(anomalies, 'purchase_payment_cache_mismatch', {
+        purchaseId: purchase.purchaseId,
+        mismatchFields,
+        record: purchase,
+      })
+    }
+  }
   if (paidAmount > purchase.totalCost) {
     pushAnomaly(anomalies, 'overpayment', {
       purchaseId: purchase.purchaseId,
@@ -207,7 +249,7 @@ function derivePurchaseRow(purchase, payments, anomalies) {
     ledgerPaidAmount,
     paidAmount,
     unpaidAmount,
-    paymentStatus: paymentStatus(purchase.totalCost, paidAmount),
+    paymentStatus: derivedPaymentStatus,
     legacyOpeningEstimated,
   }
 }

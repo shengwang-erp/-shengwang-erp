@@ -23,6 +23,7 @@ const PAYMENT_ANOMALY_CODES = new Set([
   'orphan_payment',
   'void_purchase_payment',
   'overpayment',
+  'purchase_payment_cache_mismatch',
 ])
 
 const ANOMALY_LABELS = {
@@ -36,6 +37,8 @@ const ANOMALY_LABELS = {
   void_purchase_payment: '作废采购仍有关联付款',
   legacy_opening_payment: '旧采购初始付款为估算值',
   overpayment: '采购存在超额付款',
+  missing_project_allocation: '项目使用采购未绑定项目',
+  purchase_payment_cache_mismatch: '采购付款缓存与流水不一致',
 }
 
 function asArray(value) {

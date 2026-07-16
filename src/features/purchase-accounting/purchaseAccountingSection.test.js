@@ -185,7 +185,7 @@ test('renders order cost, payment cash, current payable, and source notice', () 
   assert.match(html, /<strong>¥10,000<\/strong><span>当前采购应付余额<\/span>/u)
   assert.match(html, /<strong>¥2,000<\/strong><span>本月初始付款<\/span>/u)
   assert.match(html, /<strong>1<\/strong><span>未取得发票数量<\/span>/u)
-  assert.match(html, /<strong>1<\/strong><span>异常付款数量<\/span>/u)
+  assert.match(html, /<strong>2<\/strong><span>异常付款数量<\/span>/u)
   assert.match(html, /数据来源：采购管理/u)
 })
 
@@ -213,6 +213,7 @@ test('renders read-only filters, anomaly guidance, and purchase detail rows', ()
   assert.match(html, /PO-JUL/u)
   assert.match(html, /PO-AUG/u)
   assert.match(html, /孤立付款/u)
+  assert.match(html, /采购付款缓存与流水不一致/u)
   assert.match(html, /采购数据更正请前往采购管理/u)
   assert.doesNotMatch(html, /<button|保存|删除/u)
 
@@ -228,6 +229,23 @@ test('renders read-only filters, anomaly guidance, and purchase detail rows', ()
   ]) {
     assert.match(componentSource, new RegExp(className, 'u'))
   }
+})
+
+test('shows project-allocation health without counting it as a payment anomaly', () => {
+  const html = renderSection({
+    purchaseRecords: [purchases[1], {
+      ...purchases[0],
+      purchaseId: 'PO-MISSING-PROJECT',
+      purchasePurpose: '项目使用',
+      projectId: '',
+      projectName: '',
+      paidAmount: 0,
+    }],
+    purchasePaymentRecords: [],
+  })
+
+  assert.match(html, /项目使用采购未绑定项目/u)
+  assert.match(html, /<strong>0<\/strong><span>异常付款数量<\/span>/u)
 })
 
 test('renders an empty detail state without mutation controls', () => {
@@ -875,7 +893,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
   assert.match(html, /<strong>¥0<\/strong><span>本月采购总额<\/span>/u)
   assert.match(html, /<strong>¥3,000<\/strong><span>本月实际付款<\/span>/u)
   assert.match(html, /<strong>¥7,000<\/strong><span>当前采购应付余额<\/span>/u)
-  assert.match(html, /<strong>2<\/strong><span>采购数据异常数量<\/span>/u)
+  assert.match(html, /<strong>3<\/strong><span>采购数据异常数量<\/span>/u)
   assert.match(html, /<strong>¥10,000<\/strong><span>项目成本合计<\/span>/u)
   assert.match(html, /<strong>¥90,000<\/strong><span>预估毛利润<\/span>/u)
   assert.match(html, /<th>项目已付采购金额<\/th>/u)

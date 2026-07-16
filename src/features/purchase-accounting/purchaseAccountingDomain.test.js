@@ -53,7 +53,7 @@ test('separates July purchase cost from August payment cash flow', () => {
 
 test('does not add payment cash to project purchase cost', () => {
   const readModel = buildPurchaseAccountingReadModel({
-    purchaseRecords: [purchase()],
+    purchaseRecords: [purchase({ paidAmount: 6000 })],
     paymentRecords: [payment({ paymentDate: '2026-07-20' })],
     month: '2026-07',
     projectId: 'P-1',
@@ -62,6 +62,27 @@ test('does not add payment cash to project purchase cost', () => {
   assert.equal(readModel.summary.monthPurchaseCost, 10000)
   assert.equal(readModel.summary.monthPaymentCash, 6000)
   assert.equal(readModel.rows[0].totalCost, 10000)
+})
+
+test('keeps project-use purchases without a project in company cost and reports allocation health', () => {
+  const readModel = buildPurchaseAccountingReadModel({
+    purchaseRecords: [purchase({
+      purchasePurpose: '项目使用',
+      projectId: '   ',
+      projectName: '',
+    })],
+    month: '2026-07',
+  })
+
+  assert.equal(readModel.summary.monthPurchaseCost, 10000)
+  assert.equal(readModel.rows.length, 1)
+  assert.deepEqual(readModel.anomalies.map(({ code, purchaseId }) => ({
+    code,
+    purchaseId,
+  })), [{
+    code: 'missing_project_allocation',
+    purchaseId: 'PO-1',
+  }])
 })
 
 test('excludes void purchases and reports payments linked to them', () => {
@@ -84,9 +105,23 @@ test('excludes void purchases and reports payments linked to them', () => {
   assert.equal(readModel.anomalies[0].code, 'void_purchase_payment')
 })
 
+test('does not report missing project allocation for void purchases', () => {
+  const readModel = buildPurchaseAccountingReadModel({
+    purchaseRecords: [purchase({
+      purchasePurpose: '项目使用',
+      projectId: '',
+      purchaseStatus: '作废',
+    })],
+    month: '2026-07',
+  })
+
+  assert.deepEqual(readModel.rows, [])
+  assert.deepEqual(readModel.anomalies, [])
+})
+
 test('accepts the first payment ID once and reports duplicate and orphan payments', () => {
   const readModel = buildPurchaseAccountingReadModel({
-    purchaseRecords: [purchase()],
+    purchaseRecords: [purchase({ paidAmount: 3000 })],
     paymentRecords: [
       payment({ paymentId: 'PP-1', jpyAmount: 3000 }),
       payment({ paymentId: 'PP-1', jpyAmount: 9000 }),
@@ -118,7 +153,7 @@ test('deduplicates purchase IDs before calculating purchase cost', () => {
 
 test('keeps actual overpayment cash while capping outstanding at zero', () => {
   const readModel = buildPurchaseAccountingReadModel({
-    purchaseRecords: [purchase()],
+    purchaseRecords: [purchase({ paidAmount: 12000 })],
     paymentRecords: [payment({ jpyAmount: 12000 })],
     month: '2026-08',
   })
@@ -145,7 +180,35 @@ test('derives and marks a legacy opening payment without double counting the led
   assert.equal(readModel.rows[0].unpaidAmount, 3000)
   assert.equal(readModel.rows[0].legacyOpeningEstimated, true)
   assert.equal(readModel.summary.monthOpeningPaid, 5000)
-  assert.equal(readModel.anomalies[0].code, 'legacy_opening_payment')
+  assert.deepEqual(readModel.anomalies.map((item) => item.code), [
+    'legacy_opening_payment',
+  ])
+})
+
+test('reports one cache mismatch with every divergent field when opening is reliable', () => {
+  const readModel = buildPurchaseAccountingReadModel({
+    purchaseRecords: [purchase({
+      openingPaidAmount: 1000,
+      paidAmount: 9000,
+      unpaidAmount: 'invalid',
+      paymentStatus: '未付款',
+    })],
+    paymentRecords: [payment({ jpyAmount: 3000 })],
+    month: '2026-08',
+  })
+
+  assert.equal(readModel.rows[0].paidAmount, 4000)
+  assert.equal(readModel.rows[0].unpaidAmount, 6000)
+  assert.equal(readModel.rows[0].paymentStatus, '部分付款')
+  assert.deepEqual(readModel.anomalies.map((item) => ({
+    code: item.code,
+    purchaseId: item.purchaseId,
+    mismatchFields: item.mismatchFields,
+  })), [{
+    code: 'purchase_payment_cache_mismatch',
+    purchaseId: 'PO-1',
+    mismatchFields: ['paidAmount', 'unpaidAmount', 'paymentStatus'],
+  }])
 })
 
 test('normalizes finite yen and prevents invalid amounts from polluting totals', () => {
@@ -175,9 +238,24 @@ test('normalizes finite yen and prevents invalid amounts from polluting totals',
 test('scopes rows, purchase cost, payment cash, and outstanding by project and source', () => {
   const readModel = buildPurchaseAccountingReadModel({
     purchaseRecords: [
-      purchase({ purchaseId: 'PO-1', projectId: 'P-1', purchaseSource: '中国采购' }),
-      purchase({ purchaseId: 'PO-2', projectId: 'P-2', purchaseSource: '中国采购' }),
-      purchase({ purchaseId: 'PO-3', projectId: 'P-1', purchaseSource: 'Amazon' }),
+      purchase({
+        purchaseId: 'PO-1',
+        projectId: 'P-1',
+        purchaseSource: '中国采购',
+        paidAmount: 1000,
+      }),
+      purchase({
+        purchaseId: 'PO-2',
+        projectId: 'P-2',
+        purchaseSource: '中国采购',
+        paidAmount: 2000,
+      }),
+      purchase({
+        purchaseId: 'PO-3',
+        projectId: 'P-1',
+        purchaseSource: 'Amazon',
+        paidAmount: 3000,
+      }),
     ],
     paymentRecords: [
       payment({ paymentId: 'PP-1', purchaseId: 'PO-1', jpyAmount: 1000 }),
