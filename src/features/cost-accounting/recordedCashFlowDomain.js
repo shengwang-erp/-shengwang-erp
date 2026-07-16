@@ -11,6 +11,7 @@ const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const POSIX_EDGE_SPACE = /^[\u0009-\u000d\u0020]+|[\u0009-\u000d\u0020]+$/gu
 const MAX_IDENTIFIER_LENGTH = 500
 const MALFORMED_ROW = Symbol('malformed-row')
+const READY_LABOR_SOURCES = new Set(['formal', 'legacy'])
 
 const INPUT_KEYS = Object.freeze([
   'months',
@@ -500,6 +501,10 @@ export function buildRecordedCashFlow(input) {
   for (const [month, row] of laborRowsByMonth) {
     if (!monthSet.has(month) || incompleteMonthSet.has(month) ||
         safeOwnValue(row, 'status') !== 'ready') continue
+    if (!READY_LABOR_SOURCES.has(safeOwnValue(row, 'source'))) {
+      anomaly(anomalies, 'laborWindow', month, 'invalid_labor_source', '人工来源必须是 formal 或 legacy。')
+      continue
+    }
     const map = safeProjectMap(safeOwnValue(row, 'projectLaborById'))
     const projectLaborTotal = safeYen(safeOwnValue(row, 'projectLaborTotal'))
     if (!map || projectLaborTotal === null || map.total !== projectLaborTotal) {

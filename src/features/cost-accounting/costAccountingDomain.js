@@ -6,6 +6,8 @@ const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const POSIX_EDGE_SPACE = /^[\u0009-\u000d\u0020]+|[\u0009-\u000d\u0020]+$/gu
 const MAX_IDENTIFIER_LENGTH = 500
 const MALFORMED_ROW = Symbol('malformed-row')
+const UNSUPPORTED_OUTPUT_DATA = Symbol('unsupported-output-data')
+const READY_LABOR_SOURCES = new Set(['formal', 'legacy'])
 
 const INPUT_KEYS = Object.freeze([
   'months',
@@ -113,34 +115,79 @@ function isSafeRow(value) {
   }
 }
 
-function detachedOwnDataSnapshot(value, seen = new WeakMap()) {
-  if (value === null || typeof value !== 'object') return value
-  if (seen.has(value)) return seen.get(value)
-  const output = Array.isArray(value) ? [] : {}
-  seen.set(value, output)
-  let names
+function supportedOwnDataSnapshot(value, ancestors = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : UNSUPPORTED_OUTPUT_DATA
+  }
+  if (typeof value !== 'object') return UNSUPPORTED_OUTPUT_DATA
+
+  let registered = false
   try {
-    names = Object.getOwnPropertyNames(value)
-  } catch {
-    return output
-  }
-  for (const key of names) {
-    if (Array.isArray(value) && key === 'length') continue
-    let descriptor
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key)
-    } catch {
-      continue
+    if (ancestors.has(value)) return UNSUPPORTED_OUTPUT_DATA
+    const array = Array.isArray(value)
+    const prototype = Object.getPrototypeOf(value)
+    if (array ? prototype !== Array.prototype :
+      (prototype !== Object.prototype && prototype !== null)) {
+      return UNSUPPORTED_OUTPUT_DATA
     }
-    if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue
-    Object.defineProperty(output, key, {
-      value: detachedOwnDataSnapshot(descriptor.value, seen),
-      enumerable: descriptor.enumerable,
-      writable: true,
-      configurable: true,
-    })
+
+    const keys = Reflect.ownKeys(value)
+    if (keys.some((key) => typeof key === 'symbol')) return UNSUPPORTED_OUTPUT_DATA
+    ancestors.add(value)
+    registered = true
+
+    if (array) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+      const length = lengthDescriptor?.value
+      if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value') ||
+          lengthDescriptor.enumerable !== false || !Number.isSafeInteger(length) ||
+          length < 0 || length > 0xffffffff) {
+        return UNSUPPORTED_OUTPUT_DATA
+      }
+      const output = new Array(length)
+      for (const key of keys) {
+        if (key === 'length') continue
+        if (!/^(?:0|[1-9]\d*)$/u.test(key)) return UNSUPPORTED_OUTPUT_DATA
+        const index = Number(key)
+        if (!Number.isSafeInteger(index) || index >= length || index > 0xfffffffe) {
+          return UNSUPPORTED_OUTPUT_DATA
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (!descriptor || descriptor.enumerable !== true ||
+            !Object.hasOwn(descriptor, 'value')) return UNSUPPORTED_OUTPUT_DATA
+        const child = supportedOwnDataSnapshot(descriptor.value, ancestors)
+        if (child === UNSUPPORTED_OUTPUT_DATA) return UNSUPPORTED_OUTPUT_DATA
+        Object.defineProperty(output, key, {
+          value: child,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        })
+      }
+      return output
+    }
+
+    const output = Object.create(prototype)
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || descriptor.enumerable !== true ||
+          !Object.hasOwn(descriptor, 'value')) return UNSUPPORTED_OUTPUT_DATA
+      const child = supportedOwnDataSnapshot(descriptor.value, ancestors)
+      if (child === UNSUPPORTED_OUTPUT_DATA) return UNSUPPORTED_OUTPUT_DATA
+      Object.defineProperty(output, key, {
+        value: child,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      })
+    }
+    return output
+  } catch {
+    return UNSUPPORTED_OUTPUT_DATA
+  } finally {
+    if (registered) ancestors.delete(value)
   }
-  return output
 }
 
 function validIdentifier(value) {
@@ -356,11 +403,13 @@ export function classifyManualProjectCosts(records = []) {
   }
   for (const row of rows) {
     if (row === MALFORMED_ROW || !isSafeRow(row)) continue
-    const type = safeOwnValue(row, 'costType')
+    const snapshot = supportedOwnDataSnapshot(row)
+    if (snapshot === UNSUPPORTED_OUTPUT_DATA) continue
+    const type = safeOwnValue(snapshot, 'costType')
     if (CONFIRMED_MANUAL_TYPES.has(type)) {
-      result.confirmedRows.push(detachedOwnDataSnapshot(row))
+      result.confirmedRows.push(snapshot)
     } else if (PENDING_MANUAL_TYPES.has(type)) {
-      result[pendingKeyByType[type]].push(detachedOwnDataSnapshot(row))
+      result[pendingKeyByType[type]].push(snapshot)
     }
   }
   return result
@@ -404,7 +453,14 @@ export function buildCostAccountingReadModel(input) {
     const salary = labor ? safeYen(safeOwnValue(labor, 'salaryTotal')) : null
     const projectLaborTotal = labor ? safeYen(safeOwnValue(labor, 'projectLaborTotal')) : null
     const projectMap = labor ? safeProjectMap(safeOwnValue(labor, 'projectLaborById')) : null
-    if (safeOwnValue(labor, 'status') !== 'ready' || salary === null ||
+    const laborStatus = safeOwnValue(labor, 'status')
+    const laborSource = safeOwnValue(labor, 'source')
+    if (laborStatus === 'ready' && !READY_LABOR_SOURCES.has(laborSource)) {
+      anomaly(anomalies, 'laborWindow', month, 'invalid_labor_source', '人工来源必须是 formal 或 legacy。')
+      anomaly(anomalies, 'laborWindow', month, 'incomplete_labor_month', '人工月份不完整，未以零值替代。')
+      continue
+    }
+    if (laborStatus !== 'ready' || salary === null ||
         projectLaborTotal === null || !projectMap || projectMap.total !== projectLaborTotal) {
       anomaly(anomalies, 'laborWindow', month, 'incomplete_labor_month', '人工月份不完整，未以零值替代。')
       continue
@@ -412,7 +468,7 @@ export function buildCostAccountingReadModel(input) {
     target.salary = salary
     target.laborStatus = 'ready'
     target.laborStale = safeOwnValue(labor, 'stale') === true
-    target.laborSource = safeOwnValue(labor, 'source') ?? null
+    target.laborSource = laborSource
     target.laborPendingCount = safeYen(safeOwnValue(labor, 'pendingCount'))
     target.incomplete = false
     for (const projectId of normalized.activeProjectIds) {
@@ -490,15 +546,20 @@ export function buildCostAccountingReadModel(input) {
   for (const { row, recordId } of collectActiveRows(normalized.manualProjectCosts, {
     source: 'manualProjectCosts', idFields: ['costRecordId'], anomalies,
   })) {
-    const fact = validateAmountAndMonth(row, 'amount', 'date', anomalies, 'manualProjectCosts', recordId)
+    const snapshot = supportedOwnDataSnapshot(row)
+    if (snapshot === UNSUPPORTED_OUTPUT_DATA) {
+      anomaly(anomalies, 'manualProjectCosts', recordId, 'unsupported_output_data', '记录包含不支持的输出数据。')
+      continue
+    }
+    const fact = validateAmountAndMonth(snapshot, 'amount', 'date', anomalies, 'manualProjectCosts', recordId)
     if (!fact) continue
-    const projectId = projectRelation(row, activeProjects, anomalies, 'manualProjectCosts', recordId)
+    const projectId = projectRelation(snapshot, activeProjects, anomalies, 'manualProjectCosts', recordId)
     if (!projectId) continue
-    const type = safeOwnValue(row, 'costType')
+    const type = safeOwnValue(snapshot, 'costType')
     if (PENDING_MANUAL_TYPES.has(type)) {
       if (monthSet.has(fact.month) &&
           (normalized.projectId === 'all' || normalized.projectId === projectId)) {
-        pending[pendingKeyByType[type]].push(detachedOwnDataSnapshot(row))
+        pending[pendingKeyByType[type]].push(snapshot)
       }
     } else if (CONFIRMED_MANUAL_TYPES.has(type)) {
       addFact({
@@ -527,17 +588,22 @@ export function buildCostAccountingReadModel(input) {
   for (const { row, recordId } of collectActiveRows(normalized.vehicleIssueRecords, {
     source: 'vehicleIssueRecords', idFields: ['issueId'], anomalies,
   })) {
-    const fact = validateAmountAndMonth(row, 'repairCost', 'issueDate', anomalies, 'vehicleIssueRecords', recordId)
+    const snapshot = supportedOwnDataSnapshot(row)
+    if (snapshot === UNSUPPORTED_OUTPUT_DATA) {
+      anomaly(anomalies, 'vehicleIssueRecords', recordId, 'unsupported_output_data', '记录包含不支持的输出数据。')
+      continue
+    }
+    const fact = validateAmountAndMonth(snapshot, 'repairCost', 'issueDate', anomalies, 'vehicleIssueRecords', recordId)
     if (!fact) continue
     let allocatedProject = null
-    if (safeOwnValue(row, 'allocateToProject') === true) {
-      allocatedProject = projectRelation(row, activeProjects, anomalies, 'vehicleIssueRecords', recordId)
-    } else if (safeOwnValue(row, 'projectId')) {
+    if (safeOwnValue(snapshot, 'allocateToProject') === true) {
+      allocatedProject = projectRelation(snapshot, activeProjects, anomalies, 'vehicleIssueRecords', recordId)
+    } else if (safeOwnValue(snapshot, 'projectId')) {
       anomaly(anomalies, 'vehicleIssueRecords', recordId, 'ignored_project_fields', '未启用项目分摊，项目字段已忽略。')
     }
     if (monthSet.has(fact.month) && (
       normalized.projectId === 'all' || normalized.projectId === allocatedProject
-    )) pending.vehicleRepairEstimates.push(detachedOwnDataSnapshot(row))
+    )) pending.vehicleRepairEstimates.push(snapshot)
   }
 
   const monthlyByMonth = {}
@@ -564,9 +630,12 @@ export function buildCostAccountingReadModel(input) {
     projectLifetimeById[projectId] = { ...value, total }
   }
 
-  const companyMonthlyTotal = detachedOwnDataSnapshot(
+  const companyMonthlyTotal = supportedOwnDataSnapshot(
     monthlyByMonth[normalized.selectedMonth],
   )
+  if (companyMonthlyTotal === UNSUPPORTED_OUTPUT_DATA) {
+    throw new TypeError('company monthly total contains unsupported output data')
+  }
   const selectedProjectMonth = normalized.projectId === 'all'
     ? null
     : projectByMonth.get(normalized.selectedMonth).get(normalized.projectId)

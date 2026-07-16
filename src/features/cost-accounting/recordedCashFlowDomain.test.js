@@ -249,6 +249,29 @@ test('salary coverage rejects reserved all in monthly and lifetime labor maps', 
   assert.equal(model.anomalies.some(({ code }) => code === 'invalid_labor_lifetime_map'), true)
 })
 
+test('salary coverage rejects ready labor rows with non-enum source values', () => {
+  for (const source of [{ unsafe: true }, () => {}, 'other', null]) {
+    const model = buildRecordedCashFlow(cashFixture({
+      receipts: [], purchasePaymentRows: [], fuelRecords: [], vehicleExpenseRecords: [],
+      laborWindow: {
+        ...laborWindow(),
+        monthly: [{
+          month: '2026-07', status: 'ready', stale: false,
+          salaryTotal: 300000, projectLaborTotal: 200000,
+          projectLaborById: { P1: 200000 }, source, pendingCount: 0,
+        }],
+      },
+      operatingExpenses: [], manualProjectCosts: [], vehicleIssueRecords: [],
+    }))
+
+    const salaryCoverage = model.coverage.find(
+      ({ code }) => code === 'salary_payment_missing',
+    )
+    assert.equal(salaryCoverage.excludedCount, 0)
+    assert.equal(model.anomalies.some(({ code }) => code === 'invalid_labor_source'), true)
+  }
+})
+
 test('project coverage and cash scope exclude company-only and other-project facts', () => {
   const projectModel = buildRecordedCashFlow(cashFixture({
     activeProjectIds: ['P1', 'P2'],

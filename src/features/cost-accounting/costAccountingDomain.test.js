@@ -135,6 +135,57 @@ test('manual classification snapshots isolate caller and output mutations in bot
   assert.equal(classified.manualLaborCosts[0].metadata.source, 'caller')
 })
 
+test('manual classification preserves sparse supported data and omits unsupported graphs', () => {
+  const sparse = new Array(4)
+  sparse[1] = { label: 'caller' }
+  const nullPrototype = Object.assign(Object.create(null), { note: 'safe' })
+  const cycle = {}
+  cycle.self = cycle
+  let accessorReads = 0
+  const accessor = {}
+  Object.defineProperty(accessor, 'secret', {
+    enumerable: true,
+    get() {
+      accessorReads += 1
+      return 'unsafe'
+    },
+  })
+  const valid = {
+    costRecordId: 'M-SPARSE', costType: '外包费', amount: 10,
+    projectId: 'P1', date: '2026-07-01',
+    metadata: { sparse, nullPrototype },
+  }
+  const unsupported = [
+    ['M-FUNCTION', () => {}],
+    ['M-SYMBOL', Symbol('unsafe')],
+    ['M-DATE', new Date('2026-07-01T00:00:00.000Z')],
+    ['M-MAP', new Map([['key', 'value']])],
+    ['M-SET', new Set(['value'])],
+    ['M-CYCLE', cycle],
+    ['M-ACCESSOR', accessor],
+  ].map(([costRecordId, metadata]) => ({
+    costRecordId, costType: '外包费', amount: 10,
+    projectId: 'P1', date: '2026-07-01', metadata,
+  }))
+
+  const classified = classifyManualProjectCosts([valid, ...unsupported])
+
+  assert.deepEqual(classified.confirmedRows.map((row) => row.costRecordId), ['M-SPARSE'])
+  const published = classified.confirmedRows[0]
+  assert.equal(published.metadata.sparse.length, 4)
+  assert.equal(Object.hasOwn(published.metadata.sparse, '0'), false)
+  assert.equal(Object.hasOwn(published.metadata.sparse, '1'), true)
+  assert.equal(Object.hasOwn(published.metadata.sparse, '2'), false)
+  assert.equal(Object.hasOwn(published.metadata.sparse, '3'), false)
+  assert.equal(Object.getPrototypeOf(published.metadata.nullPrototype), null)
+  assert.equal(accessorReads, 0)
+
+  published.metadata.sparse[1].label = 'output'
+  assert.equal(sparse[1].label, 'caller')
+  sparse[2] = { label: 'input' }
+  assert.equal(Object.hasOwn(published.metadata.sparse, '2'), false)
+})
+
 test('canonical July model counts authoritative accrual facts once and keeps estimates pending', () => {
   const model = buildCostAccountingReadModel(julyFixture())
 
@@ -184,6 +235,43 @@ test('cost model snapshots isolate pending rows and selected-month sibling branc
   assert.equal(model.monthlyByMonth['2026-07'].salary, 300000)
   model.monthlyByMonth['2026-07'].purchase = 2
   assert.equal(model.companyMonthlyTotal.purchase, 80000)
+})
+
+test('every manual and repair pending path omits unsupported row data with stable anomalies', () => {
+  const cycle = {}
+  cycle.self = cycle
+  const manualProjectCosts = [
+    ['M-L', '人工费', () => {}],
+    ['M-M', '材料费', new Date('2026-07-01T00:00:00.000Z')],
+    ['M-T', '工具费', new Map()],
+    ['M-V', '车辆费', cycle],
+    ['M-O', '外包费', new Set()],
+  ].map(([costRecordId, costType, metadata]) => ({
+    costRecordId, costType, metadata, amount: 10,
+    projectId: 'P1', date: '2026-07-07',
+  }))
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [],
+    manualProjectCosts,
+    vehicleIssueRecords: [{
+      issueId: 'VI-UNSUPPORTED', issueDate: '2026-07-06', repairCost: 10,
+      allocateToProject: true, projectId: 'P1', metadata: new Date(),
+    }],
+    operatingExpenses: [],
+  }))
+
+  assert.equal(model.pending.manualLaborCosts.length, 0)
+  assert.equal(model.pending.manualMaterialCosts.length, 0)
+  assert.equal(model.pending.manualToolCosts.length, 0)
+  assert.equal(model.pending.manualVehicleCosts.length, 0)
+  assert.equal(model.pending.vehicleRepairEstimates.length, 0)
+  assert.equal(model.companyMonthlyTotal.manual, 0)
+  assert.deepEqual(
+    model.anomalies
+      .filter(({ code }) => code === 'unsupported_output_data')
+      .map(({ recordId }) => recordId),
+    ['M-L', 'M-M', 'M-T', 'M-V', 'M-O', 'VI-UNSUPPORTED'],
+  )
 })
 
 test('project composition uses project labor and explicit allocations while company facts stay company-only', () => {
@@ -412,6 +500,26 @@ test('a ready labor row with a mismatched project total stays incomplete', () =>
   assert.equal(model.companyMonthlyTotal.salary, null)
   assert.equal(model.selectedComposition.labor, null)
   assert.equal(model.anomalies.some(({ code }) => code === 'incomplete_labor_month'), true)
+})
+
+test('ready labor rows reject non-enum source values without publishing them', () => {
+  for (const source of [{ unsafe: true }, () => {}, 'other', null]) {
+    const model = buildCostAccountingReadModel(julyFixture({
+      projectId: 'P1',
+      laborWindow: laborWindow({
+        monthly: [{
+          month: '2026-07', status: 'ready', stale: false,
+          salaryTotal: 300000, projectLaborTotal: 200000,
+          projectLaborById: { P1: 200000 }, source, pendingCount: 0,
+        }],
+      }),
+    }))
+
+    assert.equal(model.companyMonthlyTotal.salary, null)
+    assert.equal(model.companyMonthlyTotal.laborSource, null)
+    assert.equal(model.selectedComposition.labor, null)
+    assert.equal(model.anomalies.some(({ code }) => code === 'invalid_labor_source'), true)
+  }
 })
 
 test('duplicate labor months are deterministic first-wins and reported once', () => {
