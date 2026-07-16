@@ -17,6 +17,14 @@ import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import {
+  canRequestLaborAccountingBridge,
+  isLaborAccountingMonth,
+  normalizeBridgeSummary,
+  resolveMonthlyProjectLaborTotal,
+  resolveMonthlySalaryTotal,
+  resolveProjectLaborTotal,
+} from './features/labor-accounting/laborAccountingBridge.js'
+import {
   combinePersonnelProtectionSources,
   shouldBlockPersonnelExit,
 } from './features/employees/personnelCriticalState.js'
@@ -29,6 +37,7 @@ import { previewLocalContractRevenueMigration } from './services/contractRevenue
 import { persistLegacyContractRevenueMigration } from './services/contractRevenueMigration.js'
 import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
+import { laborAccountingService } from './services/laborAccountingService.js'
 import { canViewProjectFinancials } from './features/projects/projectPermissions.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
@@ -722,9 +731,25 @@ function getMonthlyAllocatedLaborCost(laborRecords = [], month = currentMonthVal
     .reduce((total, record) => total + toAmount(record.laborCost), 0)
 }
 
-function getLaborAllocationInfo(salaryRecords = [], employees = [], laborRecords = [], month = currentMonthValue()) {
-  const salaryPaidTotal = getMonthlySalaryPaidTotal(salaryRecords, employees, month)
-  const allocatedLaborCostTotal = getMonthlyAllocatedLaborCost(laborRecords, month)
+function getLaborAllocationInfo(
+  salaryRecords = [],
+  employees = [],
+  laborRecords = [],
+  month = currentMonthValue(),
+  bridge = null,
+) {
+  const legacySalaryTotal = getMonthlySalaryPaidTotal(salaryRecords, employees, month)
+  const legacyAllocatedLaborCostTotal = getMonthlyAllocatedLaborCost(laborRecords, month)
+  const salaryPaidTotal = resolveMonthlySalaryTotal({
+    month,
+    legacyTotal: legacySalaryTotal,
+    bridge,
+  })
+  const allocatedLaborCostTotal = resolveMonthlyProjectLaborTotal({
+    month,
+    legacyTotal: legacyAllocatedLaborCostTotal,
+    bridge,
+  })
   const unallocatedLaborCost = salaryPaidTotal - allocatedLaborCostTotal
   const laborAllocationRate =
     salaryPaidTotal > 0 ? Math.round((allocatedLaborCostTotal / salaryPaidTotal) * 100) : 0
@@ -738,13 +763,34 @@ function getLaborAllocationInfo(salaryRecords = [], employees = [], laborRecords
   }
 }
 
-function getProjectCostTotal(projectId, projectCostRecords, laborRecords = []) {
+function getProjectLaborCost(
+  projectId,
+  laborRecords = [],
+  bridge = null,
+  month = currentMonthValue(),
+) {
+  const legacyLaborCostTotal = laborRecords
+    .filter((record) => record.projectId === projectId)
+    .reduce((total, record) => total + toAmount(record.laborCost), 0)
+  return resolveProjectLaborTotal({
+    month,
+    projectId,
+    legacyTotal: legacyLaborCostTotal,
+    bridge,
+  })
+}
+
+function getProjectCostTotal(
+  projectId,
+  projectCostRecords,
+  laborRecords = [],
+  bridge = null,
+  month = currentMonthValue(),
+) {
   const manualCostTotal = projectCostRecords
     .filter((record) => record.projectId === projectId)
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const laborCostTotal = laborRecords
-    .filter((record) => record.projectId === projectId)
-    .reduce((total, record) => total + toAmount(record.laborCost), 0)
+  const laborCostTotal = getProjectLaborCost(projectId, laborRecords, bridge, month)
 
   return manualCostTotal + laborCostTotal
 }
@@ -777,10 +823,18 @@ function getVehicleCostTotal(fuelRecords = [], vehicleExpenseRecords = [], vehic
   )
 }
 
-function getGrossProfitInfo(project, projectCostRecords, laborRecords = [], vehicleCostTotal = 0) {
+function getGrossProfitInfo(
+  project,
+  projectCostRecords,
+  laborRecords = [],
+  vehicleCostTotal = 0,
+  bridge = null,
+  month = currentMonthValue(),
+) {
   const profitAnchorTaxExclusiveAmount = getProfitAnchorTaxExclusiveAmount(project)
   const projectCostTotal =
-    getProjectCostTotal(project.projectId, projectCostRecords, laborRecords) + vehicleCostTotal
+    getProjectCostTotal(project.projectId, projectCostRecords, laborRecords, bridge, month) +
+    vehicleCostTotal
   const estimatedGrossProfit = profitAnchorTaxExclusiveAmount - projectCostTotal
   const grossProfitRate =
     profitAnchorTaxExclusiveAmount > 0
@@ -1640,6 +1694,55 @@ function createEmptyToolResponsibilityForm() {
   }
 }
 
+function notifyBridgeAuthInvalid(callback, error) {
+  if (error?.authInvalid !== true || typeof callback !== 'function') return
+  try {
+    const result = callback(error)
+    if (result && typeof result.catch === 'function') void result.catch(() => {})
+  } catch {
+    // Authentication is already being invalidated; callback failures stay isolated.
+  }
+}
+
+function LaborBridgeStatusNotice({ eligible, state, onRetry }) {
+  if (!eligible) return null
+
+  const hasBridge = Boolean(state.bridge)
+  const messages = []
+  if (!hasBridge && state.loading) {
+    messages.push('正式核算正在加载，当前为历史估算')
+  } else if (!hasBridge && state.error) {
+    messages.push('正式核算暂不可用，当前为历史估算')
+  } else if (hasBridge && state.stale) {
+    messages.push(
+      state.error
+        ? '当前显示上次正式核算数据，刷新失败'
+        : '当前显示上次正式核算数据，正在刷新',
+    )
+  } else if (hasBridge && !state.bridge.isAuthoritative) {
+    messages.push('该月份尚未启用正式核算，当前为历史估算')
+  }
+  if (hasBridge && state.bridge.pendingCount > 0) {
+    messages.push(`正式核算还有 ${state.bridge.pendingCount} 项待确认`)
+  }
+  if (messages.length === 0) return null
+
+  return (
+    <div
+      className="empty-state cost-note warning-note"
+      role={state.error ? 'alert' : 'status'}
+      aria-live={state.error ? 'assertive' : 'polite'}
+    >
+      <span>{messages.join('；')}</span>
+      {state.error && (
+        <button className="back-button" type="button" onClick={onRetry}>
+          重试正式核算
+        </button>
+      )}
+    </div>
+  )
+}
+
 function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const {
@@ -1651,6 +1754,130 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     effectivePermissionKeys: currentUser.effectivePermissionKeys,
     onAuthInvalid: onLogout,
   })
+  const [accountingMonth, setAccountingMonth] = useState(currentMonthValue())
+  const handleAccountingMonthChange = useCallback((nextMonth) => {
+    if (!isLaborAccountingMonth(nextMonth)) return
+    setAccountingMonth(nextMonth)
+  }, [])
+  const bridgeTargetActive = ['accounting', 'dashboard', 'projects'].includes(currentView)
+  const bridgeRequestedMonth = currentView === 'accounting'
+    ? accountingMonth
+    : currentMonthValue()
+  const bridgePermissionFingerprint = useMemo(() => {
+    if (!Array.isArray(currentUser.effectivePermissionKeys)) return ''
+    return [...new Set(
+      currentUser.effectivePermissionKeys.filter((key) => typeof key === 'string'),
+    )].sort().join('\u001f')
+  }, [currentUser.effectivePermissionKeys])
+  const bridgeEligible = canRequestLaborAccountingBridge({
+    actorKey: currentUser.id,
+    effectivePermissionKeys: currentUser.effectivePermissionKeys,
+  })
+  const bridgeRequestIdentity = JSON.stringify([
+    currentUser.id,
+    bridgePermissionFingerprint,
+    bridgeTargetActive && bridgeEligible ? bridgeRequestedMonth : '',
+  ])
+  const bridgeRequestIdentityRef = useRef(bridgeRequestIdentity)
+  bridgeRequestIdentityRef.current = bridgeRequestIdentity
+  const bridgeRequestGenerationRef = useRef(0)
+  const [bridgeRetryToken, setBridgeRetryToken] = useState(0)
+  const [laborBridgeState, setLaborBridgeState] = useState({
+    identity: '',
+    month: '',
+    bridge: null,
+    loading: false,
+    stale: false,
+    error: '',
+  })
+  const retryLaborBridge = useCallback(() => {
+    setBridgeRetryToken((value) => value + 1)
+  }, [])
+  useEffect(() => {
+    const generation = bridgeRequestGenerationRef.current + 1
+    bridgeRequestGenerationRef.current = generation
+    const requestIdentity = bridgeRequestIdentity
+    let active = true
+
+    if (!bridgeTargetActive || !bridgeEligible) {
+      setLaborBridgeState({
+        identity: '',
+        month: '',
+        bridge: null,
+        loading: false,
+        stale: false,
+        error: '',
+      })
+      return () => { active = false }
+    }
+
+    setLaborBridgeState((current) => {
+      const sameMonthBridge = current.identity === requestIdentity &&
+        current.month === bridgeRequestedMonth &&
+        current.bridge
+        ? current.bridge
+        : null
+      return {
+        identity: requestIdentity,
+        month: bridgeRequestedMonth,
+        bridge: sameMonthBridge,
+        loading: true,
+        stale: Boolean(sameMonthBridge),
+        error: '',
+      }
+    })
+
+    const isCurrentRequest = () => !(
+      active === false ||
+      generation !== bridgeRequestGenerationRef.current ||
+      bridgeRequestIdentityRef.current !== requestIdentity
+    )
+
+    void laborAccountingService.getBridgeSummary({ month: bridgeRequestedMonth })
+      .then((value) => {
+        if (!isCurrentRequest()) return
+        const normalized = normalizeBridgeSummary(value)
+        if (normalized?.salaryMonth !== bridgeRequestedMonth) {
+          throw new Error('invalid labor accounting bridge response')
+        }
+        setLaborBridgeState({
+          identity: requestIdentity,
+          month: bridgeRequestedMonth,
+          bridge: normalized,
+          loading: false,
+          stale: false,
+          error: '',
+        })
+      })
+      .catch((error) => {
+        if (!isCurrentRequest()) return
+        setLaborBridgeState((current) => {
+          const sameMonthBridge = current.identity === requestIdentity &&
+            current.month === bridgeRequestedMonth &&
+            current.bridge
+            ? current.bridge
+            : null
+          return {
+            identity: requestIdentity,
+            month: bridgeRequestedMonth,
+            bridge: sameMonthBridge,
+            loading: false,
+            stale: Boolean(sameMonthBridge),
+            error: '正式核算暂不可用',
+          }
+        })
+        notifyBridgeAuthInvalid(onLogout, error)
+      })
+
+    return () => { active = false }
+  }, [
+    bridgeEligible,
+    bridgeRequestIdentity,
+    bridgeRequestedMonth,
+    bridgeRetryToken,
+    bridgeTargetActive,
+    onLogout,
+  ])
   const [personnelEmployees, setPersonnelEmployees] = useState([])
   const [personnelLoadState, setPersonnelLoadState] = useState({
     loading: false,
@@ -2385,6 +2612,29 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return voided
   }
 
+  const laborBridge = laborBridgeState.identity === bridgeRequestIdentity &&
+      laborBridgeState.month === bridgeRequestedMonth
+    ? laborBridgeState.bridge
+    : null
+  const laborBridgeDisplayState = laborBridgeState.identity === bridgeRequestIdentity &&
+      laborBridgeState.month === bridgeRequestedMonth
+    ? laborBridgeState
+    : {
+        identity: bridgeRequestIdentity,
+        month: bridgeRequestedMonth,
+        bridge: null,
+        loading: bridgeTargetActive && bridgeEligible,
+        stale: false,
+        error: '',
+      }
+  const bridgeStatusNotice = (
+    <LaborBridgeStatusNotice
+      eligible={bridgeTargetActive && bridgeEligible}
+      state={laborBridgeDisplayState}
+      onRetry={retryLaborBridge}
+    />
+  )
+
   const renderInDesktopShell = (page) => (
     <DesktopAdminShell
       currentView={currentView}
@@ -2423,19 +2673,22 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   if (currentView === 'projects') {
     return renderInDesktopShell(
-      <ProjectPage
-        projects={projects}
-        projectRevenueSnapshots={projectRevenueSnapshots}
-        currentUser={currentUser}
-        employeeDirectory={projectEmployeeDirectory}
-        directoryState={projectDirectoryState}
-        onRetryDirectory={refreshProjectEmployeeDirectory}
-        onCreateProject={handleCreateProject}
-        onUpdateProject={handleUpdateProject}
-        onDeleteProject={handleDeleteProject}
-        onOpenContractRevenue={openContractRevenue}
-        onBack={() => setCurrentView('home')}
-      />
+      <>
+        {bridgeStatusNotice}
+        <ProjectPage
+          projects={projects}
+          projectRevenueSnapshots={projectRevenueSnapshots}
+          currentUser={currentUser}
+          employeeDirectory={projectEmployeeDirectory}
+          directoryState={projectDirectoryState}
+          onRetryDirectory={refreshProjectEmployeeDirectory}
+          onCreateProject={handleCreateProject}
+          onUpdateProject={handleUpdateProject}
+          onDeleteProject={handleDeleteProject}
+          onOpenContractRevenue={openContractRevenue}
+          onBack={() => setCurrentView('home')}
+        />
+      </>
     )
   }
 
@@ -2488,6 +2741,9 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         toolReturnRecords={toolReturnRecords}
         lifelongToolAssignments={lifelongToolAssignments}
         toolResponsibilityRecords={toolResponsibilityRecords}
+        laborBridge={laborBridge}
+        bridgeStatusNotice={bridgeStatusNotice}
+        laborAlertCount={laborAlertCount}
         onBack={() => setCurrentView('home')}
       />
     )
@@ -2580,6 +2836,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         fuelRecords={fuelRecords}
         vehicleExpenseRecords={vehicleExpenseRecords}
         vehicleIssueRecords={vehicleIssueRecords}
+        monthFilter={accountingMonth}
+        onMonthFilterChange={handleAccountingMonthChange}
+        laborBridge={laborBridge}
+        bridgeStatusNotice={bridgeStatusNotice}
         onBack={() => setCurrentView('home')}
       />
     )
@@ -5091,6 +5351,10 @@ function AccountingCostPage({
   fuelRecords,
   vehicleExpenseRecords,
   vehicleIssueRecords,
+  monthFilter,
+  onMonthFilterChange,
+  laborBridge,
+  bridgeStatusNotice,
   onBack,
 }) {
   const [section, setSection] = useState('salary')
@@ -5103,6 +5367,7 @@ function AccountingCostPage({
 
   return (
     <PageShell title="会计成本中心" subtitle="AccountingCostCenter" onBack={onBack}>
+      {bridgeStatusNotice}
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
@@ -5146,6 +5411,9 @@ function AccountingCostPage({
           fuelRecords={fuelRecords}
           vehicleExpenseRecords={vehicleExpenseRecords}
           vehicleIssueRecords={vehicleIssueRecords}
+          monthFilter={monthFilter}
+          onMonthFilterChange={onMonthFilterChange}
+          laborBridge={laborBridge}
         />
       )}
     </PageShell>
@@ -5749,9 +6017,17 @@ function MonthlySummarySection({
   fuelRecords,
   vehicleExpenseRecords,
   vehicleIssueRecords,
+  monthFilter,
+  onMonthFilterChange,
+  laborBridge,
 }) {
-  const [monthFilter, setMonthFilter] = useState(currentMonthValue())
-  const laborAllocationInfo = getLaborAllocationInfo(salaryRecords, employees, laborRecords, monthFilter)
+  const laborAllocationInfo = getLaborAllocationInfo(
+    salaryRecords,
+    employees,
+    laborRecords,
+    monthFilter,
+    laborBridge,
+  )
   const totalSalary = laborAllocationInfo.salaryPaidTotal
   const totalProjectCost = projectCostRecords
     .filter((record) => monthFromDate(record.date) === monthFilter)
@@ -5808,7 +6084,7 @@ function MonthlySummarySection({
     <>
       <SectionTitle title="月度汇总" note={monthFilter} />
       <div className="filter-panel">
-        <Field label="统计月份" type="month" value={monthFilter} onChange={setMonthFilter} />
+        <Field label="统计月份" type="month" value={monthFilter} onChange={onMonthFilterChange} />
       </div>
       <div className="stats-grid">
         <div className="stat-card money">
@@ -6605,7 +6881,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
 
   const uniqueEmployeeCount = new Set(filteredRecords.map((record) => record.employeeId).filter(Boolean)).size
   const totalHours = filteredRecords.reduce((total, record) => total + (Number(record.workHours) || 0), 0)
-  const totalLaborCost = filteredRecords.reduce((total, record) => total + toAmount(record.laborCost), 0)
   const restLeaveCount = filteredRecords.filter((record) =>
     ['休息', '请假', '调休'].includes(record.workType),
   ).length
@@ -6634,6 +6909,9 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
   return (
     <>
       <SectionTitle title="员工出工动向" note="按员工、项目、日期查询" />
+      <div className="empty-state cost-note">
+        历史出工明细仅供核对人数、工时和记录；金额请以人工记录中的正式核算看板为准。
+      </div>
       <div className="filter-panel">
         <Field label="开始日期" type="date" value={filters.startDate} onChange={(value) => setFilters({ ...filters, startDate: value })} />
         <Field label="结束日期" type="date" value={filters.endDate} onChange={(value) => setFilters({ ...filters, endDate: value })} />
@@ -6648,7 +6926,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
         <div className="stat-card"><strong>{filteredRecords.length}</strong><span>出工记录数</span></div>
         <div className="stat-card"><strong>{uniqueEmployeeCount}</strong><span>出工员工数</span></div>
         <div className="stat-card"><strong>{totalHours}</strong><span>总工时</span></div>
-        <div className="stat-card money"><strong>{formatYen(totalLaborCost)}</strong><span>项目人工分摊合计</span></div>
         <div className="stat-card"><strong>{filteredRecords.filter((record) => record.workType === '正常出勤').length}</strong><span>正常出勤数量</span></div>
         <div className="stat-card"><strong>{filteredRecords.filter((record) => record.workType === '加班').length}</strong><span>加班数量</span></div>
         <div className="stat-card"><strong>{restLeaveCount}</strong><span>请假/休息数量</span></div>
@@ -6731,7 +7008,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                     <strong>{employee.employeeName}</strong>
                     <span>{employee.department}｜{employee.position}</span>
                   </div>
-                  <span className="amount-pill">{formatYen(employee.totalLaborCost)}</span>
                 </div>
                 <dl className="detail-list compact">
                   <div><dt>出工天数</dt><dd>{employee.workDays}</dd></div>
@@ -6748,7 +7024,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                         <span>时间：{record.startTime || '--'}-{record.endTime || '--'}</span>
                         <span>工时：{record.workHours} 小时</span>
                         <span>工作内容：{record.jobContent || record.remark || '未填写'}</span>
-                        <span>项目人工分摊：{formatYen(record.laborCost)}</span>
                       </article>
                     ))}
                   </div>
@@ -6775,7 +7050,7 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                 <div className="timeline-list">
                   {group.items.map((record) => (
                     <div className="compact-line" key={record.laborRecordId}>
-                      {record.employeeName}｜{record.projectName || record.workLocationType}｜{record.startTime || '--'}-{record.endTime || '--'}｜{record.workHours}小时｜{formatYen(record.laborCost)}
+                      {record.employeeName}｜{record.projectName || record.workLocationType}｜{record.startTime || '--'}-{record.endTime || '--'}｜{record.workHours}小时
                     </div>
                   ))}
                 </div>
@@ -6797,19 +7072,17 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                     <strong>{project.projectName}</strong>
                     <span>{project.recordCount} 条出工记录</span>
                   </div>
-                  <span className="amount-pill">{formatYen(project.totalLaborCost)}</span>
                 </div>
                 <dl className="detail-list compact">
                   <div><dt>出工人数</dt><dd>{project.peopleCount}</dd></div>
                   <div><dt>总工时</dt><dd>{project.totalHours}</dd></div>
-                  <div><dt>项目人工分摊合计</dt><dd>{formatYen(project.totalLaborCost)}</dd></div>
                 </dl>
                 <details className="batch-detail">
                   <summary>查看项目人工明细</summary>
                   <div className="timeline-list">
                     {project.records.map((record) => (
                       <div className="compact-line" key={record.laborRecordId}>
-                        {record.workDate}｜{record.employeeName}｜{record.startTime || '--'}-{record.endTime || '--'}｜{record.workHours}小时｜{record.jobContent || '未填写'}｜{formatYen(record.laborCost)}
+                        {record.workDate}｜{record.employeeName}｜{record.startTime || '--'}-{record.endTime || '--'}｜{record.workHours}小时｜{record.jobContent || '未填写'}
                       </div>
                     ))}
                   </div>
@@ -6840,7 +7113,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                 <th>加班次数</th>
                 <th>请假/休息次数</th>
                 <th>涉及工程项目数量</th>
-                <th>项目人工分摊合计</th>
               </tr>
             </thead>
             <tbody>
@@ -6855,7 +7127,6 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
                   <td>{item.overtimeCount}</td>
                   <td>{item.restLeaveCount}</td>
                   <td>{item.projectCount}</td>
-                  <td>{formatYen(item.totalLaborCost)}</td>
                 </tr>
               ))}
             </tbody>
@@ -6874,7 +7145,6 @@ function LaborMovementCard({ record, hasConflict = false, isLongDay = false, com
           <strong>{record.employeeName}</strong>
           <span>{record.workDate}｜{record.projectName || record.workLocationType}</span>
         </div>
-        <span className="amount-pill">{formatYen(record.laborCost)}</span>
       </div>
       <dl className="detail-list compact">
         <div><dt>部门</dt><dd>{record.department || '未填写'}</dd></div>
@@ -6912,7 +7182,6 @@ function buildEmployeeMonthlyLaborStats(records, month) {
         overtimeCount: 0,
         restLeaveCount: 0,
         projectIds: new Set(),
-        totalLaborCost: 0,
       }
       current.dates.add(record.workDate)
       current.totalHours += Number(record.workHours) || 0
@@ -6920,7 +7189,6 @@ function buildEmployeeMonthlyLaborStats(records, month) {
       if (record.workType === '加班') current.overtimeCount += 1
       if (['休息', '请假', '调休'].includes(record.workType)) current.restLeaveCount += 1
       if (record.projectId) current.projectIds.add(record.projectId)
-      current.totalLaborCost += toAmount(record.laborCost)
       return { ...result, [key]: current }
     }, {})
 
@@ -6935,7 +7203,6 @@ function buildEmployeeMonthlyLaborStats(records, month) {
     overtimeCount: item.overtimeCount,
     restLeaveCount: item.restLeaveCount,
     projectCount: item.projectIds.size,
-    totalLaborCost: item.totalLaborCost,
   }))
 }
 
@@ -6950,12 +7217,10 @@ function buildEmployeeLaborStats(records) {
       dates: new Set(),
       totalHours: 0,
       projectIds: new Set(),
-      totalLaborCost: 0,
     }
     current.dates.add(record.workDate)
     current.totalHours += Number(record.workHours) || 0
     if (record.projectId) current.projectIds.add(record.projectId)
-    current.totalLaborCost += toAmount(record.laborCost)
     return { ...result, [key]: current }
   }, {})
 
@@ -6967,7 +7232,6 @@ function buildEmployeeLaborStats(records) {
     workDays: item.dates.size,
     totalHours: Number(item.totalHours.toFixed(2)),
     projectCount: item.projectIds.size,
-    totalLaborCost: item.totalLaborCost,
   }))
 }
 
@@ -6997,7 +7261,6 @@ function buildProjectLaborStats(records) {
       peopleCount: new Set(group.items.map((record) => record.employeeId).filter(Boolean)).size,
       recordCount: group.items.length,
       totalHours: group.items.reduce((total, record) => total + (Number(record.workHours) || 0), 0),
-      totalLaborCost: group.items.reduce((total, record) => total + toAmount(record.laborCost), 0),
       records: group.items,
     }
   })
@@ -7374,6 +7637,9 @@ function DashboardPage({
   toolReturnRecords,
   lifelongToolAssignments,
   toolResponsibilityRecords,
+  laborBridge,
+  bridgeStatusNotice,
+  laborAlertCount,
   onBack,
 }) {
   const [projectId, setProjectId] = useState('')
@@ -7383,15 +7649,16 @@ function DashboardPage({
   const selectedProject = projects.find((project) => project.projectId === projectId)
   const normalizedLaborRecords = records.labor.map((record) => normalizeLaborRecord(record))
   const todayLaborRecords = normalizedLaborRecords.filter((record) => record.workDate === todayValue())
-  const currentMonthLaborRecords = normalizedLaborRecords.filter(
-    (record) => monthFromDate(record.workDate) === currentMonthValue(),
-  )
   const laborAllocationInfo = getLaborAllocationInfo(
     salaryRecords,
     employees,
     normalizedLaborRecords,
+    currentMonthValue(),
+    laborBridge,
   )
-  const laborExceptionCount = getLaborExceptions(normalizedLaborRecords).length
+  const laborExceptionCount = Number.isSafeInteger(laborAlertCount) && laborAlertCount >= 0
+    ? laborAlertCount
+    : 0
   const returnedToolBorrowIds = new Set(
     toolReturnRecords.map((record) => record.borrowRecordId).filter(Boolean),
   )
@@ -7433,7 +7700,7 @@ function DashboardPage({
         detail: 'labor',
         extra: [
           `今日出工人数 ${new Set(todayLaborRecords.map((record) => record.employeeId).filter(Boolean)).size}`,
-          `本月项目人工分摊 ${formatYen(currentMonthLaborRecords.reduce((total, record) => total + toAmount(record.laborCost), 0))}`,
+          `本月项目人工分摊 ${formatYen(laborAllocationInfo.allocatedLaborCostTotal)}`,
           `异常提醒 ${laborExceptionCount}`,
         ],
       },
@@ -7483,7 +7750,7 @@ function DashboardPage({
     temporaryToolBorrowCount,
     toolUnpaidCompensation,
     todayLaborRecords,
-    currentMonthLaborRecords,
+    laborAllocationInfo.allocatedLaborCostTotal,
     laborExceptionCount,
   ])
 
@@ -7546,7 +7813,13 @@ function DashboardPage({
     const totalProjectCost = financialScopeProjects.reduce(
       (total, project) =>
         total +
-        getProjectCostTotal(project.projectId, projectCostRecords, records.labor) +
+        getProjectCostTotal(
+          project.projectId,
+          projectCostRecords,
+          records.labor,
+          laborBridge,
+          currentMonthValue(),
+        ) +
         getProjectPurchaseTotal(project.projectId, purchaseRecords) +
         getProjectVehicleCostTotal(
           project.projectId,
@@ -7572,7 +7845,7 @@ function DashboardPage({
       { label: '预估毛利润', value: formatYen(estimatedGrossProfit), tone: 'money' },
       { label: '毛利率', value: formatPercent(grossProfitRate) },
     ]
-  }, [financialScopeProjects, projectCostRecords, records.labor, purchaseRecords, fuelRecords, vehicleExpenseRecords, vehicleIssueRecords])
+  }, [financialScopeProjects, projectCostRecords, records.labor, purchaseRecords, fuelRecords, vehicleExpenseRecords, vehicleIssueRecords, laborBridge])
 
   const personnelStats = useMemo(() => {
     const visibleEmployees = employees.filter((employee) => !isHiddenSystemEmployee(employee))
@@ -7663,6 +7936,7 @@ function DashboardPage({
             <h1>人工记录详情</h1>
           </div>
         </header>
+        {bridgeStatusNotice}
         <LaborMovementSection laborRecords={records.labor} employees={employees} projects={projects} />
       </main>
     )
@@ -7680,6 +7954,7 @@ function DashboardPage({
             <h1>车辆使用详情</h1>
           </div>
         </header>
+        {bridgeStatusNotice}
         <VehicleDashboardDetail
           projects={projects}
           employees={employees}
@@ -7705,6 +7980,7 @@ function DashboardPage({
             <h1>工具详情</h1>
           </div>
         </header>
+        {bridgeStatusNotice}
         <ToolDashboardDetail
           employees={employees}
           toolRecords={toolRecords}
@@ -7719,6 +7995,7 @@ function DashboardPage({
 
   return (
     <PageShell title="老板驾驶舱" subtitle="经营看板 · 利润统计" onBack={onBack}>
+      {bridgeStatusNotice}
       {projects.length === 0 && <EmptyState text="请先在工程项目中新增项目" />}
 
       <div className="form-panel">
@@ -7909,9 +8186,11 @@ function DashboardPage({
                 const projectLaborRecords = records.labor
                   .map((record) => normalizeLaborRecord(record))
                   .filter((record) => record.projectId === project.projectId)
-                const projectLaborCost = projectLaborRecords.reduce(
-                  (total, record) => total + toAmount(record.laborCost),
-                  0,
+                const projectLaborCost = getProjectLaborCost(
+                  project.projectId,
+                  records.labor,
+                  laborBridge,
+                  currentMonthValue(),
                 )
                 const projectLaborHours = projectLaborRecords.reduce(
                   (total, record) => total + (Number(record.workHours) || 0),
@@ -7978,6 +8257,8 @@ function DashboardPage({
                   projectCostRecords,
                   records.labor,
                   projectVehicleTotal,
+                  laborBridge,
+                  currentMonthValue(),
                 )
                 const estimatedGrossProfit =
                   profitInfo.profitAnchorTaxExclusiveAmount -

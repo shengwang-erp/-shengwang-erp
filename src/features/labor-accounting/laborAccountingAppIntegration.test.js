@@ -200,3 +200,196 @@ test('shell integration keeps the thirteen-route menu contract and avoids CSS mu
   assert.match(shellSource, /<strong>[\s\S]*?<em[\s\S]*?data-labor-alert-badge/u)
   assert.doesNotMatch(shellSource, /import\s+['"].*styles\.css/u)
 })
+
+test('App loads the formal accounting bridge only for exact identity, permissions, views, and month', () => {
+  assert.match(
+    appSource,
+    /import \{ laborAccountingService \} from '.\/services\/laborAccountingService\.js'/u,
+  )
+  assert.match(
+    appSource,
+    /import \{[\s\S]*?canRequestLaborAccountingBridge[\s\S]*?normalizeBridgeSummary[\s\S]*?\} from '.\/features\/labor-accounting\/laborAccountingBridge\.js'/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /const \[accountingMonth, setAccountingMonth\] = useState\(currentMonthValue\(\)\)/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /bridgeTargetActive\s*=\s*\['accounting', 'dashboard', 'projects'\]\.includes\(currentView\)/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /bridgeRequestedMonth\s*=\s*currentView === 'accounting'[\s\S]*?accountingMonth[\s\S]*?currentMonthValue\(\)/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /canRequestLaborAccountingBridge\(\{[\s\S]*?actorKey:\s*currentUser\.id[\s\S]*?effectivePermissionKeys:\s*currentUser\.effectivePermissionKeys[\s\S]*?\}\)/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /laborAccountingService\.getBridgeSummary\(\{\s*month:\s*bridgeRequestedMonth\s*\}\)/u,
+  )
+  assert.equal(
+    (authenticatedApp.match(/laborAccountingService\.getBridgeSummary\(/gu) || []).length,
+    1,
+  )
+
+  const bridgeEligibilitySource = sliceBetween(
+    authenticatedApp,
+    'const bridgeTargetActive',
+    'const bridgeRequestedMonth',
+  )
+  assert.doesNotMatch(
+    bridgeEligibilitySource,
+    /role|employeeNumber|SW-000|department|position|isSuperAdmin/u,
+  )
+})
+
+test('bridge request lifecycle fences actor, permission, view, month, and generation', () => {
+  assert.match(authenticatedApp, /bridgeRequestGenerationRef\s*=\s*useRef\(0\)/u)
+  assert.match(authenticatedApp, /bridgeRequestIdentityRef\s*=\s*useRef/u)
+  assert.match(authenticatedApp, /bridgeRequestIdentityRef\.current\s*=\s*bridgeRequestIdentity/u)
+  assert.match(authenticatedApp, /generation\s*!==\s*bridgeRequestGenerationRef\.current/u)
+  assert.match(authenticatedApp, /bridgeRequestIdentityRef\.current\s*!==\s*requestIdentity/u)
+  assert.match(authenticatedApp, /active\s*===\s*false/u)
+  assert.match(authenticatedApp, /normalizeBridgeSummary\(value\)/u)
+  assert.match(authenticatedApp, /normalized\?\.salaryMonth\s*!==\s*bridgeRequestedMonth/u)
+  assert.match(
+    authenticatedApp,
+    /notifyBridgeAuthInvalid\(onLogout, error\)/u,
+  )
+  assert.match(
+    authenticatedApp,
+    /current\.identity === requestIdentity &&[\s\S]*?current\.month === bridgeRequestedMonth &&[\s\S]*?current\.bridge/u,
+  )
+  assert.match(authenticatedApp, /identity:\s*requestIdentity/u)
+  assert.match(
+    authenticatedApp,
+    /laborBridgeState\.identity === bridgeRequestIdentity &&[\s\S]*?laborBridgeState\.month === bridgeRequestedMonth/u,
+  )
+  assert.match(authenticatedApp, /stale:\s*Boolean\(sameMonthBridge\)/u)
+  assert.match(authenticatedApp, /setBridgeRetryToken\(\(value\) => value \+ 1\)/u)
+})
+
+test('accounting month is controlled by AuthenticatedApp and bridge status is visible and retryable', () => {
+  const accountingPage = sliceBetween(appSource, 'function AccountingCostPage', '\nfunction SalaryRecordsSection')
+  const monthlySummary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
+
+  assert.match(authenticatedApp, /monthFilter=\{accountingMonth\}/u)
+  assert.match(authenticatedApp, /onMonthFilterChange=\{handleAccountingMonthChange\}/u)
+  assert.match(
+    authenticatedApp,
+    /handleAccountingMonthChange[\s\S]*?if \(!isLaborAccountingMonth\(nextMonth\)\) return[\s\S]*?setAccountingMonth\(nextMonth\)/u,
+  )
+  assert.match(accountingPage, /monthFilter/u)
+  assert.match(accountingPage, /onMonthFilterChange/u)
+  assert.match(
+    accountingPage,
+    /<MonthlySummarySection[\s\S]*?monthFilter=\{monthFilter\}[\s\S]*?onMonthFilterChange=\{onMonthFilterChange\}/u,
+  )
+  assert.doesNotMatch(monthlySummary, /useState\(currentMonthValue\(\)\)/u)
+  assert.match(
+    monthlySummary,
+    /<Field label="统计月份" type="month" value=\{monthFilter\} onChange=\{onMonthFilterChange\}/u,
+  )
+
+  assert.match(appSource, /正式核算正在加载，当前为历史估算/u)
+  assert.match(appSource, /正式核算暂不可用，当前为历史估算/u)
+  assert.match(appSource, /上次正式核算数据/u)
+  assert.match(appSource, /尚未启用正式核算，当前为历史估算/u)
+  assert.match(appSource, /待确认/u)
+  assert.match(appSource, /onRetry/u)
+})
+
+test('bridge errors use alert semantics and auth invalidation callback failures stay isolated', () => {
+  const notice = sliceBetween(appSource, 'function LaborBridgeStatusNotice', '\nfunction AuthenticatedApp')
+  const notifier = sliceBetween(appSource, 'function notifyBridgeAuthInvalid', '\nfunction LaborBridgeStatusNotice')
+
+  assert.match(notice, /role=\{state\.error \? 'alert' : 'status'\}/u)
+  assert.match(notice, /aria-live=\{state\.error \? 'assertive' : 'polite'\}/u)
+  assert.match(notifier, /try \{/u)
+  assert.match(notifier, /const result = callback\(error\)/u)
+  assert.match(notifier, /void result\.catch\(\(\) => \{\}\)/u)
+  assert.match(notifier, /catch \{/u)
+  assert.match(authenticatedApp, /notifyBridgeAuthInvalid\(onLogout, error\)/u)
+  assert.doesNotMatch(authenticatedApp, /if \(error\?\.authInvalid === true\) onLogout\(\)/u)
+})
+
+test('monthly accounting and dashboard replace legacy totals without double counting', () => {
+  const allocationHelper = sliceBetween(
+    appSource,
+    'function getLaborAllocationInfo',
+    '\nfunction getProjectLaborCost',
+  )
+  const monthlySummary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
+  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
+
+  assert.match(allocationHelper, /resolveMonthlySalaryTotal\(\{/u)
+  assert.match(allocationHelper, /resolveMonthlyProjectLaborTotal\(\{/u)
+  assert.match(allocationHelper, /month,/u)
+  assert.match(allocationHelper, /bridge,/u)
+  assert.doesNotMatch(allocationHelper, /legacySalaryTotal\s*\+|legacyAllocatedLaborCostTotal\s*\+/u)
+  assert.match(monthlySummary, /getLaborAllocationInfo\([\s\S]*?monthFilter,[\s\S]*?laborBridge/u)
+  assert.match(dashboard, /getLaborAllocationInfo\([\s\S]*?currentMonthValue\(\),[\s\S]*?laborBridge/u)
+  assert.match(dashboard, /本月项目人工分摊/u)
+  assert.match(dashboard, /laborAllocationInfo\.allocatedLaborCostTotal/u)
+})
+
+test('all dashboard cost and gross-profit amounts choose lifetime bridge labor exactly once', () => {
+  const projectLaborHelper = sliceBetween(
+    appSource,
+    'function getProjectLaborCost',
+    '\nfunction getProjectCostTotal',
+  )
+  const projectCostHelper = sliceBetween(
+    appSource,
+    'function getProjectCostTotal',
+    '\nfunction getProjectPurchaseTotal',
+  )
+  const grossProfitHelper = sliceBetween(
+    appSource,
+    'function getGrossProfitInfo',
+    '\nfunction normalizeVehicleRecord',
+  )
+  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
+
+  assert.match(projectLaborHelper, /resolveProjectLaborTotal\(\{/u)
+  assert.match(projectLaborHelper, /legacyTotal:\s*legacyLaborCostTotal/u)
+  assert.match(projectCostHelper, /getProjectLaborCost\([\s\S]*?bridge[\s\S]*?month/u)
+  assert.match(grossProfitHelper, /getProjectCostTotal\([\s\S]*?bridge[\s\S]*?month/u)
+  assert.match(dashboard, /getProjectLaborCost\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
+  assert.match(dashboard, /getGrossProfitInfo\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
+  assert.match(dashboard, /getProjectCostTotal\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
+  assert.doesNotMatch(dashboard, /\+\s*(?:laborBridge|bridge\.)/u)
+})
+
+test('legacy dashboard drilldown keeps historical facts but never presents legacy money as formal', () => {
+  const movement = sliceBetween(
+    appSource,
+    'function LaborMovementSection',
+    '\nfunction LaborMovementCard',
+  )
+  const movementCard = sliceBetween(
+    appSource,
+    'function LaborMovementCard',
+    '\nfunction buildEmployeeMonthlyLaborStats',
+  )
+
+  assert.match(movement, /历史出工明细/u)
+  assert.match(movement, /金额请以人工记录中的正式核算看板为准/u)
+  assert.doesNotMatch(movement, /formatYen\([^\n]*(?:laborCost|totalLaborCost)/u)
+  assert.doesNotMatch(movementCard, /formatYen\([^\n]*laborCost/u)
+})
+
+test('owner dashboard uses the server alert count instead of legacy exception heuristics', () => {
+  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
+
+  assert.match(authenticatedApp, /<DashboardPage[\s\S]*?laborAlertCount=\{laborAlertCount\}/u)
+  assert.match(dashboard, /laborAlertCount/u)
+  assert.match(
+    dashboard,
+    /laborExceptionCount\s*=\s*Number\.isSafeInteger\(laborAlertCount\)[\s\S]*?laborAlertCount\s*:\s*0/u,
+  )
+  assert.doesNotMatch(dashboard, /getLaborExceptions\(normalizedLaborRecords\)\.length/u)
+})
