@@ -149,6 +149,7 @@ function resolutionDetail({
   canViewSalary = true,
   canViewProjectCosts = true,
   hasResolution = true,
+  hasMoneyScope = true,
 } = {}) {
   const permissions = {
     canResolve: true,
@@ -209,6 +210,7 @@ function resolutionDetail({
       workedMinutesReference: 480,
       sessions: [attendanceSession()],
     },
+    hasMoneyScope,
     permissions,
     salary,
     resolution,
@@ -635,7 +637,7 @@ test('resolution detail accepts only explicit salary and project-money variants'
     })
     assert.equal(Object.hasOwn(result.allocations[0], 'amount'), variant.amount)
   }
-  const noResolution = resolutionDetail({ hasResolution: false })
+  const noResolution = resolutionDetail({ hasResolution: false, hasMoneyScope: false })
   const { service } = serviceWithResponder(() => noResolution)
   assert.equal((await service.getResolutionDetail({
     employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
@@ -650,6 +652,56 @@ test('resolution detail accepts only explicit salary and project-money variants'
     const malformedService = serviceWithResponder(() => malformed).service
     await assert.rejects(
       () => malformedService.getResolutionDetail({ employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('resolution detail preserves server money scope independently of visible money and attendance units', async () => {
+  const hiddenMoney = resolutionDetail({
+    canViewSalary: false, canViewProjectCosts: false, hasMoneyScope: true,
+  })
+  hiddenMoney.allocations = []
+  const hiddenService = serviceWithResponder(() => hiddenMoney).service
+  const hiddenResult = await hiddenService.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+  })
+  assert.equal(hiddenResult.hasMoneyScope, true)
+  assert.equal(hiddenResult.salary, null)
+  assert.deepEqual(hiddenResult.allocations, [])
+
+  const positiveUnitsWithoutMoney = resolutionDetail({
+    canViewSalary: false, canViewProjectCosts: false, hasMoneyScope: false,
+  })
+  positiveUnitsWithoutMoney.allocations = []
+  const noMoneyService = serviceWithResponder(() => positiveUnitsWithoutMoney).service
+  const noMoneyResult = await noMoneyService.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+  })
+  assert.equal(noMoneyResult.resolution.attendanceUnits, 1)
+  assert.equal(noMoneyResult.hasMoneyScope, false)
+})
+
+test('resolution detail requires an exact enumerable boolean money-scope field', async () => {
+  const malformed = [
+    (() => { const row = resolutionDetail(); delete row.hasMoneyScope; return row })(),
+    (() => { const row = resolutionDetail(); row.hasMoneyScope = 'true'; return row })(),
+    (() => { const row = resolutionDetail(); row.unexpected = true; return row })(),
+    (() => {
+      const row = resolutionDetail()
+      Object.defineProperty(row, 'hasMoneyScope', { enumerable: true, get: () => true })
+      return row
+    })(),
+    (() => {
+      const row = resolutionDetail()
+      Object.defineProperty(row, 'hasMoneyScope', { value: true, enumerable: false })
+      return row
+    })(),
+  ]
+  for (const data of malformed) {
+    const service = serviceWithResponder(() => data).service
+    await assert.rejects(
+      () => service.getResolutionDetail({ employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE }),
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
@@ -1080,8 +1132,92 @@ test('only the six approved hints produce specific safe errors and causes stay n
     !error.message.includes('private'))
 })
 
+test('own response status and thrown JWT codes preserve auth expiry without private leakage', async () => {
+  const assertAuthFailure = (error, cause) => {
+    assert.ok(error instanceof LaborAccountingServiceError)
+    assert.equal(error.code, 'AUTH_INVALID')
+    assert.equal(error.userMessage, '登录状态无效，请重新登录')
+    assert.equal(error.message, '登录状态无效，请重新登录')
+    assert.equal(error.authInvalid, true)
+    assert.strictEqual(error.cause, cause)
+    assert.equal(Object.getOwnPropertyDescriptor(error, 'cause').enumerable, false)
+    assert.doesNotMatch(error.message, /PRIVATE|secret|database|details/iu)
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE|secret|database|details/iu)
+    return true
+  }
+
+  const statusCause = {
+    code: '42501', message: 'PRIVATE_DATABASE_MESSAGE', details: 'secret token',
+  }
+  const statusService = createLaborAccountingService({
+    rpc: async () => ({ data: null, error: statusCause, status: 401, statusText: 'Unauthorized' }),
+  }, { configured: true })
+  await assert.rejects(() => statusService.getAlertCount(), (error) =>
+    assertAuthFailure(error, statusCause))
+
+  for (const code of ['PGRST301', 'JWT_EXPIRED']) {
+    const cause = { code, message: 'PRIVATE_DATABASE_MESSAGE', details: 'secret token' }
+    const service = createLaborAccountingService({
+      rpc: async () => { throw cause },
+    }, { configured: true })
+    await assert.rejects(() => service.getAlertCount(), (error) =>
+      assertAuthFailure(error, cause))
+  }
+})
+
+test('inherited and accessor auth signals stay generic without executing unsafe properties', async () => {
+  const assertGenericFailure = (error) => {
+    assert.ok(error instanceof LaborAccountingServiceError)
+    assert.equal(error.code, 'LABOR_ACCOUNTING_SERVICE_UNAVAILABLE')
+    assert.notEqual(error.authInvalid, true)
+    assert.doesNotMatch(error.message, /PRIVATE|secret/iu)
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE|secret/iu)
+    return true
+  }
+  const genericCause = { message: 'PRIVATE_DATABASE_MESSAGE', details: 'secret token' }
+
+  const inheritedStatusResponse = Object.assign(Object.create({ status: 401 }), {
+    data: null, error: genericCause,
+  })
+  const inheritedStatusService = createLaborAccountingService({
+    rpc: async () => inheritedStatusResponse,
+  }, { configured: true })
+  await assert.rejects(() => inheritedStatusService.getAlertCount(), assertGenericFailure)
+
+  let statusReads = 0
+  const accessorStatusResponse = { data: null, error: genericCause }
+  Object.defineProperty(accessorStatusResponse, 'status', {
+    enumerable: true,
+    get() { statusReads += 1; throw new Error('PRIVATE_STATUS_GETTER') },
+  })
+  const accessorStatusService = createLaborAccountingService({
+    rpc: async () => accessorStatusResponse,
+  }, { configured: true })
+  await assert.rejects(() => accessorStatusService.getAlertCount(), assertGenericFailure)
+  assert.equal(statusReads, 0)
+
+  let codeReads = 0
+  const accessorCodeCause = { message: 'PRIVATE_DATABASE_MESSAGE', details: 'secret token' }
+  Object.defineProperty(accessorCodeCause, 'code', {
+    enumerable: true,
+    get() { codeReads += 1; throw new Error('PRIVATE_CODE_GETTER') },
+  })
+  const accessorCodeService = createLaborAccountingService({
+    rpc: async () => { throw accessorCodeCause },
+  }, { configured: true })
+  await assert.rejects(() => accessorCodeService.getAlertCount(), assertGenericFailure)
+  assert.equal(codeReads, 0)
+
+  const inheritedCodeCause = Object.assign(Object.create({ code: 'JWT_EXPIRED' }), genericCause)
+  const inheritedCodeService = createLaborAccountingService({
+    rpc: async () => { throw inheritedCodeCause },
+  }, { configured: true })
+  await assert.rejects(() => inheritedCodeService.getAlertCount(), assertGenericFailure)
+})
+
 test('throwing RPC property access becomes a safe request failure', async () => {
   const privateCause = new Error('PRIVATE_DATABASE_DETAIL')
+  privateCause.code = 'JWT_EXPIRED'
   const client = {}
   Object.defineProperty(client, 'rpc', {
     enumerable: true,
@@ -1093,6 +1229,7 @@ test('throwing RPC property access becomes a safe request failure', async () => 
     assert.ok(error instanceof LaborAccountingServiceError)
     assert.equal(error.code, 'LABOR_ACCOUNTING_REQUEST_FAILED')
     assert.equal(error.userMessage, '人工核算请求失败，请稍后重试')
+    assert.notEqual(error.authInvalid, true)
     assert.strictEqual(error.cause, privateCause)
     assert.doesNotMatch(error.message, /PRIVATE_DATABASE_DETAIL/u)
     assert.doesNotMatch(JSON.stringify(error), /PRIVATE_DATABASE_DETAIL/u)

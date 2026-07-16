@@ -14,6 +14,7 @@ const SAFE_ERRORS = Object.freeze({
 })
 
 const ERROR_MESSAGES = Object.freeze({
+  AUTH_INVALID: '登录状态无效，请重新登录',
   LABOR_ACCOUNTING_INVALID_INPUT: '人工核算请求参数无效',
   LABOR_ACCOUNTING_INVALID_RESPONSE: '人工核算服务返回了无效数据',
   LABOR_ACCOUNTING_NOT_CONFIGURED: '云端人工核算服务未配置',
@@ -54,6 +55,7 @@ const PAYROLL_ROW_STATUS_SET = new Set([
 ])
 const SALARY_TYPE_SET = new Set(['月薪', '日薪', '时薪', '未设置'])
 const PROJECT_REPORT_STATUS_SET = new Set(['all', 'confirmed', 'pending'])
+const AUTH_ERROR_CODE_SET = new Set(['PGRST301', 'JWT_EXPIRED'])
 const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 const SETTINGS_KEYS = Object.freeze([
@@ -89,7 +91,7 @@ const MONTHLY_MONEY_KEYS = Object.freeze([
 ])
 
 export class LaborAccountingServiceError extends Error {
-  constructor(code, userMessage, cause) {
+  constructor(code, userMessage, cause, { authInvalid = false } = {}) {
     super(userMessage)
     Object.defineProperty(this, 'name', {
       value: 'LaborAccountingServiceError', enumerable: false,
@@ -97,6 +99,7 @@ export class LaborAccountingServiceError extends Error {
     })
     this.code = code
     this.userMessage = userMessage
+    if (authInvalid) this.authInvalid = true
     if (cause !== undefined) {
       Object.defineProperty(this, 'cause', {
         value: cause, enumerable: false, configurable: false, writable: false,
@@ -678,7 +681,7 @@ function validateDetailedResolution(value, canViewSalary, canViewProjectCosts) {
 
 function validateResolutionDetail(value) {
   const row = objectShape(value, [
-    'employee', 'workDate', 'scheduleRequired', 'facts', 'permissions',
+    'employee', 'workDate', 'scheduleRequired', 'facts', 'hasMoneyScope', 'permissions',
     'salary', 'resolution', 'allocations',
   ])
   const employeeRow = objectShape(row.employee, [
@@ -728,6 +731,7 @@ function validateResolutionDetail(value) {
     workDate: dateValue(row.workDate),
     scheduleRequired: booleanValue(row.scheduleRequired),
     facts: validateResolutionFacts(row.facts),
+    hasMoneyScope: booleanValue(row.hasMoneyScope),
     permissions,
     salary,
     resolution,
@@ -1214,7 +1218,24 @@ function validateSettingsInput(value) {
   }
 }
 
-function remoteError(cause) {
+function authInvalidError(cause) {
+  return new LaborAccountingServiceError(
+    'AUTH_INVALID', ERROR_MESSAGES.AUTH_INVALID, cause, { authInvalid: true },
+  )
+}
+
+function isAuthStatus(value) {
+  return value === 401 || value === '401'
+}
+
+function remoteError(cause, responseStatus) {
+  const code = cause !== null && (typeof cause === 'object' || typeof cause === 'function')
+    ? ownDataValue(cause, 'code')
+    : undefined
+  if (isAuthStatus(responseStatus) ||
+      (typeof code === 'string' && AUTH_ERROR_CODE_SET.has(code.toUpperCase()))) {
+    return authInvalidError(cause)
+  }
   const hint = cause !== null && (typeof cause === 'object' || typeof cause === 'function')
     ? ownDataValue(cause, 'hint')
     : undefined
@@ -1243,7 +1264,11 @@ function responsePair(value) {
     const errorDescriptor = Object.getOwnPropertyDescriptor(value, 'error')
     if (!dataDescriptor || !Object.hasOwn(dataDescriptor, 'value') ||
         !errorDescriptor || !Object.hasOwn(errorDescriptor, 'value')) throw invalidResponse()
-    return { data: dataDescriptor.value, error: errorDescriptor.value }
+    return {
+      data: dataDescriptor.value,
+      error: errorDescriptor.value,
+      status: ownDataValue(value, 'status'),
+    }
   } catch (cause) {
     if (cause instanceof LaborAccountingServiceError) throw cause
     throw invalidResponse(cause)
@@ -1290,7 +1315,9 @@ export function createLaborAccountingService(client = supabase, options) {
       throw remoteError(cause)
     }
     const pair = responsePair(raw)
-    if (pair.error !== null) throw remoteError(pair.error)
+    if (pair.error !== null || isAuthStatus(pair.status)) {
+      throw remoteError(pair.error, pair.status)
+    }
     if (pair.data === null || pair.data === undefined) throw invalidResponse()
     return pair.data
   }
