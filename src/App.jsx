@@ -16,6 +16,8 @@ import PersonnelPage from './features/employees/PersonnelPage'
 import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
+import PurchaseAccountingSection from './features/purchase-accounting/PurchaseAccountingSection.jsx'
+import { buildPurchaseAccountingReadModel } from './features/purchase-accounting/purchaseAccountingDomain.js'
 import {
   canRequestLaborAccountingBridge,
   isLaborAccountingMonth,
@@ -2832,6 +2834,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         operatingExpenseRecords={operatingExpenseRecords}
         setOperatingExpenseRecords={setOperatingExpenseRecords}
         purchaseRecords={purchaseRecords}
+        purchasePaymentRecords={purchasePaymentRecords}
         laborRecords={laborRecords}
         fuelRecords={fuelRecords}
         vehicleExpenseRecords={vehicleExpenseRecords}
@@ -5347,6 +5350,7 @@ function AccountingCostPage({
   operatingExpenseRecords,
   setOperatingExpenseRecords,
   purchaseRecords,
+  purchasePaymentRecords,
   laborRecords,
   fuelRecords,
   vehicleExpenseRecords,
@@ -5362,6 +5366,7 @@ function AccountingCostPage({
     { id: 'salary', title: '工资记录' },
     { id: 'projectCost', title: '项目成本' },
     { id: 'operatingExpense', title: '经营费用' },
+    { id: 'purchaseAccounting', title: '采购对账' },
     { id: 'monthlySummary', title: '月度汇总' },
   ]
 
@@ -5400,6 +5405,15 @@ function AccountingCostPage({
           setRecords={setOperatingExpenseRecords}
         />
       )}
+      {section === 'purchaseAccounting' && (
+        <PurchaseAccountingSection
+          projects={projects}
+          purchaseRecords={purchaseRecords}
+          purchasePaymentRecords={purchasePaymentRecords}
+          monthFilter={monthFilter}
+          onMonthFilterChange={onMonthFilterChange}
+        />
+      )}
       {section === 'monthlySummary' && (
         <MonthlySummarySection
           salaryRecords={salaryRecords}
@@ -5408,6 +5422,7 @@ function AccountingCostPage({
           projectCostRecords={projectCostRecords}
           operatingExpenseRecords={operatingExpenseRecords}
           purchaseRecords={purchaseRecords}
+          purchasePaymentRecords={purchasePaymentRecords}
           fuelRecords={fuelRecords}
           vehicleExpenseRecords={vehicleExpenseRecords}
           vehicleIssueRecords={vehicleIssueRecords}
@@ -5721,6 +5736,9 @@ function ProjectCostSection({ projects, employees, records, setRecords }) {
   return (
     <>
       <SectionTitle title="项目成本" note="必须绑定工程项目" />
+      <div className="empty-state cost-note">
+        采购成本已由采购管理自动归集，不得重复手工录入；需要更正时请前往采购管理。
+      </div>
       {projects.length === 0 && <EmptyState text="请先在工程项目中新增项目" />}
 
       <form className="form-panel" onSubmit={handleSubmit}>
@@ -6007,13 +6025,14 @@ function OperatingExpenseSection({ projects, employees, records, setRecords }) {
   )
 }
 
-function MonthlySummarySection({
+export function MonthlySummarySection({
   salaryRecords,
   employees,
   laborRecords,
   projectCostRecords,
   operatingExpenseRecords,
   purchaseRecords,
+  purchasePaymentRecords,
   fuelRecords,
   vehicleExpenseRecords,
   vehicleIssueRecords,
@@ -6038,25 +6057,21 @@ function MonthlySummarySection({
   const totalOperatingExpense = operatingExpenseRecords
     .filter((record) => monthFromDate(record.date) === monthFilter)
     .reduce((total, record) => total + toAmount(record.amount), 0)
-  const monthlyPurchases = purchaseRecords.filter(
+  const purchaseAccounting = buildPurchaseAccountingReadModel({
+    purchaseRecords,
+    paymentRecords: purchasePaymentRecords,
+    month: monthFilter,
+  })
+  const monthlyPurchases = purchaseAccounting.rows.filter(
     (record) => monthFromDate(record.purchaseDate) === monthFilter && record.purchaseStatus !== '作废',
   )
-  const totalPurchaseCost = monthlyPurchases.reduce(
-    (total, record) => total + toAmount(record.totalCost),
-    0,
-  )
+  const totalPurchaseCost = purchaseAccounting.summary.monthPurchaseCost
   const purchaseBySource = (source) =>
     monthlyPurchases
       .filter((record) => record.purchaseSource === source)
       .reduce((total, record) => total + toAmount(record.totalCost), 0)
-  const unpaidPurchaseCost = monthlyPurchases.reduce(
-    (total, record) => total + toAmount(record.unpaidAmount),
-    0,
-  )
-  const paidPurchaseCost = monthlyPurchases.reduce(
-    (total, record) => total + toAmount(record.paidAmount),
-    0,
-  )
+  const unpaidPurchaseCost = purchaseAccounting.summary.currentOutstanding
+  const monthPaymentCash = purchaseAccounting.summary.monthPaymentCash
   const monthlyFuelRecords = fuelRecords.filter((record) => monthFromDate(record.fuelDate) === monthFilter)
   const monthlyVehicleExpenses = vehicleExpenseRecords.filter(
     (record) => monthFromDate(record.expenseDate) === monthFilter,
@@ -6113,7 +6128,7 @@ function MonthlySummarySection({
         </div>
         <div className="stat-card money">
           <strong>{formatYen(totalPurchaseCost)}</strong>
-          <span>采购金额合计</span>
+          <span>本月采购确认成本</span>
         </div>
         <div className="stat-card money">
           <strong>{formatYen(totalVehicleCost)}</strong>
@@ -6141,11 +6156,11 @@ function MonthlySummarySection({
         </div>
         <div className="stat-card money">
           <strong>{formatYen(unpaidPurchaseCost)}</strong>
-          <span>未付款采购金额</span>
+          <span>当前采购应付余额</span>
         </div>
         <div className="stat-card money">
-          <strong>{formatYen(paidPurchaseCost)}</strong>
-          <span>已付款采购金额</span>
+          <strong>{formatYen(monthPaymentCash)}</strong>
+          <span>本月采购付款现金流</span>
         </div>
         <div className="stat-card money">
           <strong>{formatYen(totalFuelCost)}</strong>
@@ -6160,7 +6175,7 @@ function MonthlySummarySection({
           <span>维修/保养/车检/保险</span>
         </div>
       </div>
-      <div className="empty-state cost-note">工资发放是公司实际支出；项目人工成本是工资向工程项目的分摊，不重复计入公司总成本。采购支出、绑定项目的车辆费用已计入项目成本统计时，请避免再手工重复录入同一笔费用。</div>
+      <div className="empty-state cost-note">工资发放是公司实际支出；项目人工成本是工资向工程项目的分摊，不重复计入公司总成本。采购确认成本按采购日期计入公司总成本，采购付款现金流仅单独展示；请避免再手工重复录入同一笔采购费用。</div>
       {laborAllocationInfo.isOverAllocated && (
         <div className="empty-state cost-note warning-note">
           项目人工分摊成本超过工资发放总额，请检查人工记录是否重复或工资标准是否错误。
