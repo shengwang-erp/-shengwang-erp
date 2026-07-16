@@ -53,10 +53,15 @@ async function loadAppModule() {
       },
       transform(code, id) {
         if (!id.endsWith('/src/App.jsx')) return null
-        const exported = code.replace(
-          'function DashboardPage({',
-          'export function DashboardPage({',
-        )
+        const exported = code
+          .replace(
+            'function normalizePurchaseRecord(record) {',
+            'export function normalizePurchaseRecord(record) {',
+          )
+          .replace(
+            'function DashboardPage({',
+            'export function DashboardPage({',
+          )
         const currentMonthNeedle =
           '  const currentMonth = currentMonthValue()\n  const purchaseAccounting = useMemo('
         assert.ok(
@@ -90,6 +95,15 @@ function sliceBetween(source, start, end) {
   const endIndex = source.indexOf(end, startIndex)
   assert.notEqual(endIndex, -1, `missing source marker: ${end}`)
   return source.slice(startIndex, endIndex)
+}
+
+function assertMarkersInOrder(source, markers) {
+  let previousIndex = -1
+  for (const marker of markers) {
+    const markerIndex = source.indexOf(marker)
+    assert.ok(markerIndex > previousIndex, `expected source marker in order: ${marker}`)
+    previousIndex = markerIndex
+  }
 }
 
 const loaded = await loadComponent()
@@ -223,6 +237,228 @@ test('renders an empty detail state without mutation controls', () => {
   assert.doesNotMatch(html, /<button|保存|删除/u)
 })
 
+test('AuthenticatedApp purchase normalization preserves the opening snapshot for ledger-derived accounting', () => {
+  assert.ifError(appLoaded.error)
+  assert.ok(appLoaded.module?.normalizePurchaseRecord)
+
+  const rawPurchase = {
+    purchaseId: 'PO-NORMALIZED',
+    purchaseDate: '2026-07-10',
+    purchaseSource: '中国采购',
+    purchaseType: '材料',
+    itemName: '标准化采购',
+    quantity: 1,
+    unitPrice: 10000,
+    currency: 'JPY',
+    projectId: 'P-1',
+    projectName: '东京站现场',
+    paidAmount: 9999,
+    unpaidAmount: 1,
+    purchaseStatus: '正常',
+  }
+  const normalizedPurchase = appLoaded.module.normalizePurchaseRecord({
+    ...rawPurchase,
+    openingPaidAmount: 0,
+  })
+  const normalizedOpeningPurchase = appLoaded.module.normalizePurchaseRecord({
+    ...rawPurchase,
+    purchaseId: 'PO-OPENING',
+    openingPaidAmount: 2000,
+  })
+  const legacyPurchase = appLoaded.module.normalizePurchaseRecord({
+    ...rawPurchase,
+    purchaseId: 'PO-LEGACY',
+  })
+
+  assert.equal(normalizedPurchase.openingPaidAmount, 0)
+  assert.equal(normalizedOpeningPurchase.openingPaidAmount, 2000)
+  assert.equal(normalizedPurchase.paidAmount, 9999)
+  assert.equal(normalizedPurchase.unpaidAmount, 1)
+  assert.equal(Object.hasOwn(legacyPurchase, 'openingPaidAmount'), false)
+
+  const html = renderSection({
+    purchaseRecords: [normalizedPurchase],
+    purchasePaymentRecords: [{
+      paymentId: 'PP-NORMALIZED',
+      purchaseId: 'PO-NORMALIZED',
+      paymentDate: '2026-08-08',
+      jpyAmount: 3000,
+    }],
+  })
+
+  assert.match(html, /<strong>¥3,000<\/strong><span>本月采购付款<\/span>/u)
+  assert.match(html, /<strong>¥7,000<\/strong><span>当前采购应付余额<\/span>/u)
+  assert.match(
+    html,
+    /<td>¥10,000<\/td><td>¥3,000<\/td><td>¥7,000<\/td><td>部分付款<\/td>/u,
+  )
+})
+
+test('purchase payment App handlers guard and reconcile add/delete before saving the ledger', () => {
+  const purchaseForm = sliceBetween(
+    appSource,
+    'function PurchaseFormSection',
+    '\nfunction PurchaseListSection',
+  )
+  const paymentSection = sliceBetween(
+    appSource,
+    'function PurchasePaymentSection',
+    '\nfunction PurchaseSummarySection',
+  )
+  const authenticatedApp = sliceBetween(
+    appSource,
+    'function AuthenticatedApp',
+    '\nfunction BusinessPage',
+  )
+  const purchaseManagementPage = sliceBetween(
+    appSource,
+    'function PurchaseManagementPage',
+    '\nfunction PurchaseFormSection',
+  )
+  const submitHandler = sliceBetween(
+    paymentSection,
+    '  const handleSubmit = ',
+    '\n\n  return (',
+  )
+  const deleteHandler = sliceBetween(
+    paymentSection,
+    '        onDelete={',
+    '\n        }}\n      />',
+  )
+  const purchaseSetter = sliceBetween(
+    appSource,
+    '  const setPurchaseRecords = ',
+    '\n  const setPurchasePaymentRecords = ',
+  )
+  const paymentSetter = sliceBetween(
+    appSource,
+    '  const setPurchasePaymentRecords = ',
+    '\n  const setStockInRecords = ',
+  )
+  const persistentState = sliceBetween(
+    appSource,
+    'function usePersistentState',
+    '\nfunction nextId',
+  )
+  const stateOnlyBranch = sliceBetween(
+    persistentState,
+    '      if (updateOptions.stateOnly)',
+    '\n\n      if (cloudPersistence',
+  )
+  const baseRecordImport = appSource.match(
+    /import \{[^}]*\} from '\.\/services\/baseRecordService'/u,
+  )?.[0] || ''
+  const purchaseManagementOpeningTag = authenticatedApp.match(
+    /<PurchaseManagementPage\b[\s\S]*?\/>/u,
+  )?.[0]
+  const paymentSectionOpeningTag = purchaseManagementPage.match(
+    /<PurchasePaymentSection\b[\s\S]*?\/>/u,
+  )?.[0]
+
+  assert.ok(
+    appSource.includes(
+      "import {\n  buildPurchaseAccountingReadModel,\n  canApplyPurchasePayment,\n  recalculatePurchasePaymentCache,\n} from './features/purchase-accounting/purchaseAccountingDomain.js'",
+    ),
+  )
+  assert.match(baseRecordImport, /\bsoftDelete\b/u)
+  assert.match(baseRecordImport, /\bupsertRecord\b/u)
+  assert.match(purchaseSetter, /setStoredPurchaseRecords\([\s\S]*?, updateOptions\)/u)
+  assert.match(paymentSetter, /setStoredPurchasePaymentRecords\([\s\S]*?, updateOptions\)/u)
+  assert.match(stateOnlyBranch, /updateOptions\.syncLocal/u)
+  assert.match(stateOnlyBranch, /window\.localStorage\.setItem\(key, JSON\.stringify\(resolvedValue\)\)/u)
+  assert.doesNotMatch(stateOnlyBranch, /saveList/u)
+  assert.ok(purchaseManagementOpeningTag)
+  assert.match(purchaseManagementOpeningTag, /onPersistenceError=\{setPersistenceFailure\}/u)
+  assert.ok(paymentSectionOpeningTag)
+  assert.match(paymentSectionOpeningTag, /onPersistenceError=\{onPersistenceError\}/u)
+  assert.match(purchaseForm, /openingPaidAmount:\s*amountPreview\.paidAmount,/u)
+  assert.match(
+    paymentSection,
+    /const activePurchases = purchaseRecords\.filter\(\(record\) => record\.purchaseStatus !== '作废'\)/u,
+  )
+  assert.match(
+    submitHandler,
+    /^  const handleSubmit = async \(event\) => \{/u,
+  )
+  assert.match(
+    submitHandler,
+    /if \(!selectedPurchase\) \{\s*window\.alert\('请选择采购记录'\)\s*return\s*\}/u,
+  )
+  assert.match(
+    submitHandler,
+    /if \(!canApplyPurchasePayment\(selectedPurchase, records, payment\.jpyAmount\)\) \{\s*window\.alert\('付款金额必须为有效正数，且不能超过当前未付款金额'\)\s*return\s*\}/u,
+  )
+  assert.match(submitHandler, /const nextPayments = \[payment, \.\.\.records\]/u)
+  assert.match(submitHandler, /const nextPurchases = purchaseRecords\.map/u)
+  assert.match(
+    submitHandler,
+    /recalculatePurchasePaymentCache\(\s*record,\s*nextPayments,\s*\{ previousPayments: records \},\s*\)/u,
+  )
+  assert.equal((submitHandler.match(/updatedAt: todayValue\(\)/gu) || []).length, 1)
+  assert.match(
+    submitHandler,
+    /await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)/u,
+  )
+  assert.match(
+    submitHandler,
+    /await upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)/u,
+  )
+  assert.match(
+    submitHandler,
+    /const stateUpdateOptions = localDemoMode\s*\? \{\}\s*:\s*\{ stateOnly: true, syncLocal: true \}/u,
+  )
+  assert.match(submitHandler, /onPersistenceError\?\.\(error\)/u)
+  assert.match(
+    submitHandler,
+    /try \{[\s\S]*?if \(!localDemoMode\) \{[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchasePaymentRecords, payment\)[\s\S]*?setPurchaseRecords\(nextPurchases, stateUpdateOptions\)[\s\S]*?setRecords\(nextPayments, stateUpdateOptions\)[\s\S]*?\} catch \(error\) \{\s*onPersistenceError\?\.\(error\)\s*return\s*\}/u,
+  )
+  assertMarkersInOrder(submitHandler, [
+    'canApplyPurchasePayment(selectedPurchase, records, payment.jpyAmount)',
+    'const nextPayments = [payment, ...records]',
+    'recalculatePurchasePaymentCache(',
+    'await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)',
+    'await upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment)',
+    'setPurchaseRecords(nextPurchases, stateUpdateOptions)',
+    'setRecords(nextPayments, stateUpdateOptions)',
+  ])
+
+  assert.match(deleteHandler, /^        onDelete=\{async \(record\) => \{/u)
+  assert.match(
+    deleteHandler,
+    /const remainingPayments = records\.filter\(\s*\(item\) => item\.paymentId !== record\.paymentId,?\s*\)/u,
+  )
+  assert.match(
+    deleteHandler,
+    /recalculatePurchasePaymentCache\(\s*purchase,\s*remainingPayments,\s*\{ previousPayments: records \},\s*\)/u,
+  )
+  assert.equal((deleteHandler.match(/updatedAt: todayValue\(\)/gu) || []).length, 1)
+  assert.match(
+    deleteHandler,
+    /await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)/u,
+  )
+  assert.match(
+    deleteHandler,
+    /await softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)/u,
+  )
+  assert.match(
+    deleteHandler,
+    /const stateUpdateOptions = localDemoMode\s*\? \{\}\s*:\s*\{ stateOnly: true, syncLocal: true \}/u,
+  )
+  assert.match(deleteHandler, /onPersistenceError\?\.\(error\)/u)
+  assert.match(
+    deleteHandler,
+    /try \{[\s\S]*?if \(!localDemoMode\) \{[\s\S]*?await upsertRecord\(STORAGE_KEYS\.purchaseRecords, purchaseToSave\)[\s\S]*?await softDelete\(STORAGE_KEYS\.purchasePaymentRecords, record\.paymentId\)[\s\S]*?setPurchaseRecords\(nextPurchases, stateUpdateOptions\)[\s\S]*?setRecords\(remainingPayments, stateUpdateOptions\)[\s\S]*?\} catch \(error\) \{\s*onPersistenceError\?\.\(error\)\s*return\s*\}/u,
+  )
+  assertMarkersInOrder(deleteHandler, [
+    'const remainingPayments = records.filter(',
+    'recalculatePurchasePaymentCache(',
+    'await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)',
+    'await softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId)',
+    'setPurchaseRecords(nextPurchases, stateUpdateOptions)',
+    'setRecords(remainingPayments, stateUpdateOptions)',
+  ])
+})
+
 test('monthly summary executes cross-month purchase accounting without adding payment cash to company cost', () => {
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.MonthlySummarySection)
@@ -351,6 +587,44 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
 test('owner dashboard executes shared purchase rows for cross-month cash, payable, and project profit', async () => {
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.DashboardPage)
+  assert.ok(appLoaded.module?.normalizePurchaseRecord)
+
+  const normalizedDashboardPurchases = [
+    appLoaded.module.normalizePurchaseRecord({
+      purchaseId: 'PO-DASH',
+      purchaseDate: `${DASHBOARD_PRIOR_MONTH}-10`,
+      projectId: 'P-DASH',
+      projectName: '跨月付款项目',
+      purchaseSource: '中国采购',
+      purchaseType: '材料',
+      itemName: '跨月材料',
+      quantity: 1,
+      unitPrice: 10000,
+      currency: 'JPY',
+      totalCost: 10000,
+      openingPaidAmount: 0,
+      paidAmount: 9999,
+      unpaidAmount: 1,
+      purchaseStatus: '正常',
+    }),
+    appLoaded.module.normalizePurchaseRecord({
+      purchaseId: 'PO-DASH',
+      purchaseDate: `${DASHBOARD_PRIOR_MONTH}-11`,
+      projectId: 'P-DASH',
+      projectName: '不应重复计费',
+      purchaseSource: '中国采购',
+      purchaseType: '材料',
+      itemName: '重复采购',
+      quantity: 1,
+      unitPrice: 50000,
+      currency: 'JPY',
+      totalCost: 50000,
+      openingPaidAmount: 0,
+      purchaseStatus: '正常',
+    }),
+  ]
+
+  assert.equal(normalizedDashboardPurchases[0].openingPaidAmount, 0)
 
   const source = await getDashboardSourceData({
     employees: [],
@@ -368,32 +642,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       paymentStatus: '部分付款',
     }],
     laborRecords: [],
-    purchaseRecords: [
-      {
-        purchaseId: 'PO-DASH',
-        purchaseDate: `${DASHBOARD_PRIOR_MONTH}-10`,
-        projectId: 'P-DASH',
-        projectName: '跨月付款项目',
-        purchaseSource: '中国采购',
-        purchaseType: '材料',
-        totalCost: 10000,
-        openingPaidAmount: 0,
-        paidAmount: 9999,
-        unpaidAmount: 1,
-        purchaseStatus: '正常',
-      },
-      {
-        purchaseId: 'PO-DASH',
-        purchaseDate: `${DASHBOARD_PRIOR_MONTH}-11`,
-        projectId: 'P-DASH',
-        projectName: '不应重复计费',
-        purchaseSource: '中国采购',
-        purchaseType: '材料',
-        totalCost: 50000,
-        openingPaidAmount: 0,
-        purchaseStatus: '正常',
-      },
-    ],
+    purchaseRecords: normalizedDashboardPurchases,
     purchasePaymentRecords: [
       {
         paymentId: 'PP-DASH',

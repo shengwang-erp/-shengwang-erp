@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { isCloudDatabaseReady, getList, migrateLocalStorageToSupabase, saveList } from './services/baseRecordService'
+import {
+  getList,
+  isCloudDatabaseReady,
+  migrateLocalStorageToSupabase,
+  saveList,
+  softDelete,
+  upsertRecord,
+} from './services/baseRecordService'
 import {
   buildProjectRevenueReadModel,
   buildProjectRevenueSnapshotCollection,
@@ -17,7 +24,11 @@ import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import PurchaseAccountingSection from './features/purchase-accounting/PurchaseAccountingSection.jsx'
-import { buildPurchaseAccountingReadModel } from './features/purchase-accounting/purchaseAccountingDomain.js'
+import {
+  buildPurchaseAccountingReadModel,
+  canApplyPurchasePayment,
+  recalculatePurchasePaymentCache,
+} from './features/purchase-accounting/purchaseAccountingDomain.js'
 import {
   canRequestLaborAccountingBridge,
   isLaborAccountingMonth,
@@ -1174,6 +1185,12 @@ function getPurchaseStockInStatus(purchase, stockInRecords) {
 
 function normalizePurchaseRecord(record) {
   const amounts = calculatePurchaseAmounts(record)
+  const openingPaidAmount = Number(record.openingPaidAmount)
+  const hasOpeningPaidAmount = record.openingPaidAmount !== undefined &&
+    record.openingPaidAmount !== null &&
+    !(typeof record.openingPaidAmount === 'string' && record.openingPaidAmount.trim() === '') &&
+    Number.isFinite(openingPaidAmount) &&
+    openingPaidAmount >= 0
 
   return {
     purchaseId: record.purchaseId,
@@ -1201,6 +1218,9 @@ function normalizePurchaseRecord(record) {
     paymentStatus: amounts.paymentStatus,
     paidAmount: amounts.paidAmount,
     unpaidAmount: amounts.unpaidAmount,
+    ...(hasOpeningPaidAmount
+      ? { openingPaidAmount: Math.round(openingPaidAmount) }
+      : {}),
     invoiceStatus: record.invoiceStatus || '未取得',
     arrivalStatus: record.arrivalStatus || '未到货',
     stockInStatus: record.stockInStatus || '未入库',
@@ -1391,7 +1411,12 @@ function usePersistentState(key, fallback, options = {}) {
       if (readOnly) return currentValue
       const resolvedValue =
         typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
-      if (updateOptions.stateOnly) return resolvedValue
+      if (updateOptions.stateOnly) {
+        if (updateOptions.syncLocal) {
+          window.localStorage.setItem(key, JSON.stringify(resolvedValue))
+        }
+        return resolvedValue
+      }
 
       if (cloudPersistence === 'record') {
         window.localStorage.setItem(key, JSON.stringify(resolvedValue))
@@ -2433,15 +2458,15 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       return resolvedRecords.map((record) => normalizeOperatingExpenseRecord(record))
     })
   }
-  const setPurchaseRecords = (nextRecords) => {
+  const setPurchaseRecords = (nextRecords, updateOptions = {}) => {
     setStoredPurchaseRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) => normalizePurchaseRecord(record))
       const resolvedRecords =
         typeof nextRecords === 'function' ? nextRecords(normalizedCurrent) : nextRecords
       return resolvedRecords.map((record) => normalizePurchaseRecord(record))
-    })
+    }, updateOptions)
   }
-  const setPurchasePaymentRecords = (nextRecords) => {
+  const setPurchasePaymentRecords = (nextRecords, updateOptions = {}) => {
     setStoredPurchasePaymentRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) =>
         normalizePurchasePaymentRecord(record),
@@ -2449,7 +2474,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       const resolvedRecords =
         typeof nextRecords === 'function' ? nextRecords(normalizedCurrent) : nextRecords
       return resolvedRecords.map((record) => normalizePurchasePaymentRecord(record))
-    })
+    }, updateOptions)
   }
   const setStockInRecords = (nextRecords) => {
     setStoredStockInRecords((currentRecords) => {
@@ -2761,6 +2786,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         setPurchaseRecords={setPurchaseRecords}
         purchasePaymentRecords={purchasePaymentRecords}
         setPurchasePaymentRecords={setPurchasePaymentRecords}
+        onPersistenceError={setPersistenceFailure}
         stockInRecords={stockInRecords}
         setStockInRecords={setStockInRecords}
         inventoryItems={inventoryItems}
@@ -6246,6 +6272,7 @@ function PurchaseManagementPage({
   setPurchaseRecords,
   purchasePaymentRecords,
   setPurchasePaymentRecords,
+  onPersistenceError,
   stockInRecords,
   setStockInRecords,
   inventoryItems,
@@ -6311,6 +6338,7 @@ function PurchaseManagementPage({
           setPurchaseRecords={setPurchaseRecords}
           records={purchasePaymentRecords}
           setRecords={setPurchasePaymentRecords}
+          onPersistenceError={onPersistenceError}
         />
       )}
       {section === 'summary' && (
@@ -6357,6 +6385,7 @@ function PurchaseFormSection({ projects, employees, records, setRecords }) {
     const purchase = normalizePurchaseRecord({
       ...form,
       purchaseId: nextId('PO', records, 'purchaseId'),
+      openingPaidAmount: amountPreview.paidAmount,
       projectId: selectedProject?.projectId || '',
       projectName: selectedProject?.projectName || '',
       employeeId: selectedEmployee?.employeeId || '',
@@ -6638,14 +6667,21 @@ function PurchaseStockInSection({
   )
 }
 
-function PurchasePaymentSection({ employees, purchaseRecords, setPurchaseRecords, records, setRecords }) {
+function PurchasePaymentSection({
+  employees,
+  purchaseRecords,
+  setPurchaseRecords,
+  records,
+  setRecords,
+  onPersistenceError,
+}) {
   const [form, setForm] = useState(createEmptyPurchasePaymentForm)
   const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
   const selectedPurchase = activePurchases.find((record) => record.purchaseId === form.purchaseId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
   const paymentPreview = normalizePurchasePaymentRecord({ ...form, paymentId: 'PREVIEW' })
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
 
     if (!selectedPurchase) {
@@ -6666,18 +6702,42 @@ function PurchasePaymentSection({ employees, purchaseRecords, setPurchaseRecords
       employeeName: personName,
     })
 
-    setRecords((currentRecords) => [payment, ...currentRecords])
-    setPurchaseRecords((currentRecords) =>
-      currentRecords.map((record) =>
-        record.purchaseId === selectedPurchase.purchaseId
-          ? normalizePurchaseRecord({
-              ...record,
-              paidAmount: toAmount(record.paidAmount) + payment.jpyAmount,
-              updatedAt: todayValue(),
-            })
-          : record,
-      ),
+    if (!canApplyPurchasePayment(selectedPurchase, records, payment.jpyAmount)) {
+      window.alert('付款金额必须为有效正数，且不能超过当前未付款金额')
+      return
+    }
+
+    const nextPayments = [payment, ...records]
+    const nextPurchases = purchaseRecords.map((record) =>
+      record.purchaseId === selectedPurchase.purchaseId
+        ? {
+            ...recalculatePurchasePaymentCache(
+              record,
+              nextPayments,
+              { previousPayments: records },
+            ),
+            updatedAt: todayValue(),
+          }
+        : record,
     )
+    const purchaseToSave = nextPurchases.find(
+      (record) => record.purchaseId === selectedPurchase.purchaseId,
+    )
+
+    try {
+      if (!localDemoMode) {
+        await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)
+        await upsertRecord(STORAGE_KEYS.purchasePaymentRecords, payment)
+      }
+      const stateUpdateOptions = localDemoMode
+        ? {}
+        : { stateOnly: true, syncLocal: true }
+      setPurchaseRecords(nextPurchases, stateUpdateOptions)
+      setRecords(nextPayments, stateUpdateOptions)
+    } catch (error) {
+      onPersistenceError?.(error)
+      return
+    }
     setForm(createEmptyPurchasePaymentForm())
   }
 
@@ -6731,11 +6791,43 @@ function PurchasePaymentSection({ employees, purchaseRecords, setPurchaseRecords
           ['备注', 'remark'],
         ]}
         onEdit={() => window.alert('付款记录暂不支持编辑，请作废采购或补充付款记录。')}
-        onDelete={(record) => {
+        onDelete={async (record) => {
           if (window.confirm('确定删除这条付款记录吗？')) {
-            setRecords((currentRecords) =>
-              currentRecords.filter((item) => item.paymentId !== record.paymentId),
+            const remainingPayments = records.filter(
+              (item) => item.paymentId !== record.paymentId,
             )
+            const nextPurchases = purchaseRecords.map((purchase) =>
+              purchase.purchaseId === record.purchaseId
+                ? {
+                    ...recalculatePurchasePaymentCache(
+                      purchase,
+                      remainingPayments,
+                      { previousPayments: records },
+                    ),
+                    updatedAt: todayValue(),
+                  }
+                : purchase,
+            )
+            const purchaseToSave = nextPurchases.find(
+              (purchase) => purchase.purchaseId === record.purchaseId,
+            )
+
+            try {
+              if (!localDemoMode) {
+                if (purchaseToSave) {
+                  await upsertRecord(STORAGE_KEYS.purchaseRecords, purchaseToSave)
+                }
+                await softDelete(STORAGE_KEYS.purchasePaymentRecords, record.paymentId)
+              }
+              const stateUpdateOptions = localDemoMode
+                ? {}
+                : { stateOnly: true, syncLocal: true }
+              setPurchaseRecords(nextPurchases, stateUpdateOptions)
+              setRecords(remainingPayments, stateUpdateOptions)
+            } catch (error) {
+              onPersistenceError?.(error)
+              return
+            }
           }
         }}
       />
