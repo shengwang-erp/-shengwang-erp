@@ -668,7 +668,7 @@ function getLaborExceptions(records) {
 
     return issues.map((message) => ({
       id: `${record.laborRecordId}-${message}`,
-      type: message,
+      type: '历史出工冲突（非考勤提醒）',
       message,
       record,
     }))
@@ -678,7 +678,7 @@ function getLaborExceptions(records) {
     const [firstRecord, secondRecord] = items
     return {
       id: `duplicate-${firstRecord.workDate}-${firstRecord.employeeId}`,
-      type: '同一天重复安排',
+      type: '历史出工冲突：同日重复安排（非考勤提醒）',
       message: `员工${firstRecord.employeeName}在 ${firstRecord.workDate} 已有多条出工记录，请确认是否合理。`,
       record: secondRecord || firstRecord,
       relatedRecord: firstRecord,
@@ -689,7 +689,7 @@ function getLaborExceptions(records) {
   const timeConflictExceptions = getLaborTimeConflictPairs(normalizedRecords).map(
     ([firstRecord, secondRecord]) => ({
       id: `time-conflict-${firstRecord.laborRecordId}-${secondRecord.laborRecordId}`,
-      type: '时间冲突',
+      type: '历史出工冲突：时间重叠（非考勤提醒）',
       message: '同一员工同一天同一时间段存在多条出工记录。',
       record: secondRecord,
       relatedRecord: firstRecord,
@@ -6910,7 +6910,8 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
     <>
       <SectionTitle title="员工出工动向" note="按员工、项目、日期查询" />
       <div className="empty-state cost-note">
-        历史出工明细仅供核对人数、工时和记录；金额请以人工记录中的正式核算看板为准。
+        历史出工明细仅供核对人数、工时和记录；其中的历史出工冲突（非考勤提醒）来自旧人工记录。
+        正式考勤异常请到“人工记录”看板处理，金额请以人工记录中的正式核算看板为准。
       </div>
       <div className="filter-panel">
         <Field label="开始日期" type="date" value={filters.startDate} onChange={(value) => setFilters({ ...filters, startDate: value })} />
@@ -6929,9 +6930,9 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
         <div className="stat-card"><strong>{filteredRecords.filter((record) => record.workType === '正常出勤').length}</strong><span>正常出勤数量</span></div>
         <div className="stat-card"><strong>{filteredRecords.filter((record) => record.workType === '加班').length}</strong><span>加班数量</span></div>
         <div className="stat-card"><strong>{restLeaveCount}</strong><span>请假/休息数量</span></div>
-        <div className="stat-card"><strong>{exceptions.length}</strong><span>异常记录数量</span></div>
-        <div className="stat-card"><strong>{duplicateAssignmentCount}</strong><span>同一天重复安排人数</span></div>
-        <div className="stat-card"><strong>{timeConflictCount}</strong><span>时间冲突记录数量</span></div>
+        <div className="stat-card"><strong>{exceptions.length}</strong><span>历史出工冲突（非考勤提醒）</span></div>
+        <div className="stat-card"><strong>{duplicateAssignmentCount}</strong><span>历史同日重复安排人数（非考勤提醒）</span></div>
+        <div className="stat-card"><strong>{timeConflictCount}</strong><span>历史时间重叠记录数（非考勤提醒）</span></div>
       </div>
 
       <div className="view-switcher">
@@ -6970,7 +6971,7 @@ function LaborMovementSection({ laborRecords, employees, projects }) {
           </div>
           {exceptions.length > 0 && (
             <>
-              <SectionTitle title="异常明细" note={`${exceptions.length} 条`} />
+              <SectionTitle title="历史出工冲突（非考勤提醒）" note={`${exceptions.length} 条`} />
               <div className="labor-card-list">
                 {exceptions.map((item) => (
                   <article className="labor-movement-card" key={item.id}>
@@ -7158,8 +7159,8 @@ function LaborMovementCard({ record, hasConflict = false, isLongDay = false, com
       </dl>
       {(hasConflict || isLongDay) && (
         <div className="warning-list">
-          {hasConflict && <span>时间冲突，请确认</span>}
-          {isLongDay && <span>工时异常，请确认</span>}
+          {hasConflict && <span>历史时间冲突（非考勤提醒）</span>}
+          {isLongDay && <span>历史工时冲突（非考勤提醒）</span>}
         </div>
       )}
     </article>
@@ -7701,7 +7702,7 @@ function DashboardPage({
         extra: [
           `今日出工人数 ${new Set(todayLaborRecords.map((record) => record.employeeId).filter(Boolean)).size}`,
           `本月项目人工分摊 ${formatYen(laborAllocationInfo.allocatedLaborCostTotal)}`,
-          `异常提醒 ${laborExceptionCount}`,
+          `正式考勤待处理 ${laborExceptionCount}`,
         ],
       },
       { label: '借工具数量', value: byProject(records.toolBorrow) },

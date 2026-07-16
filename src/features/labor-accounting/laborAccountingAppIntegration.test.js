@@ -378,8 +378,17 @@ test('legacy dashboard drilldown keeps historical facts but never presents legac
 
   assert.match(movement, /历史出工明细/u)
   assert.match(movement, /金额请以人工记录中的正式核算看板为准/u)
+  assert.match(movement, /历史出工冲突（非考勤提醒）/u)
+  assert.match(movement, /正式考勤异常请到“人工记录”看板处理/u)
+  for (const ambiguousCopy of [
+    '>异常记录数量<',
+    'title="异常明细"',
+    '>时间冲突记录数量<',
+  ]) assert.doesNotMatch(movement, new RegExp(ambiguousCopy, 'u'))
   assert.doesNotMatch(movement, /formatYen\([^\n]*(?:laborCost|totalLaborCost)/u)
   assert.doesNotMatch(movementCard, /formatYen\([^\n]*laborCost/u)
+  assert.doesNotMatch(movementCard, /时间冲突，请确认|工时异常，请确认/u)
+  assert.match(movementCard, /非考勤提醒/u)
 })
 
 test('owner dashboard uses the server alert count instead of legacy exception heuristics', () => {
@@ -391,5 +400,6 @@ test('owner dashboard uses the server alert count instead of legacy exception he
     dashboard,
     /laborExceptionCount\s*=\s*Number\.isSafeInteger\(laborAlertCount\)[\s\S]*?laborAlertCount\s*:\s*0/u,
   )
+  assert.match(dashboard, /正式考勤待处理 \$\{laborExceptionCount\}/u)
   assert.doesNotMatch(dashboard, /getLaborExceptions\(normalizedLaborRecords\)\.length/u)
 })

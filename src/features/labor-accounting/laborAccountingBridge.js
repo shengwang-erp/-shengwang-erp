@@ -124,6 +124,11 @@ export function normalizeBridgeSummary(value) {
     if (!monthly || !lifetime) return null
     if (monthly.total !== value.projectLaborTotal) return null
     if (lifetime.total !== value.projectLaborLifetimeTotal) return null
+    if (lifetime.total < monthly.total) return null
+    for (const [projectId, monthlyAmount] of Object.entries(monthly.map)) {
+      if (!Object.hasOwn(lifetime.map, projectId)) return null
+      if (lifetime.map[projectId] < monthlyAmount) return null
+    }
 
     return {
       salaryMonth: value.salaryMonth,

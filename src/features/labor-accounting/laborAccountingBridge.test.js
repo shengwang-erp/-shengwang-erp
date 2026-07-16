@@ -158,6 +158,57 @@ test('normalizer rejects mismatched map totals, unsafe sums, accessors, and poll
   })), null)
 })
 
+test('normalizer requires lifetime project totals to contain and dominate the requested month', () => {
+  assert.equal(normalizeBridgeSummary(bridgeSummary({
+    projectLaborTotal: 2,
+    projectLaborById: { P001: 2 },
+    projectLaborLifetimeTotal: 1,
+    projectLaborLifetimeById: { P001: 1 },
+  })), null)
+  assert.equal(normalizeBridgeSummary(bridgeSummary({
+    projectLaborTotal: 1,
+    projectLaborById: { P001: 1 },
+    projectLaborLifetimeTotal: 1,
+    projectLaborLifetimeById: { P002: 1 },
+  })), null)
+  assert.equal(normalizeBridgeSummary(bridgeSummary({
+    projectLaborTotal: 2,
+    projectLaborById: { P001: 2 },
+    projectLaborLifetimeTotal: 2,
+    projectLaborLifetimeById: { P001: 1, P002: 1 },
+  })), null)
+})
+
+test('normalizer accepts zero and maximum-safe lifetime dominance boundaries', () => {
+  const zero = bridgeSummary({
+    salaryTotal: 0,
+    projectLaborTotal: 0,
+    projectLaborById: {},
+    projectLaborLifetimeTotal: 0,
+    projectLaborLifetimeById: {},
+    pendingCount: 0,
+  })
+  assert.deepEqual(normalizeBridgeSummary(zero), zero)
+
+  const maximum = bridgeSummary({
+    salaryTotal: Number.MAX_SAFE_INTEGER,
+    projectLaborTotal: Number.MAX_SAFE_INTEGER,
+    projectLaborById: { PMAX: Number.MAX_SAFE_INTEGER },
+    projectLaborLifetimeTotal: Number.MAX_SAFE_INTEGER,
+    projectLaborLifetimeById: { PMAX: Number.MAX_SAFE_INTEGER },
+    pendingCount: Number.MAX_SAFE_INTEGER,
+  })
+  assert.deepEqual(normalizeBridgeSummary(maximum), maximum)
+
+  const zeroEntry = bridgeSummary({
+    projectLaborTotal: 0,
+    projectLaborById: { PZERO: 0 },
+    projectLaborLifetimeTotal: 0,
+    projectLaborLifetimeById: { PZERO: 0 },
+  })
+  assert.deepEqual(normalizeBridgeSummary(zeroEntry), zeroEntry)
+})
+
 test('authoritative same-month bridge replaces monthly salary and project labor without adding legacy', () => {
   const bridge = bridgeSummary()
 
@@ -222,8 +273,7 @@ test('lifetime project resolver uses the partitioned lifetime map even before ac
 
 test('lifetime project resolver treats missing and zero map entries as authoritative zero', () => {
   const bridge = bridgeSummary({
-    projectLaborLifetimeTotal: 1842000,
-    projectLaborLifetimeById: { P001: 1842000, PZERO: 0 },
+    projectLaborLifetimeById: { P001: 1842000, P002: 618000, PZERO: 0 },
   })
 
   assert.equal(resolveProjectLaborTotal({
