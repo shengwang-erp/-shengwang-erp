@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
+import { createServer } from 'vite'
 
 async function readSource(relativePath) {
   return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '')
@@ -33,83 +36,66 @@ function extractBraceBlock(source, marker) {
   return ''
 }
 
-function extractObjectContaining(source, marker) {
-  const markerIndex = source.indexOf(marker)
-  if (markerIndex < 0) return ''
-  const start = source.lastIndexOf('{', markerIndex)
-  if (start < 0) return ''
-  const end = source.indexOf('}', markerIndex)
-  return end < 0 ? '' : source.slice(start, end + 1)
-}
-
-const desktopMenu = sliceBetween(
-  shellSource,
-  'const desktopMenuItems = [',
-  '\n]\n\nfunction getDesktopActiveView',
-)
 const authenticatedApp = sliceBetween(
   appSource,
   'function AuthenticatedApp',
   '\nfunction HomePage',
 )
 
-test('desktop shell exposes every real first-level route without approval or report placeholders', () => {
-  const expectedMenuEntries = [
-    ['home', '首页'],
-    ['dashboard', '老板驾驶舱'],
-    ['projects', '工程项目'],
-    ['employees', '人员管理'],
-    ['accounting', '会计成本'],
-    ['labor', '人工记录'],
-    ['stockOut', '我要出库'],
-    ['stockReturn', '我要退回'],
-    ['purchase', '采购管理'],
-    ['vehicle', '车辆管理'],
-    ['toolBorrow', '借工具'],
-    ['todayAttendance', '今日打卡'],
-    ['settings', '系统设置'],
-  ]
-
-  for (const [view, label] of expectedMenuEntries) {
-    const menuEntry = extractObjectContaining(desktopMenu, `view: '${view}'`)
-    assert.match(
-      menuEntry,
-      new RegExp(`view:\\s*['\"]${view}['\"][\\s\\S]*?label:\\s*['\"]${label}['\"]`),
-    )
+async function loadDesktopShell() {
+  const server = await createServer({
+    root: process.cwd(),
+    logLevel: 'silent',
+    appType: 'custom',
+    server: { middlewareMode: true },
+  })
+  try {
+    return await server.ssrLoadModule('/src/DesktopAdminShell.jsx')
+  } finally {
+    await server.close()
   }
+}
 
-  const attendanceEntry = extractObjectContaining(desktopMenu, "view: 'todayAttendance'")
-  assert.match(attendanceEntry, /code:\s*'勤'/u)
-  assert.match(attendanceEntry, /alwaysAvailable:\s*true/u)
-  assert.doesNotMatch(desktopMenu, /view:\s*'toolReturn'/u)
-  assert.equal((desktopMenu.match(/\bview:/gu) || []).length, 13)
-  assert.doesNotMatch(desktopMenu, /审批中心|报表中心/)
+const desktopShellModule = await loadDesktopShell()
+
+test('desktop shell renders only centrally authorized routes and falls back to Home metadata', () => {
+  const currentUser = {
+    employeeId: 'E-ZERO',
+    employeeNumber: 'SW-123',
+    name: '零权限员工',
+    department: '现场',
+    position: '小工',
+    employmentStatus: '在职',
+    accountStatus: 'active',
+    mustChangePassword: false,
+    effectivePermissionKeys: [],
+  }
+  const markup = renderToStaticMarkup(createElement(
+    desktopShellModule.default,
+    {
+      currentView: 'dashboard',
+      currentUser,
+      onNavigate() {},
+      onLogout() {},
+    },
+    createElement('div', null, 'Home content'),
+  ))
+  const menuMarkup = sliceBetween(markup, '<nav', '</nav>')
+  const titleMarkup = sliceBetween(markup, 'desktop-admin-topbar-title', '</div>')
+
+  assert.equal((menuMarkup.match(/<button/gu) || []).length, 2)
+  assert.match(menuMarkup, />首页</u)
+  assert.match(menuMarkup, />今日打卡</u)
+  assert.doesNotMatch(menuMarkup, /老板驾驶舱|工程项目|系统设置/u)
+  assert.match(titleMarkup, /<strong>首页<\/strong>/u)
+  assert.doesNotMatch(titleMarkup, /老板驾驶舱/u)
+
   assert.match(
-    desktopMenu,
-    /view:\s*'stockOut'[\s\S]*?permissionName:\s*'仓库库存'/,
-  )
-  assert.match(
-    desktopMenu,
-    /view:\s*'stockReturn'[\s\S]*?permissionName:\s*'仓库库存'/,
-  )
-  assert.doesNotMatch(shellSource, /currentUser\.(?:position|department)\s*===/)
-  const visibility = sliceBetween(
     shellSource,
-    'const visibleMenuItems = desktopMenuItems.filter',
-    '\n  const activeMenuItem',
+    /import\s+\{\s*getVisibleAdminRoutes\s*\}\s+from\s+'\.\/auth\/businessAccess\.js'/u,
   )
-  assert.match(
-    visibility,
-    /item\.view === 'home'[\s\S]*?item\.alwaysAvailable === true[\s\S]*?isSuperAdmin\(currentUser\)[\s\S]*?canAccessModule\(currentUser, item\.permissionName\)/,
-  )
-  assert.match(
-    appSource,
-    /title:\s*'我要出库'[\s\S]*?permissionName:\s*'仓库库存'/,
-  )
-  assert.match(
-    appSource,
-    /title:\s*'我要退回'[\s\S]*?permissionName:\s*'仓库库存'/,
-  )
+  assert.match(shellSource, /const visibleMenuItems = getVisibleAdminRoutes\(currentUser\)/u)
+  assert.doesNotMatch(shellSource, /desktopMenuItems|canAccessModule|isSuperAdmin/u)
 })
 
 test('authenticated views share the desktop shell while login stays outside it', () => {
@@ -119,7 +105,7 @@ test('authenticated views share the desktop shell while login stays outside it',
   assert.match(appSource, /<AuthGate>[\s\S]*?<AuthenticatedApp/)
   assert.doesNotMatch(appSource, /if \(!currentUser\)[\s\S]*?<LoginPage/)
 
-  const toolRoute = extractBraceBlock(authenticatedApp, "if (currentView === 'toolBorrow')")
+  const toolRoute = extractBraceBlock(authenticatedApp, "if (authorizedView === 'toolBorrow')")
   const toolManagement = sliceBetween(
     appSource,
     'function ToolManagementPage',

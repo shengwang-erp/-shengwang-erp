@@ -58,7 +58,11 @@ import { persistLegacyContractRevenueMigration } from './services/contractRevenu
 import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
-import { canViewProjectFinancials } from './features/projects/projectPermissions.js'
+import {
+  canUpdateProjectFinancials,
+  canViewProjectFinancials,
+} from './features/projects/projectPermissions.js'
+import { canAccessView } from './auth/businessAccess.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
 import {
@@ -1818,6 +1822,10 @@ function LaborBridgeStatusNotice({ eligible, state, onRetry }) {
 
 function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
+  const authorizedView = canAccessView(currentUser, currentView) ? currentView : 'home'
+  useEffect(() => {
+    if (authorizedView !== currentView) setCurrentView(authorizedView)
+  }, [authorizedView, currentView])
   const {
     count: laborAlertCount,
     stale: laborAlertStale,
@@ -1832,8 +1840,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     if (!isLaborAccountingMonth(nextMonth)) return
     setAccountingMonth(nextMonth)
   }, [])
-  const bridgeTargetActive = ['accounting', 'dashboard', 'projects'].includes(currentView)
-  const bridgeRequestedMonth = currentView === 'accounting'
+  const bridgeTargetActive = ['accounting', 'dashboard', 'projects'].includes(authorizedView)
+  const bridgeRequestedMonth = authorizedView === 'accounting'
     ? accountingMonth
     : currentMonthValue()
   const bridgePermissionFingerprint = useMemo(() => {
@@ -2167,7 +2175,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     templateCritical,
   })
   const personnelExitBlocked = shouldBlockPersonnelExit({
-    currentView,
+    currentView: authorizedView,
     protectedStateActive: personnelProtectedState,
   })
   const synchronizePersonnelProtectionRef = useCallback(() => {
@@ -2192,28 +2200,30 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   }, [synchronizePersonnelProtectionRef])
   const handlePersonnelAwareNavigate = useCallback(
     (nextView) => {
+      if (!canAccessView(currentUser, nextView)) return false
       const exitBlockedNow = shouldBlockPersonnelExit({
-        currentView,
+        currentView: authorizedView,
         protectedStateActive: personnelProtectedStateRef.current,
       })
-      if (exitBlockedNow && nextView !== currentView) return
+      if (exitBlockedNow && nextView !== authorizedView) return false
       setCurrentView(nextView)
+      return true
     },
-    [currentView],
+    [authorizedView, currentUser],
   )
   const handlePersonnelAwareLogout = useCallback(() => {
     const exitBlockedNow = shouldBlockPersonnelExit({
-      currentView,
+      currentView: authorizedView,
       protectedStateActive: personnelProtectedStateRef.current,
     })
     if (exitBlockedNow) return
     return onLogout()
-  }, [currentView, onLogout])
+  }, [authorizedView, onLogout])
 
   useEffect(() => {
     const preventProtectedExit = (event) => {
       const exitBlockedNow = shouldBlockPersonnelExit({
-        currentView,
+        currentView: authorizedView,
         protectedStateActive: personnelProtectedStateRef.current,
       })
       if (!exitBlockedNow) return
@@ -2224,10 +2234,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return () => {
       window.removeEventListener('beforeunload', preventProtectedExit)
     }
-  }, [currentView, personnelExitBlocked])
+  }, [authorizedView, personnelExitBlocked])
 
   useEffect(() => {
-    if (currentView !== 'employees') {
+    if (authorizedView !== 'employees') {
       personnelRequestVersion.current += 1
       setPersonnelEmployees([])
       setPersonnelLoadState({ loading: false, error: '' })
@@ -2240,10 +2250,10 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return () => {
       personnelRequestVersion.current += 1
     }
-  }, [currentView, onLogout, refreshPersonnelEmployees])
+  }, [authorizedView, onLogout, refreshPersonnelEmployees])
 
   useEffect(() => {
-    if (currentView !== 'projects') {
+    if (authorizedView !== 'projects') {
       projectDirectoryRequestVersion.current += 1
       setProjectEmployeeDirectory([])
       setProjectDirectoryState({ loading: false, error: '' })
@@ -2254,7 +2264,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     return () => {
       projectDirectoryRequestVersion.current += 1
     }
-  }, [currentView, refreshProjectEmployeeDirectory])
+  }, [authorizedView, refreshProjectEmployeeDirectory])
 
   const refreshStoredProjectsFromLocal = async () => {
     const rows = await projectService.listProjects()
@@ -2589,8 +2599,8 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   )
 
   const openContractRevenue = (projectId) => {
+    if (!handlePersonnelAwareNavigate('contractRevenue')) return
     setContractRevenueProjectId(projectId)
-    setCurrentView('contractRevenue')
   }
 
   const handleContractRevenueProjectChange = (nextProject) => {
@@ -2710,7 +2720,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   const renderInDesktopShell = (page) => (
     <DesktopAdminShell
-      currentView={currentView}
+      currentView={authorizedView}
       currentUser={currentUser}
       onNavigate={handlePersonnelAwareNavigate}
       onLogout={handlePersonnelAwareLogout}
@@ -2721,7 +2731,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     </DesktopAdminShell>
   )
 
-  if (currentView === 'contractRevenue') {
+  if (authorizedView === 'contractRevenue') {
     return renderInDesktopShell(
       <ContractRevenuePage
         project={contractRevenueProject}
@@ -2731,7 +2741,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         receipts={projectReceipts}
         currentUser={currentUser}
         canViewFinancials={canViewFinancials}
-        canUpdateFinancials={canViewFinancials && canEdit(currentUser, 'projects')}
+        canUpdateFinancials={canUpdateProjectFinancials(currentUser)}
         onProjectChange={handleContractRevenueProjectChange}
         onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}
@@ -2739,12 +2749,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         onSavePaymentPlan={handleSavePaymentPlan}
         onCreateCustomerReceipt={handleCreateCustomerReceipt}
         onVoidCustomerReceipt={handleVoidCustomerReceipt}
-        onBack={() => setCurrentView('projects')}
+        onBack={() => handlePersonnelAwareNavigate('projects')}
       />
     )
   }
 
-  if (currentView === 'projects') {
+  if (authorizedView === 'projects') {
     return renderInDesktopShell(
       <>
         {bridgeStatusNotice}
@@ -2759,23 +2769,23 @@ function AuthenticatedApp({ currentUser, onLogout }) {
           onUpdateProject={handleUpdateProject}
           onDeleteProject={handleDeleteProject}
           onOpenContractRevenue={openContractRevenue}
-          onBack={() => setCurrentView('home')}
+          onBack={() => handlePersonnelAwareNavigate('home')}
         />
       </>
     )
   }
 
-  if (currentView === 'todayAttendance') {
+  if (authorizedView === 'todayAttendance') {
     return renderInDesktopShell(
       <TodayAttendancePage
         currentUser={currentUser}
         onAuthInvalid={onLogout}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />,
     )
   }
 
-  if (currentView === 'employees') {
+  if (authorizedView === 'employees') {
     return renderInDesktopShell(
       <PersonnelPage
         employees={personnelEmployees}
@@ -2793,7 +2803,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     )
   }
 
-  if (currentView === 'dashboard') {
+  if (authorizedView === 'dashboard') {
     return renderInDesktopShell(
       <DashboardPage
         projects={projectRevenueProjects}
@@ -2818,12 +2828,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         laborBridge={laborBridge}
         bridgeStatusNotice={bridgeStatusNotice}
         laborAlertCount={laborAlertCount}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (currentView === 'purchase') {
+  if (authorizedView === 'purchase') {
     return renderInDesktopShell(
       <PurchaseManagementPage
         projects={projects}
@@ -2837,23 +2847,23 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         setStockInRecords={setStockInRecords}
         inventoryItems={inventoryItems}
         setInventoryItems={setInventoryItems}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (currentView === 'labor') {
+  if (authorizedView === 'labor') {
     return renderInDesktopShell(
       <LaborAccountingPage
         currentUser={currentUser}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
         onAuthInvalid={onLogout}
         onAlertCountChange={refreshLaborAlertCount}
       />
     )
   }
 
-  if (currentView === 'vehicle') {
+  if (authorizedView === 'vehicle') {
     return renderInDesktopShell(
       <VehicleManagementPage
         projects={projects}
@@ -2868,12 +2878,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         setVehicleExpenseRecords={setVehicleExpenseRecords}
         vehicleIssueRecords={vehicleIssueRecords}
         setVehicleIssueRecords={setVehicleIssueRecords}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (currentView === 'toolBorrow') {
+  if (authorizedView === 'toolBorrow') {
     return renderInDesktopShell(
       <ToolManagementPage
         initialSection="borrow"
@@ -2890,12 +2900,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         setLifelongToolAssignments={setLifelongToolAssignments}
         toolResponsibilityRecords={toolResponsibilityRecords}
         setToolResponsibilityRecords={setToolResponsibilityRecords}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (currentView === 'accounting') {
+  if (authorizedView === 'accounting') {
     return renderInDesktopShell(
       <AccountingCostPage
         projects={projects}
@@ -2916,12 +2926,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         onMonthFilterChange={handleAccountingMonthChange}
         laborBridge={laborBridge}
         bridgeStatusNotice={bridgeStatusNotice}
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (currentView === 'settings') {
+  if (authorizedView === 'settings') {
     return renderInDesktopShell(
       <SystemSettingsPage
         currentUser={currentUser}
@@ -2929,20 +2939,20 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         onLocalContractRevenueMigrationComplete={
           handleLocalContractRevenueMigrationComplete
         }
-        onBack={() => setCurrentView('home')}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
 
-  if (businessConfigs[currentView]) {
+  if (businessConfigs[authorizedView]) {
     return renderInDesktopShell(
       <BusinessPage
-        config={businessConfigs[currentView]}
+        config={businessConfigs[authorizedView]}
         projects={projects}
         employees={employees}
-        records={recordGroups[currentView]}
-        setRecords={recordSetters[currentView]}
-        onBack={() => setCurrentView('home')}
+        records={recordGroups[authorizedView]}
+        setRecords={recordSetters[authorizedView]}
+        onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
   }
@@ -2955,7 +2965,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       accountingRecords={accountingRecords}
       currentUser={currentUser}
       onLogout={onLogout}
-      onOpenView={(view) => setCurrentView(view)}
+      onOpenView={handlePersonnelAwareNavigate}
     />
   )
 }
@@ -3110,8 +3120,9 @@ function HomePage({ projects, employees, records, accountingRecords, currentUser
     },
   ]
   const visibleModules = modules.filter((module) =>
-    module.alwaysAvailable === true ||
-    canAccessModule(currentUser, module.permissionName || module.title),
+    module.view
+      ? canAccessView(currentUser, module.view)
+      : canAccessModule(currentUser, module.permissionName || module.title),
   )
   const isPendingAuthorization =
     (currentUser.effectivePermissionKeys || []).length === 0

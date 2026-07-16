@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
 
+import { ADMIN_ROUTES } from '../../navigation/adminRoutes.js'
+
 async function read(relativePath) {
   return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '')
 }
@@ -62,11 +64,6 @@ const [appSource, shellSource, authSource] = await Promise.all([
   read('../../auth/AuthGate.jsx'),
 ])
 
-const desktopMenu = sliceBetween(
-  shellSource,
-  'const desktopMenuItems = [',
-  '\n]\n\nfunction getDesktopActiveView',
-)
 const authenticatedApp = sliceBetween(
   appSource,
   'function AuthenticatedApp',
@@ -91,8 +88,8 @@ async function loadDesktopShell() {
 
 const desktopShellModule = await loadDesktopShell()
 
-test('today attendance replaces return only in the first-level menu and home-card arrays', () => {
-  const menuViews = propertyValues(desktopMenu, 'view')
+test('today attendance remains in the centralized desktop routes and Home cards', () => {
+  const menuViews = ADMIN_ROUTES.filter(({ desktop }) => desktop).map(({ view }) => view)
   const moduleTitles = propertyValues(homeModules, 'title')
   const moduleViews = propertyValues(homeModules, 'view')
 
@@ -101,10 +98,11 @@ test('today attendance replaces return only in the first-level menu and home-car
   assert.equal(menuViews.includes('toolReturn'), false)
   assert.equal(menuViews.indexOf('todayAttendance'), menuViews.indexOf('toolBorrow') + 1)
 
-  const menuEntry = extractObjectContaining(desktopMenu, "view: 'todayAttendance'")
-  assert.match(menuEntry, /label:\s*'今日打卡'/u)
-  assert.match(menuEntry, /code:\s*'勤'/u)
-  assert.match(menuEntry, /alwaysAvailable:\s*true/u)
+  const menuEntry = ADMIN_ROUTES.find(({ view }) => view === 'todayAttendance')
+  assert.deepEqual(
+    { label: menuEntry.label, iconText: menuEntry.iconText, moduleName: menuEntry.moduleName },
+    { label: '今日打卡', iconText: '勤', moduleName: null },
+  )
 
   assert.equal(moduleTitles.length, 13)
   assert.deepEqual(moduleViews.filter((view) => view === 'todayAttendance'), ['todayAttendance'])
@@ -122,10 +120,14 @@ test('today attendance replaces return only in the first-level menu and home-car
 
 test('zero-module employees see Home and Today Attendance without another desktop module', () => {
   const currentUser = {
+    employeeId: 'E-ZERO',
     employeeNumber: 'SW-123',
     name: '零权限员工',
     department: '现场',
     position: '小工',
+    employmentStatus: '在职',
+    accountStatus: 'active',
+    mustChangePassword: false,
     effectivePermissionKeys: [],
   }
   const markup = renderToStaticMarkup(createElement(
@@ -144,18 +146,13 @@ test('zero-module employees see Home and Today Attendance without another deskto
   assert.match(menuMarkup, />今日打卡</u)
   assert.doesNotMatch(menuMarkup, /工程项目|借工具|系统设置/u)
 
-  const desktopFilter = sliceBetween(
-    shellSource,
-    'const visibleMenuItems = desktopMenuItems.filter',
-    '\n  const activeMenuItem',
-  )
   const homeFilter = sliceBetween(
     homePage,
     'const visibleModules = modules.filter',
     '\n  const isPendingAuthorization',
   )
-  assert.match(desktopFilter, /item\.alwaysAvailable === true/u)
-  assert.match(homeFilter, /module\.alwaysAvailable === true/u)
+  assert.match(shellSource, /getVisibleAdminRoutes\(currentUser\)/u)
+  assert.match(homeFilter, /canAccessView\(currentUser, module\.view\)/u)
 })
 
 test('valid zero-module profiles authenticate with every dead permission-gate state removed', () => {
@@ -206,7 +203,7 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   )
   const attendanceRoute = extractBraceBlock(
     authenticatedApp,
-    "if (currentView === 'todayAttendance')",
+    "if (authorizedView === 'todayAttendance')",
   )
   const openingTag = extractOpeningTag(attendanceRoute, 'TodayAttendancePage')
   const propNames = [...openingTag.matchAll(/\b([A-Za-z][A-Za-z0-9]*)\s*=/gu)]
@@ -216,7 +213,7 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   assert.deepEqual(propNames, ['currentUser', 'onAuthInvalid', 'onBack'])
   assert.match(openingTag, /currentUser=\{currentUser\}/u)
   assert.match(openingTag, /onAuthInvalid=\{onLogout\}/u)
-  assert.match(openingTag, /onBack=\{\(\) => setCurrentView\('home'\)\}/u)
+  assert.match(openingTag, /onBack=\{\(\) => handlePersonnelAwareNavigate\('home'\)\}/u)
   assert.doesNotMatch(openingTag, /\bprojects\s*=/u)
   assert.equal(
     (authenticatedApp.match(/return renderInDesktopShell\(/gu) || []).length,
@@ -240,7 +237,7 @@ test('toolBorrow still owns every internal return interface, record path, and da
     'const recordGroups = {',
     '\n\n  const projects = useMemo',
   )
-  const toolRoute = extractBraceBlock(authenticatedApp, "if (currentView === 'toolBorrow')")
+  const toolRoute = extractBraceBlock(authenticatedApp, "if (authorizedView === 'toolBorrow')")
   const toolManagement = sliceBetween(
     appSource,
     'function ToolManagementPage',
@@ -263,9 +260,9 @@ test('toolBorrow still owns every internal return interface, record path, and da
   assert.match(recordMappings, /toolReturn:\s*toolReturnRecords/u)
   assert.match(recordMappings, /toolReturn:\s*setToolReturnRecords/u)
 
-  assert.match(toolRoute, /^if \(currentView === 'toolBorrow'\)/u)
+  assert.match(toolRoute, /^if \(authorizedView === 'toolBorrow'\)/u)
   assert.doesNotMatch(toolRoute.split('{', 1)[0], /toolReturn/u)
-  assert.doesNotMatch(authenticatedApp, /\bcurrentView\s*===\s*'toolReturn'/u)
+  assert.doesNotMatch(authenticatedApp, /\bauthorizedView\s*===\s*'toolReturn'/u)
   assert.match(toolRoute, /initialSection="borrow"/u)
   for (const prop of [
     'toolBorrowRecords',
