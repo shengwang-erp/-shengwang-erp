@@ -2730,6 +2730,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         records={recordGroups}
         projectCostRecords={projectCostRecords}
         purchaseRecords={purchaseRecords}
+        purchasePaymentRecords={purchasePaymentRecords}
         stockInRecords={stockInRecords}
         inventoryItems={inventoryItems}
         salaryRecords={salaryRecords}
@@ -7640,6 +7641,7 @@ function DashboardPage({
   records,
   projectCostRecords,
   purchaseRecords,
+  purchasePaymentRecords,
   stockInRecords,
   inventoryItems,
   salaryRecords,
@@ -7675,6 +7677,15 @@ function DashboardPage({
   const laborExceptionCount = Number.isSafeInteger(laborAlertCount) && laborAlertCount >= 0
     ? laborAlertCount
     : 0
+  const currentMonth = currentMonthValue()
+  const purchaseAccounting = useMemo(
+    () => buildPurchaseAccountingReadModel({
+      purchaseRecords,
+      paymentRecords: purchasePaymentRecords,
+      month: currentMonth,
+    }),
+    [purchaseRecords, purchasePaymentRecords, currentMonth],
+  )
   const returnedToolBorrowIds = new Set(
     toolReturnRecords.map((record) => record.borrowRecordId).filter(Boolean),
   )
@@ -7836,7 +7847,9 @@ function DashboardPage({
           laborBridge,
           currentMonthValue(),
         ) +
-        getProjectPurchaseTotal(project.projectId, purchaseRecords) +
+        purchaseAccounting.rows
+          .filter((row) => row.projectId === project.projectId)
+          .reduce((total, row) => total + row.totalCost, 0) +
         getProjectVehicleCostTotal(
           project.projectId,
           fuelRecords,
@@ -7861,7 +7874,7 @@ function DashboardPage({
       { label: '预估毛利润', value: formatYen(estimatedGrossProfit), tone: 'money' },
       { label: '毛利率', value: formatPercent(grossProfitRate) },
     ]
-  }, [financialScopeProjects, projectCostRecords, records.labor, purchaseRecords, fuelRecords, vehicleExpenseRecords, vehicleIssueRecords, laborBridge])
+  }, [financialScopeProjects, projectCostRecords, records.labor, purchaseAccounting.rows, fuelRecords, vehicleExpenseRecords, vehicleIssueRecords, laborBridge])
 
   const personnelStats = useMemo(() => {
     const visibleEmployees = employees.filter((employee) => !isHiddenSystemEmployee(employee))
@@ -7896,14 +7909,14 @@ function DashboardPage({
       (employee) => employee.visaExpireDate && employee.remainingDays !== null && employee.remainingDays <= 90,
     )
     .sort((a, b) => a.remainingDays - b.remainingDays)
-  const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
+  const activePurchases = purchaseAccounting.rows
   const currentMonthPurchases = activePurchases.filter(
-    (record) => monthFromDate(record.purchaseDate) === currentMonthValue(),
+    (record) => monthFromDate(record.purchaseDate) === currentMonth,
   )
   const purchaseStats = [
     {
       label: '本月采购总额',
-      value: formatYen(currentMonthPurchases.reduce((total, record) => total + toAmount(record.totalCost), 0)),
+      value: formatYen(purchaseAccounting.summary.monthPurchaseCost),
       tone: 'money',
     },
     { label: '中国采购金额', value: formatYen(sourceTotal(currentMonthPurchases, '中国采购')), tone: 'money' },
@@ -7911,10 +7924,16 @@ function DashboardPage({
     { label: 'Yahoo拍卖金额', value: formatYen(sourceTotal(currentMonthPurchases, 'Yahoo拍卖')), tone: 'money' },
     { label: '东鹏株式会社采购金额', value: formatYen(sourceTotal(currentMonthPurchases, '东鹏株式会社')), tone: 'money' },
     {
-      label: '未付款采购金额',
-      value: formatYen(activePurchases.reduce((total, record) => total + toAmount(record.unpaidAmount), 0)),
+      label: '本月实际付款',
+      value: formatYen(purchaseAccounting.summary.monthPaymentCash),
       tone: 'money',
     },
+    {
+      label: '当前采购应付余额',
+      value: formatYen(purchaseAccounting.summary.currentOutstanding),
+      tone: 'money',
+    },
+    { label: '采购数据异常数量', value: purchaseAccounting.summary.anomalyCount },
     {
       label: '未入库采购数量',
       value: activePurchases.filter((record) => getPurchaseStockInStatus(record, stockInRecords) === '未入库').length,
@@ -8083,7 +8102,7 @@ function DashboardPage({
         </div>
       )}
 
-      <SectionTitle title="采购与库存" note={currentMonthValue()} />
+      <SectionTitle title="采购与库存" note={currentMonth} />
       <div className="stats-grid">
         {purchaseStats.map((item) => (
           <div className={`stat-card ${item.tone || ''}`} key={item.label}>
@@ -8180,7 +8199,8 @@ function DashboardPage({
                 <th>项目采购金额</th>
                 <th>项目材料采购金额</th>
                 <th>项目工具采购金额</th>
-                <th>项目未付款采购金额</th>
+                <th>项目已付采购金额</th>
+                <th>项目未付采购金额</th>
                 <th>项目未入库采购数量</th>
                 <th>项目车辆费用</th>
                 <th>项目用车次数</th>
@@ -8196,8 +8216,8 @@ function DashboardPage({
             <tbody>
               {detailProjects.map((project) => {
                 const unpaidAmount = toAmount(project.outstandingTaxInclusiveAmount)
-                const projectPurchases = activePurchases.filter(
-                  (record) => record.projectId === project.projectId,
+                const projectPurchases = purchaseAccounting.rows.filter(
+                  (row) => row.projectId === project.projectId,
                 )
                 const projectLaborRecords = records.labor
                   .map((record) => normalizeLaborRecord(record))
@@ -8216,17 +8236,21 @@ function DashboardPage({
                   projectLaborRecords.map((record) => record.employeeId).filter(Boolean),
                 ).size
                 const purchaseTotal = projectPurchases.reduce(
-                  (total, record) => total + toAmount(record.totalCost),
+                  (total, row) => total + row.totalCost,
                   0,
                 )
                 const materialPurchaseTotal = projectPurchases
-                  .filter((record) => record.purchaseType === '材料')
-                  .reduce((total, record) => total + toAmount(record.totalCost), 0)
+                  .filter((row) => row.purchaseType === '材料')
+                  .reduce((total, row) => total + row.totalCost, 0)
                 const toolPurchaseTotal = projectPurchases
-                  .filter((record) => record.purchaseType === '工具')
-                  .reduce((total, record) => total + toAmount(record.totalCost), 0)
+                  .filter((row) => row.purchaseType === '工具')
+                  .reduce((total, row) => total + row.totalCost, 0)
+                const paidPurchaseTotal = projectPurchases.reduce(
+                  (total, row) => total + row.paidAmount,
+                  0,
+                )
                 const unpaidPurchaseTotal = projectPurchases.reduce(
-                  (total, record) => total + toAmount(record.unpaidAmount),
+                  (total, row) => total + row.unpaidAmount,
                   0,
                 )
                 const notStockedPurchaseCount = projectPurchases.filter(
@@ -8313,6 +8337,7 @@ function DashboardPage({
                     <td>{formatYen(purchaseTotal)}</td>
                     <td>{formatYen(materialPurchaseTotal)}</td>
                     <td>{formatYen(toolPurchaseTotal)}</td>
+                    <td>{formatYen(paidPurchaseTotal)}</td>
                     <td>{formatYen(unpaidPurchaseTotal)}</td>
                     <td>{notStockedPurchaseCount}</td>
                     <td>{formatYen(projectVehicleTotal)}</td>

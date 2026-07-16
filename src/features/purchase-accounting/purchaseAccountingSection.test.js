@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
+import { getDashboardSourceData } from '../../services/dashboardService.js'
 
 const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
 const componentSource = await readFile(
@@ -46,6 +47,13 @@ async function loadAppModule() {
       load(id) {
         if (id !== '\0purchase-accounting-leaflet-ssr-stub') return null
         return 'export default { icon: () => ({}) }'
+      },
+      transform(code, id) {
+        if (!id.endsWith('/src/App.jsx')) return null
+        return code.replace(
+          'function DashboardPage({',
+          'export function DashboardPage({',
+        )
       },
     }],
     ssr: { noExternal: ['leaflet'] },
@@ -325,4 +333,163 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
   const totalCostCalculation = sliceBetween(monthlySummary, 'const totalCost =', '\n\n  return (')
   assert.equal((totalCostCalculation.match(/totalPurchaseCost/gu) || []).length, 1)
   assert.doesNotMatch(totalCostCalculation, /monthPaymentCash/u)
+})
+
+test('owner dashboard executes shared purchase rows for cross-month cash, payable, and project profit', async () => {
+  assert.ifError(appLoaded.error)
+  assert.ok(appLoaded.module?.DashboardPage)
+
+  const now = new Date()
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const priorMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 10)
+  const priorMonth = `${priorMonthDate.getFullYear()}-${String(priorMonthDate.getMonth() + 1).padStart(2, '0')}`
+  assert.notEqual(priorMonth, currentMonth)
+
+  const source = await getDashboardSourceData({
+    employees: [],
+    projects: [{
+      projectId: 'P-DASH',
+      projectName: '跨月付款项目',
+      address: '东京',
+      status: '进行中',
+      startDate: `${priorMonth}-01`,
+      endDate: '',
+      profitAnchorTaxExclusiveAmount: 100000,
+      adjustedTaxInclusiveAmount: 110000,
+      totalReceivedTaxInclusiveAmount: 40000,
+      outstandingTaxInclusiveAmount: 70000,
+      paymentStatus: '部分付款',
+    }],
+    laborRecords: [],
+    purchaseRecords: [
+      {
+        purchaseId: 'PO-DASH',
+        purchaseDate: `${priorMonth}-10`,
+        projectId: 'P-DASH',
+        projectName: '跨月付款项目',
+        purchaseSource: '中国采购',
+        purchaseType: '材料',
+        totalCost: 10000,
+        openingPaidAmount: 0,
+        paidAmount: 9999,
+        unpaidAmount: 1,
+        purchaseStatus: '正常',
+      },
+      {
+        purchaseId: 'PO-DASH',
+        purchaseDate: `${priorMonth}-11`,
+        projectId: 'P-DASH',
+        projectName: '不应重复计费',
+        purchaseSource: '中国采购',
+        purchaseType: '材料',
+        totalCost: 50000,
+        openingPaidAmount: 0,
+        purchaseStatus: '正常',
+      },
+    ],
+    purchasePaymentRecords: [
+      {
+        paymentId: 'PP-DASH',
+        purchaseId: 'PO-DASH',
+        paymentDate: `${currentMonth}-08`,
+        jpyAmount: 3000,
+      },
+      {
+        paymentId: 'PP-ORPHAN-DASH',
+        purchaseId: 'PO-MISSING',
+        paymentDate: `${currentMonth}-09`,
+        jpyAmount: 500,
+      },
+    ],
+    inventoryItems: [],
+    vehicleUsageRecords: [],
+    lifelongToolAssignments: [],
+    toolResponsibilityRecords: [],
+    load: async () => { throw new Error('unexpected persistence read') },
+  })
+
+  const html = renderToStaticMarkup(createElement(appLoaded.module.DashboardPage, {
+    projects: source.projects,
+    employees: source.employees,
+    records: {
+      stockOut: [],
+      stockReturn: [],
+      labor: source.laborRecords,
+      toolBorrow: [],
+      toolReturn: [],
+    },
+    projectCostRecords: [],
+    purchaseRecords: source.purchaseRecords,
+    purchasePaymentRecords: source.purchasePaymentRecords,
+    stockInRecords: [],
+    inventoryItems: source.inventoryItems,
+    salaryRecords: [],
+    vehicles: [],
+    vehicleUsageRecords: source.vehicleUsageRecords,
+    fuelRecords: [],
+    vehicleExpenseRecords: [],
+    vehicleIssueRecords: [],
+    toolRecords: [],
+    toolBorrowRecords: [],
+    toolReturnRecords: [],
+    lifelongToolAssignments: source.lifelongToolAssignments,
+    toolResponsibilityRecords: source.toolResponsibilityRecords,
+    laborBridge: null,
+    bridgeStatusNotice: null,
+    laborAlertCount: 0,
+    onBack: () => {},
+  }))
+
+  assert.match(html, /<strong>¥0<\/strong><span>本月采购总额<\/span>/u)
+  assert.match(html, /<strong>¥3,000<\/strong><span>本月实际付款<\/span>/u)
+  assert.match(html, /<strong>¥7,000<\/strong><span>当前采购应付余额<\/span>/u)
+  assert.match(html, /<strong>2<\/strong><span>采购数据异常数量<\/span>/u)
+  assert.match(html, /<strong>¥10,000<\/strong><span>项目成本合计<\/span>/u)
+  assert.match(html, /<strong>¥90,000<\/strong><span>预估毛利润<\/span>/u)
+  assert.match(html, /<th>项目已付采购金额<\/th>/u)
+  assert.match(html, /<th>项目未付采购金额<\/th>/u)
+
+  const projectRow = html.match(/<tr><td>跨月付款项目<\/td>[\s\S]*?<\/tr>/u)?.[0]
+  assert.ok(projectRow, 'expected the dashboard project detail row')
+  assert.match(
+    projectRow,
+    /payment-badge 部分付款[^>]*>部分付款<\/span><\/td><td>¥10,000<\/td>/u,
+  )
+  assert.match(
+    projectRow,
+    /<td>¥10,000<\/td><td>¥10,000<\/td><td>¥0<\/td><td>¥3,000<\/td><td>¥7,000<\/td>/u,
+  )
+  assert.match(projectRow, /<td>¥90,000<\/td><td>90%<\/td><\/tr>$/u)
+})
+
+test('AuthenticatedApp wires one shared purchase accounting model into the owner dashboard', () => {
+  const authenticatedApp = sliceBetween(
+    appSource,
+    'function AuthenticatedApp',
+    '\nfunction BusinessPage',
+  )
+  const dashboardPage = sliceBetween(
+    appSource,
+    'function DashboardPage',
+    '\nfunction PageShell',
+  )
+
+  assert.match(
+    authenticatedApp,
+    /<DashboardPage[\s\S]*?purchaseRecords=\{purchaseRecords\}[\s\S]*?purchasePaymentRecords=\{purchasePaymentRecords\}/u,
+  )
+  assert.equal(
+    (dashboardPage.match(/buildPurchaseAccountingReadModel\(/gu) || []).length,
+    1,
+  )
+  assert.match(dashboardPage, /const currentMonth = currentMonthValue\(\)/u)
+  assert.match(
+    dashboardPage,
+    /paymentRecords:\s*purchasePaymentRecords[\s\S]*?month:\s*currentMonth[\s\S]*?\[purchaseRecords, purchasePaymentRecords, currentMonth\]/u,
+  )
+  assert.match(dashboardPage, /purchaseAccounting\.summary\.monthPaymentCash/u)
+  assert.match(dashboardPage, /purchaseAccounting\.summary\.currentOutstanding/u)
+  assert.match(dashboardPage, /purchaseAccounting\.rows\.filter/u)
+  assert.match(dashboardPage, /row\.paidAmount/u)
+  assert.match(dashboardPage, /row\.unpaidAmount/u)
 })
