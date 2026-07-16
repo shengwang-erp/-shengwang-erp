@@ -187,11 +187,11 @@ export default function PurchaseAccountingSection({
         </div>
         <div className="stat-card money">
           <strong>{formatYen(readModel.summary.monthPaymentCash)}</strong>
-          <span>本月采购付款</span>
+          <span>本月已记录付款</span>
         </div>
         <div className="stat-card money">
           <strong>{formatYen(readModel.summary.currentOutstanding)}</strong>
-          <span>当前采购应付余额</span>
+          <span>当前未付采购款</span>
         </div>
         <div className="stat-card money">
           <strong>{formatYen(readModel.summary.monthOpeningPaid)}</strong>

@@ -1,3 +1,9 @@
+import {
+  PURCHASE_PAYMENT_CASH_SCHEMA,
+  isRecordedCashFact,
+  normalizeCashFactProvenance,
+} from '../cost-accounting/cashFactProvenance.js'
+
 const VOID_PURCHASE_STATUS = '作废'
 
 function asArray(value) {
@@ -130,7 +136,7 @@ function normalizePayments(paymentRecords, purchasesById, anomalies) {
     }
 
     payments.push({
-      ...record,
+      ...normalizeCashFactProvenance(record, PURCHASE_PAYMENT_CASH_SCHEMA),
       paymentId,
       purchaseId,
       jpyAmount: normalizedAmount.amount,
@@ -290,10 +296,14 @@ export function buildPurchaseAccountingReadModel({
     ))
   const rows = allRows.filter((row) => matchesScope(row, projectId, source))
   const paymentRows = payments.filter((payment) => matchesScope(payment, projectId, source))
+  const cashPaymentRows = paymentRows.filter((payment) =>
+    isRecordedCashFact(payment, PURCHASE_PAYMENT_CASH_SCHEMA),
+  )
 
   return {
     rows,
     paymentRows,
+    cashPaymentRows,
     anomalies,
     summary: {
       monthPurchaseCost: rows
@@ -302,7 +312,7 @@ export function buildPurchaseAccountingReadModel({
       monthOpeningPaid: rows
         .filter((row) => inMonth(row.purchaseDate, month))
         .reduce((total, row) => total + row.openingPaidAmount, 0),
-      monthPaymentCash: paymentRows
+      monthPaymentCash: cashPaymentRows
         .filter((payment) => inMonth(payment.paymentDate, month))
         .reduce((total, payment) => total + payment.jpyAmount, 0),
       currentOutstanding: rows.reduce((total, row) => total + row.unpaidAmount, 0),

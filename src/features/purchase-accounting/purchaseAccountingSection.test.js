@@ -59,6 +59,18 @@ async function loadAppModule() {
             'export function normalizePurchaseRecord(record) {',
           )
           .replace(
+            'function normalizeFuelRecord(record) {',
+            'export function normalizeFuelRecord(record) {',
+          )
+          .replace(
+            'function normalizeVehicleExpenseRecord(record) {',
+            'export function normalizeVehicleExpenseRecord(record) {',
+          )
+          .replace(
+            'function normalizePurchasePaymentRecord(record) {',
+            'export function normalizePurchasePaymentRecord(record) {',
+          )
+          .replace(
             'async function commitPurchasePaymentMutation({',
             'export async function commitPurchasePaymentMutation({',
           )
@@ -181,8 +193,8 @@ test('renders order cost, payment cash, current payable, and source notice', () 
   const html = renderSection()
 
   assert.match(html, /<strong>¥5,000<\/strong><span>本月采购确认成本<\/span>/u)
-  assert.match(html, /<strong>¥3,000<\/strong><span>本月采购付款<\/span>/u)
-  assert.match(html, /<strong>¥10,000<\/strong><span>当前采购应付余额<\/span>/u)
+  assert.match(html, /<strong>¥3,000<\/strong><span>本月已记录付款<\/span>/u)
+  assert.match(html, /<strong>¥10,000<\/strong><span>当前未付采购款<\/span>/u)
   assert.match(html, /<strong>¥2,000<\/strong><span>本月初始付款<\/span>/u)
   assert.match(html, /<strong>1<\/strong><span>未取得发票数量<\/span>/u)
   assert.match(html, /<strong>2<\/strong><span>异常付款数量<\/span>/u)
@@ -332,8 +344,8 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
     }],
   })
 
-  assert.match(html, /<strong>¥3,000<\/strong><span>本月采购付款<\/span>/u)
-  assert.match(html, /<strong>¥7,000<\/strong><span>当前采购应付余额<\/span>/u)
+  assert.match(html, /<strong>¥3,000<\/strong><span>本月已记录付款<\/span>/u)
+  assert.match(html, /<strong>¥7,000<\/strong><span>当前未付采购款<\/span>/u)
   assert.match(
     html,
     /<td>¥10,000<\/td><td>¥3,000<\/td><td>¥7,000<\/td><td>部分付款<\/td>/u,
@@ -487,6 +499,71 @@ test('purchase payment mutation orchestration executes durable writes before loc
     assert.equal(committed, true)
     assert.deepEqual(events, ['purchase-state', 'payment-state'])
   })
+})
+
+test('App cash normalizers preserve provenance and submit handlers mark raw forms', () => {
+  assert.ifError(appLoaded.error)
+  assert.ok(appLoaded.module?.normalizeFuelRecord)
+  assert.ok(appLoaded.module?.normalizeVehicleExpenseRecord)
+  assert.ok(appLoaded.module?.normalizePurchasePaymentRecord)
+
+  const defaultedFuel = appLoaded.module.normalizeFuelRecord({
+    fuelDate: '2026-07-16',
+    fuelDateSource: 'defaulted',
+    paymentMethod: '现金',
+    paymentMethodSource: 'defaulted',
+  })
+  const legacyExpense = appLoaded.module.normalizeVehicleExpenseRecord({
+    expenseDate: '2026-07-15',
+    paymentMethod: '公司账户',
+  })
+  const legacyPayment = appLoaded.module.normalizePurchasePaymentRecord({
+    paymentDate: '2026-07-14',
+    paymentAmount: 1000,
+    currency: 'JPY',
+  })
+
+  assert.equal(defaultedFuel.fuelDateSource, 'defaulted')
+  assert.equal(defaultedFuel.paymentMethodSource, 'defaulted')
+  assert.equal(legacyExpense.expenseDateSource, 'recorded')
+  assert.equal(legacyExpense.expenseDateLegacyInferred, true)
+  assert.equal(legacyExpense.paymentMethodSource, 'recorded')
+  assert.equal(legacyExpense.paymentMethodLegacyInferred, true)
+  assert.equal(legacyPayment.paymentDateSource, 'recorded')
+  assert.equal(legacyPayment.paymentDateLegacyInferred, true)
+
+  const fuelSection = sliceBetween(
+    appSource,
+    'function VehicleFuelSection',
+    '\nfunction VehicleExpenseSection',
+  )
+  const expenseSection = sliceBetween(
+    appSource,
+    'function VehicleExpenseSection',
+    '\nfunction VehicleIssueSection',
+  )
+  const paymentSection = sliceBetween(
+    appSource,
+    'function PurchasePaymentSection',
+    '\nfunction PurchaseSummarySection',
+  )
+
+  assert.match(
+    appSource,
+    /from '.\/features\/cost-accounting\/cashFactProvenance\.js'/u,
+  )
+  assert.match(
+    fuelSection,
+    /normalizeFuelRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, VEHICLE_FUEL_CASH_SCHEMA\)\)/u,
+  )
+  assert.match(
+    expenseSection,
+    /normalizeVehicleExpenseRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, VEHICLE_EXPENSE_CASH_SCHEMA\)\)/u,
+  )
+  assert.match(
+    paymentSection,
+    /normalizePurchasePaymentRecord\(markCashFactAsRecorded\(\{[\s\S]*?\}, PURCHASE_PAYMENT_CASH_SCHEMA\)\)/u,
+  )
 })
 
 test('purchase payment App handlers guard and reconcile add/delete before saving the ledger', () => {

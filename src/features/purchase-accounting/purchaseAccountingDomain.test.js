@@ -64,6 +64,29 @@ test('does not add payment cash to project purchase cost', () => {
   assert.equal(readModel.rows[0].totalCost, 10000)
 })
 
+test('defaulted payment dates affect payable balance but never month cash', () => {
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-07',
+    purchaseRecords: [{
+      purchaseId: 'PO-1',
+      totalCost: 1000,
+      purchaseDate: '2026-07-01',
+    }],
+    paymentRecords: [{
+      paymentId: 'PAY-1',
+      purchaseId: 'PO-1',
+      paymentDate: '2026-07-16',
+      paymentDateSource: 'defaulted',
+      jpyAmount: 400,
+    }],
+  })
+
+  assert.equal(model.rows[0].paidAmount, 400)
+  assert.equal(model.summary.currentOutstanding, 600)
+  assert.equal(model.summary.monthPaymentCash, 0)
+  assert.deepEqual(model.cashPaymentRows, [])
+})
+
 test('keeps project-use purchases without a project in company cost and reports allocation health', () => {
   const readModel = buildPurchaseAccountingReadModel({
     purchaseRecords: [purchase({
