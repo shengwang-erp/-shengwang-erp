@@ -1,0 +1,159 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import {
+  ACCOUNTING_RESOLUTION_TYPES,
+  ATTENDANCE_ISSUE_CODES,
+  buildProjectLaborCsv,
+  calculatePayrollPreview,
+  classifyAttendanceDay,
+  suggestProjectCost,
+  validateProjectAllocations,
+} from './laborAccountingDomain.js'
+
+const settings = {
+  effectiveFrom: '2026-07-16',
+  workWeekdays: [1, 2, 3, 4, 5, 6],
+  workStartTime: '08:00',
+  workEndTime: '17:00',
+  breakMinutes: 60,
+  standardDayMinutes: 480,
+}
+
+test('required weekdays and optional Sunday classify without inventing Sunday absence', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18', nowTokyo: '2026-07-18T08:01:00+09:00', settings,
+    sessions: [], resolution: null,
+  }).issueCodes, ['missing_clock_in'])
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-19', nowTokyo: '2026-07-19T12:00:00+09:00', settings,
+    sessions: [], resolution: null,
+  }), { scheduleRequired: false, dayStatus: 'optional_not_worked', issueCodes: [] })
+})
+
+test('salary previews use only whole and half-day units', () => {
+  assert.equal(calculatePayrollPreview({ salaryType: '月薪', baseSalary: 320000,
+    dailySalary: 0, hourlyWage: 0, fullDays: 20, halfDays: 2,
+    overtimePay: 10000, bonus: 5000, deduction: 3000 }).netSalary, 332000)
+  assert.equal(calculatePayrollPreview({ salaryType: '日薪', baseSalary: 0,
+    dailySalary: 12000, hourlyWage: 0, fullDays: 20, halfDays: 1,
+    overtimePay: 0, bonus: 0, deduction: 0 }).basePay, 246000)
+  assert.equal(calculatePayrollPreview({ salaryType: '时薪', baseSalary: 0,
+    dailySalary: 0, hourlyWage: 1500, fullDays: 2, halfDays: 1,
+    overtimePay: 0, bonus: 0, deduction: 0 }).basePay, 30000)
+})
+
+test('project cost suggestions round yen and allocations must balance', () => {
+  assert.equal(suggestProjectCost({ salaryType: '月薪', baseSalary: 320000,
+    dailySalary: 0, hourlyWage: 0, attendanceUnits: 0.5 }), 6667)
+  assert.deepEqual(validateProjectAllocations({ finalProjectCost: 10000,
+    allocations: [{ projectId: 'P1', amount: 6000 }, { projectId: 'P2', amount: 4000 }] }),
+  { valid: true, allocatedTotal: 10000, difference: 0 })
+  assert.equal(validateProjectAllocations({ finalProjectCost: 10000,
+    allocations: [{ projectId: 'P1', amount: 9999 }] }).valid, false)
+})
+
+test('CSV escapes quotes and starts with an Excel-compatible BOM', () => {
+  const csv = buildProjectLaborCsv([{ projectName: '东京,"改修"', workDate: '2026-07-16',
+    employeeNumber: 'SW-001', employeeName: '王强', attendanceUnits: 1, amount: 12000,
+    accountingStatus: 'confirmed' }])
+  assert.ok(csv.startsWith('\uFEFF项目,日期,员工编号,员工姓名,确认人天,分摊金额,状态\r\n'))
+  assert.match(csv, /"东京,""改修"""/u)
+})
+
+test('unconfigured and pre-activation dates fail closed without synthesized absence', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T12:00:00+09:00',
+    settings: { ...settings, configured: false, effectiveFrom: null },
+    sessions: [],
+    resolution: null,
+  }), { scheduleRequired: false, dayStatus: 'unconfigured', issueCodes: [] })
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-15',
+    nowTokyo: '2026-07-18T12:00:00+09:00',
+    settings,
+    sessions: [],
+    resolution: null,
+  }), { scheduleRequired: false, dayStatus: 'before_activation', issueCodes: [] })
+})
+
+test('confirmed accounting resolution takes precedence over attendance anomalies', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T12:00:00+09:00',
+    settings,
+    sessions: [],
+    resolution: { resolutionType: 'leave', accountingStatus: 'confirmed' },
+  }), { scheduleRequired: true, dayStatus: 'leave', issueCodes: [] })
+})
+
+test('first clock-in and last clock-out drive late, early, and overtime facts', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T18:30:00+09:00',
+    settings,
+    sessions: [{
+      openedAt: '2026-07-17T23:15:00.000Z',
+      closedAt: '2026-07-18T09:30:00.000Z',
+      clockInEvent: { result: 'abnormal' },
+      clockOutEvent: { result: 'normal' },
+    }],
+    resolution: null,
+  }), {
+    scheduleRequired: true,
+    dayStatus: 'completed',
+    issueCodes: ['abnormal_location', 'late', 'overtime_pending'],
+  })
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T16:30:00+09:00',
+    settings,
+    sessions: [{
+      openedAt: '2026-07-17T23:15:00.000Z',
+      closedAt: '2026-07-18T07:30:00.000Z',
+    }],
+    resolution: null,
+  }).issueCodes, ['late', 'early'])
+})
+
+test('open sessions report missing clock-out after shift end in stable issue order', () => {
+  assert.deepEqual(classifyAttendanceDay({
+    workDate: '2026-07-18',
+    nowTokyo: '2026-07-18T17:01:00+09:00',
+    settings,
+    sessions: [{
+      openedAt: '2026-07-17T23:15:00.000Z',
+      closedAt: null,
+      clockInEvent: { result: 'abnormal' },
+      clockOutEvent: null,
+    }],
+    resolution: null,
+  }), {
+    scheduleRequired: true,
+    dayStatus: 'working',
+    issueCodes: ['abnormal_location', 'missing_clock_out', 'late'],
+  })
+})
+
+test('CSV uses CRLF, integer yen, and RFC 4180 escaping for every field type', () => {
+  const csv = buildProjectLaborCsv([{
+    projectName: 'A\r\nB',
+    workDate: '2026-07-16',
+    employeeNumber: 'SW-001',
+    employeeName: '="unsafe"',
+    attendanceUnits: 0.5,
+    amount: 10000.6,
+    accountingStatus: 'confirmed',
+  }])
+  assert.equal(csv.includes('\n') && !csv.replaceAll('\r\n', '').includes('\n'), true)
+  assert.match(csv, /"A\r\nB"/u)
+  assert.match(csv, /"=""unsafe"""/u)
+  assert.match(csv, /,0\.5,10001,confirmed(?:\r\n)?$/u)
+})
+
+assert.deepEqual(ACCOUNTING_RESOLUTION_TYPES,
+  ['full_day', 'half_day', 'rest', 'leave', 'comp_time', 'absence'])
+assert.deepEqual(ATTENDANCE_ISSUE_CODES,
+  ['missing_clock_in', 'late', 'early', 'missing_clock_out',
+    'abnormal_location', 'overtime_pending'])
