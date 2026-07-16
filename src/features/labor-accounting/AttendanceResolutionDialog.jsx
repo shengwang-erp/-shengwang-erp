@@ -55,6 +55,51 @@ export function deriveFactProjects(detail) {
   return projects
 }
 
+function availableProjects(detail) {
+  if (detail?.permissions?.canViewProjectCosts !== true) return []
+  const projects = []
+  const seen = new Set()
+  for (const project of detail?.availableProjects || []) {
+    const projectId = typeof project?.projectId === 'string' ? project.projectId.trim() : ''
+    if (!projectId || seen.has(projectId)) continue
+    seen.add(projectId)
+    projects.push({
+      projectId,
+      projectName: String(project?.projectName || '未命名项目'),
+    })
+  }
+  return projects
+}
+
+export function addProjectAllocation(draft, projectId) {
+  const normalizedProjectId = typeof projectId === 'string' ? projectId.trim() : ''
+  const allocations = Array.isArray(draft?.allocations) ? draft.allocations : []
+  if (!normalizedProjectId || allocations.some(
+    (allocation) => allocation.projectId === normalizedProjectId,
+  )) return draft
+  return {
+    ...draft,
+    allocations: [
+      ...allocations,
+      {
+        projectId: normalizedProjectId,
+        amount: allocations.length === 0 && safeYen(draft?.finalProjectCost)
+          ? draft.finalProjectCost
+          : 0,
+        allocationNote: '',
+      },
+    ],
+  }
+}
+
+export function removeProjectAllocation(draft, projectId) {
+  const allocations = Array.isArray(draft?.allocations) ? draft.allocations : []
+  const nextAllocations = allocations.filter((allocation) => allocation.projectId !== projectId)
+  return nextAllocations.length === allocations.length
+    ? draft
+    : { ...draft, allocations: nextAllocations }
+}
+
 function cloneAllocations(allocations) {
   return allocations.map((allocation) => ({
     projectId: allocation.projectId,
@@ -116,6 +161,23 @@ export function resolutionWriteBlockedReason(detail) {
     return '该日结已有项目人工成本；当前账号缺少完整费用权限，不能修改或清空原结论'
   }
   return ''
+}
+
+function draftHasMoneyScope(draft) {
+  return Number(draft?.finalProjectCost) !== 0 ||
+    (Array.isArray(draft?.allocations) && draft.allocations.length > 0)
+}
+
+export function resolutionDraftBlockers(detail, draft, { saving = false } = {}) {
+  const blockers = []
+  const writeBlockedReason = resolutionWriteBlockedReason(detail)
+  if (writeBlockedReason) blockers.push(writeBlockedReason)
+  if (saving) blockers.push('请求正在处理中')
+  if (draftHasMoneyScope(draft) &&
+      detail?.permissions?.canUpdateProjectCosts !== true) {
+    blockers.push('当前草稿含项目费用；账号缺少完整项目费用权限，不能保存')
+  }
+  return [...new Set(blockers)]
 }
 
 export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}) {
@@ -281,31 +343,63 @@ function SalarySummary({ detail }) {
       </div>
     )
   }
-  if (detail.salary?.salaryType === '未设置') {
-    return (
-      <div className="labor-salary-warning" role="alert">
-        <strong>未设置工资标准</strong>
-        <span>整天或半天结论确认前，请先到人员管理补齐工资标准。</span>
-      </div>
-    )
-  }
   const salary = detail.salary
   const rate = salary?.salaryType === '月薪'
     ? salary.baseSalary
     : salary?.salaryType === '日薪'
       ? salary.dailySalary
       : salary?.hourlyWage
+  const snapshot = detail.resolution?.salaryTypeSnapshot
+    ? detail.resolution
+    : null
+  const snapshotStage = ['confirmed', 'month_locked'].includes(
+    detail.resolution?.accountingStatus,
+  ) ? '确认时' : '保存时'
+  const currentSalaryConfigured = salary?.salaryType && salary.salaryType !== '未设置'
   return (
-    <dl className="labor-salary-summary">
-      <div><dt>工资类型</dt><dd>{salary?.salaryType || '—'}</dd></div>
-      <div><dt>档案工资标准</dt><dd>{safeYen(rate) ? YEN_FORMATTER.format(rate) : '—'}</dd></div>
-      <div>
-        <dt>建议项目日成本</dt>
-        <dd>{safeYen(salary?.suggestedProjectCost)
-          ? YEN_FORMATTER.format(salary.suggestedProjectCost)
-          : detail.permissions.canViewProjectCosts ? '—' : '按权限隐藏'}</dd>
-      </div>
-    </dl>
+    <div className="labor-salary-summary">
+      {snapshot && (
+        <section aria-label="日结工资快照">
+          <h4>日结工资快照</h4>
+          <p>以下为日结{snapshotStage}标准，不随员工当前档案变化。</p>
+          <dl>
+            <div><dt>{snapshotStage}工资类型</dt><dd>{snapshot.salaryTypeSnapshot}</dd></div>
+            <div><dt>{snapshotStage}月薪标准</dt><dd>{safeYen(snapshot.baseSalarySnapshot)
+              ? YEN_FORMATTER.format(snapshot.baseSalarySnapshot) : '—'}</dd></div>
+            <div><dt>{snapshotStage}日薪标准</dt><dd>{safeYen(snapshot.dailySalarySnapshot)
+              ? YEN_FORMATTER.format(snapshot.dailySalarySnapshot) : '—'}</dd></div>
+            <div><dt>{snapshotStage}时薪标准</dt><dd>{safeYen(snapshot.hourlyWageSnapshot)
+              ? YEN_FORMATTER.format(snapshot.hourlyWageSnapshot) : '—'}</dd></div>
+            <div>
+              <dt>{snapshotStage}建议项目日成本</dt>
+              <dd>{safeYen(snapshot.suggestedProjectCost)
+                ? YEN_FORMATTER.format(snapshot.suggestedProjectCost)
+                : detail.permissions.canViewProjectCosts ? '—' : '按权限隐藏'}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+      {currentSalaryConfigured ? (
+        <section aria-label="当前档案工资标准">
+          <h4>当前档案工资标准</h4>
+          <dl>
+            <div><dt>当前工资类型</dt><dd>{salary.salaryType}</dd></div>
+            <div><dt>当前标准</dt><dd>{safeYen(rate) ? YEN_FORMATTER.format(rate) : '—'}</dd></div>
+            <div>
+              <dt>当前建议项目日成本</dt>
+              <dd>{safeYen(salary.suggestedProjectCost)
+                ? YEN_FORMATTER.format(salary.suggestedProjectCost)
+                : detail.permissions.canViewProjectCosts ? '—' : '按权限隐藏'}</dd>
+            </div>
+          </dl>
+        </section>
+      ) : (
+        <div className="labor-salary-warning" role="alert">
+          <strong>未设置工资标准</strong>
+          <span>整天或半天结论确认前，请先到人员管理补齐工资标准。</span>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -385,10 +479,23 @@ function AttendanceFacts({ detail }) {
 }
 
 function AllocationFields({ detail, draft, disabled, onDraftChange }) {
-  const projectNames = new Map(deriveFactProjects(detail).map((project) => [
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const moneyControlsDisabled = disabled ||
+    detail.permissions.canUpdateProjectCosts !== true
+  const allAvailableProjects = availableProjects(detail)
+  const projectNames = new Map(allAvailableProjects.map((project) => [
     project.projectId,
     project.projectName,
   ]))
+  for (const project of deriveFactProjects(detail)) {
+    projectNames.set(project.projectId, project.projectName)
+  }
+  const allocatedProjectIds = new Set(draft.allocations.map(
+    (allocation) => allocation.projectId,
+  ))
+  const selectableProjects = allAvailableProjects.filter(
+    (project) => !allocatedProjectIds.has(project.projectId),
+  )
   for (const allocation of detail.allocations || []) {
     if (!projectNames.has(allocation.projectId)) {
       projectNames.set(allocation.projectId, allocation.projectName)
@@ -413,6 +520,12 @@ function AllocationFields({ detail, draft, disabled, onDraftChange }) {
     })
   }
 
+  const addSelectedProject = () => {
+    if (!selectableProjects.some((project) => project.projectId === selectedProjectId)) return
+    onDraftChange(addProjectAllocation(draft, selectedProjectId))
+    setSelectedProjectId('')
+  }
+
   return (
     <div className="labor-allocation-editor">
       <label>
@@ -424,7 +537,7 @@ function AllocationFields({ detail, draft, disabled, onDraftChange }) {
           inputMode="numeric"
           aria-label="最终项目人工成本（日元）"
           value={draft.finalProjectCost}
-          disabled={disabled}
+          disabled={moneyControlsDisabled}
           onChange={(event) => {
             const amount = Math.max(0, Math.trunc(Number(event.target.value) || 0))
             const allocations = draft.allocations.length === 1
@@ -435,10 +548,39 @@ function AllocationFields({ detail, draft, disabled, onDraftChange }) {
         />
       </label>
 
+      <div className="labor-allocation-project-picker">
+        <label>
+          <span>选择待添加项目</span>
+          <select
+            aria-label="选择待添加项目"
+            value={selectedProjectId}
+            disabled={moneyControlsDisabled || draft.attendanceUnits === 0 ||
+              selectableProjects.length === 0}
+            onChange={(event) => setSelectedProjectId(event.target.value)}
+          >
+            <option value="">请选择项目</option>
+            {selectableProjects.map((project) => (
+              <option value={project.projectId} key={project.projectId}>{project.projectName}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          aria-label="添加项目分摊"
+          disabled={moneyControlsDisabled || draft.attendanceUnits === 0 || !selectedProjectId ||
+            !selectableProjects.some((project) => project.projectId === selectedProjectId)}
+          onClick={addSelectedProject}
+        >
+          添加项目分摊
+        </button>
+      </div>
+
       <div className="labor-allocation-list">
         {draft.allocations.length === 0 ? (
           <p className="labor-empty-inline">
-            {draft.attendanceUnits === 0 ? '0 人天结论不产生项目分摊。' : '当天没有可分摊的打卡项目。'}
+            {draft.attendanceUnits === 0
+              ? '0 人天结论不产生项目分摊。'
+              : '尚未添加项目分摊，请从上方选择项目。'}
           </p>
         ) : draft.allocations.map((allocation, index) => {
           const projectName = projectNames.get(allocation.projectId) || allocation.projectId
@@ -454,7 +596,7 @@ function AllocationFields({ detail, draft, disabled, onDraftChange }) {
                   inputMode="numeric"
                   aria-label={`${projectName}分摊金额（日元）`}
                   value={allocation.amount}
-                  disabled={disabled}
+                  disabled={moneyControlsDisabled}
                   onChange={(event) => changeAllocation(
                     index, 'amount', Math.max(0, Math.trunc(Number(event.target.value) || 0)),
                   )}
@@ -467,10 +609,18 @@ function AllocationFields({ detail, draft, disabled, onDraftChange }) {
                   maxLength="2000"
                   aria-label={`${projectName}分摊备注`}
                   value={allocation.allocationNote}
-                  disabled={disabled}
+                  disabled={moneyControlsDisabled}
                   onChange={(event) => changeAllocation(index, 'allocationNote', event.target.value)}
                 />
               </label>
+              <button
+                type="button"
+                aria-label={`移除${projectName}项目分摊`}
+                disabled={moneyControlsDisabled}
+                onClick={() => onDraftChange(removeProjectAllocation(draft, allocation.projectId))}
+              >
+                移除项目
+              </button>
             </article>
           )
         })}
@@ -508,6 +658,7 @@ export default function AttendanceResolutionDialog({
   )
   const [draft, setDraft] = useState(initialDraft)
   const readOnlyReason = resolutionWriteBlockedReason(detail)
+  const draftBlockers = resolutionDraftBlockers(detail, draft, { saving })
   const blockers = resolutionConfirmBlockers(detail, draft, { saving })
   const controlsDisabled = saving || Boolean(readOnlyReason)
   useLaborModalFocus(dialogRef, { onClose, saving })
@@ -628,7 +779,7 @@ export default function AttendanceResolutionDialog({
           <button
             type="button"
             className="labor-save-draft"
-            disabled={controlsDisabled}
+            disabled={controlsDisabled || draftBlockers.length > 0}
             onClick={() => onSaveDraft?.(draft)}
           >
             {saving ? '正在保存…' : '保存草稿'}

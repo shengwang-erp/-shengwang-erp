@@ -215,6 +215,10 @@ function resolutionDetail({
     salary,
     resolution,
     allocations,
+    availableProjects: canViewProjectCosts ? [
+      { projectId: 'P001', projectName: '东京站现场' },
+      { projectId: 'P002', projectName: '大阪现场' },
+    ] : [],
   }
 }
 
@@ -680,6 +684,7 @@ test('resolution detail accepts only explicit salary and project-money variants'
       employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
     })
     assert.equal(Object.hasOwn(result.allocations[0], 'amount'), variant.amount)
+    assert.equal(result.availableProjects.length, variant.canViewProjectCosts ? 2 : 0)
   }
   const noResolution = resolutionDetail({ hasResolution: false, hasMoneyScope: false })
   const { service } = serviceWithResponder(() => noResolution)
@@ -692,6 +697,21 @@ test('resolution detail accepts only explicit salary and project-money variants'
     (() => { const row = resolutionDetail({ canViewProjectCosts: false }); row.allocations[0].amount = 1; return row })(),
     (() => { const row = resolutionDetail(); delete row.resolution.finalProjectCost; return row })(),
     (() => { const row = resolutionDetail(); row.allocations[0].amount = 0.5; return row })(),
+    (() => { const row = resolutionDetail({ canViewProjectCosts: false }); row.availableProjects = [{ projectId: 'P001', projectName: '东京站现场' }]; return row })(),
+    (() => { const row = resolutionDetail(); row.availableProjects[1].projectId = 'P001'; return row })(),
+    (() => { const row = resolutionDetail(); row.availableProjects[1].projectId = ' P001 '; return row })(),
+    (() => { const row = resolutionDetail(); row.availableProjects[0].unexpected = true; return row })(),
+    (() => { const row = resolutionDetail(); row.availableProjects = Array(2); row.availableProjects[0] = { projectId: 'P001', projectName: '东京站现场' }; return row })(),
+    (() => { const row = resolutionDetail(); Object.setPrototypeOf(row.availableProjects, null); return row })(),
+    (() => { const row = resolutionDetail(); Object.setPrototypeOf(row.availableProjects[0], { inherited: true }); return row })(),
+    (() => {
+      const row = resolutionDetail()
+      Object.defineProperty(row.availableProjects[0], 'projectName', {
+        enumerable: true,
+        get: () => '东京站现场',
+      })
+      return row
+    })(),
   ]) {
     const malformedService = serviceWithResponder(() => malformed).service
     await assert.rejects(
@@ -699,6 +719,31 @@ test('resolution detail accepts only explicit salary and project-money variants'
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
+
+  const maximum = resolutionDetail()
+  maximum.availableProjects = Array.from({ length: 10000 }, (_, index) => ({
+    projectId: `P-${index}`,
+    projectName: `项目 ${index}`,
+  }))
+  const maximumService = serviceWithResponder(() => maximum).service
+  assert.equal((await maximumService.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID,
+    workDate: WORK_DATE,
+  })).availableProjects.length, 10000)
+
+  const tooMany = resolutionDetail()
+  tooMany.availableProjects = Array.from({ length: 10001 }, (_, index) => ({
+    projectId: `P-${index}`,
+    projectName: `项目 ${index}`,
+  }))
+  const tooManyService = serviceWithResponder(() => tooMany).service
+  await assert.rejects(
+    () => tooManyService.getResolutionDetail({
+      employeeProfileId: EMPLOYEE_ID,
+      workDate: WORK_DATE,
+    }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
 })
 
 test('resolution detail preserves server money scope independently of visible money and attendance units', async () => {
@@ -871,6 +916,74 @@ test('employee month calendar validates exact identity, month coverage, order, a
     const malformedService = serviceWithResponder(() => data).service
     await assert.rejects(
       () => malformedService.listEmployeeMonthCalendar({
+        employeeProfileId: EMPLOYEE_ID,
+        month: MONTH,
+      }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('employee month calendar rejects impossible live issues without rejecting frozen resolution facts', async (t) => {
+  const invalidDayFacts = [
+    ['late requires a scheduled day',
+      { dayStatus: 'completed', scheduleRequired: false, issueCodes: ['late'] }],
+    ['early requires a scheduled day',
+      { dayStatus: 'completed', scheduleRequired: false, issueCodes: ['early'] }],
+    ['missing clock-in requires a scheduled day',
+      { dayStatus: 'completed', scheduleRequired: false, issueCodes: ['missing_clock_in'] }],
+    ['missing clock-in must be the only issue',
+      { dayStatus: 'completed', scheduleRequired: true, issueCodes: ['missing_clock_in', 'late'] }],
+    ['working cannot be early',
+      { dayStatus: 'working', scheduleRequired: true, issueCodes: ['early'] }],
+    ['completed cannot be missing clock-out',
+      { dayStatus: 'completed', scheduleRequired: true, issueCodes: ['missing_clock_out'] }],
+  ]
+  for (const [name, invalidDayFact] of invalidDayFacts) {
+    await t.test(name, async () => {
+      const calendar = employeeMonthCalendar()
+      Object.assign(calendar.days[19], invalidDayFact)
+      const service = serviceWithResponder(() => calendar).service
+      await assert.rejects(
+        () => service.listEmployeeMonthCalendar({
+          employeeProfileId: EMPLOYEE_ID,
+          month: MONTH,
+        }),
+        (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+      )
+    })
+  }
+
+  for (const accountingStatus of ['confirmed', 'month_locked']) {
+    for (const issueCodes of [['early'], ['missing_clock_in']]) {
+      const frozenCalendar = employeeMonthCalendar()
+      Object.assign(frozenCalendar.days[17], {
+        dayStatus: 'full_day',
+        scheduleRequired: true,
+        issueCodes,
+        accountingStatus,
+      })
+      const service = serviceWithResponder(() => frozenCalendar).service
+      const result = await service.listEmployeeMonthCalendar({
+        employeeProfileId: EMPLOYEE_ID,
+        month: MONTH,
+      })
+      assert.deepEqual(result.days[17].issueCodes, issueCodes)
+      assert.equal(result.days[17].accountingStatus, accountingStatus)
+    }
+
+    const impossibleFrozenCalendar = employeeMonthCalendar()
+    Object.assign(impossibleFrozenCalendar.days[17], {
+      dayStatus: 'full_day',
+      scheduleRequired: true,
+      issueCodes: ['missing_clock_out'],
+      accountingStatus,
+    })
+    const impossibleFrozenService = serviceWithResponder(
+      () => impossibleFrozenCalendar,
+    ).service
+    await assert.rejects(
+      () => impossibleFrozenService.listEmployeeMonthCalendar({
         employeeProfileId: EMPLOYEE_ID,
         month: MONTH,
       }),

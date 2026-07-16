@@ -683,7 +683,7 @@ function validateDetailedResolution(value, canViewSalary, canViewProjectCosts) {
 function validateResolutionDetail(value) {
   const row = objectShape(value, [
     'employee', 'workDate', 'scheduleRequired', 'facts', 'hasMoneyScope', 'permissions',
-    'salary', 'resolution', 'allocations',
+    'salary', 'resolution', 'allocations', 'availableProjects',
   ])
   const employeeRow = objectShape(row.employee, [
     'employeeProfileId', 'employeeNumber', 'employeeName', 'department', 'position',
@@ -721,6 +721,22 @@ function validateResolutionDetail(value) {
     }
   })
   if (resolution === null && allocations.length !== 0) throw invalidResponse()
+  const availableProjectIds = new Set()
+  const availableProjects = arrayShape(row.availableProjects, invalidResponse, {
+    maxLength: 10000,
+  }).map((project) => {
+    const item = objectShape(project, ['projectId', 'projectName'])
+    const projectId = identifier(item.projectId)
+    if (availableProjectIds.has(projectId)) throw invalidResponse()
+    availableProjectIds.add(projectId)
+    return {
+      projectId,
+      projectName: textValue(item.projectName, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
+    }
+  })
+  if (!permissions.canViewProjectCosts && availableProjects.length !== 0) {
+    throw invalidResponse()
+  }
   return {
     employee: {
       employeeProfileId: uuidValue(employeeRow.employeeProfileId),
@@ -737,6 +753,7 @@ function validateResolutionDetail(value) {
     salary,
     resolution,
     allocations,
+    availableProjects,
   }
 }
 
@@ -919,7 +936,20 @@ function validateEmployeeMonthCalendar(value, employeeProfileId, month) {
     }
     const resolutionDay = RESOLUTION_TYPE_SET.has(dayStatus)
     const confirmedResolution = ['confirmed', 'month_locked'].includes(accountingStatus)
+    const hasMissingClockIn = issueCodes.includes('missing_clock_in')
+    const hasScheduleOnlyIssue = issueCodes.some(
+      (issueCode) => ['late', 'early', 'missing_clock_in'].includes(issueCode),
+    )
+    const hasLiveStatusIssueConflict = !resolutionDay && (
+      (hasMissingClockIn && dayStatus !== 'missing_clock_in') ||
+      (issueCodes.includes('early') && dayStatus !== 'completed') ||
+      (issueCodes.includes('missing_clock_out') && dayStatus !== 'working')
+    )
     if (resolutionDay !== confirmedResolution ||
+        (resolutionDay && issueCodes.includes('missing_clock_out')) ||
+        (!scheduleRequired && hasScheduleOnlyIssue) ||
+        (hasMissingClockIn && issueCodes.length !== 1) ||
+        hasLiveStatusIssueConflict ||
         (dayStatus === 'optional_not_worked' &&
           (scheduleRequired || issueCodes.length !== 0)) ||
         (dayStatus === 'not_started' &&

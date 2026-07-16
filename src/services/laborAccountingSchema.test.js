@@ -239,6 +239,13 @@ test('workflow, report, settings, and bridge RPCs expose only the approved secur
     calendarDefinition,
     /baseSalary|netSalary|dailySalary|hourlyWage|suggestedProjectCost|finalProjectCost|sessions|firstClockInAt|lastClockOutAt|workedMinutes/iu,
   )
+
+  const resolutionResultDefinition = migration.match(
+    /create or replace function private\.attendance_resolution_result\b[\s\S]*?\$\$;/iu,
+  )?.[0]
+  assert.ok(resolutionResultDefinition)
+  assert.match(resolutionResultDefinition, /available_projects_result/iu)
+  assert.match(resolutionResultDefinition, /limit\s+10000/iu)
   assert.doesNotMatch(migration, /insert\s+into\s+public\.(?:project_attendance_sessions|project_attendance_events)|update\s+public\.(?:project_attendance_sessions|project_attendance_events)|delete\s+from\s+public\.(?:project_attendance_sessions|project_attendance_events)/iu)
 })
 

@@ -81,6 +81,7 @@ create table public.attendance_day_resolutions (
   suggested_project_cost numeric not null,
   final_project_cost numeric not null,
   issue_codes_snapshot text[] not null default array[]::text[],
+  worked_minutes_reference_snapshot integer,
   resolution_note text not null default '',
   confirmed_by_employee_profile_id uuid
     references public.employee_profiles(id) on delete restrict,
@@ -180,6 +181,10 @@ create table public.attendance_day_resolutions (
     and cardinality(array_positions(
       issue_codes_snapshot, 'overtime_pending'
     )) <= 1
+  ),
+  constraint attendance_day_resolutions_worked_minutes_snapshot_check check (
+    worked_minutes_reference_snapshot is null
+    or worked_minutes_reference_snapshot >= 0
   ),
   constraint attendance_day_resolutions_note_check check (
     resolution_note = btrim(resolution_note)
@@ -746,6 +751,8 @@ declare
   resolution jsonb;
   resolution_type text;
   accounting_status text;
+  resolution_schedule_required boolean;
+  resolution_worked_minutes_reference integer;
   day_status text;
   salary jsonb;
   result jsonb;
@@ -761,9 +768,20 @@ begin
     into employee
     from public.employee_profiles profile
     where profile.id = p_employee_profile_id
-      and profile.deleted_at is null
       and not profile.is_hidden_system_account
-      and profile.employee_number <> 'SW-000';
+      and profile.employee_number <> 'SW-000'
+      and (
+        profile.deleted_at is null
+        or exists (
+          select 1
+          from public.attendance_day_resolutions historical_resolution
+          where historical_resolution.employee_profile_id = profile.id
+            and historical_resolution.work_date = p_work_date
+            and historical_resolution.accounting_status in (
+              'confirmed', 'month_locked'
+            )
+        )
+      );
   if not found then
     return null;
   end if;
@@ -872,11 +890,18 @@ begin
       'version', day_resolution.version
     ),
     day_resolution.resolution_type,
-    day_resolution.accounting_status
-    into resolution, resolution_type, accounting_status
+    day_resolution.accounting_status,
+    day_resolution.schedule_required,
+    day_resolution.worked_minutes_reference_snapshot
+    into resolution, resolution_type, accounting_status,
+      resolution_schedule_required, resolution_worked_minutes_reference
     from public.attendance_day_resolutions day_resolution
     where day_resolution.employee_profile_id = p_employee_profile_id
       and day_resolution.work_date = p_work_date;
+
+  if accounting_status in ('confirmed', 'month_locked') then
+    schedule_required := resolution_schedule_required;
+  end if;
 
   if first_clock_in is not null then
     reference_end := case
@@ -892,6 +917,9 @@ begin
         )::integer
       );
     end if;
+  end if;
+  if accounting_status in ('confirmed', 'month_locked') then
+    worked_minutes_reference := resolution_worked_minutes_reference;
   end if;
 
   if not configured then
@@ -1031,36 +1059,49 @@ begin
     )
     into employees
     from public.employee_profiles employee
-    where employee.deleted_at is null
-      and not employee.is_hidden_system_account
+    where not employee.is_hidden_system_account
       and employee.employee_number <> 'SW-000'
       and (
-        (
-          employee.employment_status in ('在职', '休假', '停工')
-          and (
-            employee.hire_date is null
-            or isfinite(employee.hire_date)
-          )
-          and (
-            employee.resign_date is null
-            or isfinite(employee.resign_date)
-          )
+        exists (
+          select 1
+          from public.attendance_day_resolutions historical_resolution
+          where historical_resolution.employee_profile_id = employee.id
+            and historical_resolution.work_date = p_work_date
+            and historical_resolution.accounting_status in (
+              'confirmed', 'month_locked'
+            )
         )
         or (
-          employee.employment_status = '离职'
-          and employee.hire_date is not null
-          and isfinite(employee.hire_date)
-          and employee.resign_date is not null
-          and isfinite(employee.resign_date)
+          employee.deleted_at is null
+          and (
+            (
+              employee.employment_status in ('在职', '休假', '停工')
+              and (
+                employee.hire_date is null
+                or isfinite(employee.hire_date)
+              )
+              and (
+                employee.resign_date is null
+                or isfinite(employee.resign_date)
+              )
+            )
+            or (
+              employee.employment_status = '离职'
+              and employee.hire_date is not null
+              and isfinite(employee.hire_date)
+              and employee.resign_date is not null
+              and isfinite(employee.resign_date)
+            )
+          )
+          and (
+            employee.hire_date is null
+            or employee.resign_date is null
+            or employee.hire_date <= employee.resign_date
+          )
+          and (employee.hire_date is null or employee.hire_date <= p_work_date)
+          and (employee.resign_date is null or employee.resign_date >= p_work_date)
         )
-      )
-      and (
-        employee.hire_date is null
-        or employee.resign_date is null
-        or employee.hire_date <= employee.resign_date
-      )
-      and (employee.hire_date is null or employee.hire_date <= p_work_date)
-      and (employee.resign_date is null or employee.resign_date >= p_work_date);
+      );
 
   select jsonb_build_object(
       'totalEmployees', count(*),
@@ -1241,6 +1282,19 @@ as $$
 $$;
 
 revoke all on function private.attendance_valid_business_date(date)
+  from public, anon, authenticated, service_role;
+
+create or replace function private.attendance_today_tokyo()
+returns date
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select (statement_timestamp() at time zone 'Asia/Tokyo')::date;
+$$;
+
+revoke all on function private.attendance_today_tokyo()
   from public, anon, authenticated, service_role;
 
 create or replace function private.attendance_require_safe_aggregate(
@@ -1694,6 +1748,8 @@ as $$
     'suggestedProjectCost', resolution.suggested_project_cost,
     'finalProjectCost', resolution.final_project_cost,
     'issueCodesSnapshot', to_jsonb(resolution.issue_codes_snapshot),
+    'workedMinutesReferenceSnapshot',
+      resolution.worked_minutes_reference_snapshot,
     'resolutionNote', resolution.resolution_note,
     'confirmedByEmployeeProfileId', resolution.confirmed_by_employee_profile_id,
     'confirmedAt', resolution.confirmed_at,
@@ -1768,6 +1824,7 @@ declare
   salary jsonb;
   resolution_result jsonb;
   allocations_result jsonb;
+  available_projects_result jsonb := '[]'::jsonb;
   can_view_salary boolean;
   can_view_project_costs boolean;
   can_view_project_money boolean;
@@ -1855,6 +1912,27 @@ begin
       where allocation.resolution_id = day_resolution.resolution_id;
   end if;
 
+  if can_view_project_costs then
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'projectId', project.record_key,
+        'projectName', project.project_name
+      ) order by project.project_name, project.record_key), '[]'::jsonb)
+      into available_projects_result
+      from (
+        select record.record_key, btrim(record.payload->>'projectName') project_name
+        from public.projects record
+        where record.status = 'active'
+          and record.record_key = btrim(record.record_key, E' \t\n\r\f\013')
+          and char_length(record.record_key) between 1 and 500
+          and record.record_key not in ('__proto__', 'constructor', 'prototype')
+          and jsonb_typeof(record.payload->'projectName') = 'string'
+          and nullif(btrim(record.payload->>'projectName'), '') is not null
+          and char_length(btrim(record.payload->>'projectName')) <= 500
+        order by btrim(record.payload->>'projectName'), record.record_key
+        limit 10000
+      ) project;
+  end if;
+
   return jsonb_build_object(
     'employee', jsonb_build_object(
       'employeeProfileId', employee.id,
@@ -1864,7 +1942,11 @@ begin
       'position', employee.position
     ),
     'workDate', p_work_date,
-    'scheduleRequired', private.attendance_schedule_required(p_work_date),
+    'scheduleRequired', case
+      when day_resolution.accounting_status in ('confirmed', 'month_locked')
+        then day_resolution.schedule_required
+      else private.attendance_schedule_required(p_work_date)
+    end,
     'facts', jsonb_build_object(
       'dayStatus', dashboard_employee->'dayStatus',
       'issueCodes', dashboard_employee->'issueCodes',
@@ -1894,7 +1976,8 @@ begin
     ),
     'salary', salary,
     'resolution', resolution_result,
-    'allocations', allocations_result
+    'allocations', allocations_result,
+    'availableProjects', available_projects_result
   );
 end;
 $$;
@@ -1924,10 +2007,20 @@ begin
       errcode = '22023',
       message = 'work date must be between 1900-01-01 and 2100-12-31';
   end if;
-  if p_employee_profile_id is null
-      or not private.attendance_employee_is_eligible(
+  if p_employee_profile_id is null or (
+      not private.attendance_employee_is_eligible(
         p_employee_profile_id, p_work_date
-      ) then
+      )
+      and not exists (
+        select 1
+        from public.attendance_day_resolutions historical_resolution
+        where historical_resolution.employee_profile_id = p_employee_profile_id
+          and historical_resolution.work_date = p_work_date
+          and historical_resolution.accounting_status in (
+            'confirmed', 'month_locked'
+          )
+      )
+    ) then
     raise exception using
       errcode = '22023',
       message = 'eligible employee and activated date required';
@@ -1981,6 +2074,7 @@ declare
   after_snapshot jsonb;
   computed_schedule_required boolean;
   computed_issue_codes text[];
+  computed_worked_minutes_reference integer;
   normalized_note text;
   allocated_total numeric := 0;
   money_in_scope boolean;
@@ -2021,6 +2115,13 @@ begin
     raise exception using
       errcode = '22023',
       message = 'resolution type and attendance units do not match';
+  end if;
+  if p_confirm
+      and p_work_date > private.attendance_today_tokyo()
+      and p_resolution_type not in ('rest', 'leave', 'comp_time') then
+    raise exception using
+      errcode = '22023',
+      message = 'future attendance may only be excused in advance';
   end if;
   if not private.attendance_valid_yen(p_final_project_cost) then
     raise exception using
@@ -2251,6 +2352,8 @@ begin
       and existing_resolution.accounting_status in ('confirmed', 'month_locked') then
     computed_schedule_required := existing_resolution.schedule_required;
     computed_issue_codes := existing_resolution.issue_codes_snapshot;
+    computed_worked_minutes_reference :=
+      existing_resolution.worked_minutes_reference_snapshot;
   else
     computed_schedule_required := private.attendance_schedule_required(p_work_date);
     computed_issue_codes := private.attendance_fact_issue_codes(
@@ -2258,6 +2361,11 @@ begin
       p_work_date,
       statement_timestamp() at time zone 'Asia/Tokyo'
     );
+    computed_worked_minutes_reference := (
+      private.attendance_dashboard_employee_json(
+        p_employee_profile_id, p_work_date, false
+      )->>'workedMinutesReference'
+    )::integer;
   end if;
 
   if existing_resolution.resolution_id is null then
@@ -2266,7 +2374,7 @@ begin
       resolution_type, attendance_units, accounting_status,
       salary_type_snapshot, base_salary_snapshot, daily_salary_snapshot,
       hourly_wage_snapshot, suggested_project_cost, final_project_cost,
-      issue_codes_snapshot, resolution_note,
+      issue_codes_snapshot, worked_minutes_reference_snapshot, resolution_note,
       confirmed_by_employee_profile_id, confirmed_at, version
     ) values (
       p_employee_profile_id, p_work_date, computed_schedule_required,
@@ -2277,7 +2385,8 @@ begin
       (salary->>'dailySalary')::numeric,
       (salary->>'hourlyWage')::numeric,
       (salary->>'suggestedProjectCost')::numeric,
-      p_final_project_cost, computed_issue_codes, normalized_note,
+      p_final_project_cost, computed_issue_codes,
+      computed_worked_minutes_reference, normalized_note,
       case when p_confirm then actor.id else null end,
       case when p_confirm then statement_timestamp() else null end,
       1
@@ -2295,6 +2404,7 @@ begin
         suggested_project_cost = (salary->>'suggestedProjectCost')::numeric,
         final_project_cost = p_final_project_cost,
         issue_codes_snapshot = computed_issue_codes,
+        worked_minutes_reference_snapshot = computed_worked_minutes_reference,
         resolution_note = normalized_note,
         confirmed_by_employee_profile_id = case when p_confirm then actor.id else null end,
         confirmed_at = case when p_confirm then statement_timestamp() else null end,
@@ -2431,6 +2541,7 @@ declare
   pending_days integer := 0;
   allocated_amount numeric := 0;
   final_cost numeric := 0;
+  unallocated_amount numeric := 0;
   confirmed_payroll_scheduled_units integer;
 begin
   select
@@ -2440,10 +2551,9 @@ begin
     count(*) filter (
       where resolution.resolution_type in ('rest', 'leave', 'comp_time')
     ),
-    coalesce(sum(resolution.attendance_units), 0),
-    coalesce(sum(resolution.final_project_cost), 0)
+    coalesce(sum(resolution.attendance_units), 0)
     into full_days, half_days, absence_days, excused_days,
-      confirmed_attendance_units, final_cost
+      confirmed_attendance_units
     from public.attendance_day_resolutions resolution
     where resolution.employee_profile_id = p_employee_profile_id
       and resolution.work_date >= p_month
@@ -2486,15 +2596,23 @@ begin
       end;
   end if;
 
-  select coalesce(sum(allocation.amount), 0)
-    into allocated_amount
-    from public.attendance_project_allocations allocation
-    join public.attendance_day_resolutions resolution
-      on resolution.resolution_id = allocation.resolution_id
+  select
+      coalesce(sum(resolution.final_project_cost), 0),
+      coalesce(sum(allocation_totals.amount), 0),
+      coalesce(sum(greatest(
+        resolution.final_project_cost - allocation_totals.amount, 0
+      )), 0)
+    into final_cost, allocated_amount, unallocated_amount
+    from public.attendance_day_resolutions resolution
+    cross join lateral (
+      select coalesce(sum(allocation.amount), 0) amount
+      from public.attendance_project_allocations allocation
+      where allocation.resolution_id = resolution.resolution_id
+    ) allocation_totals
     where resolution.employee_profile_id = p_employee_profile_id
       and resolution.work_date >= p_month
       and resolution.work_date < (p_month + interval '1 month')::date
-      and resolution.accounting_status in ('confirmed', 'month_locked');
+      and resolution.accounting_status in ('draft', 'confirmed', 'month_locked');
 
   if exists (
     select 1
@@ -2543,6 +2661,9 @@ begin
   allocated_amount := private.attendance_require_safe_aggregate(
     allocated_amount
   );
+  unallocated_amount := private.attendance_require_safe_aggregate(
+    unallocated_amount
+  );
 
   return jsonb_build_object(
     'fullDays', full_days,
@@ -2554,9 +2675,7 @@ begin
     'pendingDays', pending_days,
     'projectAllocatedAmount', allocated_amount,
     'projectFinalCost', final_cost,
-    'projectUnallocatedAmount', private.attendance_require_safe_aggregate(
-      greatest(final_cost - allocated_amount, 0)
-    )
+    'projectUnallocatedAmount', unallocated_amount
   );
 end;
 $$;
@@ -4056,7 +4175,7 @@ begin
       where row.work_date >= p_month and row.work_date <= month_end
     ), 0)),
     private.attendance_require_safe_aggregate(coalesce(
-      sum(row.amount) filter (where row.work_date <= month_end), 0
+      sum(row.amount), 0
     ))
     into monthly_total, lifetime_total
     from private.attendance_official_project_rows() row
@@ -4078,20 +4197,51 @@ begin
   ) unit;
 
   select count(*)::integer,
-      private.attendance_require_safe_aggregate(
-        coalesce(sum(allocation.amount), 0)
-      )
+      private.attendance_require_safe_aggregate(coalesce(sum(
+        case
+          when normalized_project_id is null then greatest(
+            resolution.final_project_cost, allocation_totals.total_amount
+          )
+          else allocation_totals.filtered_amount
+        end
+      ), 0))
     into pending_count, pending_amount
-    from public.attendance_project_allocations allocation
-    join public.attendance_day_resolutions resolution
-      on resolution.resolution_id = allocation.resolution_id
+    from public.attendance_day_resolutions resolution
     join public.employee_profiles employee
       on employee.id = resolution.employee_profile_id
+    cross join lateral (
+      select
+        private.attendance_require_safe_aggregate(
+          coalesce(sum(allocation.amount), 0)
+        ) total_amount,
+        private.attendance_require_safe_aggregate(coalesce(sum(
+          allocation.amount
+        ) filter (
+          where allocation.project_id = normalized_project_id
+        ), 0)) filtered_amount,
+        count(*) filter (
+          where allocation.project_id = normalized_project_id
+        ) filtered_count
+      from public.attendance_project_allocations allocation
+      where allocation.resolution_id = resolution.resolution_id
+    ) allocation_totals
     where resolution.accounting_status = 'draft'
       and resolution.work_date >= p_month
       and resolution.work_date <= month_end
       and (effective_from is null or resolution.work_date >= effective_from)
-      and (normalized_project_id is null or allocation.project_id = normalized_project_id)
+      and (
+        (
+          normalized_project_id is null
+          and (
+            resolution.final_project_cost > 0
+            or allocation_totals.total_amount > 0
+          )
+        )
+        or (
+          normalized_project_id is not null
+          and allocation_totals.filtered_count > 0
+        )
+      )
       and (p_employee_profile_id is null or employee.id = p_employee_profile_id);
 
   select coalesce(jsonb_agg(jsonb_build_object(
@@ -4290,11 +4440,10 @@ begin
           ), 0
         )) monthly_amount,
         private.attendance_require_safe_aggregate(coalesce(
-          sum(row.amount) filter (where row.work_date <= month_end), 0
+          sum(row.amount), 0
         )) lifetime_amount
       from private.attendance_official_project_rows() row
-      where row.work_date <= month_end
-        and (p_employee_profile_id is null
+      where (p_employee_profile_id is null
           or row.employee_profile_id = p_employee_profile_id)
       group by row.project_id
     ) comparison;

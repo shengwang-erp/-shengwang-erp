@@ -475,6 +475,244 @@ test('resolution helpers derive projects and corrected draft defaults from facts
   assert.equal(buildInitialResolutionDraft(confirmed).finalProjectCost, 13500)
 })
 
+test('no-session whole-day drafts can add, remove, and balance distinct available projects', () => {
+  const {
+    default: AttendanceResolutionDialog,
+    addProjectAllocation,
+    removeProjectAllocation,
+    resolutionConfirmBlockers,
+  } = moduleFor('dialog')
+  assert.equal(typeof addProjectAllocation, 'function')
+  assert.equal(typeof removeProjectAllocation, 'function')
+
+  const noSessionDetail = {
+    ...detail,
+    facts: {
+      ...detail.facts,
+      firstClockInAt: null,
+      lastClockOutAt: null,
+      workedMinutesReference: null,
+      sessions: [],
+    },
+    availableProjects: [
+      { projectId: 'PROJECT-001', projectName: '东京站现场' },
+      { projectId: 'PROJECT-002', projectName: '新宿改修' },
+    ],
+  }
+  const emptyDraft = { ...draft, allocations: [] }
+  const markup = render(AttendanceResolutionDialog, {
+    detail: noSessionDetail,
+    draft: emptyDraft,
+    saving: false,
+    error: '',
+    onChange() {},
+    onSaveDraft() {},
+    onConfirm() {},
+    onClose() {},
+  })
+  assert.match(markup, /aria-label="选择待添加项目"/u)
+  assert.match(markup, />添加项目分摊<\/button>/u)
+  assert.match(markup, /东京站现场/u)
+  assert.match(markup, /新宿改修/u)
+
+  const first = addProjectAllocation(emptyDraft, 'PROJECT-001')
+  assert.deepEqual(first.allocations, [
+    { projectId: 'PROJECT-001', amount: 12000, allocationNote: '' },
+  ])
+  assert.deepEqual(resolutionConfirmBlockers(noSessionDetail, first), [])
+
+  const duplicate = addProjectAllocation(first, 'PROJECT-001')
+  assert.equal(duplicate, first)
+  const second = addProjectAllocation(first, 'PROJECT-002')
+  assert.deepEqual(second.allocations, [
+    { projectId: 'PROJECT-001', amount: 12000, allocationNote: '' },
+    { projectId: 'PROJECT-002', amount: 0, allocationNote: '' },
+  ])
+  const balancedTwoProjects = {
+    ...second,
+    allocations: [
+      { projectId: 'PROJECT-001', amount: 7000, allocationNote: '' },
+      { projectId: 'PROJECT-002', amount: 5000, allocationNote: '' },
+    ],
+  }
+  assert.deepEqual(resolutionConfirmBlockers(noSessionDetail, balancedTwoProjects), [])
+  assert.equal(second.allocations.filter(
+    (allocation) => allocation.projectId === 'PROJECT-001',
+  ).length, 1)
+  assert.deepEqual(removeProjectAllocation(second, 'PROJECT-001').allocations, [
+    { projectId: 'PROJECT-002', amount: 0, allocationNote: '' },
+  ])
+})
+
+test('available-project allocation controls honor project permissions and day locks', () => {
+  const {
+    default: AttendanceResolutionDialog,
+    resolutionDraftBlockers,
+  } = moduleFor('dialog')
+  const availableProjects = [
+    { projectId: 'PROJECT-SECRET', projectName: '机密项目' },
+  ]
+  const emptyDraft = { ...draft, allocations: [] }
+  const hiddenMarkup = render(AttendanceResolutionDialog, {
+    detail: {
+      ...detail,
+      availableProjects,
+      permissions: {
+        ...detail.permissions,
+        canViewProjectCosts: false,
+        canUpdateProjectCosts: false,
+      },
+      salary: { ...detail.salary, suggestedProjectCost: null },
+    },
+    draft: emptyDraft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(hiddenMarkup, /项目分摊金额已按权限隐藏/u)
+  assert.doesNotMatch(hiddenMarkup, /机密项目|选择待添加项目|添加项目分摊/u)
+
+  const lockedMarkup = render(AttendanceResolutionDialog, {
+    detail: {
+      ...detail,
+      availableProjects,
+      resolution: {
+        resolutionType: 'full_day',
+        attendanceUnits: 1,
+        accountingStatus: 'month_locked',
+        finalProjectCost: 12000,
+        resolutionNote: '',
+        version: 1,
+      },
+    },
+    draft: emptyDraft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(lockedMarkup, /aria-label="选择待添加项目"[^>]*disabled=""/u)
+  assert.match(lockedMarkup, /<button[^>]*disabled=""[^>]*>添加项目分摊<\/button>/u)
+
+  const viewOnlyMarkup = render(AttendanceResolutionDialog, {
+    detail: {
+      ...detail,
+      availableProjects,
+      hasMoneyScope: false,
+      permissions: {
+        ...detail.permissions,
+        canUpdateProjectCosts: false,
+      },
+    },
+    draft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(viewOnlyMarkup, /aria-label="最终项目人工成本（日元）"[^>]*disabled=""/u)
+  assert.match(viewOnlyMarkup, /aria-label="选择待添加项目"[^>]*disabled=""/u)
+  assert.match(viewOnlyMarkup, /aria-label="移除东京站现场项目分摊"[^>]*disabled=""/u)
+  assert.match(viewOnlyMarkup, /class="labor-save-draft" disabled=""/u)
+  assert.ok(resolutionDraftBlockers({
+    ...detail,
+    hasMoneyScope: false,
+    permissions: { ...detail.permissions, canUpdateProjectCosts: false },
+  }, draft).some((reason) => reason.includes('项目费用')))
+
+  const zeroCostDraft = {
+    ...draft,
+    resolutionType: 'leave',
+    attendanceUnits: 0,
+    finalProjectCost: 0,
+    allocations: [],
+  }
+  assert.deepEqual(resolutionDraftBlockers({
+    ...detail,
+    hasMoneyScope: false,
+    permissions: { ...detail.permissions, canUpdateProjectCosts: false },
+  }, zeroCostDraft), [])
+})
+
+test('salary summary separates resolution-time snapshots from current profile rates', () => {
+  const { default: AttendanceResolutionDialog } = moduleFor('dialog')
+  const snapshotDetail = {
+    ...detail,
+    salary: {
+      salaryType: '日薪',
+      baseSalary: null,
+      dailySalary: 13500,
+      hourlyWage: null,
+      suggestedProjectCost: 13500,
+    },
+    resolution: {
+      resolutionType: 'full_day',
+      attendanceUnits: 1,
+      accountingStatus: 'confirmed',
+      salaryTypeSnapshot: '日薪',
+      baseSalarySnapshot: null,
+      dailySalarySnapshot: 12000,
+      hourlyWageSnapshot: null,
+      suggestedProjectCost: 12000,
+      finalProjectCost: 12000,
+      resolutionNote: '',
+      version: 1,
+    },
+  }
+  const markup = render(AttendanceResolutionDialog, {
+    detail: snapshotDetail,
+    draft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(markup, /日结工资快照/u)
+  assert.match(markup, /确认时标准/u)
+  assert.match(markup, /确认时月薪标准/u)
+  assert.match(markup, /确认时日薪标准[\s\S]*?￥12,000/u)
+  assert.match(markup, /确认时时薪标准/u)
+  assert.match(markup, /确认时建议项目日成本[\s\S]*?￥12,000/u)
+  assert.match(markup, /当前档案工资标准[\s\S]*?￥13,500/u)
+
+  const draftMarkup = render(AttendanceResolutionDialog, {
+    detail: {
+      ...snapshotDetail,
+      resolution: { ...snapshotDetail.resolution, accountingStatus: 'draft' },
+    },
+    draft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(draftMarkup, /保存时标准/u)
+  assert.doesNotMatch(draftMarkup, /确认时标准/u)
+
+  const hiddenMarkup = render(AttendanceResolutionDialog, {
+    detail: {
+      ...snapshotDetail,
+      permissions: {
+        ...snapshotDetail.permissions,
+        canViewSalary: false,
+        canViewProjectCosts: false,
+        canUpdateProjectCosts: false,
+      },
+      salary: null,
+      resolution: {
+        resolutionType: 'full_day',
+        attendanceUnits: 1,
+        accountingStatus: 'confirmed',
+        resolutionNote: '',
+        version: 1,
+      },
+      allocations: [],
+    },
+    draft,
+    saving: false,
+    error: '',
+    onClose() {},
+  })
+  assert.match(hiddenMarkup, /工资信息已按权限隐藏/u)
+  assert.doesNotMatch(hiddenMarkup, /日结工资快照|确认时标准|12,000|13,500/u)
+})
+
 test('open sessions, salary gaps, and imbalance block confirm but do not disable draft saving', () => {
   const { default: AttendanceResolutionDialog, resolutionConfirmBlockers } = moduleFor('dialog')
   const openDetail = {
@@ -1325,6 +1563,9 @@ test('styles are fully scoped and turn the desktop table into narrow employee ca
   assert.match(css, /\.labor-accounting-page[^{}]*\.labor-mobile-cards[^{]*\{[^}]*display:\s*grid/su)
   assert.doesNotMatch(css, /\.labor-accounting-page\s*\{[^}]*overflow-x:\s*auto/su)
   assert.match(css, /\.labor-accounting-page\s+\.labor-month-calendar-dialog\s*\{/u)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-salary-summary\s*>\s*section\s*\{/u)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-salary-summary\s+section\s*>\s*dl\s*\{/u)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-allocation-project-picker\s*\{/u)
   assert.match(
     css,
     /\.labor-accounting-page\s+\.labor-month-calendar-week\s*\{[^}]*grid-template-columns:\s*repeat\(7,/su,

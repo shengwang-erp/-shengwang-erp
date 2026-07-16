@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
-select plan(238);
+select plan(246);
 
 select has_table(
   'public'::name, 'attendance_accounting_settings'::name
@@ -2002,19 +2002,30 @@ select has_column(
 );
 
 select has_column(
+  'public', 'attendance_day_resolutions',
+  'worked_minutes_reference_snapshot',
+  'confirmed attendance resolutions freeze worked-minute references'
+);
+
+select has_column(
   'public', 'attendance_monthly_payrolls', 'scheduled_attendance_units',
   'confirmed monthly payrolls freeze scheduled attendance units'
 );
 
 select ok(
   (
-    select count(*) = 2
-      and bool_and(attribute.attnotnull)
+    select count(*) = 3
+      and bool_and(case
+        when attribute.attname = 'worked_minutes_reference_snapshot'
+          then not attribute.attnotnull
+        else attribute.attnotnull
+      end)
       and (
-        select count(*) = 2
+        select count(*) = 3
         from pg_catalog.pg_constraint constraint_definition
         where constraint_definition.conname in (
           'attendance_day_resolutions_issue_codes_snapshot_check',
+          'attendance_day_resolutions_worked_minutes_snapshot_check',
           'attendance_monthly_payrolls_scheduled_units_check'
         )
           and constraint_definition.contype = 'c'
@@ -2025,13 +2036,15 @@ select ok(
     where schema.nspname = 'public'
       and (
         (relation.relname = 'attendance_day_resolutions'
-          and attribute.attname = 'issue_codes_snapshot')
+          and attribute.attname in (
+            'issue_codes_snapshot', 'worked_minutes_reference_snapshot'
+          ))
         or (relation.relname = 'attendance_monthly_payrolls'
           and attribute.attname = 'scheduled_attendance_units')
       )
       and not attribute.attisdropped
   ),
-  'frozen attendance facts are mandatory persisted snapshots'
+  'frozen attendance facts use constrained persisted snapshots'
 );
 
 select is(
@@ -2205,7 +2218,7 @@ select ok(
 
 select ok(
   (
-    select count(*) = 21
+    select count(*) = 22
       and bool_and(procedure.prosecdef)
       and bool_and(procedure.proconfig @> array['search_path=pg_catalog, public'])
       and bool_and(not has_function_privilege(
@@ -2222,6 +2235,7 @@ select ok(
         'attendance_valid_yen',
         'attendance_trim_text',
         'attendance_valid_business_date',
+        'attendance_today_tokyo',
         'attendance_require_safe_aggregate',
         'attendance_parse_iso_date',
         'attendance_legacy_yen',
@@ -2472,6 +2486,12 @@ insert into public.employee_profiles (
 insert into public.projects (record_key, payload, status) values
   ('P-T4-A', '{"projectId":"P-T4-A","projectName":"  项目甲  "}'::jsonb, 'active'),
   ('P-T4-B', '{"projectId":"P-T4-B","projectName":"项目乙"}'::jsonb, 'active'),
+  ('vendor', '{"projectName":"V 开头合法项目"}'::jsonb, 'active'),
+  (' P-T4-SPACED ', '{"projectName":"异常可选项目-空格"}'::jsonb, 'active'),
+  (E'\tP-T4-TAB', '{"projectName":"异常可选项目-制表符"}'::jsonb, 'active'),
+  (E'\013P-T4-VTAB', '{"projectName":"异常可选项目-纵向制表符"}'::jsonb, 'active'),
+  ('__proto__', '{"projectName":"异常可选项目-污染键"}'::jsonb, 'active'),
+  (repeat('X', 501), '{"projectName":"异常可选项目-超长"}'::jsonb, 'active'),
   ('P-T4-DELETED', '{"projectId":"P-T4-DELETED","projectName":"已删除"}'::jsonb, 'deleted');
 
 insert into public.project_attendance_sessions (
@@ -2751,8 +2771,9 @@ select ok(
     select
       (select array_agg(key order by key) from jsonb_object_keys(result) key)
         = array[
-          'allocations', 'employee', 'facts', 'hasMoneyScope', 'permissions',
-          'resolution', 'salary', 'scheduleRequired', 'workDate'
+          'allocations', 'availableProjects', 'employee', 'facts',
+          'hasMoneyScope', 'permissions', 'resolution', 'salary',
+          'scheduleRequired', 'workDate'
         ]::text[]
       and result#>>'{employee,employeeName}' = '日薪工作流员工'
       and result#>>'{salary,salaryType}' = '日薪'
@@ -2760,6 +2781,13 @@ select ok(
       and result->'hasMoneyScope' = 'false'::jsonb
       and result->'resolution' = 'null'::jsonb
       and result->'allocations' = '[]'::jsonb
+      and result->'availableProjects' @>
+        '[{"projectId":"P-T4-A","projectName":"项目甲"}]'::jsonb
+      and result->'availableProjects' @>
+        '[{"projectId":"P-T4-B","projectName":"项目乙"}]'::jsonb
+      and result->'availableProjects' @>
+        '[{"projectId":"vendor","projectName":"V 开头合法项目"}]'::jsonb
+      and result::text !~ '异常可选项目'
     from detail
   ),
   'resolution detail has stable keys and server-derived salary suggestion'
@@ -2998,6 +3026,24 @@ select throws_ok(
 -- A deliberately broken implementation may accept the stale create above.  Keep
 -- the rest of this contract independent so RED reports every finding at once.
 reset role;
+select ok(
+  position(
+    'statement_timestamp() at time zone ''asia/tokyo''' in
+    lower(pg_get_functiondef('private.attendance_today_tokyo()'::regprocedure))
+  ) > 0,
+  'production today helper derives the Tokyo date independently of session timezone'
+);
+
+create or replace function private.attendance_today_tokyo()
+returns date
+language sql
+stable
+security definer
+set search_path = pg_catalog
+-- The test clock remains private and deterministic while production derives Tokyo today.
+as $$
+  select '2099-01-01'::date;
+$$;
 delete from public.attendance_project_allocations
 where resolution_id in (
   select resolution_id
@@ -3011,6 +3057,24 @@ where employee_profile_id = '75000000-0000-4000-8000-000000000001'
 set local role authenticated;
 select set_config(
   'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+
+select throws_ok(
+  $$select public.confirm_attendance_resolution_secure(
+    '6d000000-0000-4000-8000-000000000004', '2100-01-03',
+    'full_day', 1, 0, '[]'::jsonb, '', 0
+  )$$,
+  '22023', 'future attendance may only be excused in advance',
+  'future whole-day attendance cannot be formally confirmed'
+);
+
+select is(
+  public.confirm_attendance_resolution_secure(
+    '6d000000-0000-4000-8000-000000000004', '2100-01-04',
+    'leave', 0, 0, '[]'::jsonb, '提前请假', 0
+  )#>>'{resolution,accountingStatus}',
+  'confirmed',
+  'future leave may be marked in advance'
 );
 
 select is(
@@ -3393,6 +3457,7 @@ select ok(
         '6d000000-0000-4000-8000-000000000001'::uuid
       and before_snapshot is not null
       and after_snapshot->>'accountingStatus' = 'confirmed'
+      and after_snapshot ? 'workedMinutesReferenceSnapshot'
       and reason = '日结确认'
     from public.attendance_accounting_audit_log audit
     join public.attendance_day_resolutions resolution
@@ -4436,6 +4501,7 @@ insert into public.labor_records (record_key, payload, status) values
   ('T4-LABOR-JUNE', '{"workDate":"2026-06-30","projectId":"P-T4-A","projectName":"六月甲","employeeId":" E-OLD ","employeeName":" 旧员工 ","laborCost":500}'::jsonb, 'active'),
   ('T4-LABOR-COMP-A', '{"workDate":"2026-05-10","projectId":"P-T4-COMP","projectName":"构成项目","employeeId":" E-COMP-A ","employeeName":" 历史甲 ","laborCost":100}'::jsonb, 'active'),
   ('T4-LABOR-COMP-B', '{"workDate":"2026-05-10","projectId":"P-T4-COMP","projectName":"构成项目","employeeId":" E-COMP-B ","employeeName":" 历史乙 ","laborCost":200}'::jsonb, 'active'),
+  ('T4-LABOR-COMP-FUTURE', '{"workDate":"2026-06-10","projectId":"P-T4-COMP","projectName":"构成项目","employeeId":" E-COMP-A ","employeeName":" 历史甲 ","laborCost":400}'::jsonb, 'active'),
   ('T4-LABOR-PRE-A', '{"workDate":"2026-07-15","projectId":"P-T4-A","projectName":" 旧项目甲 ","employeeId":" E-OLD ","employeeName":" 旧员工 ","laborCost":1000}'::jsonb, 'active'),
   ('T4-LABOR-PRE-B', '{"workDate":"2026-07-15","projectId":"P-T4-B","projectName":"旧项目乙","employeeId":"E-OLD","employeeName":"旧员工","laborCost":2000}'::jsonb, 'active'),
   ('T4-LABOR-POST', '{"workDate":"2026-07-16","projectId":"P-T4-A","projectName":"不应计入","employeeId":"E-OLD","employeeName":"旧员工","laborCost":9999}'::jsonb, 'active'),
@@ -4483,6 +4549,14 @@ select ok(
       ) result
     )
     select result#>>'{summary,monthlyConfirmedCost}' = '300'
+      and result#>>'{summary,lifetimeConfirmedCost}' = '700'
+      and exists (
+        select 1
+        from jsonb_array_elements(result->'projectComparison') item
+        where item->>'projectId' = 'P-T4-COMP'
+          and item->>'monthlyConfirmedCost' = '300'
+          and item->>'lifetimeConfirmedCost' = '700'
+      )
       and jsonb_array_length(result->'employeeComposition') = 2
       and result#>>'{employeeComposition,0,employeeNumber}' = 'E-COMP-A'
       and result#>>'{employeeComposition,0,amount}' = '100'
@@ -4654,6 +4728,10 @@ declare
   pre_payroll_report jsonb;
   locked_report jsonb;
   calendar_report jsonb;
+  daily_report jsonb;
+  detail_report jsonb;
+  historical_daily_report jsonb;
+  historical_detail_report jsonb;
   result_value jsonb;
   caught_message text;
 begin
@@ -4690,13 +4768,33 @@ begin
     set work_weekdays = array[7]::smallint[],
         work_start_time = '09:00'::time,
         work_end_time = '16:00'::time,
+        break_minutes = 30,
         standard_day_minutes = 360;
+    daily_report := public.list_daily_attendance_dashboard_secure('2026-08-08');
+    detail_report := public.get_attendance_resolution_detail_secure(
+      '75000000-0000-4000-8000-000000000010', '2026-08-08'
+    );
     locked_report := public.list_monthly_payroll_secure(
       '2026-08-01', '', '75000000-0000-4000-8000-000000000010', false
     );
     update public.employee_profiles
-    set deleted_at = statement_timestamp()
+    set hire_date = '2026-08-09',
+        resign_date = '2026-08-09',
+        deleted_at = statement_timestamp()
     where id = '75000000-0000-4000-8000-000000000010';
+    historical_daily_report := public.list_daily_attendance_dashboard_secure(
+      '2026-08-08'
+    );
+    begin
+      historical_detail_report :=
+        public.get_attendance_resolution_detail_secure(
+          '75000000-0000-4000-8000-000000000010', '2026-08-08'
+        );
+    exception when others then
+      historical_detail_report := jsonb_build_object(
+        'error', sqlstate || ':' || sqlerrm
+      );
+    end;
     calendar_report := public.list_employee_attendance_calendar_secure(
       '75000000-0000-4000-8000-000000000010', '2026-08-01'
     );
@@ -4708,6 +4806,46 @@ begin
         locked_report#>'{summary,scheduledAttendanceUnits}',
       'lockedIssueCounts',
         locked_report#>'{employees,0,issueCounts}',
+      'dailySchedule', (
+        select jsonb_build_object(
+          'scheduleRequired', employee->'scheduleRequired',
+          'dayStatus', employee->'dayStatus',
+          'workedMinutesReference', employee->'workedMinutesReference',
+          'resolutionScheduleRequired', employee#>'{resolution,scheduleRequired}'
+        )
+        from jsonb_array_elements(daily_report->'employees') employee
+        where employee->>'employeeProfileId' =
+          '75000000-0000-4000-8000-000000000010'
+      ),
+      'dailyRequiredEmployees', daily_report#>'{summary,requiredEmployees}',
+      'detailSchedule', jsonb_build_object(
+        'scheduleRequired', detail_report->'scheduleRequired',
+        'dayStatus', detail_report#>'{facts,dayStatus}',
+        'workedMinutesReference',
+          detail_report#>'{facts,workedMinutesReference}',
+        'resolutionScheduleRequired',
+          detail_report#>'{resolution,scheduleRequired}'
+      ),
+      'historicalDaily', (
+        select jsonb_build_object(
+          'dayStatus', employee->'dayStatus',
+          'scheduleRequired', employee->'scheduleRequired',
+          'accountingStatus', employee#>'{resolution,accountingStatus}'
+        )
+        from jsonb_array_elements(historical_daily_report->'employees') employee
+        where employee->>'employeeProfileId' =
+          '75000000-0000-4000-8000-000000000010'
+      ),
+      'historicalDetail', case
+        when historical_detail_report ? 'error'
+          then historical_detail_report
+        else jsonb_build_object(
+          'dayStatus', historical_detail_report#>'{facts,dayStatus}',
+          'issueCodes', historical_detail_report#>'{facts,issueCodes}',
+          'accountingStatus',
+            historical_detail_report#>'{resolution,accountingStatus}'
+        )
+      end,
       'calendarDay', calendar_report#>'{days,7}'
     );
     raise exception using errcode = 'PT419', message = result_value::text;
@@ -4739,6 +4877,52 @@ select is(
   (select result->'lockedIssueCounts' from task7_frozen_facts_result),
   '{"late":1,"early":1,"abnormalLocation":0,"overtimePending":0}'::jsonb,
   'monthly reports retain confirmation-time attendance fact issues after settings drift'
+);
+
+select is(
+  (select jsonb_build_object(
+      'dailySchedule', result->'dailySchedule',
+      'dailyRequiredEmployees', result->'dailyRequiredEmployees',
+      'detailSchedule', result->'detailSchedule'
+    )
+   from task7_frozen_facts_result),
+  '{
+    "dailySchedule": {
+      "scheduleRequired": true,
+      "dayStatus": "full_day",
+      "workedMinutesReference": 420,
+      "resolutionScheduleRequired": true
+    },
+    "dailyRequiredEmployees": 1,
+    "detailSchedule": {
+      "scheduleRequired": true,
+      "dayStatus": "full_day",
+      "workedMinutesReference": 420,
+      "resolutionScheduleRequired": true
+    }
+  }'::jsonb,
+  'daily dashboard, summary, and resolution detail prefer locked rule snapshots after settings drift'
+);
+
+select is(
+  (select jsonb_build_object(
+      'historicalDaily', result->'historicalDaily',
+      'historicalDetail', result->'historicalDetail'
+    )
+   from task7_frozen_facts_result),
+  '{
+    "historicalDaily": {
+      "dayStatus": "full_day",
+      "scheduleRequired": true,
+      "accountingStatus": "month_locked"
+    },
+    "historicalDetail": {
+      "dayStatus": "full_day",
+      "issueCodes": [],
+      "accountingStatus": "month_locked"
+    }
+  }'::jsonb,
+  'confirmed history stays available in daily and detail views after HR and soft-delete drift'
 );
 
 select is(
@@ -4925,6 +5109,70 @@ select is(
 );
 
 select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-07-01', '', '75000000-0000-4000-8000-000000000009', false
+      ) result
+    )
+    select result#>>'{employees,0,projectAllocatedAmount}' = '4000'
+      and result#>>'{employees,0,projectUnallocatedAmount}' = '1000'
+      and result#>>'{summary,projectAllocatedTotal}' = '4000'
+      and result#>>'{summary,projectUnallocatedTotal}' = '1000'
+    from report
+  ),
+  'monthly project allocation metrics include draft allocated and unallocated amounts'
+);
+
+reset role;
+create or replace function pg_temp.task4_unallocated_per_day_probe()
+returns text
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  report jsonb;
+  result_text text;
+  caught_message text;
+begin
+  begin
+    perform public.save_attendance_resolution_draft_secure(
+      '75000000-0000-4000-8000-000000000005', '2026-08-03',
+      'full_day', 1, 5000,
+      '[{"projectId":"P-T4-A","amount":4000,"allocationNote":"少分摊草稿"}]'::jsonb,
+      '', 0
+    );
+    perform public.save_attendance_resolution_draft_secure(
+      '75000000-0000-4000-8000-000000000005', '2026-08-04',
+      'full_day', 1, 1000,
+      '[{"projectId":"P-T4-A","amount":2000,"allocationNote":"超分摊草稿"}]'::jsonb,
+      '', 0
+    );
+    report := public.list_monthly_payroll_secure(
+      '2026-08-01', '', '75000000-0000-4000-8000-000000000005', false
+    );
+    result_text := (report#>>'{employees,0,projectAllocatedAmount}') || ':'
+      || (report#>>'{employees,0,projectUnallocatedAmount}');
+    raise exception using errcode = 'PT419', message = result_text;
+  exception when sqlstate 'PT419' then
+    get stacked diagnostics caught_message = message_text;
+    return caught_message;
+  end;
+end;
+$$;
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub', '6c000000-0000-4000-8000-000000000001', true
+);
+select is(
+  pg_temp.task4_unallocated_per_day_probe(),
+  '6000:1000',
+  'monthly unallocated cost sums positive remainder per draft without cross-day cancellation'
+);
+
+select ok(
   public.list_project_labor_costs_secure(
     '2026-07-01', null, null, null
   ) = public.list_project_labor_costs_secure(
@@ -5065,7 +5313,7 @@ select ok(
     select result#>>'{summary,monthlyConfirmedCost}' = '6000'
       and result#>>'{summary,confirmedAttendanceUnits}' = '2'
       and result#>>'{summary,pendingAllocationCount}' = '1'
-      and result#>>'{summary,pendingAllocationAmount}' = '4000'
+      and result#>>'{summary,pendingAllocationAmount}' = '5000'
       and result#>>'{trend,5,amount}' = '6000'
       and (result->'employeeComposition')::text
         !~ 'SW-7509|草稿项目员工'
@@ -5155,7 +5403,7 @@ select ok(
       and result#>>'{summary,monthlyConfirmedCost}' = '6000'
       and result#>>'{summary,confirmedAttendanceUnits}' = '2'
       and result#>>'{summary,pendingAllocationCount}' = '1'
-      and result#>>'{summary,pendingAllocationAmount}' = '4000'
+      and result#>>'{summary,pendingAllocationAmount}' = '5000'
       and result#>>'{reconciliation,postActivationLegacyRows}' = '1'
       and result#>>'{reconciliation,globalMalformedLegacyRows}' = '2'
       and result::text !~ '9999|7777|8888'
@@ -5208,13 +5456,13 @@ select ok(
       ) result
     )
     select result#>>'{summary,monthlyConfirmedCost}' = '0'
-      and result#>>'{summary,lifetimeConfirmedCost}' = '300'
+      and result#>>'{summary,lifetimeConfirmedCost}' = '700'
       and exists (
         select 1
         from jsonb_array_elements(result->'projectComparison') item
         where item->>'projectId' = 'P-T4-COMP'
           and item->>'monthlyConfirmedCost' = '0'
-          and item->>'lifetimeConfirmedCost' = '300'
+          and item->>'lifetimeConfirmedCost' = '700'
       )
     from report
   ),
@@ -5284,12 +5532,13 @@ select ok(
       and result->>'salaryMonth' = '2026-06'
       and (result->>'isAuthoritative')::boolean = false
       and (result->>'salaryTotal')::numeric = 10500
-      and (result->>'projectLaborTotal')::numeric = 500
+      and (result->>'projectLaborTotal')::numeric = 900
       and (result#>>'{projectLaborById,P-T4-A}')::numeric = 500
-      and (result->>'projectLaborLifetimeTotal')::numeric = 18801
+      and (result#>>'{projectLaborById,P-T4-COMP}')::numeric = 400
+      and (result->>'projectLaborLifetimeTotal')::numeric = 19201
       and (result#>>'{projectLaborLifetimeById,P-T4-A}')::numeric = 10500
       and (result#>>'{projectLaborLifetimeById,P-T4-B}')::numeric = 8001
-      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 300
+      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 700
     from bridge
   ),
   'pre-activation bridge uses only valid legacy rows and recomputes legacy net salary'
@@ -5305,10 +5554,10 @@ select ok(
       and (result->>'projectLaborTotal')::numeric = 6000
       and (result#>>'{projectLaborById,P-T4-A}')::numeric = 4000
       and (result#>>'{projectLaborById,P-T4-B}')::numeric = 2000
-      and (result->>'projectLaborLifetimeTotal')::numeric = 18801
+      and (result->>'projectLaborLifetimeTotal')::numeric = 19201
       and (result#>>'{projectLaborLifetimeById,P-T4-A}')::numeric = 10500
       and (result#>>'{projectLaborLifetimeById,P-T4-B}')::numeric = 8001
-      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 300
+      and (result#>>'{projectLaborLifetimeById,P-T4-COMP}')::numeric = 700
       and (result->>'pendingCount')::integer >= 1
       and result::text !~ '9999|99999|7777|8888'
     from bridge
