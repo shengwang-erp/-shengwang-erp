@@ -3822,6 +3822,8 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       <SystemSettingsPage
         currentUser={currentUser}
         storageKeys={MIGRATABLE_STORAGE_KEYS}
+        loadContractMigrationPreview={loadContractMigrationPreview}
+        executeContractMigration={executeContractMigration}
         onLocalContractRevenueMigrationComplete={
           handleLocalContractRevenueMigrationComplete
         }
@@ -4005,6 +4007,8 @@ function HomePage({ model, summary, currentUser, onLogout, onOpenView }) {
 function SystemSettingsPage({
   currentUser,
   storageKeys,
+  loadContractMigrationPreview,
+  executeContractMigration,
   onLocalContractRevenueMigrationComplete: handleLocalContractRevenueMigrationComplete,
   onBack,
 }) {
