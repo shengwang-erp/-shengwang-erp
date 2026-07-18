@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
 
+import { buildMonthWindow } from '../features/executive-dashboard/dashboardTime.js'
+
 async function loadRuntime() {
   const server = await createServer({
     root: process.cwd(),
@@ -93,22 +95,19 @@ const populatedHomeInput = Object.freeze({
     toolBorrow: Object.freeze([{ id: 'TB-SECRET' }]),
     toolReturn: Object.freeze([{ id: 'TR-SECRET' }]),
   }),
-  accountingRecords: Object.freeze({
-    salary: Object.freeze([{ salaryMonth: currentMonth, netSalary: 1200 }]),
-    projectCost: Object.freeze([{
-      date: `${currentMonth}-01`,
-      costType: '材料费',
-      amount: 200,
-    }]),
-    operatingExpense: Object.freeze([{ date: `${currentMonth}-01`, amount: 300 }]),
-    purchase: Object.freeze([{
-      purchaseDate: `${currentMonth}-01`,
-      purchaseStatus: '正常',
-      totalCost: 400,
-    }]),
-    fuel: Object.freeze([{ fuelDate: `${currentMonth}-01`, fuelAmount: 500 }]),
-    vehicleExpense: Object.freeze([{ expenseDate: `${currentMonth}-01`, amount: 600 }]),
-    vehicleIssue: Object.freeze([{ issueDate: `${currentMonth}-01`, repairCost: 700 }]),
+  financialModels: Object.freeze({
+    cost: Object.freeze({
+      status: 'ready',
+      data: Object.freeze({
+        companyMonthlyTotal: Object.freeze({ total: 500 }),
+      }),
+    }),
+    purchase: Object.freeze({
+      status: 'ready',
+      data: Object.freeze({
+        summary: Object.freeze({ monthPurchaseCost: 400 }),
+      }),
+    }),
   }),
 })
 
@@ -117,8 +116,8 @@ const emptyHomeSummary = {
   activeEmployees: 0,
   totalRecords: 0,
   pausedProjects: 0,
-  monthlyPurchaseTotal: 0,
-  monthlyCostTotal: 0,
+  monthlyPurchaseTotal: null,
+  monthlyCostTotal: null,
   moduleCounts: {
     projects: 0,
     employees: 0,
@@ -276,7 +275,7 @@ test('Home summary data is synchronously sanitized on entry and permission revoc
     totalRecords: 6,
     pausedProjects: 1,
     monthlyPurchaseTotal: 400,
-    monthlyCostTotal: 3900,
+    monthlyCostTotal: 500,
     moduleCounts: {
       projects: 2,
       employees: 1,
@@ -287,6 +286,17 @@ test('Home summary data is synchronously sanitized on entry and permission revoc
       toolBorrow: 1,
     },
   })
+
+  const partialAccounting = buildAuthorizedHomeSummary(activeUser([
+    'module.accounting.view',
+    'module.salaries.view',
+    'sensitive.salary_view',
+    'module.project_costs.view',
+    'module.operating_expenses.view',
+    'module.purchases.view',
+  ]), populatedHomeInput)
+  assert.equal(partialAccounting.monthlyCostTotal, null)
+  assert.equal(partialAccounting.monthlyPurchaseTotal, 400)
 
   const revokedUser = { ...fullUser, employeeNumber: 'SW-123', effectivePermissionKeys: [] }
   const revokedSummary = buildAuthorizedHomeSummary(revokedUser, populatedHomeInput)
@@ -391,6 +401,82 @@ test('persistent, Promise, and labor adapters project one strict raw state witho
   }
 })
 
+test('purchase-only access stays ready through projection and preserves payment UI authorization', () => {
+  const projectPersistentSource = requireExport('projectPersistentSource')
+  const PurchaseManagementPage = requireExport('PurchaseManagementPage')
+  if (!projectPersistentSource || !PurchaseManagementPage) return
+
+  const currentUser = activeUser([
+    'module.purchases.view',
+    'module.purchases.create',
+    'module.purchases.update',
+    'module.purchases.delete',
+    'sensitive.purchase_payments_view',
+    'sensitive.purchase_payments_update',
+  ])
+  const access = runtime.businessAccess.getPurchaseAccess(currentUser)
+  assert.equal(access.records.view, true)
+  assert.equal(access.payments.view, true)
+  assert.equal(access.payments.create, true)
+  const rawReady = Object.freeze({
+    loading: false,
+    error: '',
+    code: '',
+    source: 'supabase',
+    updatedAt: '2026-07-18T00:00:00.000Z',
+  })
+  const purchaseRecords = Object.freeze([Object.freeze({
+    purchaseId: 'PO-PURCHASE-ONLY',
+    purchaseDate: '2026-07-18',
+    itemName: '采购专员材料',
+    purchaseSource: '中国采购',
+    purchaseType: '材料',
+    platform: '线下店铺',
+    totalCost: 10000,
+    purchaseStatus: '正常',
+    arrivalStatus: '未到货',
+    currency: 'JPY',
+  })])
+  const paymentRecords = Object.freeze([Object.freeze({
+    paymentId: 'PP-PURCHASE-ONLY',
+    purchaseId: 'PO-PURCHASE-ONLY',
+    paymentDate: '2026-07-18',
+    paymentAmount: 2000,
+    jpyAmount: 2000,
+    paymentMethod: '银行转账',
+    employeeName: '采购专员',
+  })])
+  const accrualState = projectPersistentSource(rawReady, {
+    readAllowed: access.records.view,
+    data: purchaseRecords,
+  })
+  const paymentState = projectPersistentSource(rawReady, {
+    readAllowed: access.payments.view,
+    data: paymentRecords,
+  })
+  assert.equal(accrualState.status, 'ready')
+  assert.equal(paymentState.status, 'ready')
+
+  const html = renderToStaticMarkup(createElement(PurchaseManagementPage, {
+    access,
+    projects: [],
+    employees: [],
+    purchaseRecords: accrualState.data,
+    setPurchaseRecords() {},
+    purchasePaymentRecords: paymentState.data,
+    purchasePaymentState: paymentState,
+    setPurchasePaymentRecords() {},
+    onPersistenceError() {},
+    stockInRecords: [],
+    setStockInRecords() {},
+    inventoryItems: [],
+    setInventoryItems() {},
+    onBack() {},
+  }))
+  assert.match(html, />付款记录<\/button>/u)
+  assert.doesNotMatch(html, /当前付款数据不可用/u)
+})
+
 test('Accounting defaults to the first authorized section and hides forbidden salary/actions', () => {
   const AccountingCostPage = requireExport('AccountingCostPage')
   if (!AccountingCostPage) return
@@ -460,41 +546,34 @@ test('Accounting monthly summary blocks an inferable total when any category is 
       purchasePayments: false,
     },
     vehicleAccess: false,
-    salaryRecords: [{ netSalary: 900000, salaryMonth: '2026-07' }],
-    employees: [],
-    laborRecords: [],
-    projectCostRecords: [{ date: '2026-07-01', costType: '材料费', amount: 1000 }],
-    operatingExpenseRecords: [{ date: '2026-07-01', amount: 2000 }],
-    purchaseRecords: [{
-      purchaseId: 'PO-1', purchaseDate: '2026-07-01', totalCost: 3000,
-      purchaseStatus: '正常', openingPaidAmount: 0,
-    }],
-    purchasePaymentRecords: [],
-    purchasePaymentState: { status: 'forbidden', data: null },
-    fuelRecords: [],
-    vehicleExpenseRecords: [],
-    vehicleIssueRecords: [],
     monthFilter: '2026-07',
     onMonthFilterChange() {},
-    laborBridge: null,
     sourceStates: {
-      projectCost: {
+      projects: {
         status: 'ready',
-        data: [{ date: '2026-07-01', costType: '材料费', amount: 1000 }],
+        data: [{ projectId: 'P-1', projectName: '允许项目', status: '进行中' }],
+      },
+      projectCosts: {
+        status: 'ready',
+        data: [{
+          costRecordId: 'PC-1', projectId: 'P-1', date: '2026-07-01',
+          costType: '材料费', amount: 1000,
+        }],
       },
       purchaseAccrual: {
         status: 'ready',
         data: [{
-          purchaseId: 'PO-1', purchaseDate: '2026-07-01', totalCost: 3000,
-          purchaseStatus: '正常', openingPaidAmount: 0,
+          purchaseId: 'PO-1', projectId: 'P-1', purchaseDate: '2026-07-01',
+          totalCost: 3000, purchaseStatus: '正常', openingPaidAmount: 0,
         }],
       },
     },
   }))
 
-  assert.match(html, /项目成本记录合计/u)
+  assert.match(html, /待核算手工材料费/u)
+  assert.match(html, /¥1,000/u)
   assert.match(html, /本月采购确认成本/u)
-  assert.doesNotMatch(html, /本月工资发放|经营费用合计|公司总成本|当前采购应付余额/u)
+  assert.doesNotMatch(html, /本月工资发放|经营费用合计|<span>公司总成本<\/span>|当前采购应付余额/u)
   assert.doesNotMatch(html, /¥904,000/u)
 })
 
@@ -635,6 +714,25 @@ test('Monthly summary blocks vehicle amounts and company total until vehicle acc
   if (!MonthlySummarySection) return
 
   const ready = (data) => ({ status: 'ready', data })
+  const laborWindow = {
+    monthly: [{
+      month: '2026-07', status: 'ready', stale: false, salaryTotal: 0,
+      projectLaborTotal: 0, projectLaborById: {}, source: 'formal', pendingCount: 0,
+    }],
+    projectLaborLifetimeById: {},
+    lifetimeStatus: 'ready', lifetimeStale: false, incompleteMonths: [], staleMonths: [],
+  }
+  const fuelRecords = [{
+    fuelRecordId: 'F-SECRET', fuelDate: '2026-07-01', fuelAmount: 987654,
+    allocateToProject: false,
+    fuelDateSource: 'recorded', fuelDateLegacyInferred: false,
+    paymentMethod: '现金', paymentMethodSource: 'recorded',
+    paymentMethodLegacyInferred: false,
+  }]
+  const vehicleIssueRecords = [{
+    issueId: 'VI-PENDING', issueDate: '2026-07-02', repairCost: 222222,
+    allocateToProject: false, issueStatus: '未处理', severity: '一般',
+  }]
   const baseProps = {
     access: {
       salary: true,
@@ -644,144 +742,165 @@ test('Monthly summary blocks vehicle amounts and company total until vehicle acc
       purchasePayments: false,
     },
     vehicleAccess: true,
-    salaryRecords: [],
-    employees: [],
-    laborRecords: [],
-    projectCostRecords: [],
-    operatingExpenseRecords: [],
-    purchaseRecords: [],
-    purchasePaymentRecords: [],
-    purchasePaymentState: { status: 'forbidden', data: null },
-    fuelRecords: [{ fuelDate: '2026-07-01', fuelAmount: 987654 }],
-    vehicleExpenseRecords: [],
-    vehicleIssueRecords: [],
+    projects: [],
     monthFilter: '2026-07',
     onMonthFilterChange() {},
-    laborBridge: null,
     sourceStates: {
-      salary: ready([]),
-      projectCost: ready([]),
-      operatingExpense: ready([]),
+      projects: ready([]),
+      laborWindow: ready(laborWindow),
+      projectCosts: ready([]),
+      operatingExpenses: ready([]),
       purchaseAccrual: ready([]),
       fuel: { status: 'loading', data: null },
-      vehicleExpense: ready([]),
-      vehicleIssue: ready([]),
+      vehicleExpenses: ready([]),
+      vehicleIssues: ready(vehicleIssueRecords),
     },
   }
 
   const loadingHtml = renderToStaticMarkup(createElement(MonthlySummarySection, baseProps))
-  assert.match(loadingHtml, /车辆成本数据正在加载/u)
-  assert.doesNotMatch(loadingHtml, /车辆费用合计|加油费用|公司总成本|¥987,654|¥0/u)
+  assert.match(loadingHtml, /成本数据正在加载/u)
+  assert.doesNotMatch(
+    loadingHtml,
+    /车辆费用合计|<span>公司总成本<\/span>|¥987,654|¥222,222/u,
+  )
 
   const staleHtml = renderToStaticMarkup(createElement(MonthlySummarySection, {
     ...baseProps,
     sourceStates: {
       ...baseProps.sourceStates,
-      fuel: { status: 'ready', data: baseProps.fuelRecords, stale: true },
+      fuel: { status: 'ready', data: fuelRecords, stale: true },
     },
   }))
-  assert.match(staleHtml, /车辆成本数据正在加载/u)
-  assert.doesNotMatch(staleHtml, /车辆费用合计|加油费用|公司总成本|¥987,654|¥0/u)
+  assert.match(staleHtml, /成本数据正在加载/u)
+  assert.doesNotMatch(
+    staleHtml,
+    /车辆费用合计|<span>公司总成本<\/span>|¥987,654|¥222,222/u,
+  )
 
   const forbiddenHtml = renderToStaticMarkup(createElement(MonthlySummarySection, {
     ...baseProps,
     vehicleAccess: false,
   }))
-  assert.doesNotMatch(forbiddenHtml, /车辆费用合计|加油费用|公司总成本|¥987,654/u)
+  assert.doesNotMatch(
+    forbiddenHtml,
+    /车辆费用合计|<span>公司总成本<\/span>|¥987,654|¥222,222/u,
+  )
 
   const readyHtml = renderToStaticMarkup(createElement(MonthlySummarySection, {
     ...baseProps,
     sourceStates: {
       ...baseProps.sourceStates,
-      fuel: ready(baseProps.fuelRecords),
+      fuel: ready(fuelRecords),
     },
   }))
-  assert.match(readyHtml, /车辆费用合计|加油费用|公司总成本|¥987,654/u)
+  assert.match(readyHtml, /车辆费用合计|<span>公司总成本<\/span>|¥987,654/u)
+  assert.match(readyHtml, /待核算维修估算|¥222,222/u)
+  assert.doesNotMatch(readyHtml, /<strong>¥1,209,876<\/strong><span>公司总成本<\/span>/u)
 })
 
 test('Dashboard executed SSR access/source matrix removes stale values synchronously on revocation', () => {
   const DashboardPage = requireExport('DashboardPage')
   if (!DashboardPage) return
 
+  const months = buildMonthWindow(currentMonth, 12)
+  const ready = (data) => ({
+    status: 'ready', data, code: '', message: '', stale: false, updatedAt: null,
+  })
+  const blocked = (status = 'forbidden') => ({
+    status, data: null,
+    code: status === 'forbidden' ? 'ACCESS_DENIED' : 'DATA_OPERATION_FAILED',
+    message: status === 'forbidden' ? '当前权限下无法查看该数据' : '数据暂不可用',
+    stale: false, updatedAt: null,
+  })
+  const exactSources = (overrides = {}) => ({
+    projects: overrides.projects || blocked(),
+    contractRevenue: overrides.contractRevenue || blocked(),
+    receipts: overrides.receipts || blocked(),
+    laborWindow: overrides.laborWindow || blocked(),
+    purchaseAccrual: overrides.purchaseAccrual || blocked(),
+    purchasePayments: overrides.purchasePayments || blocked(),
+    projectCosts: overrides.projectCosts || blocked(),
+    operatingExpenses: overrides.operatingExpenses || blocked(),
+    vehicles: overrides.vehicles || blocked(),
+    vehicleUsage: overrides.vehicleUsage || blocked(),
+    fuel: overrides.fuel || blocked(),
+    vehicleExpenses: overrides.vehicleExpenses || blocked(),
+    vehicleIssues: overrides.vehicleIssues || blocked(),
+    attendance: overrides.attendance || blocked(),
+    inventoryItems: overrides.inventoryItems || blocked(),
+    stockInRecords: overrides.stockInRecords || blocked(),
+    stockOutRecords: overrides.stockOutRecords || blocked(),
+    stockReturnRecords: overrides.stockReturnRecords || blocked(),
+    toolRecords: overrides.toolRecords || blocked(),
+    toolBorrowRecords: overrides.toolBorrowRecords || blocked(),
+    toolReturnRecords: overrides.toolReturnRecords || blocked(),
+    lifelongToolAssignments: overrides.lifelongToolAssignments || blocked(),
+    toolResponsibilityRecords: overrides.toolResponsibilityRecords || blocked(),
+  })
   const project = {
     projectId: 'P-SECRET', projectName: '机密项目', address: '机密地址', status: '进行中',
-    adjustedTaxInclusiveAmount: 880000, totalReceivedTaxInclusiveAmount: 330000,
-    outstandingTaxInclusiveAmount: 550000, profitAnchorTaxExclusiveAmount: 800000,
-    paymentStatus: '部分付款',
-  }
-  const employee = {
-    employeeId: 'E-SECRET', name: '身份机密人员', employmentStatus: '在职',
-    department: '机密部门', position: '机密职位', level: '五星', visaType: '技术',
-    visaExpireDate: '2026-08-01', phone: '090-SECRET',
   }
   const purchase = {
     purchaseId: 'PO-SECRET', purchaseDate: currentMonth + '-01', projectId: 'P-SECRET',
     purchaseSource: '中国采购', purchaseType: '材料', totalCost: 77000,
-    openingPaidAmount: 1000, paidAmount: 2000, unpaidAmount: 75000,
-    paymentStatus: '部分付款', purchaseStatus: '正常',
+    openingPaidAmount: 1000, purchaseStatus: '正常', invoiceStatus: '已取得',
   }
   const payment = {
     paymentId: 'PP-SECRET', purchaseId: 'PO-SECRET', paymentDate: currentMonth + '-02',
-    jpyAmount: 1000, dateSource: 'recorded',
+    jpyAmount: 1000, paymentDateSource: 'recorded', paymentDateLegacyInferred: false,
   }
-  const props = {
-    projects: [project],
-    employees: [employee],
-    records: {
-      stockOut: [{ projectId: 'P-SECRET' }], stockReturn: [],
-      labor: [{ projectId: 'P-SECRET', employeeId: 'E-SECRET', workDate: currentMonth + '-01', workHours: 8 }],
-      vehicle: [], toolBorrow: [], toolReturn: [],
-    },
-    projectCostRecords: [{ projectId: 'P-SECRET', date: currentMonth + '-01', amount: 1000 }],
-    operatingExpenseRecords: [],
-    purchaseRecords: [purchase],
-    purchasePaymentRecords: [payment],
-    stockInRecords: [],
-    inventoryItems: [{ inventoryId: 'INV-SECRET', totalCost: 66000 }],
-    salaryRecords: [{ salaryMonth: currentMonth, employeeId: 'E-SECRET', netSalary: 99000 }],
-    vehicles: [{ vehicleId: 'V-SECRET', vehicleName: '机密车辆', status: '使用中' }],
-    vehicleUsageRecords: [],
-    fuelRecords: [{ projectId: 'P-SECRET', allocateToProject: true, fuelDate: currentMonth + '-01', fuelAmount: 44000 }],
-    vehicleExpenseRecords: [],
-    vehicleIssueRecords: [],
-    toolRecords: [{ toolId: 'T-SECRET', toolName: '机密工具', currentStatus: '在库' }],
-    toolBorrowRecords: [],
-    toolReturnRecords: [],
-    lifelongToolAssignments: [],
-    toolResponsibilityRecords: [{ compensationStatus: '未赔偿', compensationAmount: 22000 }],
-    laborBridge: null,
-    bridgeStatusNotice: null,
-    laborAlertCount: 97,
-    onBack() {},
+  const laborWindow = {
+    monthly: months.map((month) => ({
+      month, status: 'ready', stale: false, salaryTotal: 0,
+      projectLaborTotal: 0, projectLaborById: { 'P-SECRET': 0 },
+      source: 'formal', pendingCount: 0,
+    })),
+    projectLaborLifetimeById: { 'P-SECRET': 0 },
+    lifetimeStatus: 'ready', lifetimeStale: false, incompleteMonths: [], staleMonths: [],
   }
-  const ready = (data) => ({ status: 'ready', data, stale: false, updatedAt: null })
-  const readySources = {
-    projects: ready(props.projects),
-    contractRevenue: ready({ changes: [], plans: [], receipts: [] }),
-    employees: ready(props.employees),
-    salary: ready(props.salaryRecords),
-    projectCost: ready(props.projectCostRecords),
-    operatingExpense: ready(props.operatingExpenseRecords),
-    purchaseAccrual: ready(props.purchaseRecords),
-    purchasePayments: ready(props.purchasePaymentRecords),
-    stockIn: ready(props.stockInRecords),
-    inventory: ready(props.inventoryItems),
-    laborRecords: ready(props.records.labor),
-    labor: ready(props.laborBridge),
-    laborAlert: ready(4),
-    vehicles: ready(props.vehicles),
-    vehicleUsage: ready(props.vehicleUsageRecords),
-    fuel: ready(props.fuelRecords),
-    vehicleExpense: ready(props.vehicleExpenseRecords),
-    vehicleIssue: ready(props.vehicleIssueRecords),
-    tools: ready(props.toolRecords),
-    toolBorrow: ready(props.toolBorrowRecords),
-    toolReturn: ready(props.toolReturnRecords),
-    lifelongTools: ready(props.lifelongToolAssignments),
-    toolResponsibility: ready(props.toolResponsibilityRecords),
-    stockOut: ready(props.records.stockOut),
-    stockReturn: ready(props.records.stockReturn),
-  }
+  const readySources = exactSources({
+    projects: ready([project]),
+    contractRevenue: ready([{
+      projectId: 'P-SECRET', adjustedTaxInclusiveAmount: 880000,
+      totalReceivedTaxInclusiveAmount: 330000, profitAnchorTaxExclusiveAmount: 800000,
+    }]),
+    receipts: ready([]),
+    laborWindow: ready(laborWindow),
+    purchaseAccrual: ready([purchase]),
+    purchasePayments: ready([payment]),
+    projectCosts: ready([{
+      costRecordId: 'PC-SECRET', projectId: 'P-SECRET',
+      costType: '外包费', date: currentMonth + '-03', amount: 1000,
+    }]),
+    operatingExpenses: ready([]),
+    vehicles: ready([{ vehicleId: 'V-SECRET', vehicleName: '机密车辆', status: '使用中' }]),
+    vehicleUsage: ready([]),
+    fuel: ready([{
+      fuelRecordId: 'F-SECRET', projectId: 'P-SECRET', allocateToProject: true,
+      fuelDate: currentMonth + '-04', fuelAmount: 44000,
+      fuelDateSource: 'recorded', fuelDateLegacyInferred: false,
+      paymentMethod: '现金', paymentMethodSource: 'recorded',
+      paymentMethodLegacyInferred: false,
+    }]),
+    vehicleExpenses: ready([]),
+    vehicleIssues: ready([]),
+    attendance: ready([{
+      attendanceId: 'A-SECRET', projectId: 'P-SECRET',
+      workDate: currentMonth + '-05', status: '异常',
+    }]),
+    inventoryItems: ready([{ inventoryId: 'INV-SECRET', totalCost: 66000 }]),
+    stockInRecords: ready([]),
+    stockOutRecords: ready([{ stockOutId: 'SO-SECRET', projectId: 'P-SECRET' }]),
+    stockReturnRecords: ready([]),
+    toolRecords: ready([{ toolId: 'T-SECRET', toolName: '机密工具', currentStatus: '在库' }]),
+    toolBorrowRecords: ready([]),
+    toolReturnRecords: ready([]),
+    lifelongToolAssignments: ready([]),
+    toolResponsibilityRecords: ready([{
+      responsibilityId: 'TR-SECRET', projectId: 'P-SECRET',
+      compensationStatus: '未赔偿', compensationAmount: 22000,
+    }]),
+  })
   const fullAccess = {
     page: true,
     projectSnapshot: true,
@@ -814,62 +933,91 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
       manualSupplement: false, operatingExpense: false,
     },
   }
+  const renderDashboard = (access, sources) => renderToStaticMarkup(createElement(
+    DashboardPage,
+    {
+      asOfDate: `${currentMonth}-15`,
+      selectedMonth: currentMonth,
+      filters: {
+        projectId: 'all', projectStatus: 'all', rankingMetric: 'profit',
+        page: 1, pageSize: 10,
+      },
+      access,
+      sources,
+      viewerName: '社长验收员',
+      onFiltersChange() {},
+      onNavigate() {},
+    },
+  ))
 
-  const fullHtml = renderToStaticMarkup(createElement(DashboardPage, {
-    ...props,
-    access: fullAccess,
-    sourceStates: readySources,
-  }))
-  assert.match(fullHtml, /机密项目|合同金额合计|¥880,000|身份机密人员|本月采购总额|机密车辆|机密工具/u)
-  assert.match(fullHtml, /正式考勤待处理 4/u)
+  const fullHtml = renderDashboard(fullAccess, readySources)
+  assert.match(fullHtml, /欢迎回来，社长验收员|机密项目|当前含税合同额|¥880,000/u)
+  assert.match(fullHtml, /考勤异常|工具赔偿待处理|¥22,000/u)
   assert.doesNotMatch(fullHtml, /正式考勤待处理 97/u)
 
-  const revokedHtml = renderToStaticMarkup(createElement(DashboardPage, {
-    ...props,
-    access: revokedAccess,
-    sourceStates: readySources,
-  }))
-  assert.match(revokedHtml, /当前权限下暂无可显示的驾驶舱数据/u)
+  const revokedHtml = renderDashboard(revokedAccess, readySources)
+  assert.match(revokedHtml, /当前权限下无法查看/u)
   assert.doesNotMatch(
     revokedHtml,
-    /机密项目|机密地址|¥880,000|身份机密人员|090-SECRET|¥77,000|¥66,000|机密车辆|¥44,000|机密工具|¥22,000/u,
+    /机密项目|机密地址|¥880,000|¥77,000|¥66,000|机密车辆|¥44,000|机密工具|¥22,000/u,
   )
 
-  const loadingProjectHtml = renderToStaticMarkup(createElement(DashboardPage, {
-    ...props,
-    access: fullAccess,
-    sourceStates: {
-      ...readySources,
-      projects: { status: 'loading', data: null },
-    },
-  }))
-  assert.match(loadingProjectHtml, /项目数据正在加载/u)
-  assert.doesNotMatch(loadingProjectHtml, /机密项目|合同金额合计|¥880,000|预估毛利润/u)
+  const loadingProjectHtml = renderDashboard(fullAccess, {
+    ...readySources,
+    projects: { status: 'loading', data: null, stale: false, updatedAt: null },
+  })
+  assert.match(loadingProjectHtml, /数据正在加载/u)
+  assert.doesNotMatch(loadingProjectHtml, /机密项目|当前含税合同额[^<]*¥880,000|预计利润[^<]*¥/u)
 
-  const staleProjectHtml = renderToStaticMarkup(createElement(DashboardPage, {
-    ...props,
-    access: fullAccess,
-    sourceStates: {
-      ...readySources,
-      projects: { ...readySources.projects, stale: true },
-    },
-  }))
-  assert.match(staleProjectHtml, /项目数据正在加载/u)
-  assert.doesNotMatch(staleProjectHtml, /机密项目|合同金额合计|¥880,000|预估毛利润/u)
+  const staleProjectHtml = renderDashboard(fullAccess, {
+    ...readySources,
+    projects: { status: 'loading', data: null, stale: true, updatedAt: null },
+  })
+  assert.match(staleProjectHtml, /数据正在加载/u)
+  assert.doesNotMatch(staleProjectHtml, /机密项目|当前含税合同额[^<]*¥880,000|预计利润[^<]*¥/u)
 })
 
-test('Dashboard alert count requires a ready non-stale standard source', () => {
+test('Dashboard attendance alerts derive only from the standard attendance source state', () => {
   const DashboardPage = requireExport('DashboardPage')
   if (!DashboardPage) return
 
   const ready = (data) => ({ status: 'ready', data, stale: false, updatedAt: null })
+  const forbidden = () => ({
+    status: 'forbidden', data: null, stale: false,
+    code: 'ACCESS_DENIED', message: '当前权限下无法查看该数据', updatedAt: null,
+  })
+  const sourcesFor = (attendance) => ({
+    projects: ready([{ projectId: 'P-ALERT', projectName: '考勤测试项目', status: '进行中' }]),
+    contractRevenue: forbidden(),
+    receipts: forbidden(),
+    laborWindow: forbidden(),
+    purchaseAccrual: forbidden(),
+    purchasePayments: forbidden(),
+    projectCosts: forbidden(),
+    operatingExpenses: forbidden(),
+    vehicles: forbidden(),
+    vehicleUsage: forbidden(),
+    fuel: forbidden(),
+    vehicleExpenses: forbidden(),
+    vehicleIssues: forbidden(),
+    attendance,
+    inventoryItems: forbidden(),
+    stockInRecords: forbidden(),
+    stockOutRecords: forbidden(),
+    stockReturnRecords: forbidden(),
+    toolRecords: forbidden(),
+    toolBorrowRecords: forbidden(),
+    toolReturnRecords: forbidden(),
+    lifelongToolAssignments: forbidden(),
+    toolResponsibilityRecords: forbidden(),
+  })
   const access = {
     page: true,
-    projectSnapshot: false,
+    projectSnapshot: true,
     contracts: { view: false, amounts: false },
     profit: { view: false, completeCostRequired: true },
-    attendance: { view: false, identities: false },
-    labor: { view: true, amounts: false },
+    attendance: { view: true, identities: true },
+    labor: { view: false, amounts: false },
     purchase: { accrual: false, payments: false, payable: false, anomalies: false },
     vehicle: { view: false, amounts: false },
     inventory: { view: false, amounts: false },
@@ -879,45 +1027,43 @@ test('Dashboard alert count requires a ready non-stale standard source', () => {
       manualSupplement: false, operatingExpense: false,
     },
   }
-  const baseProps = {
-    access,
-    sourceStates: { laborRecords: ready([]) },
-    laborAlertCount: 97,
-    onBack() {},
-  }
-  const renderAlert = (laborAlert) => renderToStaticMarkup(createElement(DashboardPage, {
-    ...baseProps,
-    sourceStates: {
-      ...baseProps.sourceStates,
-      ...(laborAlert === undefined ? {} : { laborAlert }),
+  const renderAttendance = (attendance) => renderToStaticMarkup(createElement(DashboardPage, {
+    asOfDate: `${currentMonth}-15`,
+    selectedMonth: currentMonth,
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
     },
+    access,
+    sources: sourcesFor(attendance),
+    viewerName: '考勤验收员',
+    onFiltersChange() {},
+    onNavigate() {},
   }))
 
-  const initialHtml = renderAlert(undefined)
-  assert.match(initialHtml, /正式考勤待处理数据正在加载/u)
-  assert.doesNotMatch(initialHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
+  const readyHtml = renderAttendance(ready([{
+    attendanceId: 'A-ALERT', projectId: 'P-ALERT',
+    workDate: `${currentMonth}-01`, status: '异常',
+  }]))
+  assert.match(readyHtml, /<strong>考勤异常<\/strong><span>1 项<\/span>/u)
+  assert.doesNotMatch(readyHtml, /正式考勤待处理|97 项/u)
 
-  const readyHtml = renderAlert(ready(5))
-  assert.match(readyHtml, /<strong>5<\/strong><span>正式考勤待处理<\/span>/u)
-  assert.doesNotMatch(readyHtml, /正式考勤待处理数据正在加载|正式考勤待处理数据暂不可用/u)
+  const staleRefreshHtml = renderAttendance({
+    status: 'loading', data: null, stale: true, updatedAt: null,
+  })
+  assert.match(staleRefreshHtml, /数据源状态提示|数据正在加载/u)
+  assert.doesNotMatch(staleRefreshHtml, /考勤异常|A-ALERT|97 项/u)
 
-  const staleHtml = renderAlert({ ...ready(8), stale: true })
-  assert.match(staleHtml, /正式考勤待处理数据正在加载/u)
-  assert.doesNotMatch(staleHtml, /<strong>(?:8|97)<\/strong><span>正式考勤待处理<\/span>/u)
-
-  const errorHtml = renderAlert({
+  const errorHtml = renderAttendance({
     status: 'error', data: null, stale: false, code: 'DATA_OPERATION_FAILED',
   })
-  assert.match(errorHtml, /正式考勤待处理数据暂不可用/u)
-  assert.doesNotMatch(errorHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
+  assert.match(errorHtml, /数据源状态提示|数据暂不可用/u)
+  assert.doesNotMatch(errorHtml, /考勤异常|A-ALERT|97 项/u)
 
-  const malformedReadyHtml = renderAlert(ready('7'))
-  assert.match(malformedReadyHtml, /正式考勤待处理数据暂不可用/u)
-  assert.doesNotMatch(malformedReadyHtml, /<strong>(?:7|97)<\/strong><span>正式考勤待处理<\/span>/u)
+  const malformedReadyHtml = renderAttendance(ready('7'))
+  assert.match(malformedReadyHtml, /数据源状态提示|数据格式无效/u)
+  assert.doesNotMatch(malformedReadyHtml, /考勤异常|A-ALERT|97 项/u)
 
-  const forbiddenHtml = renderAlert({
-    status: 'forbidden', data: null, stale: false, code: 'ACCESS_DENIED',
-  })
-  assert.match(forbiddenHtml, /当前权限下无法查看正式考勤待处理数据/u)
-  assert.doesNotMatch(forbiddenHtml, /<strong>(?:0|97)<\/strong><span>正式考勤待处理<\/span>/u)
+  const forbiddenHtml = renderAttendance(forbidden())
+  assert.match(forbiddenHtml, /数据源状态提示|当前权限下无法查看该数据/u)
+  assert.doesNotMatch(forbiddenHtml, /考勤异常|A-ALERT|97 项/u)
 })

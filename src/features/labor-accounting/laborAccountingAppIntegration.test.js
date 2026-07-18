@@ -37,18 +37,47 @@ async function loadRuntimeModules() {
     root: process.cwd(),
     logLevel: 'silent',
     appType: 'custom',
+    plugins: [{
+      name: 'labor-app-leaflet-ssr-stub',
+      enforce: 'pre',
+      resolveId(source) {
+        return source === 'leaflet' ? '\0labor-app-leaflet-ssr-stub' : null
+      },
+      load(id) {
+        return id === '\0labor-app-leaflet-ssr-stub'
+          ? 'export default { icon: () => ({}) }'
+          : null
+      },
+      transform(code, id) {
+        if (!id.endsWith('/src/App.jsx')) return null
+        return code
+          .replace('function markLaborBridgeRetry(', 'export function markLaborBridgeRetry(')
+          .replace(
+            'function shouldRefreshLaborBridgeRequest(',
+            'export function shouldRefreshLaborBridgeRequest(',
+          )
+          .replace(
+            'function consumeLaborBridgeRetry(',
+            'export function consumeLaborBridgeRetry(',
+          )
+      },
+    }],
+    ssr: { noExternal: ['leaflet'] },
     server: { middlewareMode: true },
   })
   try {
-    const [hook, shell] = await Promise.all([
+    const [hook, shell, app] = await Promise.all([
       server.ssrLoadModule('/src/features/labor-accounting/useLaborAlertCount.js')
         .then((module) => ({ module, error: null }))
         .catch((error) => ({ module: null, error })),
       server.ssrLoadModule('/src/DesktopAdminShell.jsx')
         .then((module) => ({ module, error: null }))
         .catch((error) => ({ module: null, error })),
+      server.ssrLoadModule('/src/App.jsx')
+        .then((module) => ({ module, error: null }))
+        .catch((error) => ({ module: null, error })),
     ])
-    return { hook, shell }
+    return { hook, shell, app }
   } finally {
     await server.close()
   }
@@ -183,9 +212,10 @@ test('App wires one server-identity alert hook and routes labor to the accountin
   )
   assert.match(authenticatedApp, /laborAlertCount=\{laborAlertCount\}/u)
   assert.match(authenticatedApp, /laborAlertStale=\{laborAlertStale\}/u)
+  assert.doesNotMatch(authenticatedApp, /laborAlert:\s*projectLaborSource/u)
   assert.match(
     authenticatedApp,
-    /laborAlert:\s*projectLaborSource\(\{[\s\S]*?loading:\s*laborAlertLoading[\s\S]*?error:\s*laborAlertError[\s\S]*?code:\s*laborAlertCode[\s\S]*?source:\s*laborAlertSource[\s\S]*?updatedAt:\s*laborAlertUpdatedAt[\s\S]*?\},\s*\{[\s\S]*?readAllowed:\s*laborAlertAllowed[\s\S]*?data:\s*laborAlertCount[\s\S]*?stale:\s*laborAlertStale/u,
+    /attendance:\s*projectPersistentSource\(laborRawState,[\s\S]*?readAllowed:\s*dashboardAccess\.attendance\.view/u,
   )
 
   const route = extractBraceBlock(authenticatedApp, "if (authorizedView === 'labor')")
@@ -252,7 +282,7 @@ test('shell integration keeps the thirteen-route menu contract and avoids CSS mu
   assert.doesNotMatch(shellSource, /import\s+['"].*styles\.css/u)
 })
 
-test('App loads the formal accounting bridge only for exact identity, permissions, views, and month', () => {
+test('App loads one twelve-month labor window plus the actual current cumulative snapshot', () => {
   assert.match(
     appSource,
     /import \{ laborAccountingService \} from '.\/services\/laborAccountingService\.js'/u,
@@ -266,16 +296,20 @@ test('App loads the formal accounting bridge only for exact identity, permission
     /import \{[\s\S]*?canRequestLaborAccountingBridge[\s\S]*?normalizeBridgeSummary[\s\S]*?\} from '.\/features\/labor-accounting\/laborAccountingBridge\.js'/u,
   )
   assert.match(
+    appSource,
+    /import \{ buildLaborCostWindow \} from '.\/features\/cost-accounting\/laborCostWindow\.js'/u,
+  )
+  assert.match(
     authenticatedApp,
     /const \[accountingMonth, setAccountingMonth\] = useState\(currentMonthValue\(\)\)/u,
   )
   assert.match(
     authenticatedApp,
-    /bridgeTargetActive\s*=\s*\['accounting', 'dashboard', 'projects'\]\.includes\(authorizedView\)/u,
+    /bridgeTargetActive\s*=\s*\['home', 'accounting', 'dashboard', 'projects'\]\.includes\(authorizedView\)/u,
   )
   assert.match(
     authenticatedApp,
-    /bridgeRequestedMonth\s*=\s*authorizedView === 'accounting'[\s\S]*?accountingMonth[\s\S]*?currentMonthValue\(\)/u,
+    /bridgeRequestedMonth\s*=\s*authorizedView === 'accounting'[\s\S]*?accountingMonth[\s\S]*?authorizedView === 'dashboard'[\s\S]*?dashboardQuery\.selectedMonth[\s\S]*?currentMonthValue\(\)/u,
   )
   assert.match(
     authenticatedApp,
@@ -283,7 +317,7 @@ test('App loads the formal accounting bridge only for exact identity, permission
   )
   assert.match(
     authenticatedApp,
-    /laborBridgeLoaderRef\.current\.load\(\{[\s\S]*?actorScope:\s*bridgeActorScope[\s\S]*?endMonth:\s*bridgeRequestedMonth[\s\S]*?length:\s*1[\s\S]*?snapshotMonth:\s*bridgeRequestedMonth[\s\S]*?signal:\s*abortController\.signal/u,
+    /laborBridgeLoaderRef\.current\.load\(\{[\s\S]*?actorScope:\s*bridgeActorScope[\s\S]*?endMonth:\s*bridgeRequestedMonth[\s\S]*?length:\s*12[\s\S]*?snapshotMonth:\s*bridgeSnapshotMonth[\s\S]*?signal:\s*abortController\.signal/u,
   )
   assert.equal(
     (authenticatedApp.match(/laborBridgeLoaderRef\.current\.load\(/gu) || []).length,
@@ -299,31 +333,25 @@ test('App loads the formal accounting bridge only for exact identity, permission
     bridgeEligibilitySource,
     /role|employeeNumber|SW-000|department|position|isSuperAdmin/u,
   )
+  assert.match(authenticatedApp, /const bridgeSnapshotMonth = currentMonthValue\(\)/u)
+  assert.match(authenticatedApp, /buildLaborCostWindow\(\{/u)
+  assert.match(authenticatedApp, /snapshotMonth:\s*bridgeSnapshotMonth/u)
 })
 
-test('bridge request lifecycle fences actor, permission, view, month, and generation', () => {
+test('bridge request lifecycle fences actor, sorted permissions, view, window, snapshot, and generation', () => {
   assert.match(authenticatedApp, /bridgeRequestGenerationRef\s*=\s*useRef\(0\)/u)
   assert.match(authenticatedApp, /bridgeRequestIdentityRef\s*=\s*useRef/u)
   assert.match(authenticatedApp, /bridgeRequestIdentityRef\.current\s*=\s*bridgeRequestIdentity/u)
   assert.match(authenticatedApp, /generation\s*!==\s*bridgeRequestGenerationRef\.current/u)
   assert.match(authenticatedApp, /bridgeRequestIdentityRef\.current\s*!==\s*requestIdentity/u)
   assert.match(authenticatedApp, /active\s*===\s*false/u)
-  assert.match(authenticatedApp, /normalizeBridgeSummary\(value\)/u)
-  assert.match(authenticatedApp, /normalized\?\.salaryMonth\s*!==\s*bridgeRequestedMonth/u)
-  assert.match(
-    authenticatedApp,
-    /notifyBridgeAuthInvalid\(onLogout, error\)/u,
-  )
-  assert.match(
-    authenticatedApp,
-    /current\.identity === requestIdentity &&[\s\S]*?current\.month === bridgeRequestedMonth &&[\s\S]*?current\.bridge/u,
-  )
+  assert.match(authenticatedApp, /result\.snapshotMonth\s*!==\s*bridgeSnapshotMonth/u)
+  assert.match(authenticatedApp, /result\.windowStatus/u)
   assert.match(authenticatedApp, /identity:\s*requestIdentity/u)
   assert.match(
     authenticatedApp,
-    /laborBridgeState\.identity === bridgeRequestIdentity &&[\s\S]*?laborBridgeState\.month === bridgeRequestedMonth/u,
+    /laborBridgeState\.identity === bridgeRequestIdentity &&[\s\S]*?laborBridgeState\.endMonth === bridgeRequestedMonth/u,
   )
-  assert.match(authenticatedApp, /stale:\s*Boolean\(sameMonthBridge\)/u)
   assert.match(authenticatedApp, /setBridgeRetryToken\(\(value\) => value \+ 1\)/u)
   assert.match(authenticatedApp, /const abortController = new AbortController\(\)/u)
   assert.match(authenticatedApp, /abortController\.abort\(\)/u)
@@ -333,6 +361,35 @@ test('bridge request lifecycle fences actor, permission, view, month, and genera
     authenticatedApp,
     /previousActorScope[\s\S]*?previousActorScope !== bridgeActorScope[\s\S]*?laborBridgeLoaderRef\.current\.clear\(previousActorScope\)/u,
   )
+  const scope = sliceBetween(authenticatedApp, 'const bridgeActorScope', '\n  const bridgeRequestIdentity')
+  assert.match(scope, /activeActorId/u)
+  assert.match(scope, /bridgePermissionFingerprint/u)
+  assert.doesNotMatch(scope, /currentUser\.name|employeeName|viewerName/u)
+})
+
+test('manual bridge refresh targets one identity and survives Strict Effects until current settlement', () => {
+  assert.ifError(runtime.app.error)
+  const {
+    markLaborBridgeRetry,
+    shouldRefreshLaborBridgeRequest,
+    consumeLaborBridgeRetry,
+  } = runtime.app.module
+  const targetRef = { current: '' }
+  const julyIdentity = 'tenant-1:E-1:2026-07'
+  const augustIdentity = 'tenant-1:E-1:2026-08'
+
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, julyIdentity), false)
+  markLaborBridgeRetry(targetRef, julyIdentity)
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, julyIdentity), true)
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, julyIdentity), true)
+
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, augustIdentity), false)
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, julyIdentity), false)
+
+  markLaborBridgeRetry(targetRef, augustIdentity)
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, augustIdentity), true)
+  consumeLaborBridgeRetry(targetRef, augustIdentity)
+  assert.equal(shouldRefreshLaborBridgeRequest(targetRef, augustIdentity), false)
 })
 
 test('forbidden labor, salary, or project-cost access cannot invoke the loader', () => {
@@ -373,12 +430,13 @@ test('actor or effective-permission changes abort work and clear only the previo
     '  const bridgeRequestIdentity = ',
     '\n  const bridgeRequestIdentityRef',
   )
-  assert.match(requestIdentity, /activeActorId/u)
-  assert.match(requestIdentity, /bridgePermissionFingerprint/u)
   assert.match(requestIdentity, /bridgeActorScope/u)
+  assert.match(requestIdentity, /bridgeRequestedMonth/u)
+  assert.match(requestIdentity, /bridgeSnapshotMonth/u)
+  assert.doesNotMatch(requestIdentity, /currentUser\.name|employeeName|viewerName/u)
 })
 
-test('accounting month is controlled by AuthenticatedApp and bridge status is visible and retryable', () => {
+test('accounting month is controlled by AuthenticatedApp and the shared labor source stays visible and retryable', () => {
   const accountingPage = sliceBetween(appSource, 'function AccountingCostPage', '\nfunction SalaryRecordsSection')
   const monthlySummary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
 
@@ -400,8 +458,8 @@ test('accounting month is controlled by AuthenticatedApp and bridge status is vi
     /<Field label="统计月份" type="month" value=\{monthFilter\} onChange=\{onMonthFilterChange\}/u,
   )
 
-  assert.match(appSource, /正式核算正在加载，当前为历史估算/u)
-  assert.match(appSource, /正式核算暂不可用，当前为历史估算/u)
+  assert.match(appSource, /正式核算正在加载/u)
+  assert.match(appSource, /正式核算暂不可用/u)
   assert.match(appSource, /上次正式核算数据/u)
   assert.match(appSource, /尚未启用正式核算，当前为历史估算/u)
   assert.match(appSource, /待确认/u)
@@ -411,6 +469,16 @@ test('accounting month is controlled by AuthenticatedApp and bridge status is vi
 test('bridge errors use alert semantics and auth invalidation callback failures stay isolated', () => {
   const notice = sliceBetween(appSource, 'function LaborBridgeStatusNotice', '\nexport function resolveAuthorizedView')
   const notifier = sliceBetween(appSource, 'function notifyBridgeAuthInvalid', '\nfunction LaborBridgeStatusNotice')
+  const loaderFactory = sliceBetween(
+    authenticatedApp,
+    'laborBridgeLoaderRef.current = createDashboardLaborBridgeLoader({',
+    '\n  const previousBridgeActorScopeRef',
+  )
+  const bridgeEffect = sliceBetween(
+    authenticatedApp,
+    '  useEffect(() => {\n    const generation = bridgeRequestGenerationRef.current + 1',
+    '\n  }, [\n    bridgeEligible,',
+  )
 
   assert.match(notice, /role=\{state\.error \? 'alert' : 'status'\}/u)
   assert.match(notice, /aria-live=\{state\.error \? 'assertive' : 'polite'\}/u)
@@ -418,56 +486,51 @@ test('bridge errors use alert semantics and auth invalidation callback failures 
   assert.match(notifier, /const result = callback\(error\)/u)
   assert.match(notifier, /void result\.catch\(\(\) => \{\}\)/u)
   assert.match(notifier, /catch \{/u)
-  assert.match(authenticatedApp, /notifyBridgeAuthInvalid\(onLogout, error\)/u)
+  assert.doesNotMatch(loaderFactory, /notifyBridgeAuthInvalid/u)
+  assert.equal((bridgeEffect.match(/notifyBridgeAuthInvalid\(onLogout, error\)/gu) || []).length, 1)
+  assert.ok(
+    bridgeEffect.indexOf("if (error?.name === 'AbortError') return") <
+      bridgeEffect.indexOf('notifyBridgeAuthInvalid(onLogout, error)'),
+  )
   assert.doesNotMatch(authenticatedApp, /if \(error\?\.authInvalid === true\) onLogout\(\)/u)
 })
 
-test('monthly accounting and dashboard replace legacy totals without double counting', () => {
-  const allocationHelper = sliceBetween(
-    appSource,
-    'function getLaborAllocationInfo',
-    '\nfunction getProjectLaborCost',
+test('App consumes retry refresh only after the current identity settles', () => {
+  const bridgeEffect = sliceBetween(
+    authenticatedApp,
+    '  useEffect(() => {\n    const generation = bridgeRequestGenerationRef.current + 1',
+    '\n  }, [\n    bridgeEligible,',
   )
-  const monthlySummary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
-  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
+  const currentGuardIndex = bridgeEffect.indexOf('if (!isCurrentRequest()) return')
+  const consumeIndex = bridgeEffect.indexOf(
+    'consumeLaborBridgeRetry(bridgeRetryTargetIdentityRef, requestIdentity)',
+  )
 
-  assert.match(allocationHelper, /resolveMonthlySalaryTotal\(\{/u)
-  assert.match(allocationHelper, /resolveMonthlyProjectLaborTotal\(\{/u)
-  assert.match(allocationHelper, /month,/u)
-  assert.match(allocationHelper, /bridge,/u)
-  assert.doesNotMatch(allocationHelper, /legacySalaryTotal\s*\+|legacyAllocatedLaborCostTotal\s*\+/u)
-  assert.match(monthlySummary, /getLaborAllocationInfo\([\s\S]*?monthFilter,[\s\S]*?laborBridge/u)
-  assert.match(dashboard, /getLaborAllocationInfo\([\s\S]*?currentMonthValue\(\),[\s\S]*?laborBridge/u)
-  assert.match(dashboard, /本月项目人工分摊/u)
-  assert.match(dashboard, /laborAllocationInfo\.allocatedLaborCostTotal/u)
+  assert.match(
+    authenticatedApp,
+    /markLaborBridgeRetry\(bridgeRetryTargetIdentityRef, bridgeRequestIdentityRef\.current\)[\s\S]*?setBridgeRetryToken/u,
+  )
+  assert.match(
+    bridgeEffect,
+    /const refreshBridgeRequest = shouldRefreshLaborBridgeRequest\([\s\S]*?bridgeRetryTargetIdentityRef,[\s\S]*?requestIdentity,[\s\S]*?\)/u,
+  )
+  assert.match(bridgeEffect, /refresh:\s*refreshBridgeRequest/u)
+  assert.ok(currentGuardIndex >= 0)
+  assert.ok(consumeIndex > currentGuardIndex)
+  assert.doesNotMatch(bridgeEffect, /refresh:\s*bridgeRetryToken\s*>\s*0/u)
+  assert.doesNotMatch(
+    bridgeEffect.slice(bridgeEffect.lastIndexOf('return () => {')),
+    /consumeLaborBridgeRetry/u,
+  )
 })
 
-test('all dashboard cost and gross-profit amounts choose lifetime bridge labor exactly once', () => {
-  const projectLaborHelper = sliceBetween(
-    appSource,
-    'function getProjectLaborCost',
-    '\nfunction getProjectCostTotal',
-  )
-  const projectCostHelper = sliceBetween(
-    appSource,
-    'function getProjectCostTotal',
-    '\nfunction getProjectPurchaseTotal',
-  )
-  const grossProfitHelper = sliceBetween(
-    appSource,
-    'function getGrossProfitInfo',
-    '\nfunction normalizeVehicleRecord',
-  )
-  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
-
-  assert.match(projectLaborHelper, /resolveProjectLaborTotal\(\{/u)
-  assert.match(projectLaborHelper, /legacyTotal:\s*legacyLaborCostTotal/u)
-  assert.match(projectCostHelper, /getProjectLaborCost\([\s\S]*?bridge[\s\S]*?month/u)
-  assert.match(grossProfitHelper, /getProjectCostTotal\([\s\S]*?bridge[\s\S]*?month/u)
-  assert.match(dashboard, /getProjectLaborCost\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
-  assert.match(dashboard, /getGrossProfitInfo\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
-  assert.match(dashboard, /getProjectCostTotal\([\s\S]*?laborBridge[\s\S]*?currentMonthValue\(\)/u)
-  assert.doesNotMatch(dashboard, /\+\s*(?:laborBridge|bridge\.)/u)
+test('monthly accounting and dashboard consume the projected labor window without legacy cost helpers', () => {
+  const monthlySummary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
+  const dashboard = sliceBetween(appSource, 'function DashboardPage({', '\nfunction PageShell')
+  assert.match(monthlySummary, /sourceStates\?\.laborWindow/u)
+  assert.match(monthlySummary, /buildCostAccountingReadModel\(\{/u)
+  assert.match(dashboard, /buildExecutiveDashboardReadModel\(\{/u)
+  assert.doesNotMatch(appSource, /\bgetProjectLaborCost\b|\bgetProjectCostTotal\b/u)
 })
 
 test('legacy dashboard drilldown keeps historical facts but never presents legacy money as formal', () => {
@@ -497,15 +560,10 @@ test('legacy dashboard drilldown keeps historical facts but never presents legac
   assert.match(movementCard, /非考勤提醒/u)
 })
 
-test('owner dashboard consumes the standard alert source instead of a bare count', () => {
-  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
-
+test('owner dashboard delegates authorized labor alerts through the standard dashboard model', () => {
+  const dashboard = sliceBetween(appSource, 'function DashboardPage({', '\nfunction PageShell')
   assert.doesNotMatch(authenticatedApp, /<DashboardPage[\s\S]*?laborAlertCount=\{laborAlertCount\}/u)
-  assert.match(dashboard, /projectDashboardLaborAlertSource\(sourceStates, access\.labor\?\.view\)/u)
-  assert.match(
-    dashboard,
-    /laborAlertState\.status\s*===\s*'ready'[\s\S]*?laborAlertState\.data/u,
-  )
-  assert.match(dashboard, /laborAlertStatusText\(laborAlertState\.status\)/u)
-  assert.doesNotMatch(dashboard, /getLaborExceptions\(normalizedLaborRecords\)\.length/u)
+  assert.match(dashboard, /buildExecutiveDashboardReadModel\(\{/u)
+  assert.match(authenticatedApp, /attendance:\s*projectPersistentSource\(laborRawState/u)
+  assert.match(authenticatedApp, /onNavigate=\{handleDashboardNavigate\}/u)
 })

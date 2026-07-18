@@ -151,10 +151,39 @@ test('financial persistence callers pass explicit access and preserve raw source
     )
   }
   assert.match(authenticatedApp, /const dashboardSourceStates = \{/u)
-  assert.match(authenticatedApp, /salary:\s*projectPersistentSource\(salaryRawState/u)
   assert.match(authenticatedApp, /projects:\s*projectPromiseSource\(projectRawState/u)
-  assert.match(authenticatedApp, /labor:\s*projectLaborSource\(laborBridgeState/u)
-  assert.match(authenticatedApp, /sourceStates=\{dashboardSourceStates\}/u)
+  assert.match(
+    authenticatedApp,
+    /const laborWindowInputStates = \[salaryRawState, employeeRawState, laborRawState\]/u,
+  )
+  assert.match(authenticatedApp, /laborWindow:\s*projectLaborSource\(laborWindowStateRaw/u)
+  assert.match(authenticatedApp, /projectCosts:\s*projectPersistentSource\(projectCostRawState/u)
+  assert.match(
+    authenticatedApp,
+    /operatingExpenses:\s*projectPersistentSource\(operatingExpenseRawState/u,
+  )
+  assert.match(authenticatedApp, /purchaseAccrual:\s*projectPersistentSource\(purchaseRawState/u)
+  const purchaseAccrualProjection = sliceBetween(
+    authenticatedApp,
+    'purchaseAccrual: projectPersistentSource(purchaseRawState, {',
+    '\n    purchasePayments:',
+  )
+  const purchasePaymentProjection = sliceBetween(
+    authenticatedApp,
+    'purchasePayments: projectPersistentSource(purchasePaymentRawState, {',
+    '\n    projectCosts:',
+  )
+  assert.match(purchaseAccrualProjection, /readAllowed:\s*purchaseReadAccess\.records/u)
+  assert.match(purchasePaymentProjection, /readAllowed:\s*purchaseReadAccess\.payments/u)
+  assert.equal(
+    (authenticatedApp.match(/purchaseAccrual:\s*projectPersistentSource\(/gu) || []).length,
+    1,
+  )
+  assert.equal(
+    (authenticatedApp.match(/purchasePayments:\s*projectPersistentSource\(/gu) || []).length,
+    1,
+  )
+  assert.match(authenticatedApp, /sources=\{dashboardSourceStates\}/u)
 })
 
 test('purchase accrual persistence is isolated behind purchaseService secure RPCs', () => {

@@ -270,6 +270,7 @@ export function createDashboardLaborBridgeLoader(options = {}) {
             }
           } catch (error) {
             if (signal?.aborted === true || error?.[LOADER_ABORT] === true) throw abortError()
+            if (error?.authInvalid === true) throw error
             return cached
               ? { month, key, value: cached.value, updatedAt: cached.updatedAt, stale: true, fetched: false }
               : { month, key, value: null, updatedAt: null, stale: false, fetched: false }

@@ -94,16 +94,7 @@ async function loadAppModule() {
             'function DashboardPage({',
             'export function DashboardPage({',
           )
-        const currentMonthNeedle =
-          '  const currentMonth = currentMonthValue()\n  const purchaseAccounting = useMemo('
-        assert.ok(
-          exported.includes(currentMonthNeedle),
-          'expected DashboardPage current-month marker',
-        )
-        return exported.replace(
-          currentMonthNeedle,
-          `  const currentMonth = '${DASHBOARD_CURRENT_MONTH}'\n  const purchaseAccounting = useMemo(`,
-        )
+        return exported
       },
     }],
     ssr: { noExternal: ['leaflet'] },
@@ -199,11 +190,15 @@ function renderSection(overrides = {}) {
   const paymentState = Object.hasOwn(overrides, 'paymentState')
     ? overrides.paymentState
     : { status: 'ready', data: paymentRecords, stale: false }
+  const accrualState = Object.hasOwn(overrides, 'accrualState')
+    ? overrides.accrualState
+    : { status: 'ready', data: overrides.purchaseRecords ?? purchases, stale: false }
   return renderToStaticMarkup(createElement(loaded.module.default, {
     projects,
     purchaseRecords: purchases,
     purchasePaymentRecords: paymentRecords,
     paymentState,
+    accrualState,
     monthFilter: '2026-08',
     onMonthFilterChange: () => {},
     ...overrides,
@@ -220,6 +215,18 @@ test('renders order cost, payment cash, current payable, and source notice', () 
   assert.match(html, /<strong>1<\/strong><span>未取得发票数量<\/span>/u)
   assert.match(html, /<strong>1<\/strong><span>异常付款数量<\/span>/u)
   assert.match(html, /数据来源：采购管理/u)
+})
+
+test('missing, stale, or forbidden accrual state fails closed before rendering purchase facts', () => {
+  for (const accrualState of [
+    undefined,
+    { status: 'ready', data: purchases, stale: true },
+    { status: 'forbidden', data: null, stale: false },
+  ]) {
+    const html = renderSection({ accrualState })
+    assert.doesNotMatch(html, /PO-JUL|PO-AUG|本月采购确认成本/u)
+    assert.match(html, /采购成本数据(?:正在加载|暂不可用|当前不可见)/u)
+  }
 })
 
 test('renders read-only filters, anomaly guidance, and purchase detail rows', () => {
@@ -283,7 +290,7 @@ test('shows project-allocation health without counting it as a payment anomaly',
 
 test('renders an empty detail state without mutation controls', () => {
   const html = renderSection({
-    projects: [],
+    projects,
     purchaseRecords: [],
     purchasePaymentRecords: [],
   })
@@ -975,15 +982,31 @@ test('monthly summary executes cross-month purchase accounting without adding pa
     { expenseRecordId: 'OE-1', date: '2026-08-11', amount: 2000 },
   ]
   const summaryFuel = [
-    { fuelRecordId: 'FR-1', fuelDate: '2026-08-14', fuelAmount: 500 },
+    {
+      fuelRecordId: 'FR-1', fuelDate: '2026-08-14', fuelAmount: 500,
+      fuelDateSource: 'recorded', fuelDateLegacyInferred: false,
+      paymentMethod: '现金', paymentMethodSource: 'recorded', paymentMethodLegacyInferred: false,
+    },
   ]
   const summaryVehicleExpenses = [
-    { vehicleExpenseId: 'VE-1', expenseDate: '2026-08-15', expenseType: '停车费', amount: 300 },
+    {
+      vehicleExpenseId: 'VE-1', expenseDate: '2026-08-15', expenseType: '停车费', amount: 300,
+      expenseDateSource: 'recorded', expenseDateLegacyInferred: false,
+      paymentMethod: '现金', paymentMethodSource: 'recorded', paymentMethodLegacyInferred: false,
+    },
   ]
   const summaryVehicleIssues = [
-    { vehicleIssueId: 'VI-1', issueDate: '2026-08-16', repairCost: 200 },
+    { issueId: 'VI-1', issueDate: '2026-08-16', repairCost: 200 },
   ]
-  const ready = (data) => ({ status: 'ready', data })
+  const ready = (data) => ({ status: 'ready', data, stale: false })
+  const summaryLaborWindow = {
+    monthly: [{
+      month: '2026-08', status: 'ready', stale: false, salaryTotal: 0,
+      projectLaborTotal: 0, projectLaborById: {}, source: 'formal', pendingCount: 0,
+    }],
+    projectLaborLifetimeById: {}, lifetimeStatus: 'ready', lifetimeStale: false,
+    incompleteMonths: [], staleMonths: [],
+  }
   const html = renderToStaticMarkup(createElement(appLoaded.module.MonthlySummarySection, {
     access: {
       salary: true,
@@ -993,29 +1016,19 @@ test('monthly summary executes cross-month purchase accounting without adding pa
       purchasePayments: true,
     },
     vehicleAccess: true,
-    salaryRecords: [],
-    employees: [],
-    laborRecords: [],
-    projectCostRecords: summaryProjectCosts,
-    operatingExpenseRecords: summaryOperatingExpenses,
-    purchaseRecords: summaryPurchases,
-    purchasePaymentRecords: summaryPayments,
-    purchasePaymentState: ready(summaryPayments),
-    fuelRecords: summaryFuel,
-    vehicleExpenseRecords: summaryVehicleExpenses,
-    vehicleIssueRecords: summaryVehicleIssues,
     sourceStates: {
-      salary: ready([]),
-      projectCost: ready(summaryProjectCosts),
-      operatingExpense: ready(summaryOperatingExpenses),
+      projects: ready([]),
+      laborWindow: ready(summaryLaborWindow),
+      projectCosts: ready(summaryProjectCosts),
+      operatingExpenses: ready(summaryOperatingExpenses),
       purchaseAccrual: ready(summaryPurchases),
+      purchasePayments: ready(summaryPayments),
       fuel: ready(summaryFuel),
-      vehicleExpense: ready(summaryVehicleExpenses),
-      vehicleIssue: ready(summaryVehicleIssues),
+      vehicleExpenses: ready(summaryVehicleExpenses),
+      vehicleIssues: ready(summaryVehicleIssues),
     },
     monthFilter: '2026-08',
     onMonthFilterChange: () => {},
-    laborBridge: null,
   }))
 
   assert.match(html, /<strong>¥5,000<\/strong><span>本月采购确认成本<\/span>/u)
@@ -1023,7 +1036,9 @@ test('monthly summary executes cross-month purchase accounting without adding pa
   assert.match(html, /<strong>¥10,000<\/strong><span>当前采购应付余额<\/span>/u)
   assert.match(html, /<strong>¥0<\/strong><span>中国采购金额<\/span>/u)
   assert.match(html, /<strong>¥5,000<\/strong><span>Amazon 采购金额<\/span>/u)
-  assert.match(html, /<strong>¥12,000<\/strong><span>公司总成本<\/span>/u)
+  assert.match(html, /<strong>¥7,800<\/strong><span>公司总成本<\/span>/u)
+  assert.match(html, /待核算手工材料费/u)
+  assert.match(html, /待核算维修估算/u)
 })
 
 test('App wires the purchase accounting tab and payment ledger through monthly summary', () => {
@@ -1060,27 +1075,35 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
   )
   assert.match(
     accountingPage,
-    /<MonthlySummarySection[\s\S]*?purchasePaymentRecords=\{purchasePaymentRecords\}/u,
+    /<MonthlySummarySection[\s\S]*?sourceStates=\{sourceStates\}/u,
+  )
+  assert.doesNotMatch(
+    sliceBetween(accountingPage, '<MonthlySummarySection', '/>'),
+    /projects=\{projects\}/u,
   )
   assert.match(
     monthlySummary,
-    /buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords:\s*purchaseAccrualState\.data \|\| \[\],[\s\S]*?paymentRecords:\s*resolvedAccess\.purchasePayments \? purchasePaymentRecords : \[\],[\s\S]*?paymentState:[\s\S]*?month:\s*monthFilter/u,
+    /const purchaseAccounting = purchaseAccrualState\.status === 'ready'[\s\S]*?\? buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords:\s*purchaseAccrualState\.data,[\s\S]*?paymentRecords:\s*purchasePaymentState\.data \|\| \[\],[\s\S]*?paymentState:\s*purchasePaymentState[\s\S]*?month:\s*monthFilter[\s\S]*?: null/u,
   )
   assert.match(
     monthlySummary,
-    /const monthlyPurchases = purchaseAccounting\.rows\.filter/u,
+    /const purchasePaymentVisible = purchaseAccrualState\.status === 'ready' &&[\s\S]*?purchasePaymentState\.status === 'ready'/u,
   )
   assert.match(
     monthlySummary,
-    /const totalPurchaseCost = purchaseAccounting\.summary\.monthPurchaseCost/u,
+    /const monthlyPurchases = purchaseAccounting[\s\S]*?\? purchaseAccounting\.rows\.filter/u,
   )
   assert.match(
     monthlySummary,
-    /const unpaidPurchaseCost = purchaseAccounting\.summary\.currentOutstanding/u,
+    /const totalPurchaseCost = purchaseAccounting\?\.summary\.monthPurchaseCost/u,
   )
   assert.match(
     monthlySummary,
-    /const monthPaymentCash = purchaseAccounting\.summary\.monthPaymentCash/u,
+    /const unpaidPurchaseCost = purchaseAccounting\?\.summary\.currentOutstanding/u,
+  )
+  assert.match(
+    monthlySummary,
+    /const monthPaymentCash = purchaseAccounting\?\.summary\.monthPaymentCash/u,
   )
   assert.doesNotMatch(monthlySummary, /record\.paidAmount|const paidPurchaseCost/u)
   assert.match(monthlySummary, /采购确认成本/u)
@@ -1090,9 +1113,9 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
     /采购成本已由采购管理自动归集[^。]*不得重复手工录入/u,
   )
 
-  const totalCostCalculation = sliceBetween(monthlySummary, 'const totalCost =', '\n\n  return (')
-  assert.equal((totalCostCalculation.match(/totalPurchaseCost/gu) || []).length, 1)
-  assert.doesNotMatch(totalCostCalculation, /monthPaymentCash/u)
+  assert.equal((monthlySummary.match(/buildCostAccountingReadModel\(/gu) || []).length, 1)
+  assert.match(monthlySummary, /costModel\.companyMonthlyTotal/u)
+  assert.doesNotMatch(monthlySummary, /companyMonthlyTotal[\s\S]*?monthPaymentCash\s*\+/u)
 })
 
 test('owner dashboard executes shared purchase rows for cross-month cash, payable, and project profit', async () => {
@@ -1116,21 +1139,6 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       openingPaidAmount: 0,
       paidAmount: 9999,
       unpaidAmount: 1,
-      purchaseStatus: '正常',
-    }),
-    appLoaded.module.normalizePurchaseRecord({
-      purchaseId: 'PO-DASH',
-      purchaseDate: `${DASHBOARD_PRIOR_MONTH}-11`,
-      projectId: 'P-DASH',
-      projectName: '不应重复计费',
-      purchaseSource: '中国采购',
-      purchaseType: '材料',
-      itemName: '重复采购',
-      quantity: 1,
-      unitPrice: 50000,
-      currency: 'JPY',
-      totalCost: 50000,
-      openingPaidAmount: 0,
       purchaseStatus: '正常',
     }),
   ]
@@ -1159,6 +1167,9 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
         paymentId: 'PP-DASH',
         purchaseId: 'PO-DASH',
         paymentDate: `${DASHBOARD_CURRENT_MONTH}-08`,
+        paymentDateSource: 'recorded',
+        paymentDateLegacyInferred: false,
+        paymentMethod: '银行转账',
         jpyAmount: 3000,
       },
       {
@@ -1193,89 +1204,64 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
   }
   const dashboardSources = {
     projects: ready(source.projects),
-    contractRevenue: ready({ changes: [], plans: [], receipts: [] }),
-    employees: ready(source.employees),
-    salary: ready([]),
-    projectCost: ready([]),
-    operatingExpense: ready([]),
+    contractRevenue: ready(source.projects),
+    receipts: ready([]),
+    laborWindow: ready({
+      monthly: [
+        '2025-09', '2025-10', '2025-11', '2025-12', '2026-01', '2026-02',
+        '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08',
+      ].map((month) => ({
+        month, status: 'ready', stale: false, salaryTotal: 0,
+        projectLaborTotal: 0, projectLaborById: { 'P-DASH': 0 },
+        source: 'formal', pendingCount: 0,
+      })),
+      projectLaborLifetimeById: { 'P-DASH': 0 }, lifetimeStatus: 'ready',
+      lifetimeStale: false, incompleteMonths: [], staleMonths: [],
+    }),
     purchaseAccrual: ready(source.purchaseRecords),
     purchasePayments: ready(source.purchasePaymentRecords),
-    stockIn: ready([]),
-    inventory: ready(source.inventoryItems),
-    laborRecords: ready(source.laborRecords),
-    labor: ready(null),
-    laborAlert: ready(0),
+    projectCosts: ready([]),
+    operatingExpenses: ready([]),
     vehicles: ready([]),
     vehicleUsage: ready(source.vehicleUsageRecords),
     fuel: ready([]),
-    vehicleExpense: ready([]),
-    vehicleIssue: ready([]),
-    tools: ready([]),
-    toolBorrow: ready([]),
-    toolReturn: ready([]),
-    lifelongTools: ready(source.lifelongToolAssignments),
-    toolResponsibility: ready(source.toolResponsibilityRecords),
-    stockOut: ready([]),
-    stockReturn: ready([]),
+    vehicleExpenses: ready([]),
+    vehicleIssues: ready([]),
+    attendance: ready(source.laborRecords),
+    inventoryItems: ready(source.inventoryItems),
+    stockInRecords: ready([]),
+    stockOutRecords: ready([]),
+    stockReturnRecords: ready([]),
+    toolRecords: ready([]),
+    toolBorrowRecords: ready([]),
+    toolReturnRecords: ready([]),
+    lifelongToolAssignments: ready(source.lifelongToolAssignments),
+    toolResponsibilityRecords: ready(source.toolResponsibilityRecords),
   }
 
   const html = renderToStaticMarkup(createElement(appLoaded.module.DashboardPage, {
-    access: dashboardAccess,
-    sourceStates: dashboardSources,
-    projects: source.projects,
-    employees: source.employees,
-    records: {
-      stockOut: [],
-      stockReturn: [],
-      labor: source.laborRecords,
-      toolBorrow: [],
-      toolReturn: [],
+    asOfDate: '2026-08-15',
+    selectedMonth: DASHBOARD_CURRENT_MONTH,
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
     },
-    projectCostRecords: [],
-    purchaseRecords: source.purchaseRecords,
-    purchasePaymentRecords: source.purchasePaymentRecords,
-    stockInRecords: [],
-    inventoryItems: source.inventoryItems,
-    salaryRecords: [],
-    vehicles: [],
-    vehicleUsageRecords: source.vehicleUsageRecords,
-    fuelRecords: [],
-    vehicleExpenseRecords: [],
-    vehicleIssueRecords: [],
-    toolRecords: [],
-    toolBorrowRecords: [],
-    toolReturnRecords: [],
-    lifelongToolAssignments: source.lifelongToolAssignments,
-    toolResponsibilityRecords: source.toolResponsibilityRecords,
-    laborBridge: null,
-    bridgeStatusNotice: null,
-    laborAlertCount: 0,
-    onBack: () => {},
+    access: dashboardAccess,
+    sources: dashboardSources,
+    viewerName: '采购会计',
+    onFiltersChange: () => {},
+    onNavigate: () => {},
   }))
 
-  assert.match(html, /<strong>¥0<\/strong><span>本月采购总额<\/span>/u)
-  assert.match(html, /<strong>¥3,000<\/strong><span>本月实际付款<\/span>/u)
-  assert.match(html, /<strong>¥7,000<\/strong><span>当前采购应付余额<\/span>/u)
-  assert.match(html, /<strong>2<\/strong><span>采购数据异常数量<\/span>/u)
-  assert.match(html, /<strong>¥10,000<\/strong><span>项目成本合计<\/span>/u)
-  assert.match(html, /<strong>¥90,000<\/strong><span>预估毛利润<\/span>/u)
-  assert.match(html, /<th>项目已付采购金额<\/th>/u)
-  assert.match(html, /<th>项目未付采购金额<\/th>/u)
-
-  const projectRow = html.match(/<tr><td>跨月付款项目<\/td>[\s\S]*?<\/tr>/u)?.[0]
-  assert.ok(projectRow, 'expected the dashboard project detail row')
-  assert.match(
-    projectRow,
-    /payment-badge 部分付款[^>]*>部分付款<\/span><\/td><td>¥10,000<\/td>/u,
-  )
-  assert.match(
-    projectRow,
-    /<td>¥10,000<\/td><td>¥10,000<\/td><td>¥0<\/td><td>¥3,000<\/td><td>¥7,000<\/td>/u,
-  )
-  assert.match(projectRow, /<td>¥90,000<\/td><td>90%<\/td><\/tr>$/u)
+  assert.match(html, /所选月成本合计/u)
+  assert.match(html, /¥0/u)
+  assert.match(html, /¥3,000/u)
+  assert.match(html, /¥7,000/u)
+  assert.match(html, /¥10,000/u)
+  assert.match(html, /¥90,000/u)
+  assert.match(html, /项目经营明细/u)
 })
 
-test('AuthenticatedApp wires one shared purchase accounting model into the owner dashboard', () => {
+test('AuthenticatedApp wires separate purchase accrual and payment states into the owner dashboard', () => {
   const authenticatedApp = sliceBetween(
     appSource,
     'function AuthenticatedApp',
@@ -1289,23 +1275,19 @@ test('AuthenticatedApp wires one shared purchase accounting model into the owner
   const dashboardOpeningTag = authenticatedApp.match(/<DashboardPage\b[\s\S]*?\/>/u)?.[0]
 
   assert.ok(dashboardOpeningTag, 'expected one DashboardPage opening tag')
-  assert.match(dashboardOpeningTag, /\bpurchaseRecords=\{purchaseRecords\}/u)
-  assert.match(
-    dashboardOpeningTag,
-    /\bpurchasePaymentRecords=\{purchasePaymentRecords\}/u,
-  )
+  assert.match(dashboardOpeningTag, /\bsources=\{dashboardSourceStates\}/u)
+  assert.match(dashboardOpeningTag, /\bselectedMonth=\{dashboardQuery\.selectedMonth\}/u)
   assert.equal(
-    (dashboardPage.match(/buildPurchaseAccountingReadModel\(/gu) || []).length,
+    (dashboardPage.match(/buildExecutiveDashboardReadModel\(/gu) || []).length,
     1,
   )
-  assert.match(dashboardPage, /const currentMonth = currentMonthValue\(\)/u)
   assert.match(
-    dashboardPage,
-    /paymentRecords:\s*purchasePaymentRecords[\s\S]*?paymentState:\s*sourceStates\?\.purchasePayments[\s\S]*?month:\s*currentMonth[\s\S]*?\[purchaseRecords, purchasePaymentRecords, sourceStates\?\.purchasePayments, currentMonth\]/u,
+    authenticatedApp,
+    /purchaseAccrual:\s*projectPersistentSource\(purchaseRawState,[\s\S]*?data:\s*purchaseRecords/u,
   )
-  assert.match(dashboardPage, /purchaseAccounting\.summary\.monthPaymentCash/u)
-  assert.match(dashboardPage, /purchaseAccounting\.summary\.currentOutstanding/u)
-  assert.match(dashboardPage, /purchaseAccounting\.rows\.filter/u)
-  assert.match(dashboardPage, /row\.paidAmount/u)
-  assert.match(dashboardPage, /row\.unpaidAmount/u)
+  assert.match(
+    authenticatedApp,
+    /purchasePayments:\s*projectPersistentSource\(purchasePaymentRawState,[\s\S]*?data:\s*purchasePaymentRecords/u,
+  )
+  assert.doesNotMatch(dashboardPage, /purchaseRecords|purchasePaymentRecords|currentMonthValue/u)
 })

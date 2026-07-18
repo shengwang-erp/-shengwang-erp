@@ -31,7 +31,14 @@ test('read-only revenue models reach display pages while Home gets only its auth
     appSource,
     /<ProjectPage\s+projects=\{projects\}\s+projectRevenueSnapshots=\{projectRevenueSnapshots\}/,
   )
-  assert.match(appSource, /<DashboardPage\s+projects=\{projectRevenueProjects\}/)
+  assert.match(
+    appSource,
+    /contractRevenue:\s*projectPromiseSource\(contractRevenueRawState,[\s\S]*?data:\s*projectRevenueProjects/u,
+  )
+  assert.match(
+    appSource,
+    /receipts:\s*projectPromiseSource\(contractRevenueRawState,[\s\S]*?data:\s*projectReceipts/u,
+  )
   assert.match(appSource, /projects:\s*projectRevenueProjects/)
   assert.match(appSource, /<HomePage\s+summary=\{homeSummary\}/)
   assert.doesNotMatch(appSource, /<HomePage\s+projects=/)
@@ -45,11 +52,18 @@ test('read-only revenue models reach display pages while Home gets only its auth
   assert.match(appSource, /sanitizeProjectForPersistence\(normalizedProject\)/)
 })
 
-test('App profit paths use the tax-exclusive anchor instead of compatibility contractAmount', () => {
-  assert.match(appSource, /getProfitAnchorTaxExclusiveAmount\(project\)/)
-  assert.match(appSource, /totalProfitAnchorTaxExclusiveAmount/)
+test('App delegates dashboard profit to the tax-exclusive domain without local revenue arithmetic', () => {
+  assert.match(
+    appSource,
+    /import \{ buildExecutiveDashboardReadModel \} from '.\/features\/executive-dashboard\/executiveDashboardDomain\.js'/u,
+  )
+  const start = appSource.indexOf('function DashboardPage({')
+  const end = appSource.indexOf('\nfunction PageShell', start)
+  const dashboard = appSource.slice(start, end)
+  assert.match(dashboard, /buildExecutiveDashboardReadModel\(\{/u)
+  assert.doesNotMatch(dashboard, /adjustedTaxInclusiveAmount|contractAmount|getProfitAnchorTaxExclusiveAmount/u)
   assert.doesNotMatch(
     appSource,
-    /const estimatedGrossProfit\s*=\s*toAmount\(project\.contractAmount\)/,
+    /adjustedTaxInclusiveAmount\s*-|const estimatedGrossProfit\s*=\s*toAmount\(project\.contractAmount\)/,
   )
 })

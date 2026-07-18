@@ -106,9 +106,9 @@ function anomalyText(group) {
 
 export default function PurchaseAccountingSection({
   projects = [],
-  purchaseRecords = [],
   purchasePaymentRecords = [],
   paymentState,
+  accrualState,
   monthFilter = '',
   onMonthFilterChange = () => {},
 }) {
@@ -116,16 +116,20 @@ export default function PurchaseAccountingSection({
   const [sourceFilter, setSourceFilter] = useState('')
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('')
 
+  const effectiveAccrualState = failClosedPaymentState(accrualState)
   const effectivePaymentState = failClosedPaymentState(paymentState)
+  const accrualReady = effectiveAccrualState?.status === 'ready' &&
+    Array.isArray(effectiveAccrualState.data)
+  const effectivePurchaseRecords = accrualReady ? effectiveAccrualState.data : []
   const readModel = useMemo(() => buildPurchaseAccountingReadModel({
-    purchaseRecords,
+    purchaseRecords: effectivePurchaseRecords,
     paymentRecords: purchasePaymentRecords,
     paymentState: effectivePaymentState,
     month: monthFilter,
     projectId: projectFilter,
     source: sourceFilter,
   }), [
-    purchaseRecords,
+    effectivePurchaseRecords,
     purchasePaymentRecords,
     effectivePaymentState,
     monthFilter,
@@ -140,8 +144,8 @@ export default function PurchaseAccountingSection({
   }), [readModel.rows, paymentStatusFilter, paymentVisible])
 
   const availableProjects = useMemo(
-    () => projectOptions(projects, purchaseRecords),
-    [projects, purchaseRecords],
+    () => projectOptions(projects, effectivePurchaseRecords),
+    [projects, effectivePurchaseRecords],
   )
   const anomalyGroups = useMemo(
     () => groupAnomalies(readModel.anomalies),
@@ -150,6 +154,23 @@ export default function PurchaseAccountingSection({
   const paymentAnomalyCount = readModel.anomalies.filter(
     (anomaly) => PAYMENT_ANOMALY_CODES.has(anomaly.code),
   ).length
+
+  if (!accrualReady) {
+    const notice = effectiveAccrualState?.status === 'forbidden'
+      ? '采购成本数据当前不可见'
+      : effectiveAccrualState?.status === 'error'
+        ? '采购成本数据暂不可用'
+        : '采购成本数据正在加载'
+    return (
+      <section aria-labelledby="purchase-accounting-title">
+        <div className="subsection-title">
+          <h2 id="purchase-accounting-title">采购对账</h2>
+          <span>{monthFilter}</span>
+        </div>
+        <div className="empty-state cost-note" role="status">{notice}</div>
+      </section>
+    )
+  }
 
   return (
     <section aria-labelledby="purchase-accounting-title">

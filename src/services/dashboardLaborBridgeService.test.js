@@ -170,6 +170,38 @@ test('a failed uncached month is incomplete instead of zero', async () => {
   assert.equal(Object.hasOwn(state.data, '2026-01'), false)
 })
 
+test('twelve-month window plus snapshot surfaces concurrent auth invalidation once and writes no cache', async () => {
+  const cache = new Map()
+  let requests = 0
+  let logoutCalls = 0
+  const loader = createDashboardLaborBridgeLoader({
+    cache,
+    getBridgeSummary: async () => {
+      requests += 1
+      const error = new Error('session expired')
+      error.authInvalid = true
+      throw error
+    },
+  })
+
+  await loader.load({
+    actorScope: 'tenant-1:E-1',
+    endMonth: '2026-06',
+    length: 12,
+    snapshotMonth: '2026-07',
+  }).catch((error) => {
+    if (error?.authInvalid === true) logoutCalls += 1
+    throw error
+  }).then(
+    () => assert.fail('auth invalidation must reject the whole bridge load'),
+    (error) => assert.equal(error?.authInvalid, true),
+  )
+
+  assert.equal(logoutCalls, 1)
+  assert.ok(requests >= 1 && requests <= 13)
+  assert.equal(cache.size, 0)
+})
+
 test('a current snapshot failure never poisons a complete historical window', async () => {
   const loader = createDashboardLaborBridgeLoader({
     getBridgeSummary: async ({ month }) => {

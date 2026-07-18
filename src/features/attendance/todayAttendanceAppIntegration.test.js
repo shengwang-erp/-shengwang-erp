@@ -58,10 +58,11 @@ function propertyValues(source, propertyName) {
     .map((match) => match[1])
 }
 
-const [appSource, shellSource, authSource] = await Promise.all([
+const [appSource, shellSource, authSource, dashboardDomainSource] = await Promise.all([
   read('../../App.jsx'),
   read('../../DesktopAdminShell.jsx'),
   read('../../auth/AuthGate.jsx'),
+  read('../executive-dashboard/executiveDashboardDomain.js'),
 ])
 
 const authenticatedApp = sliceBetween(
@@ -221,7 +222,7 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   )
 })
 
-test('toolBorrow still owns every internal return interface, record path, and dashboard statistic', () => {
+test('toolBorrow owns return workflows while the dashboard consumes the standard return source', () => {
   const storageKeys = sliceBetween(
     appSource,
     'const STORAGE_KEYS = {',
@@ -248,12 +249,12 @@ test('toolBorrow still owns every internal return interface, record path, and da
     "{section === 'returns' && (",
     "\n      {section === 'lifelong' && (",
   )
-  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
-  const toolDashboard = sliceBetween(
-    appSource,
-    'function ToolDashboardDetail',
-    '\nfunction DashboardPage',
+  const dashboardSources = sliceBetween(
+    authenticatedApp,
+    'const dashboardSourceStates = {',
+    '\n  const handleDashboardNavigate',
   )
+  const dashboard = sliceBetween(appSource, 'function DashboardPage', '\nfunction PageShell')
 
   assert.match(storageKeys, /toolReturnRecords:\s*'erp\.toolReturnRecords'/u)
   assert.match(toolBusinessConfigs, /toolReturn:\s*\{/u)
@@ -277,8 +278,12 @@ test('toolBorrow still owns every internal return interface, record path, and da
   assert.match(returnsBranch, /records=\{toolReturnRecords\}/u)
   assert.match(returnsBranch, /setRecords=\{setToolReturnRecords\}/u)
 
-  assert.match(dashboard, /toolReturnRecords/u)
-  assert.match(dashboard, /records\.toolReturn/u)
-  assert.match(toolDashboard, /toolReturnRecords/u)
-  assert.match(toolDashboard, /returnedIds/u)
+  assert.match(
+    dashboardSources,
+    /toolReturnRecords:\s*projectPersistentSource\(toolReturnRawState,[\s\S]*?data:\s*toolReturnRecords/u,
+  )
+  assert.match(dashboard, /buildExecutiveDashboardReadModel\(\{[\s\S]*?sources,/u)
+  assert.match(dashboard, /<ExecutiveDashboardPage[\s\S]*?model=\{model\}/u)
+  assert.match(dashboardDomainSource, /'toolReturnRecords'/u)
+  assert.match(dashboardDomainSource, /states\.toolReturnRecords\.data/u)
 })
