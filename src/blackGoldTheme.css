@@ -280,6 +280,11 @@
   font-family: var(--erp-font-numeric);
 }
 
+.erp-black-gold .module-count {
+  border: 1px solid var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
 .erp-black-gold .module-section {
   color: var(--erp-text-primary);
   background: transparent;
@@ -329,7 +334,9 @@
 }
 
 .erp-black-gold .module-action {
-  border-color: var(--erp-border-subtle);
+  border: 1px solid var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
 }
 
 .erp-black-gold .page-header {
@@ -362,6 +369,42 @@
 .erp-black-gold .section-heading,
 .erp-black-gold .labor-section-heading {
   border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .project-page .project-form-heading {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .project-page .project-form-heading span {
+  color: var(--erp-accent-gold);
+}
+
+.erp-black-gold .project-page .project-form-heading strong,
+.erp-black-gold .project-page .project-location-form-title strong {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .project-page .project-form-heading small,
+.erp-black-gold .project-page .project-location-form-title span,
+.erp-black-gold .project-page .project-radius-field p {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .project-page .project-location-form-section {
+  border: 1px solid var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .project-page .project-form-error {
+  border-color: var(--erp-status-danger);
+  color: var(--erp-status-danger);
+  background: var(--erp-status-danger-surface);
+}
+
+.erp-black-gold .project-page .project-directory-error {
+  border-color: var(--erp-status-warning);
+  color: var(--erp-status-warning);
+  background: var(--erp-status-warning-surface);
 }
 
 .erp-black-gold .field,
@@ -560,6 +603,28 @@
 }
 
 .erp-black-gold tbody tr:hover {
+  background: var(--erp-bg-hover);
+}
+
+.erp-black-gold .payment-table thead,
+.erp-black-gold .payment-table tbody,
+.erp-black-gold .payment-table tbody tr {
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .payment-table th {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-accent-gold);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .payment-table td {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .payment-table tbody tr:hover td {
   background: var(--erp-bg-hover);
 }
 
@@ -768,6 +833,21 @@
     overscroll-behavior-inline: contain;
   }
 
+  .erp-black-gold .payment-table tbody tr {
+    border: 1px solid var(--erp-border-subtle);
+    background: var(--erp-bg-surface);
+    box-shadow: var(--erp-shadow-card);
+  }
+
+  .erp-black-gold .payment-table td {
+    border-bottom-color: var(--erp-border-subtle);
+    background: var(--erp-bg-surface);
+  }
+
+  .erp-black-gold .payment-table tbody tr:hover td {
+    background: var(--erp-bg-hover);
+  }
+
   .erp-black-gold .mobile-bottom-navigation {
     position: fixed;
     z-index: 1200;
@@ -842,13 +922,15 @@
 
   .erp-black-gold .desktop-admin-menu {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
+    margin-top: 0;
     padding: 10px 14px;
-    overflow-x: auto;
+    overflow: visible;
   }
 
   .erp-black-gold .desktop-admin-menu-item {
-    flex: 0 0 auto;
+    flex: 1 1 156px;
     min-height: 40px;
   }
 
@@ -862,7 +944,11 @@
     position: static !important;
     inset: auto !important;
     display: flex !important;
+    flex-wrap: wrap;
     width: auto !important;
+    height: auto;
+    min-height: 62px;
+    padding: 10px 16px;
   }
 
   .erp-black-gold .desktop-admin-content {

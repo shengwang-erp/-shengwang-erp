@@ -11,6 +11,22 @@ const [themeSource, mainSource, appSource, shellSource, executiveDashboardStyles
   readFile(new URL('./features/executive-dashboard/executiveDashboard.css', import.meta.url), 'utf8'),
 ])
 
+const themeRoot = postcss.parse(themeSource, { from: 'blackGoldTheme.css' })
+
+function declarationsFor(selector, media = null) {
+  const declarations = new Map()
+  themeRoot.walkRules((rule) => {
+    const parentMedia = rule.parent?.type === 'atrule' && rule.parent.name === 'media'
+      ? rule.parent.params.replace(/\s+/gu, ' ').trim()
+      : null
+    if (parentMedia !== media || !rule.selectors.includes(selector)) return
+    for (const node of rule.nodes) {
+      if (node.type === 'decl') declarations.set(node.prop, node.value)
+    }
+  })
+  return declarations
+}
+
 test('black-gold theme loads after legacy styles and defines the exact palette tokens', () => {
   const legacyIndex = mainSource.indexOf("import './styles.css'")
   const themeIndex = mainSource.indexOf("import './blackGoldTheme.css'")
@@ -118,6 +134,81 @@ test('theme covers shell, business surfaces, exact responsive tiers, and reduced
   assert.match(compactDesktop, /\.erp-black-gold \.desktop-admin-workspace\s*\{[^}]*display:\s*block\s*!important[^}]*margin-left:\s*0\s*!important/u)
   assert.match(compactDesktop, /\.erp-black-gold \.desktop-admin-topbar\s*\{[^}]*position:\s*static\s*!important[^}]*display:\s*flex\s*!important/u)
   assert.match(compactDesktop, /\.erp-black-gold \.desktop-admin-content\s*\{[^}]*display:\s*block\s*!important[^}]*padding-top:\s*0\s*!important/u)
+})
+
+test('black-gold overrides legacy light module, purchase table, and project form surfaces', () => {
+  const moduleCount = declarationsFor('.erp-black-gold .module-count')
+  assert.equal(moduleCount.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(moduleCount.get('border'), '1px solid var(--erp-border-subtle)')
+
+  const moduleAction = declarationsFor('.erp-black-gold .module-action')
+  assert.equal(moduleAction.get('color'), 'var(--erp-accent-gold-soft)')
+  assert.equal(moduleAction.get('background'), 'var(--erp-accent-gold-surface)')
+  assert.equal(moduleAction.get('border'), '1px solid var(--erp-border-gold-muted)')
+
+  const paymentHeader = declarationsFor('.erp-black-gold .payment-table th')
+  const paymentCell = declarationsFor('.erp-black-gold .payment-table td')
+  const paymentRow = declarationsFor('.erp-black-gold .payment-table tbody tr')
+  const paymentHover = declarationsFor('.erp-black-gold .payment-table tbody tr:hover td')
+  assert.equal(paymentHeader.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(paymentCell.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(paymentRow.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(paymentHover.get('background'), 'var(--erp-bg-hover)')
+
+  const mobileMedia = '(max-width: 767px)'
+  const mobilePaymentRow = declarationsFor(
+    '.erp-black-gold .payment-table tbody tr',
+    mobileMedia,
+  )
+  const mobilePaymentCell = declarationsFor('.erp-black-gold .payment-table td', mobileMedia)
+  const mobilePaymentHover = declarationsFor(
+    '.erp-black-gold .payment-table tbody tr:hover td',
+    mobileMedia,
+  )
+  assert.equal(mobilePaymentRow.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(mobilePaymentRow.get('border'), '1px solid var(--erp-border-subtle)')
+  assert.equal(mobilePaymentCell.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(mobilePaymentHover.get('background'), 'var(--erp-bg-hover)')
+
+  const projectHeadingStrong = declarationsFor(
+    '.erp-black-gold .project-page .project-form-heading strong',
+  )
+  const projectHeadingSmall = declarationsFor(
+    '.erp-black-gold .project-page .project-form-heading small',
+  )
+  const locationSection = declarationsFor(
+    '.erp-black-gold .project-page .project-location-form-section',
+  )
+  const locationTitle = declarationsFor(
+    '.erp-black-gold .project-page .project-location-form-title strong',
+  )
+  const radiusHelp = declarationsFor(
+    '.erp-black-gold .project-page .project-radius-field p',
+  )
+  assert.equal(projectHeadingStrong.get('color'), 'var(--erp-text-primary)')
+  assert.equal(projectHeadingSmall.get('color'), 'var(--erp-text-muted)')
+  assert.equal(locationSection.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(locationSection.get('border'), '1px solid var(--erp-border-subtle)')
+  assert.equal(locationTitle.get('color'), 'var(--erp-text-primary)')
+  assert.equal(radiusHelp.get('color'), 'var(--erp-text-muted)')
+})
+
+test('compact desktop resets legacy desktop geometry and wraps the menu at every 768-1023 width', () => {
+  const media = '(min-width: 768px) and (max-width: 1023px)'
+  const menu = declarationsFor('.erp-black-gold .desktop-admin-menu', media)
+  const menuItem = declarationsFor('.erp-black-gold .desktop-admin-menu-item', media)
+  const topbar = declarationsFor('.erp-black-gold .desktop-admin-topbar', media)
+
+  assert.equal(menu.get('display'), 'flex')
+  assert.equal(menu.get('flex-wrap'), 'wrap')
+  assert.equal(menu.get('margin-top'), '0')
+  assert.equal(menu.get('overflow'), 'visible')
+  assert.equal(menu.has('overflow-x'), false)
+  assert.equal(menuItem.get('flex'), '1 1 156px')
+  assert.equal(topbar.get('flex-wrap'), 'wrap')
+  assert.equal(topbar.get('height'), 'auto')
+  assert.equal(topbar.get('min-height'), '62px')
+  assert.equal(topbar.get('padding'), '10px 16px')
 })
 
 test('Home and mobile surfaces consume shared route and access sources', () => {

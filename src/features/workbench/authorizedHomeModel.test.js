@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createServer } from 'vite'
 
 import { getVisibleAdminRoutes } from '../../auth/businessAccess.js'
 import {
+  buildUnavailableHomeFinancialState,
   buildAuthorizedHomeModel,
   getAuthorizedHomeSummary,
 } from './authorizedHomeModel.js'
@@ -23,6 +25,33 @@ const activeUser = (effectivePermissionKeys = [], overrides = {}) => ({
 const ready = (data, overrides = {}) => ({
   status: 'ready', data, stale: false, message: '', ...overrides,
 })
+
+async function loadAppModule() {
+  const server = await createServer({
+    root: process.cwd(),
+    logLevel: 'silent',
+    appType: 'custom',
+    plugins: [{
+      name: 'home-financial-leaflet-ssr-stub',
+      enforce: 'pre',
+      resolveId(source) {
+        return source === 'leaflet' ? '\0home-financial-leaflet-ssr-stub' : null
+      },
+      load(id) {
+        return id === '\0home-financial-leaflet-ssr-stub'
+          ? 'export default { icon: () => ({}) }'
+          : null
+      },
+    }],
+    ssr: { noExternal: ['leaflet'] },
+    server: { middlewareMode: true },
+  })
+  try {
+    return await server.ssrLoadModule('/src/App.jsx')
+  } finally {
+    await server.close()
+  }
+}
 
 test('ordinary Home never reads or aggregates hidden business source states', () => {
   let hiddenReads = 0
@@ -87,6 +116,95 @@ test('finance Home exposes only ready authorized accounting and purchase project
   assert.equal(JSON.stringify(model).includes('999'), false)
   assert.equal(byView.has('projects'), false)
   assert.equal(byView.has('employees'), false)
+})
+
+test('stale finance inputs reach Home as ready-stale without an amount or zero fallback', () => {
+  const user = activeUser([
+    'module.accounting.view',
+    'module.salaries.view',
+    'module.project_costs.view',
+    'module.operating_expenses.view',
+    'module.purchases.view',
+    'module.vehicles.view',
+    'sensitive.salary_view',
+  ], {
+    name: '财务员工', department: '会计', position: '会计',
+  })
+  const staleCost = buildUnavailableHomeFinancialState([
+    ready([], { stale: true }),
+    ready([]),
+  ])
+  const stalePurchase = buildUnavailableHomeFinancialState([
+    ready([{ totalCost: 880000 }], { stale: true }),
+  ])
+
+  assert.deepEqual(staleCost, { status: 'ready', data: null, stale: true })
+  assert.deepEqual(stalePurchase, { status: 'ready', data: null, stale: true })
+
+  const model = buildAuthorizedHomeModel({
+    user,
+    routes: getVisibleAdminRoutes(user),
+    sourceStates: {
+      costSummary: staleCost,
+      purchaseSummary: stalePurchase,
+      vehicles: ready([]),
+    },
+  })
+  const byView = new Map(model.modules.map((item) => [item.view, item]))
+  assert.equal(byView.get('accounting').displayValue, '数据过期')
+  assert.equal(byView.get('purchase').displayValue, '数据过期')
+  assert.equal(byView.get('accounting').sourceStale, true)
+  assert.equal(byView.get('purchase').sourceStale, true)
+  assert.equal(model.summary.monthlyCostTotal, null)
+  assert.equal(model.summary.monthlyPurchaseTotal, null)
+  assert.equal(JSON.stringify(model).includes('880000'), false)
+})
+
+test('financial source failures keep fail-closed priority over a separate stale source', () => {
+  const stale = ready([], { stale: true })
+  assert.deepEqual(buildUnavailableHomeFinancialState([
+    stale,
+    { status: 'error', data: null, stale: false },
+  ]), { status: 'error', data: null, stale: false })
+  assert.deepEqual(buildUnavailableHomeFinancialState([
+    stale,
+    { status: 'loading', data: null, stale: false },
+  ]), { status: 'loading', data: null, stale: false })
+})
+
+test('App financial builder preserves stale cost and purchase inputs as amount-free Home states', async () => {
+  const { buildHomeFinancialModels } = await loadAppModule()
+  const owner = activeUser(['all'], {
+    employeeId: 'SUPER_ADMIN',
+    employeeNumber: 'SW-000',
+    name: '本地验收社长',
+    department: '总务部',
+    position: '社长',
+  })
+  const staleArray = ready([{ totalCost: 880000 }], { stale: true })
+  const staleObject = ready({ secretTotal: 990000 }, { stale: true })
+  const model = buildHomeFinancialModels({
+    currentUser: owner,
+    selectedMonth: '2026-07',
+    sourceStates: {
+      projects: staleArray,
+      laborWindow: staleObject,
+      purchaseAccrual: staleArray,
+      purchasePayments: staleArray,
+      projectCosts: staleArray,
+      operatingExpenses: staleArray,
+      fuel: staleArray,
+      vehicleExpenses: staleArray,
+      vehicleIssues: staleArray,
+    },
+  })
+
+  assert.deepEqual(model, {
+    cost: { status: 'ready', data: null, stale: true },
+    purchase: { status: 'ready', data: null, stale: true },
+  })
+  assert.equal(JSON.stringify(model).includes('880000'), false)
+  assert.equal(JSON.stringify(model).includes('990000'), false)
 })
 
 test('SW-000 Home derives counts from ready states and discloses stale or failed sources', () => {

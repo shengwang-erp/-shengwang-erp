@@ -26,14 +26,18 @@ async function loadComponent() {
     server: { middlewareMode: true },
   })
   try {
-    return await server.ssrLoadModule('/src/navigation/MobileBottomNavigation.jsx')
+    const [component, workbenchModel] = await Promise.all([
+      server.ssrLoadModule('/src/navigation/MobileBottomNavigation.jsx'),
+      server.ssrLoadModule('/src/features/workbench/workbenchModel.js'),
+    ])
+    return { component, workbenchModel }
   } finally {
     await server.close()
   }
 }
 
 test('mobile navigation renders the exact four centralized tabs and current page state', async () => {
-  const { default: MobileBottomNavigation } = await loadComponent()
+  const { component: { default: MobileBottomNavigation } } = await loadComponent()
   const html = renderToStaticMarkup(createElement(MobileBottomNavigation, {
     currentView: 'messages',
     currentUser: activeUser(),
@@ -54,7 +58,7 @@ test('mobile navigation renders the exact four centralized tabs and current page
 })
 
 test('a business route maps mobile current state to Workbench', async () => {
-  const { default: MobileBottomNavigation } = await loadComponent()
+  const { component: { default: MobileBottomNavigation } } = await loadComponent()
   const html = renderToStaticMarkup(createElement(MobileBottomNavigation, {
     currentView: 'todayAttendance',
     currentUser: activeUser(),
@@ -68,7 +72,7 @@ test('a business route maps mobile current state to Workbench', async () => {
 })
 
 test('an unknown route fails to Home while a canonical child stays in Workbench', async () => {
-  const { default: MobileBottomNavigation } = await loadComponent()
+  const { component: { default: MobileBottomNavigation } } = await loadComponent()
   const user = activeUser(['module.projects.view'], {
     department: '财务部',
     position: '会计',
@@ -90,15 +94,20 @@ test('an unknown route fails to Home while a canonical child stays in Workbench'
   }
 })
 
-test('mobile badge totals are recalculated only from routes the current user can access', async () => {
-  const { default: MobileBottomNavigation } = await loadComponent()
+test('mobile badge totals require a same-actor workbench projection', async () => {
+  const {
+    component: { default: MobileBottomNavigation },
+    workbenchModel: { buildWorkbenchItems },
+  } = await loadComponent()
+  const user = activeUser()
+  const workbenchItems = buildWorkbenchItems({
+    user,
+    counts: { todayAttendance: 2 },
+  })
   const html = renderToStaticMarkup(createElement(MobileBottomNavigation, {
     currentView: 'home',
-    currentUser: activeUser(),
-    workbenchItems: [
-      { view: 'projects', label: '工程项目', iconText: '项', badgeCount: 91 },
-      { view: 'todayAttendance', label: '今日打卡', iconText: '勤', badgeCount: 2 },
-    ],
+    currentUser: user,
+    workbenchItems,
     messages: [{
       id: 'private-project',
       severity: 'warning',
@@ -115,6 +124,41 @@ test('mobile badge totals are recalculated only from routes the current user can
   assert.match(html, /aria-label="工作台，2 条待处理"/u)
   assert.doesNotMatch(html, />91<|>88<|179 条待处理/u)
   assert.doesNotMatch(html, /aria-label="消息，/u)
+
+  const forgedHtml = renderToStaticMarkup(createElement(MobileBottomNavigation, {
+    currentView: 'home',
+    currentUser: user,
+    workbenchItems: [{ view: 'todayAttendance', badgeCount: 99 }],
+    messages: [],
+    onNavigate() {},
+  }))
+  assert.doesNotMatch(forgedHtml, /aria-label="工作台，|mobile-bottom-badge/u)
+
+  const crossActorHtml = renderToStaticMarkup(createElement(MobileBottomNavigation, {
+    currentView: 'home',
+    currentUser: activeUser([], { employeeId: 'E-OTHER', employeeNumber: 'SW-404' }),
+    workbenchItems,
+    messages: [],
+    onNavigate() {},
+  }))
+  assert.doesNotMatch(crossActorHtml, /aria-label="工作台，|mobile-bottom-badge/u)
+
+  const projectActor = activeUser(['module.projects.view'], {
+    employeeId: 'E-SAME-ACTOR',
+    employeeNumber: 'SW-501',
+  })
+  const projectItems = buildWorkbenchItems({
+    user: projectActor,
+    counts: { projects: 23 },
+  })
+  const downgradedHtml = renderToStaticMarkup(createElement(MobileBottomNavigation, {
+    currentView: 'home',
+    currentUser: { ...projectActor, effectivePermissionKeys: [] },
+    workbenchItems: projectItems,
+    messages: [],
+    onNavigate() {},
+  }))
+  assert.doesNotMatch(downgradedHtml, /aria-label="工作台，|>23<|mobile-bottom-badge/u)
 })
 
 test('mobile navigation consumes centralized route and access metadata', async () => {

@@ -6,11 +6,34 @@ import {
 import { getAdminRoute } from '../../navigation/adminRoutes.js'
 
 const authorizedMessageCollections = new WeakSet()
+const authorizedWorkbenchCollections = new WeakMap()
+const emptyWorkbenchProjection = Object.freeze([])
 
 function ownValue(value, key) {
   if (value === null || typeof value !== 'object') return undefined
   const descriptor = Object.getOwnPropertyDescriptor(value, key)
   return descriptor && 'value' in descriptor ? descriptor.value : undefined
+}
+
+function workbenchActorIdentity(user) {
+  try {
+    const employeeId = ownValue(user, 'employeeId')
+    const employeeNumber = ownValue(user, 'employeeNumber')
+    if (
+      typeof employeeId !== 'string' || employeeId.trim().length === 0 ||
+      typeof employeeNumber !== 'string' || employeeNumber.trim().length === 0
+    ) return null
+    const tenantId = ownValue(user, 'tenantId')
+    const authUserId = ownValue(user, 'id')
+    return JSON.stringify([
+      typeof tenantId === 'string' ? tenantId : '',
+      typeof authUserId === 'string' ? authUserId : '',
+      employeeId,
+      employeeNumber,
+    ])
+  } catch {
+    return null
+  }
 }
 
 function safeBadgeCount(value) {
@@ -19,7 +42,7 @@ function safeBadgeCount(value) {
 
 export function buildWorkbenchItems({ user, counts = {} } = {}) {
   const visibleRoutes = getVisibleAdminRoutes(user)
-  return Object.freeze(visibleRoutes
+  const projection = Object.freeze(visibleRoutes
     .filter((route) => route.view !== 'home')
     .map((route) => Object.freeze({
       view: route.view,
@@ -27,6 +50,61 @@ export function buildWorkbenchItems({ user, counts = {} } = {}) {
       iconText: route.iconText,
       badgeCount: safeBadgeCount(ownValue(counts, route.view)),
     })))
+  authorizedWorkbenchCollections.set(projection, workbenchActorIdentity(user))
+  return projection
+}
+
+export function projectAuthorizedWorkbenchItems(user, items) {
+  try {
+    const actorIdentity = workbenchActorIdentity(user)
+    if (
+      actorIdentity === null || !Array.isArray(items) ||
+      authorizedWorkbenchCollections.get(items) !== actorIdentity
+    ) {
+      return emptyWorkbenchProjection
+    }
+    const projection = []
+    for (const item of items) {
+      const route = getAdminRoute(ownValue(item, 'view'))
+      if (!route?.desktop || route.view === 'home' || !canAccessView(user, route.view)) continue
+      projection.push(Object.freeze({
+        route,
+        badgeCount: safeBadgeCount(ownValue(item, 'badgeCount')),
+      }))
+    }
+    return Object.freeze(projection)
+  } catch {
+    return emptyWorkbenchProjection
+  }
+}
+
+export function countAuthorizedWorkbenchBadges(user, items) {
+  return projectAuthorizedWorkbenchItems(user, items).reduce(
+    (total, item) => total + item.badgeCount,
+    0,
+  )
+}
+
+function validDashboardMonth(value) {
+  if (typeof value !== 'string' || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(value)) return false
+  const year = Number(value.slice(0, 4))
+  return year >= 1900 && year <= 2100
+}
+
+export function resolveDashboardBridgeMonth({
+  authorizedView,
+  dashboardSelectedMonth,
+  accountingMonth,
+  currentMonth,
+} = {}) {
+  const fallbackMonth = validDashboardMonth(currentMonth) ? currentMonth : ''
+  if (authorizedView === 'home') return fallbackMonth
+  if (authorizedView === 'accounting') {
+    return validDashboardMonth(accountingMonth) ? accountingMonth : fallbackMonth
+  }
+  return validDashboardMonth(dashboardSelectedMonth)
+    ? dashboardSelectedMonth
+    : fallbackMonth
 }
 
 function messageRows(alerts) {

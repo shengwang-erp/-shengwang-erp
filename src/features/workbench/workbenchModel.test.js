@@ -6,7 +6,13 @@ import test from 'node:test'
 import { createServer } from 'vite'
 
 import { getDashboardAccess } from '../../auth/businessAccess.js'
-import { buildAuthorizedMessages, buildWorkbenchItems } from './workbenchModel.js'
+import {
+  buildAuthorizedMessages,
+  buildWorkbenchItems,
+  countAuthorizedWorkbenchBadges,
+  projectAuthorizedWorkbenchItems,
+  resolveDashboardBridgeMonth,
+} from './workbenchModel.js'
 
 const activeUser = (effectivePermissionKeys = [], overrides = {}) => ({
   employeeId: 'E-WORK',
@@ -46,6 +52,7 @@ async function loadPages() {
       server.ssrLoadModule('/src/features/workbench/MobileWorkbenchPage.jsx'),
       server.ssrLoadModule('/src/features/workbench/MobileMessagesPage.jsx'),
       server.ssrLoadModule('/src/features/workbench/MobileProfilePage.jsx'),
+      server.ssrLoadModule('/src/features/workbench/workbenchModel.js'),
     ])
   } finally {
     await server.close()
@@ -62,7 +69,8 @@ test('workbench items use only real authorized routes and calculate badges after
     },
     inventory: 777,
   }
-  const items = buildWorkbenchItems({ user: activeUser(), counts })
+  const user = activeUser()
+  const items = buildWorkbenchItems({ user, counts })
 
   assert.deepEqual(items, [{
     view: 'todayAttendance',
@@ -72,6 +80,100 @@ test('workbench items use only real authorized routes and calculate badges after
   }])
   assert.equal(hiddenCountReads, 0)
   assert.equal(items.some(({ view, label }) => view === 'inventory' || label === '仓库库存'), false)
+  assert.equal(countAuthorizedWorkbenchBadges(user, items), 2)
+})
+
+test('workbench projections require same-actor provenance before reading or rendering badges', () => {
+  const actor = activeUser([], { employeeId: 'E-ACTOR-A', employeeNumber: 'SW-201' })
+  const otherActor = activeUser([], { employeeId: 'E-ACTOR-B', employeeNumber: 'SW-202' })
+  const items = buildWorkbenchItems({ user: actor, counts: { todayAttendance: 7 } })
+
+  assert.deepEqual(projectAuthorizedWorkbenchItems(actor, items).map(({ route, badgeCount }) => ({
+    view: route.view,
+    label: route.label,
+    badgeCount,
+  })), [{ view: 'todayAttendance', label: '今日打卡', badgeCount: 7 }])
+  assert.equal(countAuthorizedWorkbenchBadges(actor, items), 7)
+  assert.deepEqual(projectAuthorizedWorkbenchItems(otherActor, items), [])
+  assert.equal(countAuthorizedWorkbenchBadges(otherActor, items), 0)
+
+  let forgedBadgeReads = 0
+  const forged = [{
+    view: 'todayAttendance',
+    get badgeCount() {
+      forgedBadgeReads += 1
+      return 999
+    },
+  }]
+  assert.deepEqual(projectAuthorizedWorkbenchItems(actor, forged), [])
+  assert.equal(countAuthorizedWorkbenchBadges(actor, forged), 0)
+  assert.equal(forgedBadgeReads, 0)
+
+  const sameActorSnapshot = {
+    ...actor,
+    effectivePermissionKeys: [...actor.effectivePermissionKeys],
+  }
+  assert.equal(countAuthorizedWorkbenchBadges(sameActorSnapshot, items), 7)
+
+  const mutableActor = activeUser([], {
+    employeeId: 'E-MUTABLE-A',
+    employeeNumber: 'SW-301',
+  })
+  const mutableItems = buildWorkbenchItems({
+    user: mutableActor,
+    counts: { todayAttendance: 11 },
+  })
+  mutableActor.employeeId = 'E-MUTABLE-B'
+  mutableActor.employeeNumber = 'SW-302'
+  assert.deepEqual(projectAuthorizedWorkbenchItems(mutableActor, mutableItems), [])
+  assert.equal(countAuthorizedWorkbenchBadges(mutableActor, mutableItems), 0)
+
+  let descriptorTrapCalls = 0
+  const hostileActor = new Proxy(actor, {
+    getOwnPropertyDescriptor() {
+      descriptorTrapCalls += 1
+      throw new Error('hostile actor descriptor')
+    },
+  })
+  assert.doesNotThrow(() => projectAuthorizedWorkbenchItems(hostileActor, items))
+  assert.deepEqual(projectAuthorizedWorkbenchItems(hostileActor, items), [])
+  assert.equal(countAuthorizedWorkbenchBadges(hostileActor, items), 0)
+  assert.ok(descriptorTrapCalls > 0)
+
+  const revokedItems = Proxy.revocable([], {})
+  revokedItems.revoke()
+  assert.doesNotThrow(() => projectAuthorizedWorkbenchItems(actor, revokedItems.proxy))
+  assert.deepEqual(projectAuthorizedWorkbenchItems(actor, revokedItems.proxy), [])
+  assert.equal(countAuthorizedWorkbenchBadges(actor, revokedItems.proxy), 0)
+
+  const projectActor = activeUser(['module.projects.view'], {
+    employeeId: 'E-SAME-ACTOR',
+    employeeNumber: 'SW-401',
+  })
+  const projectItems = buildWorkbenchItems({
+    user: projectActor,
+    counts: { projects: 13 },
+  })
+  const revokedProjectActor = {
+    ...projectActor,
+    effectivePermissionKeys: [],
+  }
+  const downgraded = projectAuthorizedWorkbenchItems(revokedProjectActor, projectItems)
+  assert.deepEqual(downgraded.map(({ route }) => route.view), ['todayAttendance'])
+  assert.equal(countAuthorizedWorkbenchBadges(revokedProjectActor, projectItems), 0)
+})
+
+test('dashboard alert month follows the active bridge context across route changes', () => {
+  const context = {
+    dashboardSelectedMonth: '2026-04',
+    accountingMonth: '2026-06',
+    currentMonth: '2026-07',
+  }
+  for (const authorizedView of ['dashboard', 'workbench', 'messages', 'profile', 'projects']) {
+    assert.equal(resolveDashboardBridgeMonth({ ...context, authorizedView }), '2026-04')
+  }
+  assert.equal(resolveDashboardBridgeMonth({ ...context, authorizedView: 'accounting' }), '2026-06')
+  assert.equal(resolveDashboardBridgeMonth({ ...context, authorizedView: 'home' }), '2026-07')
 })
 
 test('messages reject unauthorized targets before preserving counts or amounts', () => {
@@ -179,7 +281,7 @@ test('messages reject unauthorized targets before preserving counts or amounts',
 })
 
 test('mobile workbench, messages, and profile SSR stay inside permission projections', async () => {
-  const [workbenchModule, messagesModule, profileModule] = await loadPages()
+  const [workbenchModule, messagesModule, profileModule, runtimeWorkbenchModel] = await loadPages()
   const ordinary = activeUser()
   const finance = financeUser()
   const owner = activeUser(['all'], {
@@ -197,9 +299,44 @@ test('mobile workbench, messages, and profile SSR stay inside permission project
     }],
     onNavigate() {},
   }))
-  assert.match(ordinaryWorkbench, /今日打卡/u)
-  assert.match(ordinaryWorkbench, />勤</u)
-  assert.doesNotMatch(ordinaryWorkbench, /伪造模块|>X<|9007199254740991/u)
+  assert.match(ordinaryWorkbench, /当前没有可进入的业务模块/u)
+  assert.doesNotMatch(ordinaryWorkbench, /今日打卡|>勤<|伪造模块|>X<|9007199254740991/u)
+
+  const genuineItems = runtimeWorkbenchModel.buildWorkbenchItems({
+    user: ordinary,
+    counts: { todayAttendance: 5 },
+  })
+  const genuineWorkbench = renderToStaticMarkup(createElement(workbenchModule.default, {
+    currentUser: ordinary,
+    items: genuineItems,
+    onNavigate() {},
+  }))
+  assert.match(genuineWorkbench, /今日打卡|>勤</u)
+  assert.match(genuineWorkbench, /5 条待处理/u)
+
+  const crossActorWorkbench = renderToStaticMarkup(createElement(workbenchModule.default, {
+    currentUser: activeUser([], { employeeId: 'E-OTHER', employeeNumber: 'SW-321' }),
+    items: genuineItems,
+    onNavigate() {},
+  }))
+  assert.match(crossActorWorkbench, /当前没有可进入的业务模块/u)
+  assert.doesNotMatch(crossActorWorkbench, /5 条待处理/u)
+
+  const projectActor = activeUser(['module.projects.view'], {
+    employeeId: 'E-SSR-SAME',
+    employeeNumber: 'SW-411',
+  })
+  const projectItems = runtimeWorkbenchModel.buildWorkbenchItems({
+    user: projectActor,
+    counts: { projects: 13 },
+  })
+  const downgradedWorkbench = renderToStaticMarkup(createElement(workbenchModule.default, {
+    currentUser: { ...projectActor, effectivePermissionKeys: [] },
+    items: projectItems,
+    onNavigate() {},
+  }))
+  assert.match(downgradedWorkbench, /今日打卡/u)
+  assert.doesNotMatch(downgradedWorkbench, /工程项目|13 条待处理/u)
 
   const financeMessages = buildAuthorizedMessages({
     access: { user: finance, dashboard: getDashboardAccess(finance) },
@@ -231,7 +368,7 @@ test('mobile pages import centralized route or access metadata instead of local 
   ]
   for (const path of paths) {
     const source = await readFile(new URL(path, import.meta.url), 'utf8')
-    assert.match(source, /(?:adminRoutes|businessAccess)\.js/u, path)
+    assert.match(source, /(?:adminRoutes|businessAccess|workbenchModel)\.js/u, path)
     assert.doesNotMatch(source, /const\s+(?:modules|routes|menuItems)\s*=\s*\[/u, path)
   }
 })

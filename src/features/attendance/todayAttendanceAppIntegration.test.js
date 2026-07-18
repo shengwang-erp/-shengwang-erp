@@ -228,6 +228,11 @@ test('mobile shell routes use projected Home, workbench, message, and profile mo
   )
   assert.match(authenticatedApp, /const authorizedMessages = buildAuthorizedMessages\(/u)
   assert.match(authenticatedApp, /const workbenchItems = buildWorkbenchItems\(/u)
+  assert.match(authenticatedApp, /const bridgeRequestedMonth = [\s\S]*?resolveDashboardBridgeMonth\(/u)
+  assert.match(
+    authenticatedApp,
+    /const dashboardAlertState = [\s\S]*?buildExecutiveDashboardReadModel\(\{[\s\S]*?selectedMonth:\s*bridgeRequestedMonth/u,
+  )
   assert.match(
     authenticatedApp,
     /const bridgeTargetActive = \['home', 'accounting', 'dashboard', 'projects'\]\.includes\(authorizedView\)\s*\|\|\s*dashboardAccess\.page/u,

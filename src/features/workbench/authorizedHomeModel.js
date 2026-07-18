@@ -28,6 +28,21 @@ function ownValue(value, key) {
   return descriptor && 'value' in descriptor ? descriptor.value : undefined
 }
 
+export function buildUnavailableHomeFinancialState(states = []) {
+  const candidates = Array.isArray(states) ? states : []
+  if (candidates.some((state) => ownValue(state, 'status') === 'error')) {
+    return Object.freeze({ status: 'error', data: null, stale: false })
+  }
+  if (candidates.some((state) => ownValue(state, 'status') === 'loading')) {
+    return Object.freeze({ status: 'loading', data: null, stale: false })
+  }
+  if (candidates.some((state) =>
+    ownValue(state, 'status') === 'ready' && ownValue(state, 'stale') === true)) {
+    return Object.freeze({ status: 'ready', data: null, stale: true })
+  }
+  return Object.freeze({ status: 'forbidden', data: null, stale: false })
+}
+
 function arrayStateData(state) {
   const data = ownValue(state, 'data')
   return ownValue(state, 'status') === 'ready' && ownValue(state, 'stale') !== true &&

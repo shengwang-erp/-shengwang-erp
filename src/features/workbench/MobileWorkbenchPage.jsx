@@ -1,17 +1,7 @@
-import { canAccessView } from '../../auth/businessAccess.js'
-import { getAdminRoute } from '../../navigation/adminRoutes.js'
+import { projectAuthorizedWorkbenchItems } from './workbenchModel.js'
 
 export default function MobileWorkbenchPage({ currentUser, items = [], onNavigate }) {
-  const visibleItems = Array.isArray(items) ? items.flatMap((item) => {
-    const route = getAdminRoute(item?.view)
-    if (!route?.desktop || route.view === 'home' || !canAccessView(currentUser, route.view)) {
-      return []
-    }
-    const badgeCount = Number.isSafeInteger(item?.badgeCount) && item.badgeCount > 0
-      ? item.badgeCount
-      : 0
-    return [{ route, badgeCount }]
-  }) : []
+  const visibleItems = projectAuthorizedWorkbenchItems(currentUser, items)
 
   return (
     <main className="mobile-workbench-page page-shell">

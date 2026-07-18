@@ -54,12 +54,14 @@ import MobileMessagesPage from './features/workbench/MobileMessagesPage.jsx'
 import MobileProfilePage from './features/workbench/MobileProfilePage.jsx'
 import MobileWorkbenchPage from './features/workbench/MobileWorkbenchPage.jsx'
 import {
+  buildUnavailableHomeFinancialState,
   buildAuthorizedHomeModel,
   getAuthorizedHomeSummary,
 } from './features/workbench/authorizedHomeModel.js'
 import {
   buildAuthorizedMessages,
   buildWorkbenchItems,
+  resolveDashboardBridgeMonth,
 } from './features/workbench/workbenchModel.js'
 import AuthGate from './auth/AuthGate'
 import { employeeAdminService } from './services/employeeAdminService'
@@ -1923,14 +1925,6 @@ function readyProjectedObject(state) {
     : null
 }
 
-function unavailableProjectedStatus(states) {
-  if (states.some((state) => state?.status === 'error')) return 'error'
-  if (states.some((state) => state?.status === 'loading' || state?.stale === true)) {
-    return 'loading'
-  }
-  return 'forbidden'
-}
-
 export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceStates }) {
   const accountingAccess = getAccountingAccess(currentUser)
   const purchaseAccess = getPurchaseAccess(currentUser)
@@ -2005,7 +1999,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
         result.cost = { status: 'error', data: null }
       }
     } else {
-      result.cost = { status: unavailableProjectedStatus(requiredStates), data: null }
+      result.cost = buildUnavailableHomeFinancialState(requiredStates)
     }
   }
 
@@ -2013,10 +2007,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
     const accrualState = sourceStates?.purchaseAccrual
     const purchaseRecords = readyProjectedArray(accrualState)
     if (purchaseRecords === null) {
-      result.purchase = {
-        status: unavailableProjectedStatus([accrualState]),
-        data: null,
-      }
+      result.purchase = buildUnavailableHomeFinancialState([accrualState])
     } else {
       const rawPaymentState = purchaseAccess.payments.view
         ? sourceStates?.purchasePayments
@@ -2235,11 +2226,21 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   }, [])
   const bridgeTargetActive = ['home', 'accounting', 'dashboard', 'projects'].includes(authorizedView) ||
     dashboardAccess.page
+  const dashboardBridgeMonthContext = {
+    authorizedView,
+    dashboardSelectedMonth: dashboardQuery.selectedMonth,
+    accountingMonth,
+    currentMonth: currentMonthValue(),
+  }
   const bridgeRequestedMonth = authorizedView === 'accounting'
-    ? accountingMonth
+    ? resolveDashboardBridgeMonth({ ...dashboardBridgeMonthContext, accountingMonth })
     : authorizedView === 'dashboard'
-      ? dashboardQuery.selectedMonth
-      : currentMonthValue()
+      ? resolveDashboardBridgeMonth({
+          ...dashboardBridgeMonthContext,
+          dashboardSelectedMonth: dashboardQuery.selectedMonth,
+          currentMonth: currentMonthValue(),
+        })
+      : resolveDashboardBridgeMonth(dashboardBridgeMonthContext)
   const bridgeSnapshotMonth = currentMonthValue()
   const bridgePermissionFingerprint = useMemo(() => {
     if (!Array.isArray(activePermissionKeys)) return ''
@@ -3562,7 +3563,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const dashboardAlertState = dashboardAccess.page
     ? buildExecutiveDashboardReadModel({
         asOfDate: todayValue(),
-        selectedMonth: dashboardQuery.selectedMonth,
+        selectedMonth: bridgeRequestedMonth,
         filters: dashboardFilters,
         access: dashboardAccess,
         sources: dashboardSourceStates,

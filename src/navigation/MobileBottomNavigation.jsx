@@ -1,20 +1,12 @@
 import { canAccessView } from '../auth/businessAccess.js'
 import {
   countAuthorizedMessageBadges,
+  countAuthorizedWorkbenchBadges,
 } from '../features/workbench/workbenchModel.js'
 import { MOBILE_PRIMARY_TABS, getAdminRoute } from './adminRoutes.js'
 
 function safeBadgeCount(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0
-}
-
-function workbenchBadgeCount(user, items) {
-  if (!Array.isArray(items)) return 0
-  return items.reduce((total, item) => {
-    const route = getAdminRoute(item?.view)
-    if (!route?.desktop || route.view === 'home' || !canAccessView(user, route.view)) return total
-    return total + safeBadgeCount(item?.badgeCount)
-  }, 0)
 }
 
 export default function MobileBottomNavigation({
@@ -31,7 +23,7 @@ export default function MobileBottomNavigation({
       ? currentRoute.view
       : 'workbench'
   const badgeCounts = {
-    workbench: workbenchBadgeCount(currentUser, workbenchItems),
+    workbench: countAuthorizedWorkbenchBadges(currentUser, workbenchItems),
     messages: countAuthorizedMessageBadges(messages),
   }
 
