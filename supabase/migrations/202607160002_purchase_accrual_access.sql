@@ -123,6 +123,85 @@ begin
 end;
 $$;
 
+create or replace function private.guard_purchase_link_fact_write()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  link_field text := tg_argv[0];
+  old_link_key text;
+  new_link_key text;
+  new_raw_link text;
+  parent_is_active boolean;
+begin
+  if link_field not in ('purchaseId', 'sourcePurchaseId') then
+    raise exception using
+      errcode = '22023',
+      message = 'valid purchase link field required';
+  end if;
+
+  if tg_op <> 'INSERT'
+    and old.status = 'active'
+    and jsonb_typeof(old.payload->link_field) = 'string'
+  then
+    old_link_key := nullif(btrim(old.payload->>link_field), '');
+  end if;
+  if tg_op <> 'DELETE' and new.status = 'active' then
+    new_raw_link := new.payload->>link_field;
+    if jsonb_typeof(new.payload->link_field) is distinct from 'string'
+      or new_raw_link is null
+      or new_raw_link = ''
+      or new_raw_link <> btrim(new_raw_link)
+      or char_length(new_raw_link) > 200
+      or new_raw_link !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$'
+    then
+      raise exception using
+        errcode = '23503',
+        message = 'active purchase record required';
+    end if;
+    new_link_key := new_raw_link;
+  end if;
+
+  if old_link_key is not null
+    and new_link_key is not null
+    and old_link_key <> new_link_key
+  then
+    if old_link_key < new_link_key then
+      perform private.lock_purchase_record_key(old_link_key);
+      perform private.lock_purchase_record_key(new_link_key);
+    else
+      perform private.lock_purchase_record_key(new_link_key);
+      perform private.lock_purchase_record_key(old_link_key);
+    end if;
+  elsif coalesce(new_link_key, old_link_key) is not null then
+    perform private.lock_purchase_record_key(
+      coalesce(new_link_key, old_link_key)
+    );
+  end if;
+
+  if new_link_key is not null then
+    select exists (
+      select 1
+        from public.purchase_records as purchase
+        where purchase.record_key = new_link_key
+          and purchase.status = 'active'
+    ) into parent_is_active;
+    if not parent_is_active then
+      raise exception using
+        errcode = '23503',
+        message = 'active purchase record required';
+    end if;
+  end if;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
 revoke all on function private.purchase_payment_payload_keys()
   from public, anon, authenticated, service_role;
 revoke all on function private.purchase_client_audit_payload_keys()
@@ -133,12 +212,26 @@ revoke all on function private.lock_purchase_record_key(text)
   from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_records_direct_write()
   from public, anon, authenticated, service_role;
+revoke all on function private.guard_purchase_link_fact_write()
+  from public, anon, authenticated, service_role;
 
 drop trigger if exists block_purchase_records_direct_write
   on public.purchase_records;
 create trigger block_purchase_records_direct_write
 before insert or update or delete on public.purchase_records
 for each row execute function private.guard_purchase_records_direct_write();
+
+drop trigger if exists guard_active_purchase_link
+  on public.purchase_payment_records;
+create trigger guard_active_purchase_link
+before insert or update or delete on public.purchase_payment_records
+for each row execute function private.guard_purchase_link_fact_write('purchaseId');
+
+drop trigger if exists guard_active_purchase_link
+  on public.stock_in_records;
+create trigger guard_active_purchase_link
+before insert or update or delete on public.stock_in_records
+for each row execute function private.guard_purchase_link_fact_write('sourcePurchaseId');
 
 create or replace function public.list_purchase_records_secure()
 returns table (
@@ -371,7 +464,10 @@ set search_path = pg_catalog, public, private
 as $$
 declare
   actor public.employee_profiles%rowtype;
+  can_view_linked_facts boolean;
   deleted_record_key text;
+  has_linked_facts boolean;
+  purchase_is_active boolean;
 begin
   if not public.is_current_employee_active()
     or not public.has_current_permission('module.purchases.delete')
@@ -406,6 +502,48 @@ begin
     raise exception using
       errcode = '42501',
       message = 'active employee required';
+  end if;
+
+  can_view_linked_facts :=
+    public.has_current_permission('module.purchases.view')
+    and public.has_current_permission('sensitive.purchase_payments_view');
+  select exists (
+    select 1
+      from public.purchase_records as purchase
+      where purchase.record_key = p_record_key
+        and purchase.status = 'active'
+  ) into purchase_is_active;
+  if not purchase_is_active then
+    if can_view_linked_facts then
+      raise exception using
+        errcode = 'P0002',
+        message = 'purchase record not found';
+    end if;
+    raise exception using
+      errcode = '23503',
+      message = 'purchase record cannot be deleted';
+  end if;
+
+  select exists (
+      select 1
+        from public.purchase_payment_records as payment
+        where payment.status = 'active'
+          and btrim(payment.payload->>'purchaseId') = p_record_key
+    ) or exists (
+      select 1
+        from public.stock_in_records as stock_in
+        where stock_in.status = 'active'
+          and btrim(stock_in.payload->>'sourcePurchaseId') = p_record_key
+    ) into has_linked_facts;
+  if has_linked_facts then
+    if can_view_linked_facts then
+      raise exception using
+        errcode = '23503',
+        message = 'purchase record has linked facts';
+    end if;
+    raise exception using
+      errcode = '23503',
+      message = 'purchase record cannot be deleted';
   end if;
 
   update public.purchase_records as purchase

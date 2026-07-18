@@ -329,11 +329,21 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
     ],
     valueFormatter,
   }
-  const chartMarkup = [
-    render(DonutChart, common),
-    render(BarChart, common),
-    render(HorizontalBarChart, { ...common, data: [...common.data, { key: 'loss', label: '亏损', value: -5 }] }),
-    render(LineChart, {
+  const chartCases = [
+    {
+      markup: render(DonutChart, common),
+      markLabels: ['甲：¥60', '乙：¥40'],
+    },
+    {
+      markup: render(BarChart, common),
+      markLabels: ['甲：¥60', '乙：¥40'],
+    },
+    {
+      markup: render(HorizontalBarChart, { ...common, data: [...common.data, { key: 'loss', label: '亏损', value: -5 }] }),
+      markLabels: ['甲：¥60', '乙：¥40', '亏损：¥-5'],
+    },
+    {
+      markup: render(LineChart, {
       title: '现金趋势',
       description: '收入、流出与净现金',
       points: [
@@ -346,15 +356,32 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
         { key: 'net', label: '净现金', color: 'var(--erp-chart-gold)' },
       ],
       valueFormatter,
-    }),
+      }),
+      markLabels: [
+        '2026-06 收入：¥100',
+        '2026-07 收入：¥0',
+        '2026-06 流出：¥50',
+        '2026-07 流出：¥20',
+        '2026-06 净现金：¥50',
+        '2026-07 净现金：¥-20',
+      ],
+    },
   ]
 
-  for (const markup of chartMarkup) {
+  for (const { markup, markLabels } of chartCases) {
     assert.match(markup, /<svg[^>]*role="img"[^>]*aria-label="[^"]+"/u)
-    assert.match(markup, /<title>/u)
     assert.match(markup, /executive-chart-(?:legend|data-table)/u)
     const svgMarkup = markup.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || ''
-    assert.doesNotMatch(svgMarkup, /tabindex=/u)
+    const focusableMarks = [...svgMarkup.matchAll(/<(?:circle|rect)\b[^>]*\btabindex="0"[^>]*>/gu)]
+      .map((match) => match[0])
+    assert.equal(focusableMarks.length, markLabels.length)
+    assert.equal((svgMarkup.match(/\btabindex="0"/gu) || []).length, markLabels.length)
+    assert.equal((svgMarkup.match(/<title>/gu) || []).length, markLabels.length + 1)
+    for (const markLabel of markLabels) {
+      assert.ok(focusableMarks.some((mark) => (
+        mark.includes('role="img"') && mark.includes(`aria-label="${markLabel}"`)
+      )), `expected one keyboard-focusable SVG mark for ${markLabel}`)
+    }
     assert.match(markup, /<ul class="executive-chart-legend"[^>]*>[\s\S]*?<li[^>]*tabindex="0"[^>]*aria-label=/u)
     assert.doesNotMatch(markup, /NaN|Infinity/u)
   }
@@ -373,6 +400,8 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
   for (const markup of unstableInputs) {
     assert.match(markup, /暂无可展示数据|当前数据均为零/u)
     assert.doesNotMatch(markup, /NaN|Infinity/u)
+    const svgMarkup = markup.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || ''
+    assert.doesNotMatch(svgMarkup, /tabindex=/u)
   }
 
   const invalidDonuts = [

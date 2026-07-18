@@ -37,6 +37,12 @@ select has_function(
   'purchase direct-write trigger guard exists'
 );
 select has_function(
+  'private',
+  'guard_purchase_link_fact_write',
+  array[]::text[],
+  'purchase linked-fact write guard exists'
+);
+select has_function(
   'public',
   'list_purchase_records_secure',
   array[]::text[],
@@ -159,7 +165,8 @@ select is(
         'purchase_client_audit_payload_keys',
         'purchase_payload_has_unsafe_keys',
         'lock_purchase_record_key',
-        'guard_purchase_records_direct_write'
+        'guard_purchase_records_direct_write',
+        'guard_purchase_link_fact_write'
       )
       and grantee in ('PUBLIC', 'anon', 'authenticated', 'service_role')
       and privilege_type = 'EXECUTE'
@@ -206,6 +213,49 @@ select is(
   ),
   1::bigint,
   'purchase_records has one enabled row-level BEFORE INSERT/UPDATE/DELETE guard'
+);
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_proc as procedure
+    join pg_catalog.pg_namespace as namespace
+      on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'private'
+      and procedure.proname = 'guard_purchase_link_fact_write'
+      and procedure.prosecdef
+      and procedure.proconfig =
+        array['search_path=pg_catalog, public, private']::text[]
+      and pg_catalog.pg_get_functiondef(procedure.oid)
+        like '%private.lock_purchase_record_key%'
+  ),
+  1::bigint,
+  'linked-fact guard is pinned, privileged, and uses the shared purchase lock'
+);
+
+select is(
+  (
+    select count(*)
+    from pg_catalog.pg_trigger as trigger
+    join pg_catalog.pg_class as relation
+      on relation.oid = trigger.tgrelid
+    join pg_catalog.pg_namespace as relation_namespace
+      on relation_namespace.oid = relation.relnamespace
+    join pg_catalog.pg_proc as procedure
+      on procedure.oid = trigger.tgfoid
+    join pg_catalog.pg_namespace as procedure_namespace
+      on procedure_namespace.oid = procedure.pronamespace
+    where relation_namespace.nspname = 'public'
+      and relation.relname in ('purchase_payment_records', 'stock_in_records')
+      and trigger.tgname = 'guard_active_purchase_link'
+      and not trigger.tgisinternal
+      and trigger.tgenabled = 'O'
+      and trigger.tgtype = 31
+      and procedure_namespace.nspname = 'private'
+      and procedure.proname = 'guard_purchase_link_fact_write'
+  ),
+  2::bigint,
+  'payment and stock-in writes share enabled row-level purchase-link guards'
 );
 
 select is(
@@ -421,7 +471,8 @@ insert into auth.users (
   ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000003', 'authenticated', 'authenticated', 'task7-purchase-none@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000004', 'authenticated', 'authenticated', 'task7-purchase-disabled@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'task7-purchase-create-only@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
-  ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000006', 'authenticated', 'authenticated', 'task7-purchase-update-only@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
+  ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000006', 'authenticated', 'authenticated', 'task7-purchase-update-only@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', '71000000-0000-4000-8000-000000000007', 'authenticated', 'authenticated', 'task7-purchase-delete-only@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
 
 insert into public.employee_profiles (
   id,
@@ -440,11 +491,12 @@ insert into public.employee_profiles (
   ('72000000-0000-4000-8000-000000000003', 'SW-7203', '71000000-0000-4000-8000-000000000003', '无采购权限员工', '电商部', '主任', '在职', 'active', false, false),
   ('72000000-0000-4000-8000-000000000004', 'SW-7204', '71000000-0000-4000-8000-000000000004', '停用采购员工', '仓库管理部', '仓库管理员', '在职', 'disabled', false, false),
   ('72000000-0000-4000-8000-000000000005', 'SW-7205', '71000000-0000-4000-8000-000000000005', '仅新建采购员工', '后勤部', '大工', '在职', 'active', false, false),
-  ('72000000-0000-4000-8000-000000000006', 'SW-7206', '71000000-0000-4000-8000-000000000006', '仅更新采购员工', '事务部', '中工', '在职', 'active', false, false);
+  ('72000000-0000-4000-8000-000000000006', 'SW-7206', '71000000-0000-4000-8000-000000000006', '仅更新采购员工', '事务部', '中工', '在职', 'active', false, false),
+  ('72000000-0000-4000-8000-000000000007', 'SW-7207', '71000000-0000-4000-8000-000000000007', '仅删除采购员工', '设计部', '职长', '在职', 'active', false, false);
 
 delete from public.permission_grants
 where subject_type = 'department'
-  and subject_code in ('采购部', '财务部', '电商部', '仓库管理部', '后勤部', '事务部')
+  and subject_code in ('采购部', '财务部', '电商部', '仓库管理部', '后勤部', '事务部', '设计部')
   and (
     permission_key like 'module.purchases.%'
     or permission_key like 'module.inventory.%'
@@ -470,7 +522,8 @@ insert into public.permission_grants (
   ('department', '财务部', 'sensitive.purchase_payments_update'),
   ('department', '仓库管理部', 'module.purchases.view'),
   ('department', '后勤部', 'module.purchases.create'),
-  ('department', '事务部', 'module.purchases.update');
+  ('department', '事务部', 'module.purchases.update'),
+  ('department', '设计部', 'module.purchases.delete');
 
 insert into public.purchase_records (
   record_key,
@@ -551,7 +604,52 @@ insert into public.purchase_records (
     '种子创建人',
     'seed-updater',
     '种子更新人'
+  ),
+  (
+    'PO-TASK7-PAYMENT-LINKED',
+    '{"purchaseId":"PO-TASK7-PAYMENT-LINKED","itemName":"已有付款事实"}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'PO-TASK7-STOCK-LINKED',
+    '{"purchaseId":"PO-TASK7-STOCK-LINKED","itemName":"已有入库事实"}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'PO-TASK7-DELETE-ONLY',
+    '{"purchaseId":"PO-TASK7-DELETE-ONLY","itemName":"仅删除权限目标"}'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
   );
+
+insert into public.purchase_payment_records (
+  record_key,
+  payload,
+  status,
+  created_by_employee_id,
+  created_by_employee_name,
+  updated_by_employee_id,
+  updated_by_employee_name
+) values (
+  'PP-TASK7-PURCHASE-LINK',
+  '{"paymentId":"PP-TASK7-PURCHASE-LINK","purchaseId":"PO-TASK7-PAYMENT-LINKED","jpyAmount":1000}'::jsonb,
+  'active',
+  'seed-creator',
+  '种子创建人',
+  'seed-updater',
+  '种子更新人'
+);
 
 insert into public.stock_in_records (
   record_key,
@@ -561,19 +659,33 @@ insert into public.stock_in_records (
   created_by_employee_name,
   updated_by_employee_id,
   updated_by_employee_name
-) values (
-  'SI-TASK7-DELETED',
-  '{
-    "stockInId":"SI-TASK7-DELETED",
-    "sourcePurchaseId":"PO-TASK7-STOCK",
-    "stockInQuantity":1
-  }'::jsonb,
-  'deleted',
-  'seed-creator',
-  '种子创建人',
-  'seed-updater',
-  '种子更新人'
-);
+) values
+  (
+    'SI-TASK7-DELETED',
+    '{
+      "stockInId":"SI-TASK7-DELETED",
+      "sourcePurchaseId":"PO-TASK7-STOCK",
+      "stockInQuantity":1
+    }'::jsonb,
+    'deleted',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  ),
+  (
+    'SI-TASK7-PURCHASE-LINK',
+    '{
+      "stockInId":"SI-TASK7-PURCHASE-LINK",
+      "sourcePurchaseId":"PO-TASK7-STOCK-LINKED",
+      "stockInQuantity":1
+    }'::jsonb,
+    'active',
+    'seed-creator',
+    '种子创建人',
+    'seed-updater',
+    '种子更新人'
+  );
 
 insert into public.inventory_items (
   record_key,
@@ -608,7 +720,7 @@ select lives_ok(
 );
 select is(
   (select count(*) from task7_list_results where scenario = 'accrual-list'),
-  4::bigint,
+  7::bigint,
   'the secure list excludes deleted records'
 );
 select ok(
@@ -1002,9 +1114,9 @@ select is(
 );
 select throws_ok(
   $$select public.soft_delete_purchase_record_secure('PO-TASK7-CREATED')$$,
-  'P0002',
-  'purchase record not found',
-  'a soft-deleted purchase cannot be deleted again'
+  '23503',
+  'purchase record cannot be deleted',
+  'a payment-blind deleter gets no linked-fact oracle for a soft-deleted purchase'
 );
 
 reset role;
@@ -1017,6 +1129,192 @@ select ok(
     where record_key = 'PO-TASK7-CREATED'
   ),
   'soft-delete changes only server-controlled state and audit identity'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-PAYMENT-LINKED')$$,
+  '23503',
+  'purchase record cannot be deleted',
+  'an active payment blocks a payment-blind deleter with a generic rejection'
+);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-STOCK-LINKED')$$,
+  '23503',
+  'purchase record cannot be deleted',
+  'an active stock-in blocks a payment-blind deleter with the same generic rejection'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-PAYMENT-LINKED')$$,
+  '23503',
+  'purchase record has linked facts',
+  'a payment-sensitive deleter receives the linked-fact advisory'
+);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-STOCK-LINKED')$$,
+  '23503',
+  'purchase record has linked facts',
+  'the payment-sensitive linked-fact advisory still does not identify the child table'
+);
+
+reset role;
+select is(
+  (
+    select count(*)
+    from public.purchase_records
+    where record_key in ('PO-TASK7-PAYMENT-LINKED', 'PO-TASK7-STOCK-LINKED')
+      and status = 'active'
+  ),
+  2::bigint,
+  'linked purchase rows remain active after rejected deletes'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000007', true);
+select ok(
+  public.has_current_permission('module.purchases.delete')
+    and not public.has_current_permission('module.purchases.view')
+    and not public.has_current_permission('module.purchases.create')
+    and not public.has_current_permission('module.purchases.update')
+    and not public.has_current_permission('sensitive.purchase_payments_view')
+    and not public.has_current_permission('sensitive.purchase_payments_update'),
+  'the delete-only actor has no purchase read/write or payment-sensitive permission'
+);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-PAYMENT-LINKED')$$,
+  '23503',
+  'purchase record cannot be deleted',
+  'a delete-only actor cannot distinguish a payment-linked purchase'
+);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-STOCK-LINKED')$$,
+  '23503',
+  'purchase record cannot be deleted',
+  'a delete-only actor cannot distinguish a stock-linked purchase'
+);
+select throws_ok(
+  $$select public.soft_delete_purchase_record_secure('PO-TASK7-MISSING')$$,
+  '23503',
+  'purchase record cannot be deleted',
+  'a delete-only actor receives the same rejection for an unavailable purchase'
+);
+select lives_ok(
+  $$insert into pg_temp.task7_mutation_results (scenario, result)
+    values (
+      'delete-only',
+      to_jsonb(public.soft_delete_purchase_record_secure('PO-TASK7-DELETE-ONLY'))
+    )$$,
+  'a delete-only actor can delete an unlinked purchase'
+);
+
+reset role;
+select ok(
+  (
+    select status = 'deleted'
+      and updated_by_employee_id = '72000000-0000-4000-8000-000000000007'
+      and updated_by_employee_name = '仅删除采购员工'
+    from public.purchase_records
+    where record_key = 'PO-TASK7-DELETE-ONLY'
+  ),
+  'delete-only purchase deletion records the server-derived actor'
+);
+
+select throws_ok(
+  $$insert into public.purchase_payment_records (
+      record_key,
+      payload,
+      status,
+      created_by_employee_id,
+      created_by_employee_name,
+      updated_by_employee_id,
+      updated_by_employee_name
+    ) values (
+      'PP-TASK7-AFTER-DELETE',
+      '{"paymentId":"PP-TASK7-AFTER-DELETE","purchaseId":"PO-TASK7-DELETE-ONLY"}'::jsonb,
+      'active',
+      'seed-creator',
+      '种子创建人',
+      'seed-updater',
+      '种子更新人'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'a payment write ordered after purchase deletion cannot create an orphan'
+);
+select throws_ok(
+  $$insert into public.stock_in_records (
+      record_key,
+      payload,
+      status,
+      created_by_employee_id,
+      created_by_employee_name,
+      updated_by_employee_id,
+      updated_by_employee_name
+    ) values (
+      'SI-TASK7-AFTER-DELETE',
+      '{"stockInId":"SI-TASK7-AFTER-DELETE","sourcePurchaseId":"PO-TASK7-DELETE-ONLY"}'::jsonb,
+      'active',
+      'seed-creator',
+      '种子创建人',
+      'seed-updater',
+      '种子更新人'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'a stock-in write ordered after purchase deletion cannot create an orphan'
+);
+select throws_ok(
+  $$insert into public.purchase_payment_records (
+      record_key, payload, status
+    ) values (
+      'PP-TASK7-WHITESPACE-LINK',
+      '{"paymentId":"PP-TASK7-WHITESPACE-LINK","purchaseId":" PO-TASK7-PAYMENT-LINKED "}'::jsonb,
+      'active'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'an active payment rejects a whitespace-normalized purchase link'
+);
+select throws_ok(
+  $$insert into public.stock_in_records (
+      record_key, payload, status
+    ) values (
+      'SI-TASK7-WHITESPACE-LINK',
+      '{"stockInId":"SI-TASK7-WHITESPACE-LINK","sourcePurchaseId":" PO-TASK7-STOCK-LINKED "}'::jsonb,
+      'active'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'an active stock-in rejects a whitespace-normalized purchase link'
+);
+select throws_ok(
+  $$insert into public.purchase_payment_records (
+      record_key, payload, status
+    ) values (
+      'PP-TASK7-MISSING-LINK',
+      '{"paymentId":"PP-TASK7-MISSING-LINK"}'::jsonb,
+      'active'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'an active payment cannot omit its purchase link'
+);
+select throws_ok(
+  $$insert into public.stock_in_records (
+      record_key, payload, status
+    ) values (
+      'SI-TASK7-BLANK-LINK',
+      '{"stockInId":"SI-TASK7-BLANK-LINK","sourcePurchaseId":""}'::jsonb,
+      'active'
+    )$$,
+  '23503',
+  'active purchase record required',
+  'an active stock-in cannot use a blank purchase link'
 );
 
 set local role authenticated;
@@ -1306,6 +1604,9 @@ select ok(
   'the existing stock-in fixture has own string IDs bound to purchase A'
 );
 
+-- Seed deliberately corrupt legacy rows without exercising the new-write guard;
+-- the following RPC assertions prove those rows still fail closed.
+set local session_replication_role = replica;
 insert into public.stock_in_records (
   record_key,
   payload,
@@ -1346,6 +1647,7 @@ insert into public.stock_in_records (
     'seed-updater',
     '种子更新人'
   );
+set local session_replication_role = origin;
 
 create temporary table task7_stock_binding_snapshot (
   state jsonb not null

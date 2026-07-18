@@ -7364,6 +7364,11 @@ export function PurchaseManagementPage({
     purchasePaymentState.stale !== true &&
     Array.isArray(purchasePaymentState.data)
   const readyPaymentRecords = paymentReady ? purchasePaymentState.data : []
+  const deleteAdvisoryPaymentRecords = paymentReady
+    ? readyPaymentRecords
+    : localDemoMode && Array.isArray(purchasePaymentRecords)
+      ? purchasePaymentRecords
+      : []
   const sections = [
     ...(resolvedAccess.records.create ? [{ id: 'create', title: '新增采购' }] : []),
     ...(resolvedAccess.records.view ? [{ id: 'list', title: '采购列表' }] : []),
@@ -7418,7 +7423,7 @@ export function PurchaseManagementPage({
           projects={projects}
           records={purchaseRecords}
           setRecords={setPurchaseRecords}
-          paymentRecords={readyPaymentRecords}
+          paymentRecords={deleteAdvisoryPaymentRecords}
           stockInRecords={stockInRecords}
           access={resolvedAccess.records}
           paymentVisible={paymentReady}
@@ -7674,7 +7679,7 @@ function PurchaseListSection({
               stockInStatus={getPurchaseStockInStatus(record, stockInRecords)}
               showPayments={paymentVisible}
               canVoid={access.update}
-              canDelete={access.delete && paymentVisible}
+              canDelete={access.delete}
               onVoid={async () => {
                 const nextRecord = normalizePurchaseRecord({
                   ...record,
@@ -7687,7 +7692,6 @@ function PurchaseListSection({
                 ))
               }}
               onDelete={async () => {
-                if (!paymentVisible) return
                 const hasPayment = paymentRecords.some(
                   (item) => item.purchaseId === record.purchaseId,
                 )

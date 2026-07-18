@@ -637,7 +637,7 @@ test('Purchase sections and controls follow exact record, payment, stock, and su
   assert.doesNotMatch(noAccessHtml, /新增采购|采购列表|付款记录|采购汇总/u)
 })
 
-test('Purchase payment UI and actions require an explicitly ready payment source', () => {
+test('Purchase payment UI requires a ready source while purchase delete follows record access', () => {
   const PurchaseManagementPage = requireExport('PurchaseManagementPage')
   if (!PurchaseManagementPage) return
 
@@ -691,7 +691,7 @@ test('Purchase payment UI and actions require an explicitly ready payment source
     )
   }
 
-  const blockedDeleteHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
+  const deleteOnlyHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
     ...props,
     access: {
       ...paymentAccess,
@@ -699,8 +699,21 @@ test('Purchase payment UI and actions require an explicitly ready payment source
     },
     purchasePaymentState: { status: 'loading', data: null },
   }))
-  assert.match(blockedDeleteHtml, /付款机密采购/u)
-  assert.doesNotMatch(blockedDeleteHtml, />删除</u)
+  assert.match(deleteOnlyHtml, /付款机密采购/u)
+  assert.match(deleteOnlyHtml, />删除</u)
+  assert.doesNotMatch(
+    deleteOnlyHtml,
+    /付款记录|保存付款记录|PP-SECRET|付款机密人员|¥5,000/u,
+  )
+  assert.match(appSource, /canDelete=\{access\.delete\}/u)
+  assert.doesNotMatch(appSource, /canDelete=\{access\.delete && paymentVisible\}/u)
+  assert.doesNotMatch(appSource, /if \(!paymentVisible\) return/u)
+  assert.match(
+    appSource,
+    /const deleteAdvisoryPaymentRecords = paymentReady[\s\S]*localDemoMode[\s\S]*purchasePaymentRecords/u,
+  )
+  assert.match(appSource, /paymentRecords=\{deleteAdvisoryPaymentRecords\}/u)
+  assert.match(appSource, /const hasPayment = paymentRecords\.some/u)
 
   const readyHtml = renderToStaticMarkup(createElement(PurchaseManagementPage, {
     ...props,

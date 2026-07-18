@@ -203,6 +203,9 @@ export function DonutChart({ title, description, data, valueFormatter }) {
             <circle
               className="executive-donut-segment"
               key={row.key}
+              tabIndex={0}
+              role="img"
+              aria-label={markLabel}
               cx="160"
               cy="112"
               r="70"
@@ -291,6 +294,9 @@ export function BarChart({ title, description, data, valueFormatter }) {
           return (
             <g key={row.key}>
               <rect
+                tabIndex={0}
+                role="img"
+                aria-label={markLabel}
                 x={svgNumber(x)}
                 y={svgNumber(y)}
                 width={svgNumber(barWidth)}
@@ -346,6 +352,9 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
                 {row.label}
               </text>
               <rect
+                tabIndex={0}
+                role="img"
+                aria-label={markLabel}
                 x={svgNumber(x)}
                 y={svgNumber(y)}
                 width={svgNumber(width)}
@@ -498,6 +507,9 @@ export function LineChart({ title, description, points, series, valueFormatter }
                 <circle
                   className="executive-line-point"
                   key={`${item.key}-${point.month}-${index}`}
+                  tabIndex={0}
+                  role="img"
+                  aria-label={markLabel}
                   cx={svgNumber(xFor(index))}
                   cy={svgNumber(yFor(value))}
                   r="4"
