@@ -168,7 +168,12 @@ function sourceDataShapeIsValid(name, data) {
   if (name === 'laborWindow') {
     if (!isPlainRecord(data) || !recordArray(data.monthly) ||
         !Array.isArray(data.incompleteMonths) || !Array.isArray(data.staleMonths)) return false
-    if (data.monthly.some((row) => !isPlainRecord(row.projectLaborById))) return false
+    const incompleteMonths = new Set(data.incompleteMonths)
+    if (data.monthly.some((row) => row.status === 'ready'
+      ? !isPlainRecord(row.projectLaborById)
+      : row.status !== 'error' || !incompleteMonths.has(row.month) ||
+        row.salaryTotal !== null || row.projectLaborTotal !== null ||
+        row.projectLaborById !== null)) return false
     return isPlainRecord(data.projectLaborLifetimeById) ||
       (data.projectLaborLifetimeById === null && data.lifetimeStatus !== 'ready')
   }
@@ -438,11 +443,13 @@ function stateMini(state, data) {
   return state.status === 'ready' ? mini('ready', data) : mini(state.status, null)
 }
 
-function rowsForScope(rows, scopeIds, projectId) {
+function rowsForScope(rows, scopeIds, filters) {
   return rows.filter((row) => {
     const rowProjectId = row?.projectId
-    if (projectId !== 'all') return scopeIds.has(projectId) && rowProjectId === projectId
-    return !rowProjectId || scopeIds.has(rowProjectId)
+    if (filters.projectId === 'all' && filters.projectStatus === 'all') {
+      return !rowProjectId || scopeIds.has(rowProjectId)
+    }
+    return scopeIds.has(rowProjectId)
   })
 }
 
@@ -1043,16 +1050,15 @@ export function buildExecutiveDashboardReadModel(input) {
       })
     : emptyPrepared
 
+  const companyWideScope = filters.projectId === 'all' && filters.projectStatus === 'all'
   const scopePrepared = (prepared) => ({
-    rows: rowsForScope(prepared.rows, scopeIds, filters.projectId),
+    rows: rowsForScope(prepared.rows, scopeIds, filters),
     anomalies: prepared.anomalies.filter((issue) => {
-      if (!issue.projectId) return true
-      if (filters.projectId !== 'all') return issue.projectId === filters.projectId
-      return scopeIds.has(issue.projectId)
+      if (companyWideScope) return !issue.projectId || scopeIds.has(issue.projectId)
+      return Boolean(issue.projectId && scopeIds.has(issue.projectId))
     }),
   })
   const scopedPurchasePrepared = scopePrepared(purchasePrepared)
-  const companyWideScope = filters.projectId === 'all' && filters.projectStatus === 'all'
   const paymentProjectsIntersectScope = (projectIds) =>
     Array.isArray(projectIds) && projectIds.some((projectId) => scopeIds.has(projectId))
   const scopedPaymentPrepared = {
@@ -1714,7 +1720,7 @@ export function buildExecutiveDashboardReadModel(input) {
     : states.attendance.status !== 'ready'
       ? mini(states.attendance.status, null)
       : (() => {
-          const rows = rowsForScope(states.attendance.data, scopeIds, filters.projectId)
+          const rows = rowsForScope(states.attendance.data, scopeIds, filters)
             .filter((row) => !isInactive(row))
             .filter((row) => dateInMonth(row, ['workDate', 'attendanceDate', 'date'], selectedMonth))
           const statusCounts = Object.create(null)
@@ -1785,7 +1791,7 @@ export function buildExecutiveDashboardReadModel(input) {
       )
     }
     else {
-      const usage = rowsForScope(vehicleUsageSanitized.rows, scopeIds, filters.projectId)
+      const usage = rowsForScope(vehicleUsageSanitized.rows, scopeIds, filters)
         .filter((row) => dateInMonth(row, ['usageDate', 'date'], selectedMonth))
       const fuel = fuelMonth.rows
       const expenses = vehicleExpenseMonth.rows
@@ -1832,7 +1838,7 @@ export function buildExecutiveDashboardReadModel(input) {
       const itemRows = access.inventory.amounts
         ? inventorySanitized.rows
         : states.inventoryItems.data
-      const items = rowsForScope(itemRows, scopeIds, filters.projectId)
+      const items = rowsForScope(itemRows, scopeIds, filters)
         .filter((row) => !isInactive(row))
       const statusCounts = Object.create(null)
       for (const row of items) {
@@ -1842,7 +1848,7 @@ export function buildExecutiveDashboardReadModel(input) {
         )
         statusCounts[status] = (statusCounts[status] || 0) + 1
       }
-      const countMonth = (name, fields) => rowsForScope(states[name].data, scopeIds, filters.projectId)
+      const countMonth = (name, fields) => rowsForScope(states[name].data, scopeIds, filters)
         .filter((row) => !isInactive(row) && dateInMonth(row, fields, selectedMonth)).length
       inventoryOperations = readyBlock(states, INVENTORY_REQUIRED, {
         itemCount: items.length,
@@ -1877,7 +1883,7 @@ export function buildExecutiveDashboardReadModel(input) {
       }
       const returned = new Set(states.toolReturnRecords.data.filter((row) => !isInactive(row))
         .map((row) => row.borrowRecordId).filter(safeIdentifier))
-      const monthBorrows = rowsForScope(states.toolBorrowRecords.data, scopeIds, filters.projectId)
+      const monthBorrows = rowsForScope(states.toolBorrowRecords.data, scopeIds, filters)
         .filter((row) => !isInactive(row) &&
           dateInMonth(row, ['borrowDate', 'date'], selectedMonth))
       const openTemporary = monthBorrows.filter((row) =>
@@ -1885,13 +1891,13 @@ export function buildExecutiveDashboardReadModel(input) {
         !returned.has(row.borrowRecordId),
       )
       const assignments = rowsForScope(
-        states.lifelongToolAssignments.data, scopeIds, filters.projectId,
+        states.lifelongToolAssignments.data, scopeIds, filters,
       ).filter((row) => !isInactive(row))
       const responsibilityRows = access.tools.amounts
         ? responsibilitySanitized.rows
         : states.toolResponsibilityRecords.data
       const responsibilities = rowsForScope(
-        responsibilityRows, scopeIds, filters.projectId,
+        responsibilityRows, scopeIds, filters,
       ).filter((row) => !isInactive(row) && row.compensationStatus === '未赔偿')
       toolOperations = readyBlock(states, TOOL_REQUIRED, {
         toolCount: tools.length,
@@ -1938,7 +1944,7 @@ export function buildExecutiveDashboardReadModel(input) {
   }
   if (attendanceState.status === 'ready' && attendanceState.data.abnormalCount > 0) {
     const row = states.attendance.data.find((item) =>
-      !isInactive(item) && rowsForScope([item], scopeIds, filters.projectId).length > 0 &&
+      !isInactive(item) && rowsForScope([item], scopeIds, filters).length > 0 &&
       dateInMonth(item, ['workDate', 'attendanceDate', 'date'], selectedMonth) &&
       !NORMAL_ATTENDANCE.has(item.status),
     )
@@ -1993,7 +1999,8 @@ export function buildExecutiveDashboardReadModel(input) {
       revealRecord: false,
     })
   }
-  if (access.costCategories.manualSupplement && states.projectCosts.status === 'ready') {
+  if (companyWideScope && access.costCategories.manualSupplement &&
+      states.projectCosts.status === 'ready') {
     const unbound = states.projectCosts.data.filter((row) =>
       !isInactive(row) && !safeIdentifier(row?.projectId),
     )
@@ -2052,7 +2059,7 @@ export function buildExecutiveDashboardReadModel(input) {
           ? responsibilitySanitized.rows
           : states.toolResponsibilityRecords.data,
         scopeIds,
-        filters.projectId,
+        filters,
       )
     : []) {
     if (isInactive(row) || row.compensationStatus !== '未赔偿') continue

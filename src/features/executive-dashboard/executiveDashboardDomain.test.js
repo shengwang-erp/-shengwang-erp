@@ -911,6 +911,46 @@ test('project row options publish the complete authorized set before status filt
   }, TypeError)
 })
 
+test('unbound purchases belong only to the company-wide portfolio', () => {
+  const sources = sourceFixture({
+    purchaseAccrual: ready([
+      {
+        purchaseId: 'PO-UNBOUND', projectId: '', purchaseDate: '2026-07-15',
+        purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: 100,
+      },
+      {
+        purchaseId: '', projectId: '', purchaseDate: '2026-07-15',
+        purchaseSource: '中国采购', purchaseStatus: '正常', totalCost: 1,
+      },
+    ]),
+    purchasePayments: ready([]),
+    projectCosts: ready([{
+      costRecordId: 'PC-UNBOUND', projectId: '', date: '2026-07-15',
+      costType: '外包费', amount: 88,
+    }]),
+  })
+  const company = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit',
+      page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+  const ongoing = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: '进行中', rankingMetric: 'profit',
+      page: 1, pageSize: 10,
+    },
+    sources,
+  }))
+
+  assert.equal(company.purchaseOperations.data.occurrence.data.monthCost, 100)
+  assert.equal(ongoing.purchaseOperations.data.occurrence.data.monthCost, 0)
+  assert.equal(ongoing.purchaseOperations.data.health.data.anomalyCount, 0)
+  assert.equal(company.alerts.data.some((alert) => alert.type === 'unbound_project_fact'), true)
+  assert.equal(ongoing.alerts.data.some((alert) => alert.type === 'unbound_project_fact'), false)
+})
+
 test('invalid envelopes throw while malformed source data and unsafe aggregates fail closed in envelopes', () => {
   let getterCalls = 0
   const accessorInput = input()
@@ -1230,6 +1270,29 @@ test('malformed ready payloads become isolated source errors across every dashbo
   assert.equal(calls, 0)
 })
 
+test('documented incomplete labor month keeps valid selected labor available', () => {
+  const window = laborWindow()
+  const model = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      laborWindow: ready(laborWindow({
+        monthly: window.monthly.map((row) => row.month === '2026-06'
+          ? {
+              month: row.month, status: 'error', stale: false,
+              salaryTotal: null, projectLaborTotal: null,
+              projectLaborById: null, source: null, pendingCount: null,
+            }
+          : row),
+        incompleteMonths: ['2026-06'],
+      })),
+    }),
+  }))
+
+  assert.equal(model.sourceIssues.data.some((issue) => issue.source === 'laborWindow'), false)
+  assert.equal(model.laborOperations.data.labor.status, 'ready')
+  assert.equal(model.costs.status, 'ready')
+  assert.equal(model.costs.data.monthlyByMonth['2026-06'].incomplete, true)
+})
+
 test('page denial globally fails closed and incompatible project/status filters produce an empty ready scope', () => {
   const denied = buildExecutiveDashboardReadModel(input({
     access: fullAccess({ page: false }),
@@ -1256,6 +1319,9 @@ test('page denial globally fails closed and incompatible project/status filters 
 
 test('alerts include current payable and unbound facts while forbidden source messages stay generic', () => {
   const model = buildExecutiveDashboardReadModel(input({
+    filters: {
+      projectId: 'all', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
     sources: sourceFixture({
       projectCosts: ready([
         ...sourceFixture().projectCosts.data,
