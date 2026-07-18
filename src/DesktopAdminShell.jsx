@@ -1,4 +1,5 @@
 import { getVisibleAdminRoutes } from './auth/businessAccess.js'
+import MobileBottomNavigation from './navigation/MobileBottomNavigation.jsx'
 import { normalizeAdminView } from './navigation/adminRoutes.js'
 
 export default function DesktopAdminShell({
@@ -8,6 +9,8 @@ export default function DesktopAdminShell({
   onLogout,
   laborAlertCount = 0,
   laborAlertStale = false,
+  workbenchItems = [],
+  messages = [],
   children,
 }) {
   const normalizedLaborAlertCount =
@@ -20,7 +23,7 @@ export default function DesktopAdminShell({
   const activeView = activeMenuItem?.view || 'home'
 
   return (
-    <div className="desktop-admin-layout">
+    <div className="erp-black-gold desktop-admin-layout">
       <aside className="desktop-admin-sidebar">
         <div className="desktop-admin-brand">
           <span className="desktop-admin-brand-mark" aria-hidden="true">
@@ -56,24 +59,9 @@ export default function DesktopAdminShell({
                   {item.label}
                   {showLaborAlert && (
                     <em
+                      className={`desktop-admin-alert-badge ${laborAlertStale ? 'is-stale' : ''}`}
                       data-labor-alert-badge
                       aria-hidden="true"
-                      style={{
-                        alignItems: 'center',
-                        background: laborAlertStale ? '#8a6d3b' : '#b42318',
-                        borderRadius: '999px',
-                        color: '#fff',
-                        display: 'inline-flex',
-                        fontSize: '11px',
-                        fontStyle: 'normal',
-                        fontWeight: 700,
-                        justifyContent: 'center',
-                        lineHeight: 1,
-                        marginLeft: '8px',
-                        minHeight: '19px',
-                        minWidth: '19px',
-                        padding: '0 5px',
-                      }}
                     >
                       {normalizedLaborAlertCount}
                     </em>
@@ -109,6 +97,13 @@ export default function DesktopAdminShell({
         </header>
         <div className="desktop-admin-content">{children}</div>
       </div>
+      <MobileBottomNavigation
+        currentView={currentView}
+        currentUser={currentUser}
+        workbenchItems={workbenchItems}
+        messages={messages}
+        onNavigate={onNavigate}
+      />
     </div>
   )
 }

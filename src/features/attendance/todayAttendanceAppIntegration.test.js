@@ -58,11 +58,12 @@ function propertyValues(source, propertyName) {
     .map((match) => match[1])
 }
 
-const [appSource, shellSource, authSource, dashboardDomainSource] = await Promise.all([
+const [appSource, shellSource, authSource, dashboardDomainSource, homeModelSource] = await Promise.all([
   read('../../App.jsx'),
   read('../../DesktopAdminShell.jsx'),
   read('../../auth/AuthGate.jsx'),
   read('../executive-dashboard/executiveDashboardDomain.js'),
+  read('../workbench/authorizedHomeModel.js'),
 ])
 
 const authenticatedApp = sliceBetween(
@@ -71,7 +72,6 @@ const authenticatedApp = sliceBetween(
   '\nfunction HomePage',
 )
 const homePage = sliceBetween(appSource, 'function HomePage', '\nfunction SystemSettingsPage')
-const homeModules = sliceBetween(homePage, 'const modules = [', '\n  ]')
 
 async function loadDesktopShell() {
   const server = await createServer({
@@ -91,8 +91,6 @@ const desktopShellModule = await loadDesktopShell()
 
 test('today attendance remains in the centralized desktop routes and Home cards', () => {
   const menuViews = ADMIN_ROUTES.filter(({ desktop }) => desktop).map(({ view }) => view)
-  const moduleTitles = propertyValues(homeModules, 'title')
-  const moduleViews = propertyValues(homeModules, 'view')
 
   assert.equal(menuViews.length, 13)
   assert.deepEqual(menuViews.filter((view) => view === 'todayAttendance'), ['todayAttendance'])
@@ -105,18 +103,11 @@ test('today attendance remains in the centralized desktop routes and Home cards'
     { label: '今日打卡', iconText: '勤', moduleName: null },
   )
 
-  assert.equal(moduleTitles.length, 13)
-  assert.deepEqual(moduleViews.filter((view) => view === 'todayAttendance'), ['todayAttendance'])
-  assert.equal(moduleViews.includes('toolReturn'), false)
-  assert.equal(moduleTitles.indexOf('今日打卡'), moduleTitles.indexOf('借工具') + 1)
-
-  const homeEntry = extractObjectContaining(homeModules, "view: 'todayAttendance'")
-  assert.match(homeEntry, /title:\s*'今日打卡'/u)
-  assert.match(homeEntry, /code:\s*'勤'/u)
-  assert.match(homeEntry, /color:\s*'green'/u)
-  assert.match(homeEntry, /count:\s*'进入'/u)
-  assert.match(homeEntry, /label:\s*'定位打卡・现场日志'/u)
-  assert.match(homeEntry, /alwaysAvailable:\s*true/u)
+  assert.match(homeModelSource, /getVisibleAdminRoutes/u)
+  assert.match(homeModelSource, /getAdminRoute/u)
+  assert.match(homeModelSource, /todayAttendance:\s*'进入'/u)
+  assert.match(homePage, /model\.modules\.map/u)
+  assert.doesNotMatch(homePage, /const\s+modules\s*=\s*\[/u)
 })
 
 test('zero-module employees see Home and Today Attendance without another desktop module', () => {
@@ -147,13 +138,9 @@ test('zero-module employees see Home and Today Attendance without another deskto
   assert.match(menuMarkup, />今日打卡</u)
   assert.doesNotMatch(menuMarkup, /工程项目|借工具|系统设置/u)
 
-  const homeFilter = sliceBetween(
-    homePage,
-    'const visibleModules = modules.filter',
-    '\n  const isPendingAuthorization',
-  )
   assert.match(shellSource, /getVisibleAdminRoutes\(currentUser\)/u)
-  assert.match(homeFilter, /canAccessView\(currentUser, module\.view\)/u)
+  assert.match(authenticatedApp, /buildAuthorizedHomeModel\(\{/u)
+  assert.match(authenticatedApp, /routes:\s*getVisibleAdminRoutes\(currentUser\)/u)
 })
 
 test('valid zero-module profiles authenticate with every dead permission-gate state removed', () => {
@@ -218,7 +205,32 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   assert.doesNotMatch(openingTag, /\bprojects\s*=/u)
   assert.equal(
     (authenticatedApp.match(/return renderInDesktopShell\(/gu) || []).length,
-    13,
+    16,
+  )
+})
+
+test('mobile shell routes use projected Home, workbench, message, and profile models', () => {
+  for (const [view, component] of [
+    ['workbench', 'MobileWorkbenchPage'],
+    ['messages', 'MobileMessagesPage'],
+    ['profile', 'MobileProfilePage'],
+  ]) {
+    const route = extractBraceBlock(authenticatedApp, `if (authorizedView === '${view}')`)
+    assert.match(route, new RegExp(`<${component}\\b`, 'u'))
+    assert.match(route, /return renderInDesktopShell\(/u)
+  }
+
+  const homeOpeningTag = extractOpeningTag(authenticatedApp, 'HomePage')
+  assert.match(homeOpeningTag, /model=\{homeModel\}/u)
+  assert.doesNotMatch(
+    homeOpeningTag,
+    /\b(?:projects|employees|purchaseRecords|projectCostRecords|inventoryItems)\s*=/u,
+  )
+  assert.match(authenticatedApp, /const authorizedMessages = buildAuthorizedMessages\(/u)
+  assert.match(authenticatedApp, /const workbenchItems = buildWorkbenchItems\(/u)
+  assert.match(
+    authenticatedApp,
+    /const bridgeTargetActive = \['home', 'accounting', 'dashboard', 'projects'\]\.includes\(authorizedView\)\s*\|\|\s*dashboardAccess\.page/u,
   )
 })
 

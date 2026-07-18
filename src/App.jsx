@@ -50,6 +50,17 @@ import {
   shouldBlockPersonnelExit,
 } from './features/employees/personnelCriticalState.js'
 import DesktopAdminShell from './DesktopAdminShell'
+import MobileMessagesPage from './features/workbench/MobileMessagesPage.jsx'
+import MobileProfilePage from './features/workbench/MobileProfilePage.jsx'
+import MobileWorkbenchPage from './features/workbench/MobileWorkbenchPage.jsx'
+import {
+  buildAuthorizedHomeModel,
+  getAuthorizedHomeSummary,
+} from './features/workbench/authorizedHomeModel.js'
+import {
+  buildAuthorizedMessages,
+  buildWorkbenchItems,
+} from './features/workbench/workbenchModel.js'
 import AuthGate from './auth/AuthGate'
 import { employeeAdminService } from './services/employeeAdminService'
 import { permissionTemplateService } from './services/permissionTemplateService'
@@ -74,6 +85,7 @@ import {
   getAccountingAccess,
   getDashboardAccess,
   getPurchaseAccess,
+  getVisibleAdminRoutes,
 } from './auth/businessAccess.js'
 import { getAdminRoute } from './navigation/adminRoutes.js'
 
@@ -92,7 +104,6 @@ import {
   loadProjectReceipts,
 } from './services/contractRevenueService'
 import {
-  canAccessModule,
   canEdit,
   isHiddenSystemEmployee,
   isSuperAdmin,
@@ -2044,6 +2055,18 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
 export function buildAuthorizedHomeSummary(currentUser, sources) {
   if (!canAccessView(currentUser, 'home')) return emptyHomeSummary()
 
+  try {
+    const descriptor = sources && typeof sources === 'object'
+      ? Object.getOwnPropertyDescriptor(sources, 'homeModel')
+      : null
+    const projectedSummary = descriptor && 'value' in descriptor
+      ? getAuthorizedHomeSummary(descriptor.value)
+      : null
+    if (projectedSummary) return projectedSummary
+  } catch {
+    // Continue through the legacy permission projection for compatibility callers.
+  }
+
   const projectAccess = canAccessView(currentUser, 'projects')
   const employeeAccess = canAccessView(currentUser, 'employees')
   const stockOutAccess = canAccessView(currentUser, 'stockOut')
@@ -2210,7 +2233,8 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       }
     })
   }, [])
-  const bridgeTargetActive = ['home', 'accounting', 'dashboard', 'projects'].includes(authorizedView)
+  const bridgeTargetActive = ['home', 'accounting', 'dashboard', 'projects'].includes(authorizedView) ||
+    dashboardAccess.page
   const bridgeRequestedMonth = authorizedView === 'accounting'
     ? accountingMonth
     : authorizedView === 'dashboard'
@@ -3494,12 +3518,67 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     selectedMonth: currentMonthValue(),
     sourceStates: dashboardSourceStates,
   })
-  const homeSummary = buildAuthorizedHomeSummary(currentUser, {
-    projects: projectRevenueProjects,
-    employees,
-    records: recordGroups,
-    financialModels: homeFinancialModels,
+  const homeSourceStates = {
+    projects: projectPromiseSource(projectRawState, {
+      readAllowed: canAccessView(currentUser, 'projects'),
+      data: projects,
+    }),
+    employees: projectPersistentSource(employeeRawState, {
+      readAllowed: canAccessView(currentUser, 'employees'),
+      data: employees,
+    }),
+    stockOutRecords: projectPersistentSource(stockOutRawState, {
+      readAllowed: canAccessView(currentUser, 'stockOut'),
+      data: stockOutRecords,
+    }),
+    stockReturnRecords: projectPersistentSource(stockReturnRawState, {
+      readAllowed: canAccessView(currentUser, 'stockReturn'),
+      data: stockReturnRecords,
+    }),
+    attendance: projectPersistentSource(laborRawState, {
+      readAllowed: canAccessView(currentUser, 'labor'),
+      data: laborRecords,
+    }),
+    vehicles: projectPersistentSource(vehicleRawState, {
+      readAllowed: canAccessView(currentUser, 'vehicle'),
+      data: vehicles,
+    }),
+    toolBorrowRecords: projectPersistentSource(toolBorrowRawState, {
+      readAllowed: canAccessView(currentUser, 'toolBorrow'),
+      data: normalizedToolBorrowRecords,
+    }),
+    costSummary: homeFinancialModels.cost,
+    purchaseSummary: homeFinancialModels.purchase,
+  }
+  const homeModel = buildAuthorizedHomeModel({
+    user: currentUser,
+    routes: getVisibleAdminRoutes(currentUser),
+    sourceStates: homeSourceStates,
   })
+  const homeSummary = buildAuthorizedHomeSummary(currentUser, {
+    homeModel,
+    projects: projectRevenueProjects,
+  })
+  const dashboardAlertState = dashboardAccess.page
+    ? buildExecutiveDashboardReadModel({
+        asOfDate: todayValue(),
+        selectedMonth: dashboardQuery.selectedMonth,
+        filters: dashboardFilters,
+        access: dashboardAccess,
+        sources: dashboardSourceStates,
+      }).alerts
+    : { status: 'forbidden', data: [], stale: false }
+  const authorizedMessages = buildAuthorizedMessages({
+    access: { user: currentUser, dashboard: dashboardAccess },
+    alerts: dashboardAlertState,
+  })
+  const workbenchCounts = Object.fromEntries(
+    homeModel.modules.map((module) => [
+      module.view,
+      module.view === 'labor' ? laborAlertCount : module.badgeCount,
+    ]),
+  )
+  const workbenchItems = buildWorkbenchItems({ user: currentUser, counts: workbenchCounts })
 
   const renderInDesktopShell = (page) => (
     <DesktopAdminShell
@@ -3509,10 +3588,38 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       onLogout={handlePersonnelAwareLogout}
       laborAlertCount={laborAlertCount}
       laborAlertStale={laborAlertStale}
+      workbenchItems={workbenchItems}
+      messages={authorizedMessages}
     >
       {page}
     </DesktopAdminShell>
   )
+
+  if (authorizedView === 'workbench') {
+    return renderInDesktopShell(
+      <MobileWorkbenchPage
+        currentUser={currentUser}
+        items={workbenchItems}
+        onNavigate={handlePersonnelAwareNavigate}
+      />,
+    )
+  }
+
+  if (authorizedView === 'messages') {
+    return renderInDesktopShell(
+      <MobileMessagesPage
+        currentUser={currentUser}
+        messages={authorizedMessages}
+        onNavigate={handleDashboardNavigate}
+      />,
+    )
+  }
+
+  if (authorizedView === 'profile') {
+    return renderInDesktopShell(
+      <MobileProfilePage currentUser={currentUser} onLogout={handlePersonnelAwareLogout} />,
+    )
+  }
 
   if (authorizedView === 'contractRevenue') {
     return renderInDesktopShell(
@@ -3738,6 +3845,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   return renderInDesktopShell(
     <HomePage
       summary={homeSummary}
+      model={homeModel}
       currentUser={currentUser}
       onLogout={onLogout}
       onOpenView={handlePersonnelAwareNavigate}
@@ -3745,139 +3853,68 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   )
 }
 
-function HomePage({ summary, currentUser, onLogout, onOpenView }) {
+function buildLegacyHomePresentation(currentUser, summary) {
+  const safeSummary = summary && typeof summary === 'object' ? summary : emptyHomeSummary()
+  const moduleCounts = safeSummary.moduleCounts && typeof safeSummary.moduleCounts === 'object'
+    ? safeSummary.moduleCounts
+    : {}
+  const modules = getVisibleAdminRoutes(currentUser)
+    .filter((route) => route.view !== 'home')
+    .map((route) => {
+      let displayValue = '进入'
+      if (route.view === 'accounting') {
+        displayValue = Number.isSafeInteger(safeSummary.monthlyCostTotal)
+          ? formatYen(safeSummary.monthlyCostTotal)
+          : '待核算'
+      } else if (route.view === 'purchase') {
+        displayValue = Number.isSafeInteger(safeSummary.monthlyPurchaseTotal)
+          ? formatYen(safeSummary.monthlyPurchaseTotal)
+          : '待核算'
+      } else if (Number.isSafeInteger(moduleCounts[route.view])) {
+        displayValue = String(moduleCounts[route.view])
+      } else if (route.view === 'dashboard' || route.view === 'settings') {
+        displayValue = '查看'
+      }
+      return {
+        view: route.view,
+        label: route.label,
+        iconText: route.iconText,
+        badgeCount: Number.isSafeInteger(moduleCounts[route.view])
+          ? moduleCounts[route.view]
+          : 0,
+        displayValue,
+        sourceStatus: 'ready',
+        sourceStale: false,
+      }
+    })
+
+  return {
+    viewer: {
+      name: currentUser?.name || '',
+      department: currentUser?.department || '',
+      position: currentUser?.position || '',
+      isSuperAdmin: isSuperAdmin(currentUser),
+    },
+    overview: [
+      { key: 'active-projects', value: safeSummary.activeProjects || 0, label: '进行中项目' },
+      { key: 'authorized-records', value: safeSummary.totalRecords || 0, label: '已授权业务记录' },
+      { key: 'paused-projects', value: safeSummary.pausedProjects || 0, label: '暂停项目' },
+    ],
+    modules,
+    sourceNotices: [],
+    summary: safeSummary,
+  }
+}
+
+function HomePage({ model, summary, currentUser, onLogout, onOpenView }) {
   const today = new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',
     weekday: 'short',
   }).format(new Date())
-
-  const {
-    activeProjects,
-    activeEmployees,
-    totalRecords,
-    pausedProjects,
-    monthlyPurchaseTotal,
-    monthlyCostTotal,
-    moduleCounts,
-  } = summary
-
-  const overviewItems = [
-    { value: activeProjects, label: '进行中项目' },
-    { value: totalRecords, label: '业务记录' },
-    { value: pausedProjects, label: '暂停项目' },
-  ]
-
-  const modules = [
-    {
-      title: '工程项目',
-      code: 'GC',
-      color: 'blue',
-      count: moduleCounts.projects,
-      label: '项目主数据',
-      view: 'projects',
-    },
-    {
-      title: '人员管理',
-      code: '人员',
-      color: 'violet',
-      count: moduleCounts.employees,
-      label: '员工档案・工资・身份',
-      view: 'employees',
-    },
-    { title: '仓库库存', code: 'KC', color: 'green', count: '静态', label: '库存物料' },
-    {
-      title: '我要出库',
-      permissionName: '仓库库存',
-      code: '出库',
-      color: 'orange',
-      count: moduleCounts.stockOut,
-      label: '材料领用',
-      view: 'stockOut',
-    },
-    {
-      title: '我要退回',
-      permissionName: '仓库库存',
-      code: '退回',
-      color: 'rose',
-      count: moduleCounts.stockReturn,
-      label: '余料退库',
-      view: 'stockReturn',
-    },
-    {
-      title: '人工记录',
-      code: 'RG',
-      color: 'violet',
-      count: moduleCounts.labor,
-      label: '今日出勤',
-      view: 'labor',
-    },
-    {
-      title: '车辆管理',
-      code: 'CL',
-      color: 'cyan',
-      count: moduleCounts.vehicle,
-      label: '轨迹・费用・异常',
-      view: 'vehicle',
-    },
-    {
-      title: '借工具',
-      permissionName: '工具管理',
-      code: '借',
-      color: 'lime',
-      count: moduleCounts.toolBorrow,
-      label: '工具领用',
-      view: 'toolBorrow',
-    },
-    {
-      title: '今日打卡',
-      code: '勤',
-      color: 'green',
-      count: '进入',
-      label: '定位打卡・现场日志',
-      view: 'todayAttendance',
-      alwaysAvailable: true,
-    },
-    {
-      title: '会计成本',
-      code: '会计',
-      color: 'blue',
-      count: Number.isSafeInteger(monthlyCostTotal) ? formatYen(monthlyCostTotal) : '待核算',
-      label: '做账・工资・成本',
-      view: 'accounting',
-    },
-    {
-      title: '采购管理',
-      code: '采购',
-      color: 'orange',
-      count: Number.isSafeInteger(monthlyPurchaseTotal)
-        ? formatYen(monthlyPurchaseTotal)
-        : '待核算',
-      label: '国内・日本・关系单位',
-      view: 'purchase',
-    },
-    {
-      title: '系统设置',
-      code: '设置',
-      color: 'blue',
-      count: isCloudDatabaseReady() ? '云端' : '本机',
-      label: '云端数据库・迁移',
-      view: 'settings',
-    },
-    {
-      title: '老板驾驶舱',
-      code: 'JS',
-      color: 'dark',
-      count: '查看',
-      label: '经营看板 · 利润统计',
-      view: 'dashboard',
-    },
-  ]
-  const visibleModules = modules.filter((module) =>
-    module.view
-      ? canAccessView(currentUser, module.view)
-      : canAccessModule(currentUser, module.permissionName || module.title),
-  )
+  model = getAuthorizedHomeSummary(model)
+    ? model
+    : buildLegacyHomePresentation(currentUser, summary)
   const isPendingAuthorization =
     (currentUser.effectivePermissionKeys || []).length === 0
 
@@ -3900,14 +3937,14 @@ function HomePage({ summary, currentUser, onLogout, onOpenView }) {
         </div>
 
         <div className="summary-grid" aria-label="数据概览">
-          {overviewItems.map((item) => (
-            <div className="summary-item" key={item.label}>
+          {model.overview.map((item) => (
+            <div className="summary-item" key={item.key}>
               <strong>{item.value}</strong>
               <span>{item.label}</span>
             </div>
           ))}
         </div>
-        {isSuperAdmin(currentUser) && (
+        {model.viewer.isSuperAdmin && (
           <div className="system-account-panel">
             <strong>当前为系统恢复账号</strong>
             <span>状态：已启用</span>
@@ -3924,26 +3961,33 @@ function HomePage({ summary, currentUser, onLogout, onOpenView }) {
         </div>
 
         <div className="module-grid">
-          {visibleModules.map((module) => (
+          {model.modules.map((module) => (
             <button
-              className={`module-card ${module.color}`}
+              className={`module-card module-${module.view} is-${module.sourceStatus}`}
               type="button"
-              key={module.title}
-              onClick={() => module.view && onOpenView(module.view)}
+              key={module.view}
+              onClick={() => onOpenView(module.view)}
             >
               <span className="module-icon" aria-hidden="true">
-                {module.code}
+                {module.iconText}
               </span>
               <span className="module-copy">
-                <strong>{module.title}</strong>
-                <small>{module.label}</small>
+                <strong>{module.label}</strong>
+                <small>{module.sourceStale ? '数据可能已过期' : '进入业务模块'}</small>
               </span>
-              <span className="module-count">{module.count}</span>
+              <span className="module-count">{module.displayValue}</span>
               <span className="module-action">查看详情</span>
             </button>
           ))}
         </div>
-        {visibleModules.length === 0 && (
+        {model.sourceNotices.length > 0 && (
+          <div className="home-source-notices" aria-label="授权数据源状态">
+            {model.sourceNotices.map((notice) => (
+              <span className={`status-${notice.status}`} key={notice.view}>{notice.message}</span>
+            ))}
+          </div>
+        )}
+        {model.modules.length === 0 && (
           <div className="empty-state pending-auth-state">
             <strong>账号已创建，请联系管理员开通业务模块权限。</strong>
             <span>姓名：{currentUser.name}</span>
@@ -4715,7 +4759,12 @@ function VehicleManagementPage({
   ]
 
   return (
-    <PageShell title="车辆管理" subtitle="车辆轨迹・费用・项目分摊" onBack={onBack}>
+    <PageShell
+      title="车辆管理"
+      subtitle="车辆轨迹・费用・项目分摊"
+      rootClassName="vehicle-management-page"
+      onBack={onBack}
+    >
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
@@ -5368,7 +5417,12 @@ function ToolManagementPage({
   ]
 
   return (
-    <PageShell title="工具管理" subtitle="临时借用・终身领用・责任记录" onBack={onBack}>
+    <PageShell
+      title="工具管理"
+      subtitle="临时借用・终身领用・责任记录"
+      rootClassName="tool-management-page"
+      onBack={onBack}
+    >
       <div className="accounting-entry-grid">
         {sections.map((item) => (
           <button
@@ -6237,7 +6291,12 @@ export function AccountingCostPage({
   }, [section, sections])
 
   return (
-    <PageShell title="会计成本中心" subtitle="AccountingCostCenter" onBack={onBack}>
+    <PageShell
+      title="会计成本中心"
+      subtitle="AccountingCostCenter"
+      rootClassName="accounting-cost-page"
+      onBack={onBack}
+    >
       {bridgeStatusNotice}
       {sections.length === 0 && <EmptyState text="当前账号无可用功能" />}
       <div className="accounting-entry-grid">
@@ -7316,7 +7375,12 @@ export function PurchaseManagementPage({
   }, [section, sections])
 
   return (
-    <PageShell title="采购管理" subtitle="国内・日本・关系单位" onBack={onBack}>
+    <PageShell
+      title="采购管理"
+      subtitle="国内・日本・关系单位"
+      rootClassName="purchase-management-page"
+      onBack={onBack}
+    >
       {sections.length === 0 && <EmptyState text="当前账号无可用功能" />}
       {resolvedAccess.payments.view && !paymentReady && (
         <EmptyState text="当前付款数据不可用" />
@@ -8040,7 +8104,7 @@ function PurchaseSummarySection({
   const inventoryTotal = inventoryItems.reduce((sum, item) => sum + toAmount(item.totalCost), 0)
 
   return (
-    <>
+    <section className="inventory-section">
       <SectionTitle title="采购汇总" note={monthFilter} />
       <div className="filter-panel">
         <Field label="统计月份" type="month" value={monthFilter} onChange={setMonthFilter} />
@@ -8059,7 +8123,7 @@ function PurchaseSummarySection({
         <div className="stat-card"><strong>{stockStatusCount('已入库')}</strong><span>已入库采购数量</span></div>
         <div className="stat-card money"><strong>{formatYen(inventoryTotal)}</strong><span>仓库库存总成本</span></div>
       </div>
-    </>
+    </section>
   )
 }
 
@@ -8608,9 +8672,9 @@ function DashboardPage({
   )
 }
 
-function PageShell({ title, subtitle, onBack, action, children }) {
+function PageShell({ title, subtitle, rootClassName = '', onBack, action, children }) {
   return (
-    <main className="app-shell page-shell">
+    <main className={`app-shell page-shell ${rootClassName}`.trim()}>
       <header className="page-header">
         <button className="back-button" type="button" onClick={onBack}>
           返回首页

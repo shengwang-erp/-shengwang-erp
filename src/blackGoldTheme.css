@@ -1,0 +1,933 @@
+.erp-black-gold {
+  --erp-bg-canvas: #080806;
+  --erp-bg-surface: #0f0f0d;
+  --erp-bg-elevated: #171612;
+  --erp-bg-hover: #211f18;
+  --erp-border-subtle: #3a3120;
+  --erp-border-strong: #5b492a;
+  --erp-border-gold-muted: #6d552d;
+  --erp-accent-gold: #d6aa5c;
+  --erp-accent-gold-soft: #f0c56d;
+  --erp-accent-gold-surface: #2a2114;
+  --erp-text-primary: #f4efe4;
+  --erp-text-secondary: #c7bdab;
+  --erp-text-muted: #9c9485;
+  --erp-status-success: #63b36a;
+  --erp-status-danger: #e05c46;
+  --erp-status-warning: #d98a3d;
+  --erp-status-info: #6d94bd;
+  --erp-status-success-surface: #112417;
+  --erp-status-danger-surface: #2b1511;
+  --erp-status-warning-surface: #2b2011;
+  --erp-status-info-surface: #111d28;
+  --erp-focus-ring: #f0c56d;
+  --erp-chart-gold: #d6aa5c;
+  --erp-chart-amber: #d98a3d;
+  --erp-chart-bronze: #9f7442;
+  --erp-chart-ivory: #d8cdb9;
+  --erp-chart-slate: #6d7b89;
+  --erp-chart-positive: #63b36a;
+  --erp-chart-negative: #e05c46;
+  --erp-chart-track: #2a271f;
+  --erp-chart-axis: #5b5141;
+  --erp-font-sans: Inter, "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --erp-font-numeric: "SFMono-Regular", "Roboto Mono", ui-monospace, monospace;
+  --erp-shadow-card: 0 12px 32px rgba(0, 0, 0, 0.24);
+  --erp-shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.34);
+  min-width: 0;
+  min-height: 100vh;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+  color-scheme: dark;
+  font-family: var(--erp-font-sans);
+}
+
+.erp-black-gold *,
+.erp-black-gold *::before,
+.erp-black-gold *::after {
+  box-sizing: border-box;
+}
+
+.erp-black-gold.desktop-admin-layout {
+  min-width: 0;
+  min-height: 100vh;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.erp-black-gold .desktop-admin-sidebar {
+  color: var(--erp-text-primary);
+  border-color: var(--erp-border-subtle);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-panel);
+}
+
+.erp-black-gold .desktop-admin-brand {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .desktop-admin-brand-mark {
+  border-color: var(--erp-accent-gold);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  box-shadow: inset 0 0 18px rgba(214, 170, 92, 0.12);
+}
+
+.erp-black-gold .desktop-admin-brand small,
+.erp-black-gold .desktop-admin-sidebar-foot span,
+.erp-black-gold .desktop-admin-sidebar-foot small {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .desktop-admin-menu-item {
+  border-color: transparent;
+  color: var(--erp-text-secondary);
+  background: transparent;
+}
+
+.erp-black-gold .desktop-admin-menu-item:hover {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-hover);
+}
+
+.erp-black-gold .desktop-admin-menu-item.active {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  box-shadow: inset 3px 0 0 var(--erp-accent-gold);
+}
+
+.erp-black-gold .desktop-admin-menu-item > span {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .desktop-admin-sidebar-foot {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .desktop-admin-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  min-height: 19px;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--erp-text-primary);
+  background: var(--erp-status-danger);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.erp-black-gold .desktop-admin-alert-badge.is-stale {
+  background: var(--erp-status-warning);
+}
+
+.erp-black-gold .desktop-admin-workspace,
+.erp-black-gold .desktop-admin-content {
+  min-width: 0;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.erp-black-gold .desktop-admin-topbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: rgba(15, 15, 13, 0.96);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(18px);
+}
+
+.erp-black-gold .desktop-admin-topbar-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.erp-black-gold .desktop-admin-topbar-title > span,
+.erp-black-gold .desktop-admin-topbar-title > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-black-gold .desktop-admin-topbar-user {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.erp-black-gold .desktop-admin-topbar-user > span {
+  min-width: 0;
+  max-width: clamp(72px, 24vw, 180px);
+  overflow: hidden;
+  text-align: right;
+}
+
+.erp-black-gold .desktop-admin-topbar-user > span > strong,
+.erp-black-gold .desktop-admin-topbar-user > span > small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-black-gold .desktop-admin-topbar-user > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 7px;
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  cursor: pointer;
+}
+
+.erp-black-gold .desktop-admin-topbar-title > span,
+.erp-black-gold .desktop-admin-topbar-user small {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .desktop-admin-topbar-title > strong {
+  color: var(--erp-accent-gold-soft);
+}
+
+.erp-black-gold .app-shell,
+.erp-black-gold .page-shell,
+.erp-black-gold .project-page,
+.erp-black-gold .personnel-page,
+.erp-black-gold .labor-accounting-page,
+.erp-black-gold .attendance-page,
+.erp-black-gold .contract-revenue-page,
+.erp-black-gold .accounting-cost-page,
+.erp-black-gold .purchase-management-page,
+.erp-black-gold .vehicle-management-page,
+.erp-black-gold .tool-management-page {
+  min-width: 0;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.erp-black-gold .top-panel {
+  overflow: hidden;
+  border: 1px solid var(--erp-border-strong);
+  border-top: 3px solid var(--erp-accent-gold);
+  color: var(--erp-text-primary);
+  background: linear-gradient(135deg, var(--erp-bg-surface), var(--erp-bg-elevated));
+  box-shadow: var(--erp-shadow-panel);
+}
+
+.erp-black-gold .top-panel::after {
+  border-color: var(--erp-border-gold-muted);
+  background: transparent;
+  opacity: 0.34;
+}
+
+.erp-black-gold .eyebrow,
+.erp-black-gold .dark-text {
+  color: var(--erp-accent-gold);
+  letter-spacing: 0.12em;
+}
+
+.erp-black-gold .home-subtitle,
+.erp-black-gold .home-user-box,
+.erp-black-gold .section-heading > span {
+  color: var(--erp-text-secondary);
+}
+
+.erp-black-gold .date-pill,
+.erp-black-gold .amount-pill,
+.erp-black-gold .status-badge {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .summary-grid {
+  gap: 1px;
+  border: 1px solid var(--erp-border-subtle);
+  background: var(--erp-border-subtle);
+}
+
+.erp-black-gold .summary-item {
+  min-width: 0;
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .summary-item strong,
+.erp-black-gold .stat-card strong,
+.erp-black-gold .module-count {
+  color: var(--erp-text-primary);
+  font-family: var(--erp-font-numeric);
+}
+
+.erp-black-gold .module-section {
+  color: var(--erp-text-primary);
+  background: transparent;
+}
+
+.erp-black-gold .module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.erp-black-gold .module-card {
+  min-width: 0;
+  min-height: 154px;
+  padding: 18px;
+  border: 1px solid var(--erp-border-subtle);
+  border-top: 2px solid var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .module-card:hover {
+  border-color: var(--erp-accent-gold);
+  background: var(--erp-bg-hover);
+  transform: translateY(-2px);
+}
+
+.erp-black-gold .module-card.is-error,
+.erp-black-gold .module-card.is-forbidden {
+  border-top-color: var(--erp-status-warning);
+}
+
+.erp-black-gold .module-icon,
+.erp-black-gold .mobile-workbench-icon,
+.erp-black-gold .mobile-profile-mark {
+  border: 1px solid var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .module-copy small,
+.erp-black-gold .module-action,
+.erp-black-gold .detail-list dt,
+.erp-black-gold .record-header span {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .module-action {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .page-header {
+  border: 1px solid var(--erp-border-subtle);
+  border-left: 3px solid var(--erp-accent-gold);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .form-panel,
+.erp-black-gold .form-card,
+.erp-black-gold .filter-panel,
+.erp-black-gold .record-card,
+.erp-black-gold .payment-table,
+.erp-black-gold .payment-table-wrap,
+.erp-black-gold .inventory-section,
+.erp-black-gold .personnel-card,
+.erp-black-gold .labor-report-card,
+.erp-black-gold .labor-report-table-card {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .form-group,
+.erp-black-gold .personnel-fieldset,
+.erp-black-gold .record-header,
+.erp-black-gold .section-heading,
+.erp-black-gold .labor-section-heading {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .field,
+.erp-black-gold .personnel-field,
+.erp-black-gold .labor-report-filters label {
+  color: var(--erp-text-secondary);
+}
+
+.erp-black-gold input,
+.erp-black-gold select,
+.erp-black-gold textarea {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+  caret-color: var(--erp-accent-gold-soft);
+}
+
+.erp-black-gold input::placeholder,
+.erp-black-gold textarea::placeholder {
+  color: var(--erp-text-muted);
+  opacity: 0.72;
+}
+
+.erp-black-gold button {
+  font: inherit;
+}
+
+.erp-black-gold .primary-button,
+.erp-black-gold .back-button,
+.erp-black-gold .ghost-button,
+.erp-black-gold .mobile-profile-logout,
+.erp-black-gold .labor-primary-action,
+.erp-black-gold .labor-row-action {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .primary-button,
+.erp-black-gold .labor-primary-action {
+  color: var(--erp-bg-canvas);
+  background: var(--erp-accent-gold);
+}
+
+.erp-black-gold .danger-button {
+  border-color: var(--erp-status-danger);
+  color: var(--erp-status-danger);
+  background: var(--erp-status-danger-surface);
+}
+
+.erp-black-gold button:hover:not(:disabled) {
+  border-color: var(--erp-accent-gold-soft);
+  filter: brightness(1.08);
+}
+
+.erp-black-gold button:focus-visible,
+.erp-black-gold input:focus-visible,
+.erp-black-gold select:focus-visible,
+.erp-black-gold textarea:focus-visible,
+.erp-black-gold [tabindex="0"]:focus-visible {
+  outline: 2px solid var(--erp-focus-ring);
+  outline-offset: 2px;
+}
+
+.erp-black-gold button:disabled,
+.erp-black-gold input:disabled,
+.erp-black-gold select:disabled,
+.erp-black-gold textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.erp-black-gold .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.erp-black-gold .stat-card {
+  border-color: var(--erp-border-subtle);
+  border-top-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .record-list,
+.erp-black-gold .labor-card-list,
+.erp-black-gold .mobile-message-list {
+  gap: 10px;
+}
+
+.erp-black-gold .record-actions {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .detail-list dd,
+.erp-black-gold .record-header strong,
+.erp-black-gold .section-heading h2,
+.erp-black-gold .page-header h1 {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .empty-state {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .warning-note,
+.erp-black-gold .status-warning,
+.erp-black-gold [data-tone="warning"] {
+  border-color: var(--erp-status-warning);
+  color: var(--erp-status-warning);
+  background: var(--erp-status-warning-surface);
+}
+
+.erp-black-gold .status-error,
+.erp-black-gold .personnel-error,
+.erp-black-gold .labor-page-error,
+.erp-black-gold [data-tone="danger"] {
+  border-color: var(--erp-status-danger);
+  color: var(--erp-status-danger);
+  background: var(--erp-status-danger-surface);
+}
+
+.erp-black-gold .status-success,
+.erp-black-gold [data-tone="success"],
+.erp-black-gold [data-tone="locked"] {
+  border-color: var(--erp-status-success);
+  color: var(--erp-status-success);
+  background: var(--erp-status-success-surface);
+}
+
+.erp-black-gold .status-loading,
+.erp-black-gold .status-forbidden,
+.erp-black-gold [data-tone="info"] {
+  border-color: var(--erp-status-info);
+  color: var(--erp-status-info);
+  background: var(--erp-status-info-surface);
+}
+
+.erp-black-gold .personnel-summary,
+.erp-black-gold .labor-summary-grid,
+.erp-black-gold .labor-report-summary,
+.erp-black-gold .labor-project-summary {
+  border-color: var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .personnel-form,
+.erp-black-gold .personnel-filters,
+.erp-black-gold .labor-daily-board,
+.erp-black-gold .labor-exception-queue,
+.erp-black-gold .labor-settings-card {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-tabs,
+.erp-black-gold .accounting-entry-grid {
+  border-color: var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-tabs button,
+.erp-black-gold .accounting-entry {
+  border-color: transparent;
+  color: var(--erp-text-secondary);
+  background: transparent;
+}
+
+.erp-black-gold .labor-tabs button[aria-selected="true"],
+.erp-black-gold .accounting-entry.active {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold table {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold th {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-accent-gold);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold td {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+}
+
+.erp-black-gold tbody tr:hover {
+  background: var(--erp-bg-hover);
+}
+
+.erp-black-gold .home-source-notices {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.erp-black-gold .home-source-notices > span {
+  padding: 10px 12px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 6px;
+}
+
+.erp-black-gold .mobile-workbench-page,
+.erp-black-gold .mobile-messages-page,
+.erp-black-gold .mobile-profile-page {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
+.erp-black-gold .mobile-workbench-header,
+.erp-black-gold .mobile-profile-card,
+.erp-black-gold .mobile-profile-modules {
+  margin-bottom: 14px;
+  padding: 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-top: 2px solid var(--erp-accent-gold);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .mobile-workbench-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.erp-black-gold .mobile-workbench-card,
+.erp-black-gold .mobile-message-card {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .mobile-workbench-copy,
+.erp-black-gold .mobile-message-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+  text-align: left;
+}
+
+.erp-black-gold .mobile-workbench-copy small,
+.erp-black-gold .mobile-message-copy p,
+.erp-black-gold .mobile-message-copy span,
+.erp-black-gold .mobile-profile-card p,
+.erp-black-gold .mobile-profile-card small {
+  margin: 0;
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .mobile-workbench-badge,
+.erp-black-gold .mobile-bottom-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--erp-text-primary);
+  background: var(--erp-status-danger);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.erp-black-gold .mobile-message-card.is-warning {
+  border-left: 3px solid var(--erp-status-warning);
+}
+
+.erp-black-gold .mobile-message-card.is-danger,
+.erp-black-gold .mobile-message-card.is-error {
+  border-left: 3px solid var(--erp-status-danger);
+}
+
+.erp-black-gold .mobile-message-card.is-info {
+  border-left: 3px solid var(--erp-status-info);
+}
+
+.erp-black-gold .mobile-profile-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.erp-black-gold .mobile-profile-module-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.erp-black-gold .mobile-profile-module-list > span {
+  padding: 7px 10px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 999px;
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .mobile-profile-logout {
+  width: 100%;
+  min-height: 46px;
+}
+
+.erp-black-gold .mobile-bottom-navigation {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .erp-black-gold.desktop-admin-layout {
+    display: block !important;
+  }
+
+  .erp-black-gold .desktop-admin-sidebar {
+    display: none !important;
+  }
+
+  .erp-black-gold .desktop-admin-workspace {
+    display: block !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+  }
+
+  .erp-black-gold .desktop-admin-topbar {
+    position: sticky !important;
+    display: flex !important;
+    top: 0 !important;
+    right: auto !important;
+    left: auto !important;
+    width: auto !important;
+    min-height: 62px;
+    padding: 10px 14px;
+  }
+
+  .erp-black-gold .desktop-admin-topbar-title > span,
+  .erp-black-gold .desktop-admin-topbar-user small {
+    display: none;
+  }
+
+  .erp-black-gold .desktop-admin-content {
+    display: block !important;
+    padding-top: 0 !important;
+    padding-bottom: calc(82px + env(safe-area-inset-bottom));
+  }
+
+  .erp-black-gold .app-shell,
+  .erp-black-gold .page-shell {
+    width: 100%;
+    padding: 12px;
+  }
+
+  .erp-black-gold .top-panel,
+  .erp-black-gold .page-header {
+    padding: 18px;
+  }
+
+  .erp-black-gold .title-row,
+  .erp-black-gold .page-header,
+  .erp-black-gold .mobile-profile-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .erp-black-gold .summary-grid,
+  .erp-black-gold .module-grid,
+  .erp-black-gold .stats-grid,
+  .erp-black-gold .mobile-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .erp-black-gold .module-card {
+    min-height: 128px;
+  }
+
+  .erp-black-gold .form-grid,
+  .erp-black-gold .personnel-form-grid,
+  .erp-black-gold .labor-settings-grid,
+  .erp-black-gold .labor-project-analytics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .erp-black-gold .payment-table-wrap,
+  .erp-black-gold .labor-status-table-wrap,
+  .erp-black-gold .labor-report-desktop-table {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .erp-black-gold .mobile-bottom-navigation {
+    position: fixed;
+    z-index: 1200;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-height: 64px;
+    padding: 7px 8px 4px;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--erp-border-strong);
+    background: rgba(15, 15, 13, 0.98);
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.34);
+    backdrop-filter: blur(18px);
+  }
+
+  .erp-black-gold .mobile-bottom-navigation button {
+    position: relative;
+    display: grid;
+    place-items: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 50px;
+    padding: 3px;
+    border: 0;
+    border-radius: 8px;
+    color: var(--erp-text-muted);
+    background: transparent;
+    font-size: 11px;
+  }
+
+  .erp-black-gold .mobile-bottom-navigation button.is-active {
+    color: var(--erp-accent-gold-soft);
+    background: var(--erp-accent-gold-surface);
+  }
+
+  .erp-black-gold .mobile-bottom-icon {
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .erp-black-gold .mobile-bottom-badge {
+    position: absolute;
+    top: 1px;
+    left: calc(50% + 6px);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .erp-black-gold.desktop-admin-layout {
+    display: block !important;
+  }
+
+  .erp-black-gold .desktop-admin-sidebar {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border-right: 0;
+    box-shadow: none;
+  }
+
+  .erp-black-gold .desktop-admin-brand,
+  .erp-black-gold .desktop-admin-sidebar-foot {
+    display: none;
+  }
+
+  .erp-black-gold .desktop-admin-menu {
+    display: flex;
+    gap: 6px;
+    padding: 10px 14px;
+    overflow-x: auto;
+  }
+
+  .erp-black-gold .desktop-admin-menu-item {
+    flex: 0 0 auto;
+    min-height: 40px;
+  }
+
+  .erp-black-gold .desktop-admin-workspace {
+    display: block !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+  }
+
+  .erp-black-gold .desktop-admin-topbar {
+    position: static !important;
+    inset: auto !important;
+    display: flex !important;
+    width: auto !important;
+  }
+
+  .erp-black-gold .desktop-admin-content {
+    display: block !important;
+    padding-top: 0 !important;
+  }
+
+  .erp-black-gold .module-grid,
+  .erp-black-gold .stats-grid,
+  .erp-black-gold .mobile-workbench-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .erp-black-gold .mobile-bottom-navigation {
+    display: none !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  .erp-black-gold.desktop-admin-layout {
+    display: grid !important;
+    grid-template-columns: 196px minmax(0, 1fr);
+  }
+
+  .erp-black-gold .desktop-admin-sidebar {
+    position: fixed !important;
+    z-index: 100;
+    inset: 0 auto 0 0 !important;
+    display: flex !important;
+    width: 196px !important;
+    height: 100vh !important;
+  }
+
+  .erp-black-gold .desktop-admin-workspace {
+    grid-column: 2;
+    min-width: 0;
+    margin-left: 0 !important;
+  }
+
+  .erp-black-gold .desktop-admin-topbar {
+    position: fixed !important;
+    z-index: 90;
+    top: 0 !important;
+    right: 0 !important;
+    left: 196px !important;
+    width: auto !important;
+  }
+
+  .erp-black-gold .desktop-admin-content {
+    min-width: 0;
+    padding-top: 74px !important;
+  }
+
+  .erp-black-gold .mobile-bottom-navigation {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erp-black-gold *,
+  .erp-black-gold *::before,
+  .erp-black-gold *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

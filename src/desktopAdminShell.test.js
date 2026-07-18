@@ -101,7 +101,7 @@ test('desktop shell renders only centrally authorized routes and falls back to H
 test('authenticated views share the desktop shell while login stays outside it', () => {
   assert.match(appSource, /import DesktopAdminShell from '\.\/DesktopAdminShell'/)
   assert.match(appSource, /const renderInDesktopShell\s*=\s*\(page\)\s*=>/)
-  assert.equal((authenticatedApp.match(/return renderInDesktopShell\(/g) || []).length, 13)
+  assert.equal((authenticatedApp.match(/return renderInDesktopShell\(/g) || []).length, 16)
   assert.match(appSource, /<AuthGate>[\s\S]*?<AuthenticatedApp/)
   assert.doesNotMatch(appSource, /if \(!currentUser\)[\s\S]*?<LoginPage/)
 
@@ -122,6 +122,16 @@ test('authenticated views share the desktop shell while login stays outside it',
   assert.match(returnsBranch, /<ToolReturnSection/u)
   assert.match(returnsBranch, /records=\{toolReturnRecords\}/u)
   assert.match(returnsBranch, /setRecords=\{setToolReturnRecords\}/u)
+})
+
+test('desktop shell owns the scoped ERP root and mounts the centralized mobile navigation', () => {
+  assert.match(
+    shellSource,
+    /import MobileBottomNavigation from ['"]\.\/navigation\/MobileBottomNavigation\.jsx['"]/u,
+  )
+  assert.match(shellSource, /<div className="erp-black-gold desktop-admin-layout">/u)
+  assert.match(shellSource, /<MobileBottomNavigation[\s\S]*?currentView=\{currentView\}[\s\S]*?currentUser=\{currentUser\}/u)
+  assert.doesNotMatch(shellSource, /const\s+(?:modules|routes|menuItems)\s*=\s*\[/u)
 })
 
 test('desktop frame is fixed and gold-highlighted only above the mobile breakpoint', () => {
@@ -147,6 +157,8 @@ test('desktop shell reserves an accessible labor-only alert badge contract', () 
   assert.match(shellSource, /item\.view\s*===\s*'labor'/u)
   assert.match(shellSource, /aria-label=\{[^}]*人工记录[^}]*待处理/u)
   assert.match(shellSource, /data-labor-alert-badge/u)
+  assert.match(shellSource, /className=\{`desktop-admin-alert-badge \$\{laborAlertStale \? 'is-stale' : ''\}`\}/u)
   assert.match(shellSource, /<strong>[\s\S]*?<em[\s\S]*?data-labor-alert-badge/u)
+  assert.doesNotMatch(shellSource, /data-labor-alert-badge[\s\S]{0,180}?style=\{/u)
   assert.doesNotMatch(shellSource, /styles\.css['"]/u)
 })
