@@ -369,7 +369,7 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
   ]
 
   for (const { markup, markLabels } of chartCases) {
-    assert.match(markup, /<svg[^>]*role="img"[^>]*aria-label="[^"]+"/u)
+    assert.match(markup, /<svg[^>]*role="group"[^>]*aria-label="[^"]+"/u)
     assert.match(markup, /executive-chart-(?:legend|data-table)/u)
     const svgMarkup = markup.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || ''
     const focusableMarks = [...svgMarkup.matchAll(/<(?:circle|rect)\b[^>]*\btabindex="0"[^>]*>/gu)]
@@ -470,6 +470,31 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
   })
   assert.doesNotMatch(negativeTail, /当前数据均为零/u)
   assert.match(negativeTail.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || '', /尾部亏损/u)
+})
+
+test('mixed zero bar charts keep invisible zero geometry out of the SVG focus order', () => {
+  const { BarChart, HorizontalBarChart } = moduleFor('charts')
+  const common = {
+    title: '混合零值图表',
+    description: '零值不应形成不可见焦点',
+    data: [
+      { key: 'zero', label: '零项', value: 0, color: 'var(--erp-chart-gold)' },
+      { key: 'positive', label: '非零项', value: 25, color: 'var(--erp-chart-amber)' },
+    ],
+    valueFormatter: (value) => `¥${value}`,
+  }
+
+  for (const Chart of [BarChart, HorizontalBarChart]) {
+    const markup = render(Chart, common)
+    const svgMarkup = markup.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || ''
+    const focusableBars = [...svgMarkup.matchAll(/<rect\b[^>]*\btabindex="0"[^>]*>/gu)]
+      .map((match) => match[0])
+
+    assert.equal(focusableBars.length, 1)
+    assert.match(focusableBars[0], /role="img"[^>]*aria-label="非零项：¥25"/u)
+    assert.doesNotMatch(svgMarkup, /<rect\b[^>]*aria-label="零项：¥0"/u)
+    assert.match(svgMarkup, />零项<\/text>/u)
+  }
 })
 
 test('line chart maps signed finite extremes to three exact ordered coordinates', () => {

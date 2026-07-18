@@ -191,7 +191,7 @@ export function DonutChart({ title, description, data, valueFormatter }) {
   return (
     <figure className="executive-chart executive-chart-donut">
       <ChartCaption title={title} description={description} />
-      <svg role="img" aria-label={label} viewBox="0 0 320 240">
+      <svg role="group" aria-label={label} viewBox="0 0 320 240">
         <title>{label}</title>
         <circle className="executive-donut-track" cx="160" cy="112" r="70" />
         {hasSegments ? positiveRows.map((row) => {
@@ -281,7 +281,7 @@ export function BarChart({ title, description, data, valueFormatter }) {
   return (
     <figure className="executive-chart executive-chart-bars">
       <ChartCaption title={title} description={description} />
-      <svg role="img" aria-label={label} viewBox="0 0 680 280">
+      <svg role="group" aria-label={label} viewBox="0 0 680 280">
         <title>{label}</title>
         <line className="executive-chart-axis" x1={left} x2={right} y1={svgNumber(baseline)} y2={svgNumber(baseline)} />
         {!message ? rows.map((row, index) => {
@@ -289,22 +289,25 @@ export function BarChart({ title, description, data, valueFormatter }) {
           const valueY = yFor(row.value)
           const y = row.value >= 0 ? valueY : baseline
           const rectHeight = clamp(Math.abs(baseline - valueY), 0, height)
+          const renderedHeight = svgNumber(rectHeight)
           const x = clamp(left + slot * index + (slot - barWidth) / 2, left, right - barWidth)
           const markLabel = `${row.label}：${formatValue(valueFormatter, row.value)}`
           return (
             <g key={row.key}>
-              <rect
-                tabIndex={0}
-                role="img"
-                aria-label={markLabel}
-                x={svgNumber(x)}
-                y={svgNumber(y)}
-                width={svgNumber(barWidth)}
-                height={svgNumber(rectHeight)}
-                fill={row.color}
-              >
-                <title>{markLabel}</title>
-              </rect>
+              {renderedHeight > 0 ? (
+                <rect
+                  tabIndex={0}
+                  role="img"
+                  aria-label={markLabel}
+                  x={svgNumber(x)}
+                  y={svgNumber(y)}
+                  width={svgNumber(barWidth)}
+                  height={renderedHeight}
+                  fill={row.color}
+                >
+                  <title>{markLabel}</title>
+                </rect>
+              ) : null}
               <text className="executive-chart-axis-label" x={svgNumber(x + barWidth / 2)} y="252" textAnchor="middle">
                 {row.label}
               </text>
@@ -335,7 +338,7 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
   return (
     <figure className="executive-chart executive-chart-horizontal-bars">
       <ChartCaption title={title} description={description} />
-      <svg role="img" aria-label={label} viewBox={`0 0 680 ${svgNumber(chartHeight)}`}>
+      <svg role="group" aria-label={label} viewBox={`0 0 680 ${svgNumber(chartHeight)}`}>
         <title>{label}</title>
         <line className="executive-chart-axis" x1={svgNumber(baseline)} x2={svgNumber(baseline)} y1={top} y2={svgNumber(chartBottom)} />
         {!message ? rows.map((row, index) => {
@@ -343,6 +346,7 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
           const valueX = xFor(row.value)
           const x = row.value >= 0 ? baseline : valueX
           const width = clamp(Math.abs(valueX - baseline), 0, right - left)
+          const renderedWidth = svgNumber(width)
           const y = top + index * rowHeight + rowHeight * 0.2
           const height = rowHeight * 0.6
           const markLabel = `${row.label}：${formatValue(valueFormatter, row.value)}`
@@ -351,18 +355,20 @@ export function HorizontalBarChart({ title, description, data, valueFormatter })
               <text className="executive-chart-axis-label" x="148" y={svgNumber(y + height * 0.72)} textAnchor="end">
                 {row.label}
               </text>
-              <rect
-                tabIndex={0}
-                role="img"
-                aria-label={markLabel}
-                x={svgNumber(x)}
-                y={svgNumber(y)}
-                width={svgNumber(width)}
-                height={svgNumber(height)}
-                fill={row.color}
-              >
-                <title>{markLabel}</title>
-              </rect>
+              {renderedWidth > 0 ? (
+                <rect
+                  tabIndex={0}
+                  role="img"
+                  aria-label={markLabel}
+                  x={svgNumber(x)}
+                  y={svgNumber(y)}
+                  width={renderedWidth}
+                  height={svgNumber(height)}
+                  fill={row.color}
+                >
+                  <title>{markLabel}</title>
+                </rect>
+              ) : null}
             </g>
           )
         }) : <EmptyChartText message={message} x="340" y="126" />}
@@ -486,7 +492,7 @@ export function LineChart({ title, description, points, series, valueFormatter }
   return (
     <figure className="executive-chart executive-chart-line">
       <ChartCaption title={title} description={description} />
-      <svg role="img" aria-label={label} viewBox="0 0 680 280">
+      <svg role="group" aria-label={label} viewBox="0 0 680 280">
         <title>{label}</title>
         <line className="executive-chart-axis" x1={left} x2={right} y1={svgNumber(yFor(0))} y2={svgNumber(yFor(0))} />
         {!message ? safeSeries.map((item) => (
