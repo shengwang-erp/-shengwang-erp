@@ -8,6 +8,13 @@ import { getAdminRoute } from '../../navigation/adminRoutes.js'
 const authorizedMessageCollections = new WeakSet()
 const authorizedWorkbenchCollections = new WeakMap()
 const emptyWorkbenchProjection = Object.freeze([])
+const WORKBENCH_ACTOR_STRING_FIELDS = Object.freeze([
+  'employeeId',
+  'employeeNumber',
+  'name',
+  'department',
+  'position',
+])
 
 function ownValue(value, key) {
   if (value === null || typeof value !== 'object') return undefined
@@ -15,25 +22,105 @@ function ownValue(value, key) {
   return descriptor && 'value' in descriptor ? descriptor.value : undefined
 }
 
-function workbenchActorIdentity(user) {
+function ownDataValue(descriptors, key) {
+  const descriptor = descriptors[key]
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined
+}
+
+function capturePermissionKeys(value) {
   try {
-    const employeeId = ownValue(user, 'employeeId')
-    const employeeNumber = ownValue(user, 'employeeNumber')
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+      return null
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const length = ownDataValue(descriptors, 'length')
     if (
-      typeof employeeId !== 'string' || employeeId.trim().length === 0 ||
-      typeof employeeNumber !== 'string' || employeeNumber.trim().length === 0
-    ) return null
-    const tenantId = ownValue(user, 'tenantId')
-    const authUserId = ownValue(user, 'id')
-    return JSON.stringify([
-      typeof tenantId === 'string' ? tenantId : '',
-      typeof authUserId === 'string' ? authUserId : '',
-      employeeId,
-      employeeNumber,
-    ])
+      !Number.isSafeInteger(length) || length < 0 || length > 1000 ||
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string')
+    ) {
+      return null
+    }
+
+    const keys = []
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)]
+      if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string') {
+        return null
+      }
+      keys.push(descriptor.value)
+    }
+
+    const expectedProperties = new Set(['length', ...keys.map((_, index) => String(index))])
+    if (Object.keys(descriptors).some((key) => !expectedProperties.has(key))) return null
+    return Object.freeze(keys)
   } catch {
     return null
   }
+}
+
+function captureWorkbenchActor(user) {
+  try {
+    if (
+      user === null ||
+      typeof user !== 'object' ||
+      Array.isArray(user) ||
+      Object.getPrototypeOf(user) !== Object.prototype
+    ) {
+      return null
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(user)
+    if (
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string') ||
+      Object.values(descriptors).some((descriptor) => !('value' in descriptor))
+    ) {
+      return null
+    }
+
+    for (const field of WORKBENCH_ACTOR_STRING_FIELDS) {
+      const value = ownDataValue(descriptors, field)
+      if (typeof value !== 'string' || value.trim().length === 0) return null
+    }
+    if (
+      ownDataValue(descriptors, 'employmentStatus') !== '在职' ||
+      ownDataValue(descriptors, 'accountStatus') !== 'active' ||
+      ownDataValue(descriptors, 'mustChangePassword') !== false
+    ) {
+      return null
+    }
+
+    const effectivePermissionKeys = capturePermissionKeys(
+      ownDataValue(descriptors, 'effectivePermissionKeys'),
+    )
+    if (effectivePermissionKeys === null) return null
+
+    const tenantId = ownDataValue(descriptors, 'tenantId')
+    const authUserId = ownDataValue(descriptors, 'id')
+    return Object.freeze({
+      employeeId: ownDataValue(descriptors, 'employeeId'),
+      employeeNumber: ownDataValue(descriptors, 'employeeNumber'),
+      name: ownDataValue(descriptors, 'name'),
+      department: ownDataValue(descriptors, 'department'),
+      position: ownDataValue(descriptors, 'position'),
+      employmentStatus: '在职',
+      accountStatus: 'active',
+      mustChangePassword: false,
+      effectivePermissionKeys,
+      tenantId: typeof tenantId === 'string' ? tenantId : '',
+      id: typeof authUserId === 'string' ? authUserId : '',
+    })
+  } catch {
+    return null
+  }
+}
+
+function workbenchActorIdentity(actorSnapshot) {
+  return JSON.stringify([
+    actorSnapshot.tenantId,
+    actorSnapshot.id,
+    actorSnapshot.employeeId,
+    actorSnapshot.employeeNumber,
+  ])
 }
 
 function safeBadgeCount(value) {
@@ -41,7 +128,9 @@ function safeBadgeCount(value) {
 }
 
 export function buildWorkbenchItems({ user, counts = {} } = {}) {
-  const visibleRoutes = getVisibleAdminRoutes(user)
+  const actorSnapshot = captureWorkbenchActor(user)
+  if (actorSnapshot === null) return emptyWorkbenchProjection
+  const visibleRoutes = getVisibleAdminRoutes(actorSnapshot)
   const projection = Object.freeze(visibleRoutes
     .filter((route) => route.view !== 'home')
     .map((route) => Object.freeze({
@@ -50,15 +139,17 @@ export function buildWorkbenchItems({ user, counts = {} } = {}) {
       iconText: route.iconText,
       badgeCount: safeBadgeCount(ownValue(counts, route.view)),
     })))
-  authorizedWorkbenchCollections.set(projection, workbenchActorIdentity(user))
+  authorizedWorkbenchCollections.set(projection, workbenchActorIdentity(actorSnapshot))
   return projection
 }
 
 export function projectAuthorizedWorkbenchItems(user, items) {
   try {
-    const actorIdentity = workbenchActorIdentity(user)
+    const actorSnapshot = captureWorkbenchActor(user)
+    if (actorSnapshot === null) return emptyWorkbenchProjection
+    const actorIdentity = workbenchActorIdentity(actorSnapshot)
     if (
-      actorIdentity === null || !Array.isArray(items) ||
+      !Array.isArray(items) ||
       authorizedWorkbenchCollections.get(items) !== actorIdentity
     ) {
       return emptyWorkbenchProjection
@@ -66,7 +157,10 @@ export function projectAuthorizedWorkbenchItems(user, items) {
     const projection = []
     for (const item of items) {
       const route = getAdminRoute(ownValue(item, 'view'))
-      if (!route?.desktop || route.view === 'home' || !canAccessView(user, route.view)) continue
+      if (
+        !route?.desktop || route.view === 'home' ||
+        !canAccessView(actorSnapshot, route.view)
+      ) continue
       projection.push(Object.freeze({
         route,
         badgeCount: safeBadgeCount(ownValue(item, 'badgeCount')),

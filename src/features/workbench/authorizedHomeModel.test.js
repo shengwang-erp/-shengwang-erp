@@ -164,6 +164,10 @@ test('financial source failures keep fail-closed priority over a separate stale 
   const stale = ready([], { stale: true })
   assert.deepEqual(buildUnavailableHomeFinancialState([
     stale,
+    { status: 'forbidden', data: null, stale: false },
+  ]), { status: 'forbidden', data: null, stale: false })
+  assert.deepEqual(buildUnavailableHomeFinancialState([
+    stale,
     { status: 'error', data: null, stale: false },
   ]), { status: 'error', data: null, stale: false })
   assert.deepEqual(buildUnavailableHomeFinancialState([

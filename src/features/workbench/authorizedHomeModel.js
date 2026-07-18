@@ -30,6 +30,9 @@ function ownValue(value, key) {
 
 export function buildUnavailableHomeFinancialState(states = []) {
   const candidates = Array.isArray(states) ? states : []
+  if (candidates.some((state) => ownValue(state, 'status') === 'forbidden')) {
+    return Object.freeze({ status: 'forbidden', data: null, stale: false })
+  }
   if (candidates.some((state) => ownValue(state, 'status') === 'error')) {
     return Object.freeze({ status: 'error', data: null, stale: false })
   }

@@ -163,6 +163,51 @@ test('workbench projections require same-actor provenance before reading or rend
   assert.equal(countAuthorizedWorkbenchBadges(revokedProjectActor, projectItems), 0)
 })
 
+test('one actor snapshot prevents a stateful Proxy from authorizing A and marking badges for B', () => {
+  const actorA = activeUser(['module.projects.view'], {
+    employeeId: 'E-PROXY-A',
+    employeeNumber: 'SW-601',
+  })
+  const actorB = activeUser(['module.projects.view'], {
+    employeeId: 'E-PROXY-B',
+    employeeNumber: 'SW-602',
+  })
+  let descriptorBatch = 0
+  let remainingDescriptors = 0
+  let descriptorReads = 0
+  let descriptorSource = actorA
+  const statefulActor = new Proxy({}, {
+    getPrototypeOf() {
+      return Object.prototype
+    },
+    ownKeys() {
+      descriptorBatch += 1
+      descriptorSource = descriptorBatch === 1 ? actorA : actorB
+      const keys = Reflect.ownKeys(descriptorSource)
+      remainingDescriptors = keys.length
+      return keys
+    },
+    getOwnPropertyDescriptor(_target, key) {
+      descriptorReads += 1
+      const source = remainingDescriptors > 0 ? descriptorSource : actorB
+      const descriptor = Reflect.getOwnPropertyDescriptor(source, key)
+      if (remainingDescriptors > 0) remainingDescriptors -= 1
+      return descriptor
+    },
+  })
+
+  const items = buildWorkbenchItems({
+    user: statefulActor,
+    counts: { projects: 13 },
+  })
+
+  assert.equal(countAuthorizedWorkbenchBadges(actorA, items), 13)
+  assert.equal(countAuthorizedWorkbenchBadges(actorB, items), 0)
+  assert.deepEqual(projectAuthorizedWorkbenchItems(actorB, items), [])
+  assert.equal(descriptorBatch, 1)
+  assert.equal(descriptorReads, Reflect.ownKeys(actorA).length)
+})
+
 test('dashboard alert month follows the active bridge context across route changes', () => {
   const context = {
     dashboardSelectedMonth: '2026-04',
