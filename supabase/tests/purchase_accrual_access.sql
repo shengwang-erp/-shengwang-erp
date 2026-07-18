@@ -35,6 +35,41 @@ begin
 end;
 $function$;
 
+create or replace function pg_temp.session_holds_purchase_key(
+  p_pid integer,
+  p_record_key text
+)
+returns boolean
+language plpgsql
+volatile
+security invoker
+set search_path = pg_catalog
+as $function$
+declare
+  lock_key bigint;
+begin
+  lock_key := pg_catalog.hashtextextended(
+    'public.purchase_records:' || p_record_key,
+    0
+  );
+  perform pg_catalog.pg_stat_clear_snapshot();
+  return exists (
+    select 1
+    from pg_catalog.pg_locks as held_lock
+    where held_lock.pid = p_pid
+      and held_lock.locktype = 'advisory'
+      and held_lock.granted
+      and held_lock.objsubid = 1
+      and held_lock.classid::bigint = (
+        (lock_key >> 32) & 4294967295::bigint
+      )
+      and held_lock.objid::bigint = (
+        lock_key & 4294967295::bigint
+      )
+  );
+end;
+$function$;
+
 select has_function(
   'private',
   'purchase_payment_payload_keys',
@@ -1434,8 +1469,11 @@ set search_path = pg_catalog, extensions
 as $function$
 declare
   b_waited_for_a boolean := false;
+  b_held_target_key boolean := true;
   a_error text := '';
   b_error text := '';
+  a_result_key text := '';
+  b_result_key text := '';
   final_count bigint := -1;
   final_winner text := '';
   a_pid integer;
@@ -1531,6 +1569,10 @@ begin
     exit when b_waited_for_a;
     perform pg_sleep(0.01);
   end loop;
+  b_held_target_key := pg_temp.session_holds_purchase_key(
+    b_pid,
+    'PO-TASK7-UPSERT-RACE'
+  );
 
   if extensions.dblink_send_query(
     'task7_parent_upsert_a',
@@ -1551,7 +1593,8 @@ begin
     perform extensions.dblink_cancel_query('task7_parent_upsert_a');
     raise exception 'tuple-holder parent update did not finish';
   end if;
-  perform result.record_key
+  select result.record_key
+    into a_result_key
     from extensions.dblink_get_result('task7_parent_upsert_a', false)
       as result(record_key text);
   a_error := extensions.dblink_error_message('task7_parent_upsert_a');
@@ -1569,7 +1612,8 @@ begin
     perform extensions.dblink_cancel_query('task7_parent_upsert_b');
     raise exception 'parent upsert did not finish';
   end if;
-  perform result.record_key
+  select result.record_key
+    into b_result_key
     from extensions.dblink_get_result('task7_parent_upsert_b', false)
       as result(record_key text);
   b_error := extensions.dblink_error_message('task7_parent_upsert_b');
@@ -1595,8 +1639,11 @@ begin
   perform extensions.dblink_disconnect('task7_parent_upsert_a');
 
   return b_waited_for_a
+    and not b_held_target_key
     and a_error = 'OK'
     and b_error = 'OK'
+    and a_result_key = 'PO-TASK7-UPSERT-RACE'
+    and b_result_key = 'PO-TASK7-UPSERT-RACE'
     and final_count = 1
     and final_winner = 'B';
 exception when others then
@@ -1669,10 +1716,13 @@ set search_path = pg_catalog, extensions
 as $function$
 declare
   b_waited_for_a boolean := false;
+  b_held_target_key boolean := true;
   a_error text := '';
   b_error text := '';
+  a_result_key text := '';
+  b_result_key text := '';
   final_count bigint := -1;
-  final_winner text := '';
+  target_link_count bigint := -1;
   a_pid integer;
   b_pid integer;
   poll_attempt integer;
@@ -1704,6 +1754,52 @@ begin
       'task7_child_upsert_b',
       'select pg_backend_pid()'
     ) as result(pid integer);
+  perform extensions.dblink_exec(
+    'task7_child_upsert_a',
+    $remote$
+      insert into public.purchase_records (record_key, payload, status)
+      values
+        (
+          'PO-TASK7-CHILD-REBIND-A',
+          '{"purchaseId":"PO-TASK7-CHILD-REBIND-A"}'::jsonb,
+          'active'
+        ),
+        (
+          'PO-TASK7-CHILD-REBIND-B',
+          '{"purchaseId":"PO-TASK7-CHILD-REBIND-B"}'::jsonb,
+          'active'
+        );
+      insert into public.purchase_payment_records (
+        record_key,
+        payload,
+        status
+      ) values
+        (
+          'PP-TASK7-UPSERT-REBIND',
+          '{"paymentId":"PP-TASK7-UPSERT-REBIND","purchaseId":"PO-TASK7-CHILD-REBIND-A","winner":"seed"}'::jsonb,
+          'active'
+        ),
+        (
+          'PP-TASK7-UPDATE-REBIND',
+          '{"paymentId":"PP-TASK7-UPDATE-REBIND","purchaseId":"PO-TASK7-CHILD-REBIND-A","winner":"seed"}'::jsonb,
+          'active'
+        )
+    $remote$
+  );
+
+  perform extensions.dblink_exec('task7_child_upsert_a', 'begin');
+  perform extensions.dblink_exec(
+    'task7_child_upsert_a',
+    $remote$
+      do $purchase_key$
+      begin
+        perform private.lock_purchase_record_key(
+          'PO-TASK7-CHILD-REBIND-A'
+        );
+      end
+      $purchase_key$
+    $remote$
+  );
   perform extensions.dblink_exec('task7_child_upsert_a', 'set role service_role');
   perform extensions.dblink_exec('task7_child_upsert_b', 'set role service_role');
   perform extensions.dblink_exec(
@@ -1716,38 +1812,11 @@ begin
   );
   perform extensions.dblink_exec(
     'task7_child_upsert_a',
-    $remote$
-      insert into public.purchase_records (record_key, payload, status)
-      values (
-        'PO-TASK7-CHILD-UPSERT-RACE',
-        '{"purchaseId":"PO-TASK7-CHILD-UPSERT-RACE"}'::jsonb,
-        'active'
-      );
-      insert into public.purchase_payment_records (
-        record_key,
-        payload,
-        status
-      ) values (
-        'PP-TASK7-UPSERT-RACE',
-        '{"paymentId":"PP-TASK7-UPSERT-RACE","purchaseId":"PO-TASK7-CHILD-UPSERT-RACE","winner":"seed"}'::jsonb,
-        'active'
-      )
-    $remote$
+    'set statement_timeout = ''5s'''
   );
-
-  perform extensions.dblink_exec('task7_child_upsert_a', 'begin');
   perform extensions.dblink_exec(
-    'task7_child_upsert_a',
-    $remote$
-      do $lock$
-      begin
-        perform 1
-        from public.purchase_payment_records
-        where record_key = 'PP-TASK7-UPSERT-RACE'
-        for update;
-      end
-      $lock$
-    $remote$
+    'task7_child_upsert_b',
+    'set statement_timeout = ''5s'''
   );
   if extensions.dblink_send_query(
     'task7_child_upsert_b',
@@ -1757,8 +1826,8 @@ begin
         payload,
         status
       ) values (
-        'PP-TASK7-UPSERT-RACE',
-        '{"paymentId":"PP-TASK7-UPSERT-RACE","purchaseId":"PO-TASK7-CHILD-UPSERT-RACE","winner":"B"}'::jsonb,
+        'PP-TASK7-UPSERT-REBIND',
+        '{"paymentId":"PP-TASK7-UPSERT-REBIND","purchaseId":"PO-TASK7-CHILD-REBIND-B","winner":"B"}'::jsonb,
         'active'
       )
       on conflict (record_key) do update
@@ -1773,18 +1842,26 @@ begin
     b_waited_for_a := pg_temp.session_waits_on_lock(
       b_pid,
       a_pid,
-      false
+      true
     );
     exit when b_waited_for_a;
     perform pg_sleep(0.01);
   end loop;
+  b_held_target_key := pg_temp.session_holds_purchase_key(
+    b_pid,
+    'PO-TASK7-CHILD-REBIND-B'
+  );
 
   if extensions.dblink_send_query(
     'task7_child_upsert_a',
     $remote$
       update public.purchase_payment_records
-      set payload = payload || '{"winner":"A"}'::jsonb
-      where record_key = 'PP-TASK7-UPSERT-RACE'
+      set payload = jsonb_set(
+            payload || '{"winner":"A"}'::jsonb,
+            '{purchaseId}',
+            '"PO-TASK7-CHILD-REBIND-B"'::jsonb
+          )
+      where record_key = 'PP-TASK7-UPDATE-REBIND'
       returning record_key
     $remote$
   ) <> 1 then
@@ -1798,7 +1875,8 @@ begin
     perform extensions.dblink_cancel_query('task7_child_upsert_a');
     raise exception 'tuple-holder child update did not finish';
   end if;
-  perform result.record_key
+  select result.record_key
+    into a_result_key
     from extensions.dblink_get_result('task7_child_upsert_a', false)
       as result(record_key text);
   a_error := extensions.dblink_error_message('task7_child_upsert_a');
@@ -1816,38 +1894,56 @@ begin
     perform extensions.dblink_cancel_query('task7_child_upsert_b');
     raise exception 'child upsert did not finish';
   end if;
-  perform result.record_key
+  select result.record_key
+    into b_result_key
     from extensions.dblink_get_result('task7_child_upsert_b', false)
       as result(record_key text);
   b_error := extensions.dblink_error_message('task7_child_upsert_b');
 
-  select result.row_count, result.winner
-    into final_count, final_winner
+  select result.row_count, result.target_link_count
+    into final_count, target_link_count
     from extensions.dblink(
       'task7_child_upsert_a',
       $remote$
-        select count(*)::bigint, max(payload->>'winner')
+        select
+          count(*)::bigint,
+          count(*) filter (
+            where payload->>'purchaseId' = 'PO-TASK7-CHILD-REBIND-B'
+          )::bigint
         from public.purchase_payment_records
-        where record_key = 'PP-TASK7-UPSERT-RACE'
+        where record_key in (
+          'PP-TASK7-UPSERT-REBIND',
+          'PP-TASK7-UPDATE-REBIND'
+        )
       $remote$
-    ) as result(row_count bigint, winner text);
+    ) as result(row_count bigint, target_link_count bigint);
+  perform extensions.dblink_exec('task7_child_upsert_a', 'reset role');
   perform extensions.dblink_exec(
     'task7_child_upsert_a',
     $remote$
       delete from public.purchase_payment_records
-      where record_key = 'PP-TASK7-UPSERT-RACE';
+      where record_key in (
+        'PP-TASK7-UPSERT-REBIND',
+        'PP-TASK7-UPDATE-REBIND'
+      );
       delete from public.purchase_records
-      where record_key = 'PO-TASK7-CHILD-UPSERT-RACE'
+      where record_key in (
+        'PO-TASK7-CHILD-REBIND-A',
+        'PO-TASK7-CHILD-REBIND-B'
+      )
     $remote$
   );
   perform extensions.dblink_disconnect('task7_child_upsert_b');
   perform extensions.dblink_disconnect('task7_child_upsert_a');
 
   return b_waited_for_a
+    and not b_held_target_key
     and a_error = 'OK'
     and b_error = 'OK'
-    and final_count = 1
-    and final_winner = 'B';
+    and a_result_key = 'PP-TASK7-UPDATE-REBIND'
+    and b_result_key = 'PP-TASK7-UPSERT-REBIND'
+    and final_count = 2
+    and target_link_count = 2;
 exception when others then
   raise notice 'child ON CONFLICT lock-order probe failed: %', sqlerrm;
   connection_names := coalesce(
@@ -1892,13 +1988,20 @@ exception when others then
             as result(record_key text);
       end if;
       perform extensions.dblink_exec('task7_child_upsert_a', 'rollback', false);
+      perform extensions.dblink_exec('task7_child_upsert_a', 'reset role', false);
       perform extensions.dblink_exec(
         'task7_child_upsert_a',
         $remote$
           delete from public.purchase_payment_records
-          where record_key = 'PP-TASK7-UPSERT-RACE';
+          where record_key in (
+            'PP-TASK7-UPSERT-REBIND',
+            'PP-TASK7-UPDATE-REBIND'
+          );
           delete from public.purchase_records
-          where record_key = 'PO-TASK7-CHILD-UPSERT-RACE'
+          where record_key in (
+            'PO-TASK7-CHILD-REBIND-A',
+            'PO-TASK7-CHILD-REBIND-B'
+          )
         $remote$,
         false
       );
@@ -1913,7 +2016,7 @@ $function$;
 
 select ok(
   pg_temp.purchase_child_on_conflict_is_tuple_first(),
-  'child ON CONFLICT waits for its tuple without holding the parent key'
+  'child ON CONFLICT rebind defers parent keys to the sorted UPDATE path'
 );
 
 create or replace function pg_temp.purchase_rebind_conflict_is_tuple_first()
@@ -2228,8 +2331,11 @@ set search_path = pg_catalog, extensions
 as $function$
 declare
   commit_waited_for_update boolean := false;
+  commit_held_purchase_key boolean := true;
   update_error text := '';
   commit_error text := '';
+  update_result_key text := '';
+  commit_result jsonb;
   final_count bigint := -1;
   final_winner text := '';
   a_pid integer;
@@ -2396,6 +2502,10 @@ begin
     exit when commit_waited_for_update;
     perform pg_sleep(0.01);
   end loop;
+  commit_held_purchase_key := pg_temp.session_holds_purchase_key(
+    b_pid,
+    'PO-TASK7-COMMIT-RACE'
+  );
 
   if extensions.dblink_send_query(
     'task7_stock_commit_a',
@@ -2422,7 +2532,8 @@ begin
     perform extensions.dblink_cancel_query('task7_stock_commit_a');
     raise exception 'direct stock-in upsert did not finish';
   end if;
-  perform result.record_key
+  select result.record_key
+    into update_result_key
     from extensions.dblink_get_result('task7_stock_commit_a', false)
       as result(record_key text);
   update_error := extensions.dblink_error_message('task7_stock_commit_a');
@@ -2440,7 +2551,8 @@ begin
     perform extensions.dblink_cancel_query('task7_stock_commit_b');
     raise exception 'transactional stock-in commit did not finish';
   end if;
-  perform result.result
+  select result.result
+    into commit_result
     from extensions.dblink_get_result('task7_stock_commit_b', false)
       as result(result jsonb);
   commit_error := extensions.dblink_error_message('task7_stock_commit_b');
@@ -2483,8 +2595,11 @@ begin
   perform extensions.dblink_disconnect('task7_stock_commit_a');
 
   return commit_waited_for_update
+    and not commit_held_purchase_key
     and update_error = 'OK'
     and commit_error = 'OK'
+    and update_result_key = 'SI-TASK7-COMMIT-RACE'
+    and commit_result->'stock_in'->>'record_key' = 'SI-TASK7-COMMIT-RACE'
     and final_count = 1
     and final_winner = 'B';
 exception when others then
@@ -3405,6 +3520,54 @@ select throws_ok(
   '42501',
   'purchase view permission required',
   'an active employee without the purchase module receives 42501'
+);
+select throws_ok(
+  $$insert into public.purchase_payment_records (
+      record_key, payload, status
+    ) values (
+      'PP-TASK7-NO-PERM-ACTIVE',
+      '{"paymentId":"PP-TASK7-NO-PERM-ACTIVE","purchaseId":"PO-TASK7-PAYMENT-LINKED"}'::jsonb,
+      'active'
+    )$$,
+  '42501',
+  'purchase fact insert permission required',
+  'an unauthorized payment insert is rejected before an active parent lookup'
+);
+select throws_ok(
+  $$insert into public.purchase_payment_records (
+      record_key, payload, status
+    ) values (
+      'PP-TASK7-NO-PERM-MISSING',
+      '{"paymentId":"PP-TASK7-NO-PERM-MISSING","purchaseId":"PO-TASK7-NO-SUCH-PARENT"}'::jsonb,
+      'active'
+    )$$,
+  '42501',
+  'purchase fact insert permission required',
+  'an unauthorized payment insert gets the same rejection for a missing parent'
+);
+select throws_ok(
+  $$insert into public.stock_in_records (
+      record_key, payload, status
+    ) values (
+      'SI-TASK7-NO-PERM-ACTIVE',
+      '{"stockInId":"SI-TASK7-NO-PERM-ACTIVE","sourcePurchaseId":"PO-TASK7-STOCK-LINKED"}'::jsonb,
+      'active'
+    )$$,
+  '42501',
+  'purchase fact insert permission required',
+  'an unauthorized stock-in insert is rejected before an active parent lookup'
+);
+select throws_ok(
+  $$insert into public.stock_in_records (
+      record_key, payload, status
+    ) values (
+      'SI-TASK7-NO-PERM-MISSING',
+      '{"stockInId":"SI-TASK7-NO-PERM-MISSING","sourcePurchaseId":"PO-TASK7-NO-SUCH-PARENT"}'::jsonb,
+      'active'
+    )$$,
+  '42501',
+  'purchase fact insert permission required',
+  'an unauthorized stock-in insert gets the same rejection for a missing parent'
 );
 
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000004', true);

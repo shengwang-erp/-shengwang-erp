@@ -245,6 +245,63 @@ begin
 end;
 $$;
 
+create or replace function private.authorize_purchase_link_fact_insert()
+returns trigger
+language plpgsql
+security invoker
+set search_path = pg_catalog, public
+as $$
+declare
+  relation_owner name;
+  insert_is_authorized boolean := false;
+begin
+  if tg_table_schema <> 'public'
+    or tg_table_name not in (
+      'purchase_payment_records',
+      'stock_in_records'
+    )
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'valid purchase fact table required';
+  end if;
+
+  select pg_catalog.pg_get_userbyid(relation.relowner)
+    into relation_owner
+    from pg_catalog.pg_class as relation
+    where relation.oid = tg_relid;
+
+  if current_user = relation_owner or current_user = 'service_role' then
+    return new;
+  end if;
+
+  if current_user = 'authenticated'
+    and new.status = 'active'
+    and public.is_current_employee_active()
+  then
+    if tg_table_name = 'purchase_payment_records' then
+      insert_is_authorized :=
+        public.has_current_permission('module.purchases.create')
+        and public.has_current_permission(
+          'sensitive.purchase_payments_update'
+        );
+    else
+      insert_is_authorized := public.has_current_permission(
+        'module.inventory.create'
+      );
+    end if;
+  end if;
+
+  if not insert_is_authorized then
+    raise exception using
+      errcode = '42501',
+      message = 'purchase fact insert permission required';
+  end if;
+
+  return new;
+end;
+$$;
+
 create or replace function private.guard_purchase_link_fact_write()
 returns trigger
 language plpgsql
@@ -323,11 +380,16 @@ begin
     end if;
   end if;
 
+  -- A conflicting INSERT already owns the target child tuple. It must not
+  -- acquire either parent key here: PostgreSQL will next execute the UPDATE
+  -- trigger, which has both old and new links and takes their complete sorted
+  -- key set. DO NOTHING and duplicate-error paths do not mutate the child.
+  if tg_op = 'INSERT' and target_fact_found then
+    return new;
+  end if;
+
   -- A genuinely new INSERT has no child tuple and may lock its parent first.
-  -- An INSERT that found a conflict tuple follows UPDATE ordering instead:
-  -- child tuple -> purchase key -> fresh parent visibility check.
   if tg_op = 'INSERT'
-    and not target_fact_found
     and new_link_key is not null
   then
     select true
@@ -339,11 +401,10 @@ begin
     parent_is_active := found;
   end if;
 
-  -- A found INSERT parent is protected by FOR SHARE and needs no logical
-  -- key. Missing-parent INSERTs and all UPDATE/DELETE paths use the shared key
-  -- and then evaluate a fresh READ COMMITTED snapshot.
+  -- A found INSERT parent is protected by FOR SHARE and needs no logical key.
+  -- Missing-parent INSERTs and all UPDATE/DELETE paths use the shared key and
+  -- then evaluate a fresh READ COMMITTED snapshot.
   if tg_op <> 'INSERT'
-    or target_fact_found
     or (
       new_link_key is not null
       and not parent_is_active
@@ -382,7 +443,7 @@ begin
         where purchase.record_key = new_link_key
           and purchase.status = 'active'
       ) into parent_is_active;
-    elsif tg_op <> 'INSERT' or target_fact_found then
+    elsif tg_op <> 'INSERT' then
       select exists (
         select 1
         from public.purchase_records as purchase
@@ -422,6 +483,8 @@ revoke all on function private.guard_purchase_records_direct_write()
   from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_parent_write()
   from public, anon, authenticated, service_role;
+revoke all on function private.authorize_purchase_link_fact_insert()
+  from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_link_fact_write()
   from public, anon, authenticated, service_role;
 
@@ -450,6 +513,11 @@ before update or delete on public.purchase_payment_records
 for each row execute function private.guard_purchase_link_fact_write('purchaseId');
 drop trigger if exists guard_active_purchase_link_insert
   on public.purchase_payment_records;
+drop trigger if exists authorize_purchase_link_fact_insert
+  on public.purchase_payment_records;
+create trigger authorize_purchase_link_fact_insert
+before insert on public.purchase_payment_records
+for each row execute function private.authorize_purchase_link_fact_insert();
 create trigger guard_active_purchase_link_insert
 before insert on public.purchase_payment_records
 for each row execute function private.guard_purchase_link_fact_write('purchaseId');
@@ -461,6 +529,11 @@ before update or delete on public.stock_in_records
 for each row execute function private.guard_purchase_link_fact_write('sourcePurchaseId');
 drop trigger if exists guard_active_purchase_link_insert
   on public.stock_in_records;
+drop trigger if exists authorize_purchase_link_fact_insert
+  on public.stock_in_records;
+create trigger authorize_purchase_link_fact_insert
+before insert on public.stock_in_records
+for each row execute function private.authorize_purchase_link_fact_insert();
 create trigger guard_active_purchase_link_insert
 before insert on public.stock_in_records
 for each row execute function private.guard_purchase_link_fact_write('sourcePurchaseId');
