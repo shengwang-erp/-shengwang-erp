@@ -435,26 +435,42 @@ function LineDataTable({ title, points, series, valueFormatter }) {
 export function LineChart({ title, description, points, series, valueFormatter }) {
   const safePoints = normalizePoints(points)
   const safeSeries = normalizeSeries(series)
-  const values = safePoints.flatMap((point) => safeSeries.map((item) => point[item.key]))
-    .filter((value) => value !== null)
-  const empty = safePoints.length === 0 || safeSeries.length === 0 || values.length === 0
-  const allZero = !empty && values.every((value) => value === 0)
-  let minimum = empty ? -1 : Math.min(0, ...values)
-  let maximum = empty ? 1 : Math.max(0, ...values)
+  let valueCount = 0
+  let allValuesZero = true
+  let minimum = 0
+  let maximum = 0
+  for (const point of safePoints) {
+    for (const item of safeSeries) {
+      const value = point[item.key]
+      if (value === null) continue
+      valueCount += 1
+      minimum = Math.min(minimum, value)
+      maximum = Math.max(maximum, value)
+      if (value !== 0) allValuesZero = false
+    }
+  }
+  const empty = safePoints.length === 0 || safeSeries.length === 0 || valueCount === 0
+  const allZero = !empty && allValuesZero
+  if (empty) {
+    minimum = -1
+    maximum = 1
+  }
   if (minimum === maximum) {
-    const padding = Math.max(Math.abs(minimum) * 0.1, 1)
-    minimum -= padding
-    maximum += padding
+    minimum = -1
+    maximum = 1
   }
   const left = 50
   const right = 646
   const top = 22
   const bottom = 218
-  const range = maximum - minimum || 1
   const xFor = (index) => safePoints.length <= 1
     ? (left + right) / 2
     : left + (index / (safePoints.length - 1)) * (right - left)
-  const yFor = (value) => clamp(bottom - ((value - minimum) / range) * (bottom - top), top, bottom)
+  const yFor = (value) => clamp(
+    bottom - ratioInRange(value, minimum, maximum) * (bottom - top),
+    top,
+    bottom,
+  )
   const label = chartLabel(title, description)
   const message = empty ? '暂无可展示数据' : allZero ? '当前数据均为零' : ''
 

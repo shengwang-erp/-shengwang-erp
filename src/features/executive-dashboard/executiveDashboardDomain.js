@@ -2062,7 +2062,7 @@ export function buildExecutiveDashboardReadModel(input) {
       id: `tool:${alertsData.filter((item) => item.type === 'tool_responsibility').length + 1}`,
       type: 'tool_responsibility', severity: 'warning',
       title: '工具赔偿待处理', reason: '存在未赔偿工具责任记录。', count: 1,
-      amount: row.compensationAmount, targetView: 'tools', recordRef: id,
+      amount: row.compensationAmount, targetView: 'toolBorrow', recordRef: id,
     }, {
       canNavigate: access.tools.view,
       revealAmount: access.tools.amounts,

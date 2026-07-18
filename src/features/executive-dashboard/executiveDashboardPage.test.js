@@ -6,6 +6,8 @@ import test from 'node:test'
 import postcss from 'postcss'
 import { createServer } from 'vite'
 
+import { buildExecutiveDashboardReadModel } from './executiveDashboardDomain.js'
+
 const cssSource = await readFile(
   new URL('./executiveDashboard.css', import.meta.url),
   'utf8',
@@ -214,6 +216,88 @@ function dashboardModel(overrides = {}) {
   }
 }
 
+const DOMAIN_MONTHS = Object.freeze([
+  '2025-08', '2025-09', '2025-10', '2025-11', '2025-12', '2026-01',
+  '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07',
+])
+
+function domainReady(data) {
+  return {
+    status: 'ready', data, code: '', message: '', stale: false,
+    updatedAt: '2026-07-17T00:00:00.000Z',
+  }
+}
+
+function actualFullAccessDashboardModel() {
+  const empty = () => domainReady([])
+  return buildExecutiveDashboardReadModel({
+    asOfDate: '2026-07-17',
+    selectedMonth: '2026-07',
+    filters: {
+      projectId: 'P1', projectStatus: 'all', rankingMetric: 'profit', page: 1, pageSize: 10,
+    },
+    access: {
+      page: true,
+      projectSnapshot: true,
+      contracts: { view: true, amounts: true },
+      profit: { view: true, completeCostRequired: true },
+      attendance: { view: true, identities: true },
+      labor: { view: true, amounts: true },
+      purchase: { accrual: true, payments: true, payable: true, anomalies: true },
+      vehicle: { view: true, amounts: true },
+      inventory: { view: true, amounts: true },
+      tools: { view: true, amounts: true },
+      costCategories: {
+        labor: true, purchase: true, vehicle: true,
+        manualSupplement: true, operatingExpense: true,
+      },
+    },
+    sources: {
+      projects: domainReady([{ projectId: 'P1', projectName: '实际模型项目', status: '进行中' }]),
+      contractRevenue: domainReady([{
+        projectId: 'P1', adjustedTaxInclusiveAmount: 100,
+        totalReceivedTaxInclusiveAmount: 50,
+        profitAnchorTaxExclusiveAmount: 90,
+        allocationStatus: 'auto_allocated',
+      }]),
+      receipts: empty(),
+      laborWindow: domainReady({
+        monthly: DOMAIN_MONTHS.map((month) => ({
+          month, status: 'ready', stale: false, source: 'formal', pendingCount: 0,
+          salaryTotal: 0, projectLaborTotal: 0, projectLaborById: { P1: 0 },
+        })),
+        projectLaborLifetimeById: { P1: 0 },
+        lifetimeStatus: 'ready',
+        lifetimeStale: false,
+        incompleteMonths: [],
+        staleMonths: [],
+      }),
+      purchaseAccrual: empty(),
+      purchasePayments: empty(),
+      projectCosts: empty(),
+      operatingExpenses: empty(),
+      vehicles: empty(),
+      vehicleUsage: empty(),
+      fuel: empty(),
+      vehicleExpenses: empty(),
+      vehicleIssues: empty(),
+      attendance: empty(),
+      inventoryItems: empty(),
+      stockInRecords: empty(),
+      stockOutRecords: empty(),
+      stockReturnRecords: empty(),
+      toolRecords: domainReady([{ toolId: 'T1', currentStatus: '借出', totalCost: 10 }]),
+      toolBorrowRecords: empty(),
+      toolReturnRecords: empty(),
+      lifelongToolAssignments: empty(),
+      toolResponsibilityRecords: domainReady([{
+        responsibilityRecordId: 'TR-ACTUAL', toolId: 'T1', projectId: 'P1',
+        compensationStatus: '未赔偿', compensationAmount: 9,
+      }]),
+    },
+  })
+}
+
 function materializedElements(node, output = []) {
   if (node === null || node === undefined || typeof node === 'boolean') return output
   if (Array.isArray(node)) {
@@ -357,6 +441,30 @@ test('native SVG charts expose titles, text equivalents, external focus targets,
   })
   assert.doesNotMatch(negativeTail, /当前数据均为零/u)
   assert.match(negativeTail.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || '', /尾部亏损/u)
+})
+
+test('line chart maps signed finite extremes to three exact ordered coordinates', () => {
+  const { LineChart } = moduleFor('charts')
+  const maximum = Number.MAX_VALUE
+  const markup = render(LineChart, {
+    title: '极值现金趋势',
+    description: '有限极值必须保持有序且互不重叠',
+    points: [
+      { month: '2026-05', income: 0, outflow: 0, net: -maximum },
+      { month: '2026-06', income: 0, outflow: 0, net: 0 },
+      { month: '2026-07', income: 0, outflow: 0, net: maximum },
+    ],
+    series: [{ key: 'net', label: '净现金', color: 'var(--erp-chart-gold)' }],
+    valueFormatter: (value) => value.toExponential(3),
+  })
+  const svgMarkup = markup.match(/<svg[\s\S]*?<\/svg>/u)?.[0] || ''
+
+  assert.match(svgMarkup, /points="50,218 348,120 646,22"/u)
+  assert.deepEqual(
+    [...svgMarkup.matchAll(/<circle[^>]*\scy="([\d.]+)"/gu)].map((match) => Number(match[1])),
+    [218, 120, 22],
+  )
+  assert.doesNotMatch(markup, /NaN|Infinity/u)
 })
 
 test('ready dashboard renders five current KPIs and every required management block', () => {
@@ -544,6 +652,46 @@ test('real page controls emit merged filters and only authorized alerts navigate
     onNavigate() {},
   })
   assert.doesNotMatch(nonAuthorizedMarkup, /987,654|PRIVATE-RECORD/u)
+})
+
+test('full-access Task 8 model navigates its registered tool alert and still rejects a rogue target', () => {
+  const { ExecutiveDashboardPage } = moduleFor('page')
+  const actualModel = actualFullAccessDashboardModel()
+  const toolAlert = actualModel.alerts.data.find((alert) => alert.type === 'tool_responsibility')
+  assert.ok(toolAlert)
+  assert.equal(toolAlert.canNavigate, true)
+  assert.equal(toolAlert.targetView, 'toolBorrow')
+
+  const model = {
+    ...actualModel,
+    alerts: {
+      ...actualModel.alerts,
+      data: [...actualModel.alerts.data, {
+        id: 'rogue:actual-model', type: 'rogue', severity: 'warning',
+        title: '伪造实际模型目标', reason: '不得导航。', count: 1, amount: 765432,
+        targetView: 'tools', canNavigate: true, recordRef: 'ROGUE-ACTUAL-REF',
+      }],
+    },
+  }
+  const navigationCalls = []
+  const tree = ExecutiveDashboardPage({
+    model,
+    filters,
+    viewerName: '实际模型校验员',
+    onNavigate: (target) => navigationCalls.push(target),
+  })
+  const elements = materializedElements(tree)
+  const control = (id) => elements.find((element) => element.props?.['data-testid'] === id)
+  const toolAction = control(`dashboard-alert-action-${toolAlert.id}`)
+
+  assert.ok(toolAction)
+  toolAction.props.onClick()
+  assert.deepEqual(navigationCalls, ['toolBorrow'])
+  assert.equal(control('dashboard-alert-action-rogue:actual-model'), undefined)
+
+  const markup = render(ExecutiveDashboardPage, { model, filters, viewerName: '实际模型校验员' })
+  assert.match(markup, /工具赔偿待处理/u)
+  assert.doesNotMatch(markup, /765,432|ROGUE-ACTUAL-REF/u)
 })
 
 test('filter callbacks emit only normalized canonical filter state', () => {

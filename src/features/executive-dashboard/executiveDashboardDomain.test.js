@@ -834,7 +834,7 @@ test('operations use exact natural source rules and alerts are redacted before o
 
   const sensitiveAlertTypes = new Set(['attendance_exception', 'vehicle_issue', 'tool_responsibility'])
   const targetByType = {
-    attendance_exception: 'labor', vehicle_issue: 'vehicle', tool_responsibility: 'tools',
+    attendance_exception: 'labor', vehicle_issue: 'vehicle', tool_responsibility: 'toolBorrow',
   }
   for (const alert of model.alerts.data.filter((item) => sensitiveAlertTypes.has(item.type))) {
     assert.deepEqual(Object.keys(alert), [
@@ -1325,7 +1325,7 @@ test('alert navigation and detail gates are independent and source failures neve
 
   const tool = model.alerts.data.find((alert) => alert.type === 'tool_responsibility')
   assert.equal(tool.canNavigate, true)
-  assert.equal(tool.targetView, 'tools')
+  assert.equal(tool.targetView, 'toolBorrow')
   assert.equal(tool.amount, null)
   assert.equal(tool.recordRef, null)
 
