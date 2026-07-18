@@ -3,9 +3,8 @@ import {
   resolveMonthlyProjectLaborTotal,
   resolveMonthlySalaryTotal,
 } from '../labor-accounting/laborAccountingBridge.js'
-import { normalizeMonth } from '../executive-dashboard/dashboardTime.js'
+import { monthOfDate, normalizeMonth } from '../executive-dashboard/dashboardTime.js'
 
-const DATE_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/u
 const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 function safeYen(value) {
@@ -51,8 +50,8 @@ function laborProjectMap(laborRecords, month = null) {
   const totals = new Map()
   for (const record of laborRecords) {
     const workDate = safeOwnValue(record, 'workDate')
-    if (typeof workDate !== 'string' || !DATE_PATTERN.test(workDate)) continue
-    if (month !== null && workDate.slice(0, 7) !== month) continue
+    const workMonth = monthOfDate(workDate)
+    if (!workMonth || (month !== null && workMonth !== month)) continue
     const projectId = safeOwnValue(record, 'projectId')
     if (typeof projectId !== 'string' || projectId.length === 0 || POLLUTION_KEYS.has(projectId)) continue
     const amount = safeYen(safeOwnValue(record, 'laborCost'))

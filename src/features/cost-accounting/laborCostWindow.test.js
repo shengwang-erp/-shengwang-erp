@@ -139,6 +139,40 @@ test('a pre-activation exact snapshot aggregates all normalized legacy labor by 
   assert.equal(model.lifetimeStale, true)
 })
 
+test('legacy labor projections reject non-calendar work dates', () => {
+  const preActivation = bridge({
+    salaryMonth: '2026-02', isAuthoritative: false,
+    salaryTotal: 0, projectLaborTotal: 0, projectLaborById: {},
+    projectLaborLifetimeTotal: 0, projectLaborLifetimeById: {},
+    pendingCount: 0, effectiveFrom: '2026-07-01',
+  })
+  const model = buildLaborCostWindow({
+    months: ['2026-02'], snapshotMonth: '2026-02',
+    bridgeState: {
+      windowStatus: 'ready', data: { '2026-02': preActivation },
+      windowIncompleteMonths: [], windowStaleMonths: [], snapshotMonth: '2026-02',
+      snapshotStatus: 'ready', snapshotStale: false, updatedAtByMonth: {},
+    },
+    salaryRecords: [], employees: [],
+    laborRecords: [
+      { workDate: '2026-01-31', projectId: 'P-HISTORICAL', laborCost: 40 },
+      { workDate: '2026-02-28', projectId: 'P-VALID', laborCost: 60 },
+      { workDate: '2026-02-31', projectId: 'P-IMPOSSIBLE', laborCost: 80 },
+      { workDate: '2026-02-28junk', projectId: 'P-SUFFIX', laborCost: 90 },
+    ],
+  })
+
+  assert.deepEqual({
+    monthTotal: model.monthly[0].projectLaborTotal,
+    monthByProject: model.monthly[0].projectLaborById,
+    lifetimeByProject: model.projectLaborLifetimeById,
+  }, {
+    monthTotal: 60,
+    monthByProject: { 'P-VALID': 60 },
+    lifetimeByProject: { 'P-HISTORICAL': 40, 'P-VALID': 60 },
+  })
+})
+
 test('legacy salary falls back to active monthly employees only when no month row exists', () => {
   const preActivation = bridge({
     salaryMonth: '2026-06', isAuthoritative: false,

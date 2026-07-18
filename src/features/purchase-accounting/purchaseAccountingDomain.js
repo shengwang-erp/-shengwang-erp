@@ -3,6 +3,7 @@ import {
   isRecordedCashFact,
   normalizeCashFactProvenance,
 } from '../cost-accounting/cashFactProvenance.js'
+import { isDateInMonth, monthOfDate } from '../executive-dashboard/dashboardTime.js'
 
 const VOID_PURCHASE_STATUS = '作废'
 const PAYMENT_FIELDS = [
@@ -94,8 +95,7 @@ function normalizeYen(value, { blankIsZero = true } = {}) {
 }
 
 function inMonth(date, month) {
-  return typeof month === 'string' && /^\d{4}-\d{2}$/u.test(month) &&
-    typeof date === 'string' && date.startsWith(`${month}-`)
+  return isDateInMonth(date, month)
 }
 
 function paymentStatus(totalCost, paidAmount) {
@@ -138,6 +138,9 @@ function normalizePurchases(purchaseRecords, anomalies) {
         value: record?.totalCost,
         record,
       })
+    }
+    if (!monthOfDate(record?.purchaseDate)) {
+      pushAnomaly(anomalies, 'invalid_purchase_date', { purchaseId })
     }
 
     const purchase = {

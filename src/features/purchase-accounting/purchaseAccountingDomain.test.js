@@ -103,6 +103,81 @@ test('trimmed recorded payment dates contribute to their canonical month', () =>
   assert.equal(model.summary.monthPaymentCash, 400)
 })
 
+test('invalid purchase dates stay out of month facts without erasing current payable', () => {
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-02',
+    purchaseRecords: [
+      purchase({
+        purchaseId: 'PO-IMPOSSIBLE',
+        purchaseDate: '2026-02-31',
+        totalCost: 100,
+        openingPaidAmount: 20,
+        paidAmount: 20,
+      }),
+      purchase({
+        purchaseId: 'PO-SUFFIX',
+        purchaseDate: '2026-02-28junk',
+        totalCost: 200,
+        openingPaidAmount: 30,
+        paidAmount: 30,
+      }),
+    ],
+  })
+
+  assert.deepEqual({
+    monthPurchaseCost: model.summary.monthPurchaseCost,
+    monthOpeningPaid: model.summary.monthOpeningPaid,
+    currentOutstanding: model.summary.currentOutstanding,
+    rowIds: model.rows.map((row) => row.purchaseId),
+    anomalies: model.anomalies,
+    anomalyCount: model.summary.anomalyCount,
+  }, {
+    monthPurchaseCost: 0,
+    monthOpeningPaid: 0,
+    currentOutstanding: 250,
+    rowIds: ['PO-IMPOSSIBLE', 'PO-SUFFIX'],
+    anomalies: [
+      { code: 'invalid_purchase_date', purchaseId: 'PO-IMPOSSIBLE' },
+      { code: 'invalid_purchase_date', purchaseId: 'PO-SUFFIX' },
+    ],
+    anomalyCount: 2,
+  })
+})
+
+test('purchase payment cash accepts only calendar dates', () => {
+  const model = buildPurchaseAccountingReadModel({
+    month: '2026-02',
+    purchaseRecords: [purchase({
+      purchaseDate: '2026-02-28',
+      totalCost: 1000,
+      openingPaidAmount: 0,
+    })],
+    paymentRecords: [
+      payment({
+        paymentId: 'PP-IMPOSSIBLE',
+        paymentDate: '2026-02-31',
+        paymentDateSource: 'recorded',
+        jpyAmount: 100,
+      }),
+      payment({
+        paymentId: 'PP-SUFFIX',
+        paymentDate: '2026-02-28junk',
+        paymentDateSource: 'recorded',
+        jpyAmount: 200,
+      }),
+    ],
+  })
+
+  assert.equal(model.rows[0].ledgerPaidAmount, 300)
+  assert.equal(model.summary.currentOutstanding, 700)
+  assert.deepEqual(model.paymentRows.map((row) => row.paymentId), [
+    'PP-IMPOSSIBLE',
+    'PP-SUFFIX',
+  ])
+  assert.deepEqual(model.cashPaymentRows, [])
+  assert.equal(model.summary.monthPaymentCash, 0)
+})
+
 test('keeps project-use purchases without a project in company cost and reports allocation health', () => {
   const readModel = buildPurchaseAccountingReadModel({
     purchaseRecords: [purchase({
