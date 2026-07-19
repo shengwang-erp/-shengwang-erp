@@ -375,20 +375,54 @@ test('普通社长首页不会把未就绪的会计或采购金额伪装成零',
   assert.equal(JSON.stringify(model).includes('¥0'), false)
 })
 
-test('普通社长的实际 Home SSR 保留未就绪财务状态且不渲染零金额', async () => {
+test('普通社长的实际 Home SSR 从 App 原始源投影保留未就绪状态且不渲染零金额', async () => {
   const { app, home } = await loadAppPages()
-  const president = ordinaryPresident()
+  const president = ordinaryPresident([
+    ...PRESIDENT_VIEW_KEYS,
+    'sensitive.salary_view',
+  ])
   const routes = getVisibleAdminRoutes(president).filter(
     ({ view }) => view === 'accounting' || view === 'purchase',
   )
+  const ready = (data) => ({ status: 'ready', data, stale: false })
+  const financialModels = app.buildHomeFinancialModels({
+    currentUser: president,
+    selectedMonth: '2026-07',
+    sourceStates: {
+      projects: {
+        status: 'forbidden',
+        data: [{ projectId: 'SECRET', contractAmount: 999999 }],
+        stale: false,
+      },
+      laborWindow: ready({ monthly: [], projectLaborLifetimeById: {} }),
+      purchaseAccrual: {
+        status: 'error',
+        data: [{ purchaseId: 'PRIVATE', totalCost: 987654 }],
+        stale: false,
+      },
+      purchasePayments: ready([]),
+      projectCosts: ready([]),
+      operatingExpenses: ready([]),
+      fuel: ready([]),
+      vehicleExpenses: ready([]),
+      vehicleIssues: ready([]),
+    },
+  })
+  assert.deepEqual(financialModels, {
+    cost: { status: 'forbidden', data: null, stale: false },
+    purchase: { status: 'error', data: null, stale: false },
+  })
+
   const model = home.buildAuthorizedHomeModel({
     user: president,
     routes,
     sourceStates: {
-      costSummary: { status: 'forbidden', data: null, stale: false },
-      purchaseSummary: { status: 'error', data: null, stale: false },
+      costSummary: financialModels.cost,
+      purchaseSummary: financialModels.purchase,
     },
   })
+  assert.equal(model.summary.monthlyCostTotal, null)
+  assert.equal(model.summary.monthlyPurchaseTotal, null)
   const html = renderToStaticMarkup(createElement(app.HomePage, {
     model,
     summary: model.summary,
@@ -403,4 +437,5 @@ test('普通社长的实际 Home SSR 保留未就绪财务状态且不渲染零�
   assert.match(html, /读取失败/u)
   assert.doesNotMatch(html, /<span class="module-count">¥0<\/span>/u)
   assert.doesNotMatch(html, /当前为系统恢复账号/u)
+  assert.doesNotMatch(html, /999,?999|987,?654|SECRET|PRIVATE/u)
 })
