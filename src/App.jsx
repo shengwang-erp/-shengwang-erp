@@ -4077,53 +4077,57 @@ function SystemSettingsPage({
         </section>
       )}
 
-      <ContractRevenueMigrationPanel
-        canExecute={canMigrate}
-        onMigrationComplete={handleLocalContractRevenueMigrationComplete}
-        loadPreview={loadContractMigrationPreview}
-        executeMigration={executeContractMigration}
-      />
+      {canMigrate && (
+        <ContractRevenueMigrationPanel
+          canExecute={canMigrate}
+          onMigrationComplete={handleLocalContractRevenueMigrationComplete}
+          loadPreview={loadContractMigrationPreview}
+          executeMigration={executeContractMigration}
+        />
+      )}
 
-      <section className="form-card">
-        <div className="section-heading">
-          <h2>localStorage → Supabase 数据迁移</h2>
-          <span>{canMigrate ? '最高权限可用' : '无权限'}</span>
-        </div>
-        <div className="empty-state cost-note">
-          迁移工具只处理明确允许的旧业务缓存，不包含旧员工档案。每次迁移都会重新确认登录会话并由云端 RLS 校验权限；失败后不会继续重试整表。
-        </div>
-        <div className="form-actions">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={handleMigration}
-            disabled={!canMigrate || isMigrating}
-          >
-            {isMigrating ? '迁移中...' : '上传当前浏览器数据到 Supabase'}
-          </button>
-        </div>
-        {message && <div className="empty-state">{message}</div>}
-        {migrationResults.length > 0 && (
-          <div className="record-grid">
-            {migrationResults.map((result) => (
-              <article className="record-card" key={result.storageKey}>
-                <strong>{result.storageKey}</strong>
-                <span>成功：{result.saved}</span>
-                <span>失败：{result.failed}</span>
-                {result.errors?.length > 0 && (
-                  <div className="migration-error">
-                    <strong>失败原因</strong>
-                    {result.errors.slice(0, 3).map((errorText) => (
-                      <span key={errorText}>{errorText}</span>
-                    ))}
-                    {result.errors.length > 3 && <span>还有 {result.errors.length - 3} 条错误未显示。</span>}
-                  </div>
-                )}
-              </article>
-            ))}
+      {canMigrate && (
+        <section className="form-card">
+          <div className="section-heading">
+            <h2>localStorage → Supabase 数据迁移</h2>
+            <span>{canMigrate ? '最高权限可用' : '无权限'}</span>
           </div>
-        )}
-      </section>
+          <div className="empty-state cost-note">
+            迁移工具只处理明确允许的旧业务缓存，不包含旧员工档案。每次迁移都会重新确认登录会话并由云端 RLS 校验权限；失败后不会继续重试整表。
+          </div>
+          <div className="form-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={handleMigration}
+              disabled={!canMigrate || isMigrating}
+            >
+              {isMigrating ? '迁移中...' : '上传当前浏览器数据到 Supabase'}
+            </button>
+          </div>
+          {message && <div className="empty-state">{message}</div>}
+          {migrationResults.length > 0 && (
+            <div className="record-grid">
+              {migrationResults.map((result) => (
+                <article className="record-card" key={result.storageKey}>
+                  <strong>{result.storageKey}</strong>
+                  <span>成功：{result.saved}</span>
+                  <span>失败：{result.failed}</span>
+                  {result.errors?.length > 0 && (
+                    <div className="migration-error">
+                      <strong>失败原因</strong>
+                      {result.errors.slice(0, 3).map((errorText) => (
+                        <span key={errorText}>{errorText}</span>
+                      ))}
+                      {result.errors.length > 3 && <span>还有 {result.errors.length - 3} 条错误未显示。</span>}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
     </PageShell>
   )

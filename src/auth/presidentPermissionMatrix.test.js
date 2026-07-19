@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
+import { createServer } from 'vite'
 
 import {
   canAccessView,
@@ -50,6 +53,50 @@ const EXPECTED_PRESIDENT_DESKTOP_VIEWS = [
   'toolBorrow',
   'todayAttendance',
 ]
+
+let appPagesPromise
+
+function loadAppPages() {
+  if (appPagesPromise) return appPagesPromise
+  appPagesPromise = (async () => {
+    const server = await createServer({
+      root: process.cwd(),
+      logLevel: 'silent',
+      appType: 'custom',
+      plugins: [{
+        name: 'president-permission-app-pages',
+        enforce: 'pre',
+        resolveId(source) {
+          return source === 'leaflet' ? '\0president-permission-leaflet-stub' : null
+        },
+        load(id) {
+          return id === '\0president-permission-leaflet-stub'
+            ? 'export default { icon: () => ({}) }'
+            : null
+        },
+        transform(code, id) {
+          if (!id.endsWith('/src/App.jsx')) return null
+          return code
+            .replace('function HomePage(', 'export function HomePage(')
+            .replace('function SystemSettingsPage(', 'export function SystemSettingsPage(')
+        },
+      }],
+      ssr: { noExternal: ['leaflet'] },
+      server: { middlewareMode: true },
+    })
+    try {
+      return {
+        app: await server.ssrLoadModule('/src/App.jsx'),
+        home: await server.ssrLoadModule(
+          '/src/features/workbench/authorizedHomeModel.js',
+        ),
+      }
+    } finally {
+      await server.close()
+    }
+  })()
+  return appPagesPromise
+}
 
 function ordinaryPresident(effectivePermissionKeys = PRESIDENT_VIEW_KEYS, overrides = {}) {
   return {
@@ -186,6 +233,126 @@ test('普通社长的工资、合同额、采购付款和身份信息只由对�
   )
 })
 
+test('普通社长的工资修改需要模块 update 与工资敏感 update 两个精确授权', () => {
+  const salaryViewKeys = [...PRESIDENT_VIEW_KEYS, 'sensitive.salary_view']
+  const moduleUpdateOnly = ordinaryPresident([
+    ...salaryViewKeys,
+    'module.salaries.update',
+  ])
+  assert.deepEqual(getAccountingAccess(moduleUpdateOnly).salary, {
+    view: true,
+    create: false,
+    update: false,
+    delete: false,
+  })
+
+  const sensitiveUpdateOnly = ordinaryPresident([
+    ...salaryViewKeys,
+    'sensitive.salary_update',
+  ])
+  assert.equal(getAccountingAccess(sensitiveUpdateOnly).salary.update, false)
+
+  const exactUpdate = ordinaryPresident([
+    ...salaryViewKeys,
+    'module.salaries.update',
+    'sensitive.salary_update',
+  ])
+  assert.deepEqual(getAccountingAccess(exactUpdate).salary, {
+    view: true,
+    create: false,
+    update: true,
+    delete: false,
+  })
+})
+
+test('普通社长的采购付款修改需要采购 update 与付款敏感 update 两个精确授权', () => {
+  const paymentViewKeys = [
+    ...PRESIDENT_VIEW_KEYS,
+    'sensitive.purchase_payments_view',
+  ]
+  const moduleUpdateOnly = ordinaryPresident([
+    ...paymentViewKeys,
+    'module.purchases.update',
+  ])
+  assert.equal(getPurchaseAccess(moduleUpdateOnly).records.update, true)
+  assert.deepEqual(getPurchaseAccess(moduleUpdateOnly).payments, {
+    view: true,
+    create: false,
+    update: false,
+    delete: false,
+  })
+
+  const sensitiveUpdateOnly = ordinaryPresident([
+    ...paymentViewKeys,
+    'sensitive.purchase_payments_update',
+  ])
+  assert.equal(getPurchaseAccess(sensitiveUpdateOnly).payments.update, false)
+
+  const exactUpdate = ordinaryPresident([
+    ...paymentViewKeys,
+    'module.purchases.update',
+    'sensitive.purchase_payments_update',
+  ])
+  assert.deepEqual(getPurchaseAccess(exactUpdate).payments, {
+    view: true,
+    create: false,
+    update: true,
+    delete: false,
+  })
+})
+
+test('普通社长即使显式获准系统设置页也看不到 SW-000 恢复与迁移工具', async () => {
+  const { app } = await loadAppPages()
+  const president = ordinaryPresident([
+    ...PRESIDENT_VIEW_KEYS,
+    'module.settings.view',
+  ])
+  assert.equal(canAccessView(president, 'settings'), true)
+
+  const html = renderToStaticMarkup(createElement(app.SystemSettingsPage, {
+    currentUser: president,
+    storageKeys: ['erp.projects'],
+    loadContractMigrationPreview() {
+      throw new Error('普通社长不得触发迁移预览')
+    },
+    executeContractMigration() {
+      throw new Error('普通社长不得触发迁移执行')
+    },
+    onLocalContractRevenueMigrationComplete() {},
+    onBack() {},
+  }))
+
+  assert.match(html, /系统设置/u)
+  assert.match(html, /Supabase 云端数据库/u)
+  assert.doesNotMatch(html, /系统恢复账号|最高权限/u)
+  assert.doesNotMatch(
+    html,
+    /旧合同收入数据迁移|只读预览|执行云端迁移|localStorage → Supabase 数据迁移|上传当前浏览器数据到 Supabase/u,
+  )
+
+  const recoveryAccount = ordinaryPresident(['all'], {
+    employeeId: 'SUPER_ADMIN',
+    employeeNumber: 'SW-000',
+    name: '系统恢复账号',
+    isHiddenSystemAccount: true,
+  })
+  const recoveryHtml = renderToStaticMarkup(createElement(app.SystemSettingsPage, {
+    currentUser: recoveryAccount,
+    storageKeys: ['erp.projects'],
+    loadContractMigrationPreview() {
+      return null
+    },
+    executeContractMigration() {},
+    onLocalContractRevenueMigrationComplete() {},
+    onBack() {},
+  }))
+  assert.match(recoveryHtml, /系统恢复账号状态/u)
+  assert.match(recoveryHtml, /旧合同收入数据迁移/u)
+  assert.match(recoveryHtml, /只读预览/u)
+  assert.match(recoveryHtml, /localStorage → Supabase 数据迁移/u)
+  assert.match(recoveryHtml, /上传当前浏览器数据到 Supabase/u)
+})
+
 test('普通社长首页不会把未就绪的会计或采购金额伪装成零', () => {
   const president = ordinaryPresident()
   const routes = getVisibleAdminRoutes(president).filter(
@@ -206,4 +373,34 @@ test('普通社长首页不会把未就绪的会计或采购金额伪装成零',
   assert.equal(model.summary.monthlyCostTotal, null)
   assert.equal(model.summary.monthlyPurchaseTotal, null)
   assert.equal(JSON.stringify(model).includes('¥0'), false)
+})
+
+test('普通社长的实际 Home SSR 保留未就绪财务状态且不渲染零金额', async () => {
+  const { app, home } = await loadAppPages()
+  const president = ordinaryPresident()
+  const routes = getVisibleAdminRoutes(president).filter(
+    ({ view }) => view === 'accounting' || view === 'purchase',
+  )
+  const model = home.buildAuthorizedHomeModel({
+    user: president,
+    routes,
+    sourceStates: {
+      costSummary: { status: 'forbidden', data: null, stale: false },
+      purchaseSummary: { status: 'error', data: null, stale: false },
+    },
+  })
+  const html = renderToStaticMarkup(createElement(app.HomePage, {
+    model,
+    summary: model.summary,
+    currentUser: president,
+    onLogout() {},
+    onOpenView() {},
+  }))
+
+  assert.match(html, /会计成本/u)
+  assert.match(html, /采购管理/u)
+  assert.match(html, /权限受限/u)
+  assert.match(html, /读取失败/u)
+  assert.doesNotMatch(html, /<span class="module-count">¥0<\/span>/u)
+  assert.doesNotMatch(html, /当前为系统恢复账号/u)
 })
