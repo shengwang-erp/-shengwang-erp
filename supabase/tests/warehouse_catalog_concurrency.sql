@@ -1,12 +1,9 @@
-create extension if not exists pgtap with schema extensions;
-create extension if not exists dblink with schema extensions;
-set search_path = public, auth, extensions;
-
-select plan(5);
-
 do $$
 declare
   target record;
+  proof record;
+  connection_name text;
+  connection_string text;
 begin
   if to_regclass('private.warehouse_task3_test_target') is null
   then
@@ -21,6 +18,9 @@ begin
     or target.api_port = 54321
     or target.project_id !~ '^warehouse-task3-[a-z0-9-]+$'
     or target.test_workdir !~ '^/private/tmp/warehouse-task3-[A-Za-z0-9._-]+$'
+    or target.marker_nonce is null
+    or target.created_at < clock_timestamp() - interval '5 minutes'
+    or target.created_at > clock_timestamp()
   then
     raise exception 'explicit isolated warehouse Task 3 target required';
   end if;
@@ -38,8 +38,58 @@ begin
   then
     raise exception 'warehouse Task 3 migration marker missing on isolated target';
   end if;
+  connection_string := format(
+    'host=host.docker.internal port=%s dbname=postgres user=postgres password=postgres application_name=%s',
+    target.db_port,
+    target.project_id || '-' || target.marker_nonce::text
+  );
+  foreach connection_name in array array['task2_parent', 'task2_child'] loop
+    perform extensions.dblink_connect(connection_name, connection_string);
+    perform extensions.dblink_exec(connection_name, 'begin read only');
+    select * into proof
+    from extensions.dblink(
+      connection_name,
+      $remote$
+        select marker.project_id, marker.test_workdir, marker.db_port,
+               marker.api_port, marker.marker_nonce,
+               marker.created_at > clock_timestamp() - interval '5 minutes',
+               exists(
+                 select 1 from supabase_migrations.schema_migrations
+                 where version = '202608080003'
+               ),
+               exists(
+                 select 1 from storage.buckets
+                 where id = 'warehouse-item-photos' and public = false
+               )
+        from private.warehouse_task3_test_target marker
+      $remote$
+    ) as remote_proof(
+      project_id text, test_workdir text, db_port integer, api_port integer,
+      marker_nonce uuid, fresh boolean, migrated boolean, private_bucket boolean
+    );
+    if not found
+      or proof.project_id is distinct from target.project_id
+      or proof.test_workdir is distinct from target.test_workdir
+      or proof.db_port is distinct from target.db_port
+      or proof.api_port is distinct from target.api_port
+      or proof.marker_nonce is distinct from target.marker_nonce
+      or proof.fresh is distinct from true
+      or proof.migrated is distinct from true
+      or proof.private_bucket is distinct from true
+    then
+      raise exception 'remote warehouse Task 3 marker mismatch before fixtures';
+    end if;
+    perform extensions.dblink_exec(connection_name, 'rollback');
+  end loop;
+exception when others then
+  begin perform extensions.dblink_disconnect('task2_parent'); exception when others then null; end;
+  begin perform extensions.dblink_disconnect('task2_child'); exception when others then null; end;
+  raise;
 end;
 $$;
+
+set search_path = public, auth, extensions;
+select plan(7);
 
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -137,6 +187,29 @@ begin
 end;
 $$;
 
+create or replace function public.task3_pause_photo_delete_begin(
+  p_variant_id uuid,
+  p_photo_id uuid,
+  p_marker bigint
+)
+returns jsonb
+language plpgsql
+volatile
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+begin
+  result := public.begin_warehouse_variant_photo_delete_secure(
+    p_variant_id, p_photo_id
+  );
+  perform pg_advisory_lock(p_marker);
+  perform pg_sleep(0.5);
+  perform pg_advisory_unlock(p_marker);
+  return result;
+end;
+$$;
+
 revoke all on function public.task2_pause_site_deactivation(uuid, jsonb, bigint)
   from public, anon, service_role;
 revoke all on function public.task2_pause_item_deactivation(uuid, jsonb, bigint)
@@ -148,6 +221,10 @@ grant execute on function public.task2_pause_item_deactivation(uuid, jsonb, bigi
 revoke all on function public.task3_pause_photo_registration(uuid, text, bigint)
   from public, anon, service_role;
 grant execute on function public.task3_pause_photo_registration(uuid, text, bigint)
+  to authenticated;
+revoke all on function public.task3_pause_photo_delete_begin(uuid, uuid, bigint)
+  from public, anon, service_role;
+grant execute on function public.task3_pause_photo_delete_begin(uuid, uuid, bigint)
   to authenticated;
 
 create or replace function pg_temp.task2_wait_for_marker(p_marker bigint)
@@ -245,39 +322,6 @@ begin
   return error_message;
 end;
 $$;
-
-create or replace function pg_temp.task2_connection_string()
-returns text
-language plpgsql
-as $$
-declare
-  target record;
-begin
-  if to_regclass('private.warehouse_task3_test_target') is null then
-    raise exception 'warehouse test database port is invalid';
-  end if;
-  select * into target from private.warehouse_task3_test_target;
-  if not found
-    or target.db_port not between 1024 and 65535
-    or target.db_port = 54322
-    or target.project_id !~ '^warehouse-task3-[a-z0-9-]+$'
-  then raise exception 'warehouse test database port is invalid'; end if;
-  return format(
-    'host=host.docker.internal port=%s dbname=postgres user=postgres password=postgres application_name=%s',
-    target.db_port,
-    target.project_id
-  );
-end;
-$$;
-
-select extensions.dblink_connect(
-  'task2_parent',
-  pg_temp.task2_connection_string()
-);
-select extensions.dblink_connect(
-  'task2_child',
-  pg_temp.task2_connection_string()
-);
 
 -- Active location creation racing with site deactivation.
 select pg_temp.task2_begin_remote('task2_parent');
@@ -558,6 +602,125 @@ select ok(
   'concurrent eighth and ninth registrations commit exactly one photo'
 );
 
+-- A pending delete linearizes before a concurrent reorder.
+select pg_temp.task2_begin_remote('task2_parent');
+select pg_temp.task2_begin_remote('task2_child');
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    $query$select public.task3_pause_photo_delete_begin(
+      'bc300000-0000-4000-8000-000000000002',
+      %L::uuid,
+      %s
+    )$query$,
+    (select id from public.warehouse_variant_photos
+     where object_path like '%000000000001.jpg'),
+    hashtextextended('task3-photo-delete-reorder-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(
+    hashtextextended('task3-photo-delete-reorder-marker', 0)
+  ) then raise exception 'photo delete/reorder race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    $query$select public.reorder_warehouse_variant_photos_secure(
+      'bc300000-0000-4000-8000-000000000002', %L::uuid[]
+    )$query$,
+    (select array_agg(id order by sort_order)
+     from public.warehouse_variant_photos
+     where variant_id = 'bc300000-0000-4000-8000-000000000002')
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.photo_delete_reorder_error',
+  pg_temp.task3_finish_limit_child('task2_child'), false
+);
+select ok(
+  current_setting('warehouse.photo_delete_reorder_error')
+    like '%warehouse photo delete pending%'
+  and (select count(*) = 1 from public.warehouse_photo_delete_outbox
+       where variant_id = 'bc300000-0000-4000-8000-000000000002'),
+  'delete begin commits before a concurrent reorder can mutate photo order'
+);
+select set_config(
+  'warehouse.photo_delete_race_id',
+  (select id::text from public.warehouse_variant_photos
+   where object_path like '%000000000001.jpg'), false
+);
+set request.jwt.claim.role = 'authenticated';
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000001';
+set role authenticated;
+select public.cancel_warehouse_photo_delete_secure(
+  (begun.ticket->>'deletionId')::uuid,
+  (begun.ticket->>'variantId')::uuid,
+  (begun.ticket->>'photoId')::uuid
+)
+from (
+  select public.begin_warehouse_variant_photo_delete_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    current_setting('warehouse.photo_delete_race_id')::uuid
+  ) as ticket
+) begun;
+reset role;
+
+-- A pending delete also linearizes before a concurrent registration.
+select pg_temp.task2_begin_remote('task2_parent');
+select pg_temp.task2_begin_remote('task2_child');
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    $query$select public.task3_pause_photo_delete_begin(
+      'bc300000-0000-4000-8000-000000000002',
+      %L::uuid,
+      %s
+    )$query$,
+    (select id from public.warehouse_variant_photos
+     where object_path like '%000000000001.jpg'),
+    hashtextextended('task3-photo-delete-register-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(
+    hashtextextended('task3-photo-delete-register-marker', 0)
+  ) then raise exception 'photo delete/register race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    $query$select public.register_warehouse_variant_photo_secure(
+      'bc300000-0000-4000-8000-000000000002', %L,
+      'image/jpeg', 100
+    )$query$,
+    (select name from storage.objects object
+     where bucket_id = 'warehouse-item-photos'
+       and name like 'bc300000-0000-4000-8000-000000000002/%'
+       and not exists (
+         select 1 from public.warehouse_variant_photos photo
+         where photo.object_path = object.name
+       ) limit 1)
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.photo_delete_register_error',
+  pg_temp.task3_finish_limit_child('task2_child'), false
+);
+select ok(
+  current_setting('warehouse.photo_delete_register_error')
+    like '%warehouse photo delete pending%'
+  and (select count(*) = 1 from public.warehouse_photo_delete_outbox
+       where variant_id = 'bc300000-0000-4000-8000-000000000002'),
+  'delete begin commits before a concurrent registration can consume a slot'
+);
+
 select * from finish();
 
 select extensions.dblink_disconnect('task2_parent');
@@ -576,6 +739,14 @@ delete from public.warehouse_photo_audit
 where actor_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
 alter table public.warehouse_photo_audit
   enable trigger reject_warehouse_photo_audit_mutation;
+alter table private.warehouse_photo_delete_receipts
+  disable trigger reject_warehouse_photo_delete_receipt_mutation;
+delete from private.warehouse_photo_delete_receipts
+where requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
+alter table private.warehouse_photo_delete_receipts
+  enable trigger reject_warehouse_photo_delete_receipt_mutation;
+delete from public.warehouse_photo_delete_outbox
+where requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
 delete from public.warehouse_variant_photos
 where variant_id = 'bc300000-0000-4000-8000-000000000002';
 set session_replication_role = replica;
@@ -596,6 +767,7 @@ where id = 'bc000000-0000-4000-8000-000000000001';
 drop function public.task2_pause_site_deactivation(uuid, jsonb, bigint);
 drop function public.task2_pause_item_deactivation(uuid, jsonb, bigint);
 drop function public.task3_pause_photo_registration(uuid, text, bigint);
+drop function public.task3_pause_photo_delete_begin(uuid, uuid, bigint);
 delete from public.permission_grants
 where subject_type = 'department'
   and subject_code = '仓库管理部'

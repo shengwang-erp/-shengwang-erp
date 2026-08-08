@@ -12,9 +12,13 @@ export const MAX_WAREHOUSE_VARIANT_PHOTOS = 8
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const PATH = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(jpg|png|webp)$/u
 const MIME_BY_EXTENSION = Object.freeze({ jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' })
-const RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
+const RPC_RESULT_FIELDS = Object.freeze(['data', 'error', 'count', 'status', 'statusText'])
+const STORAGE_RESULT_FIELDS = Object.freeze(['data', 'error'])
 const PHOTO_FIELDS = Object.freeze([
   'id', 'variantId', 'objectPath', 'sortOrder', 'mimeType', 'byteSize', 'createdAt',
+])
+const DELETE_TICKET_FIELDS = Object.freeze([
+  'deletionId', 'kind', 'photoId', 'variantId', 'objectPath', 'storageDeleted',
 ])
 const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_PHOTO_NOT_CONFIGURED: '云端图片服务未配置，请联系管理员',
@@ -54,10 +58,34 @@ function plainObject(value) {
 
 function exactObject(value, fields) {
   const descriptors = plainObject(value)
-  if (!descriptors || Object.keys(descriptors).sort().join('\u0000') !== [...fields].sort().join('\u0000')) {
+  if (
+    !descriptors ||
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string') ||
+    Object.keys(descriptors).sort().join('\u0000') !== [...fields].sort().join('\u0000')
+  ) {
     throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
   }
   return Object.fromEntries(fields.map((field) => [field, descriptors[field].value]))
+}
+
+function denseArrayDescriptors(value, maximumLength = Number.MAX_SAFE_INTEGER) {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    !Number.isSafeInteger(value.length) ||
+    value.length > maximumLength
+  ) return null
+  const descriptors = Object.getOwnPropertyDescriptors(value)
+  const keys = Reflect.ownKeys(descriptors)
+  if (keys.some((key) => typeof key !== 'string')) return null
+  const expected = Array.from({ length: value.length }, (_, index) => String(index))
+  expected.push('length')
+  if (keys.sort().join('\u0000') !== expected.sort().join('\u0000')) return null
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[index]
+    if (!descriptor || !('value' in descriptor) || descriptor.enumerable !== true) return null
+  }
+  return descriptors
 }
 
 function uuid(value, input = false) {
@@ -98,11 +126,12 @@ function photoResponse(value, expectedVariantId) {
 }
 
 function photoList(value, expectedVariantId) {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
-  }
-  if (value.length > MAX_WAREHOUSE_VARIANT_PHOTOS) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
-  const rows = value.map((entry) => photoResponse(entry, expectedVariantId))
+  const descriptors = denseArrayDescriptors(value, MAX_WAREHOUSE_VARIANT_PHOTOS)
+  if (!descriptors) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+  const rows = Array.from(
+    { length: value.length },
+    (_, index) => photoResponse(descriptors[index].value, expectedVariantId),
+  )
   if (rows.some((row, index) => row.sortOrder !== index)) {
     throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
   }
@@ -111,22 +140,73 @@ function photoList(value, expectedVariantId) {
 
 function normalizeSupplierError(error, status) {
   if (error instanceof WarehouseMediaServiceError) return error
-  if (status === 401 || error?.code === 'PGRST301' || error?.code === 'JWT_EXPIRED') {
+  const descriptors = plainObject(error)
+  const code = typeof descriptors?.code?.value === 'string' ? descriptors.code.value : ''
+  const hint = typeof descriptors?.hint?.value === 'string' ? descriptors.hint.value : ''
+  if (status === 401 || code === 'PGRST301' || code === 'JWT_EXPIRED') {
     return fail('AUTH_SESSION_INVALID')
   }
-  if (status === 403 || error?.code === '42501') return fail('ACCESS_DENIED')
-  if (error?.code === '55000' && error?.hint === 'WAREHOUSE_PHOTO_LIMIT_REACHED') {
+  if (status === 403 || code === '42501') return fail('ACCESS_DENIED')
+  if (code === '55000' && hint === 'WAREHOUSE_PHOTO_LIMIT_REACHED') {
     return fail('WAREHOUSE_PHOTO_LIMIT_REACHED')
   }
   return fail('WAREHOUSE_PHOTO_SERVICE_UNAVAILABLE')
 }
 
-function validStorageResult(result, field) {
-  const descriptors = plainObject(result)
-  if (!descriptors) return false
-  const error = descriptors.error?.value
-  if (error) return false
-  return field ? Boolean(descriptors.data?.value?.[field]) : descriptors.data?.value !== null
+function storageData(result) {
+  let envelope
+  try {
+    envelope = exactObject(result, STORAGE_RESULT_FIELDS)
+  } catch {
+    return null
+  }
+  if (envelope.error !== null) return null
+  return envelope.data
+}
+
+function storageField(result, field) {
+  const data = storageData(result)
+  const descriptors = plainObject(data)
+  if (!descriptors || !descriptors[field] || typeof descriptors[field].value !== 'string') return null
+  return descriptors[field].value
+}
+
+function exactRemovedPath(result, expectedPath) {
+  const data = storageData(result)
+  const descriptors = denseArrayDescriptors(data, 1)
+  if (!descriptors || data.length !== 1) return false
+  const row = plainObject(descriptors[0].value)
+  return Boolean(row?.name && row.name.value === expectedPath)
+}
+
+function removalOutcome(result, expectedPath) {
+  let envelope
+  try {
+    envelope = exactObject(result, STORAGE_RESULT_FIELDS)
+  } catch {
+    return 'ambiguous'
+  }
+  if (envelope.error !== null) {
+    return plainObject(envelope.error) ? 'failed' : 'ambiguous'
+  }
+  return exactRemovedPath(result, expectedPath) ? 'removed' : 'ambiguous'
+}
+
+function deleteTicket(value, expectedVariantId, expectedPhotoId) {
+  const ticket = exactObject(value, DELETE_TICKET_FIELDS)
+  if (
+    !['registered', 'orphan'].includes(ticket.kind) ||
+    uuid(ticket.deletionId) !== ticket.deletionId ||
+    uuid(ticket.variantId) !== expectedVariantId ||
+    ticket.photoId !== expectedPhotoId ||
+    (ticket.photoId !== null && uuid(ticket.photoId) !== ticket.photoId) ||
+    typeof ticket.storageDeleted !== 'boolean'
+  ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+  const pathMatch = typeof ticket.objectPath === 'string' ? PATH.exec(ticket.objectPath) : null
+  if (!pathMatch || pathMatch[1] !== expectedVariantId) {
+    throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+  }
+  return Object.freeze(ticket)
 }
 
 export function createWarehouseMediaService(client, options = {}) {
@@ -159,16 +239,20 @@ export function createWarehouseMediaService(client, options = {}) {
     } catch (error) {
       throw normalizeSupplierError(error)
     }
-    const descriptors = plainObject(result)
+    let envelope
+    try {
+      envelope = exactObject(result, RPC_RESULT_FIELDS)
+    } catch {
+      throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+    }
     if (
-      !descriptors ||
-      !descriptors.data ||
-      Object.keys(descriptors).some((key) => !RESULT_FIELDS.has(key))
+      !Number.isSafeInteger(envelope.status) ||
+      typeof envelope.statusText !== 'string' ||
+      (envelope.count !== null && !Number.isSafeInteger(envelope.count)) ||
+      (envelope.error !== null && !plainObject(envelope.error))
     ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
-    const error = descriptors.error?.value
-    const status = descriptors.status?.value
-    if (error) throw normalizeSupplierError(error, status)
-    return descriptors.data.value
+    if (envelope.error !== null) throw normalizeSupplierError(envelope.error, envelope.status)
+    return envelope.data
   }
   const bucket = () => {
     ensureClient()
@@ -178,6 +262,34 @@ export function createWarehouseMediaService(client, options = {}) {
     await call('list_warehouse_variant_photos_secure', { p_variant_id: uuid(variantId, true) }),
     variantId,
   )
+  const cancelDelete = async (ticket) => call('cancel_warehouse_photo_delete_secure', {
+    p_deletion_id: ticket.deletionId,
+    p_variant_id: ticket.variantId,
+    p_photo_id: ticket.photoId,
+  })
+  const finishDelete = async (ticket, storageFailureCode) => {
+    if (!ticket.storageDeleted) {
+      let removal
+      try {
+        removal = await bucket().remove([ticket.objectPath])
+      } catch {
+        throw fail(storageFailureCode)
+      }
+      const outcome = removalOutcome(removal, ticket.objectPath)
+      if (outcome === 'failed') {
+        try { await cancelDelete(ticket) } catch { /* pending stays recoverable */ }
+        throw fail(storageFailureCode)
+      }
+      if (outcome !== 'removed') throw fail(storageFailureCode)
+    }
+    const finalized = await call('finalize_warehouse_photo_delete_secure', {
+      p_deletion_id: ticket.deletionId,
+      p_variant_id: ticket.variantId,
+      p_photo_id: ticket.photoId,
+    })
+    if (finalized !== true) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+    return true
+  }
 
   return Object.freeze({
     async listVariantPhotos(variantId) {
@@ -193,20 +305,17 @@ export function createWarehouseMediaService(client, options = {}) {
         } catch {
           throw fail('WAREHOUSE_PHOTO_SIGN_FAILED')
         }
-        if (!validStorageResult(signed, 'signedUrl') || typeof signed.data.signedUrl !== 'string') {
+        const signedUrl = storageField(signed, 'signedUrl')
+        if (!signedUrl) {
           throw fail('WAREHOUSE_PHOTO_SIGN_FAILED')
         }
-        result.push(Object.freeze({ ...row, signedUrl: signed.data.signedUrl }))
+        result.push(Object.freeze({ ...row, signedUrl }))
       }
       return Object.freeze(result)
     },
     async uploadVariantPhoto({ variantId, file } = {}) {
       uuid(variantId, true)
       validateWarehousePhotoFile(file)
-      const existing = await listMetadata(variantId)
-      if (existing.length >= MAX_WAREHOUSE_VARIANT_PHOTOS) {
-        throw fail('WAREHOUSE_PHOTO_LIMIT_REACHED')
-      }
       let compressed
       try {
         compressed = await compressPhoto(file)
@@ -235,7 +344,7 @@ export function createWarehouseMediaService(client, options = {}) {
       } catch {
         throw fail('WAREHOUSE_PHOTO_UPLOAD_FAILED')
       }
-      if (!validStorageResult(upload, 'path') || upload.data.path !== path) {
+      if (storageField(upload, 'path') !== path) {
         throw fail('WAREHOUSE_PHOTO_UPLOAD_FAILED')
       }
       try {
@@ -246,13 +355,18 @@ export function createWarehouseMediaService(client, options = {}) {
           p_byte_size: compressed.size,
         }), variantId)
       } catch (registrationError) {
-        let cleanup
         try {
-          cleanup = await bucket().remove([path])
+          const ticket = deleteTicket(
+            await call('begin_warehouse_photo_orphan_delete_secure', {
+              p_variant_id: variantId,
+              p_object_path: path,
+            }),
+            variantId,
+            null,
+          )
+          if (ticket.kind !== 'orphan') throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+          await finishDelete(ticket, 'WAREHOUSE_PHOTO_ORPHAN_CLEANUP_FAILED')
         } catch {
-          throw fail('WAREHOUSE_PHOTO_ORPHAN_CLEANUP_FAILED')
-        }
-        if (!validStorageResult(cleanup)) {
           throw fail('WAREHOUSE_PHOTO_ORPHAN_CLEANUP_FAILED')
         }
         throw registrationError
@@ -279,20 +393,12 @@ export function createWarehouseMediaService(client, options = {}) {
       } catch {
         throw fail('WAREHOUSE_PHOTO_INPUT_INVALID')
       }
-      let removal
-      try {
-        removal = await bucket().remove([row.objectPath])
-      } catch {
-        throw fail('WAREHOUSE_PHOTO_DELETE_FAILED')
-      }
-      if (!validStorageResult(removal)) throw fail('WAREHOUSE_PHOTO_DELETE_FAILED')
-      const deleted = await call('delete_warehouse_variant_photo_secure', {
+      const ticket = deleteTicket(await call('begin_warehouse_variant_photo_delete_secure', {
         p_variant_id: row.variantId,
         p_photo_id: row.id,
-        p_object_path: row.objectPath,
-      })
-      if (deleted !== true) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
-      return true
+      }), row.variantId, row.id)
+      if (ticket.kind !== 'registered') throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+      return finishDelete(ticket, 'WAREHOUSE_PHOTO_DELETE_FAILED')
     },
   })
 }

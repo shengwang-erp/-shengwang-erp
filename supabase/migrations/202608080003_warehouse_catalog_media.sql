@@ -390,7 +390,7 @@ returns boolean
 language plpgsql
 stable
 security definer
-set search_path = pg_catalog, public, private
+set search_path = pg_catalog, public, private, storage
 as $$
 declare
   found_pending boolean;
@@ -1041,7 +1041,7 @@ create table public.warehouse_photo_audit (
   actor_employee_profile_id uuid not null,
   created_at timestamptz not null default statement_timestamp(),
   constraint warehouse_photo_audit_action_check
-    check (action in ('registered', 'reordered', 'deleted')),
+    check (action in ('registered', 'reordered', 'delete_pending', 'delete_cancelled', 'deleted')),
   constraint warehouse_photo_audit_actor_fk
     foreign key (actor_employee_profile_id)
       references public.employee_profiles(id) on delete restrict
@@ -1051,6 +1051,43 @@ create index warehouse_photo_audit_variant_time_idx
   on public.warehouse_photo_audit(variant_id, created_at desc, id);
 create index warehouse_photo_audit_actor_time_idx
   on public.warehouse_photo_audit(actor_employee_profile_id, created_at desc, id);
+
+create table public.warehouse_photo_delete_outbox (
+  deletion_id uuid primary key default gen_random_uuid(),
+  kind text not null,
+  photo_id uuid,
+  variant_id uuid not null,
+  object_path text not null unique,
+  requested_by_employee_profile_id uuid not null,
+  created_at timestamptz not null default statement_timestamp(),
+  constraint warehouse_photo_delete_outbox_kind_check
+    check (kind in ('registered', 'orphan')),
+  constraint warehouse_photo_delete_outbox_kind_photo_check
+    check ((kind = 'registered' and photo_id is not null) or (kind = 'orphan' and photo_id is null)),
+  constraint warehouse_photo_delete_outbox_variant_fk foreign key (variant_id)
+    references public.warehouse_variants(id) on delete restrict,
+  constraint warehouse_photo_delete_outbox_requester_fk
+    foreign key (requested_by_employee_profile_id)
+      references public.employee_profiles(id) on delete restrict
+);
+
+create unique index warehouse_photo_delete_outbox_registered_photo_idx
+  on public.warehouse_photo_delete_outbox(photo_id)
+  where photo_id is not null;
+create index warehouse_photo_delete_outbox_variant_created_idx
+  on public.warehouse_photo_delete_outbox(variant_id, created_at, deletion_id);
+
+create table private.warehouse_photo_delete_receipts (
+  deletion_id uuid primary key,
+  kind text not null check (kind in ('registered', 'orphan')),
+  photo_id uuid,
+  variant_id uuid not null,
+  object_path text not null,
+  requested_by_employee_profile_id uuid not null,
+  outcome text not null check (outcome in ('cancelled', 'finalized')),
+  created_at timestamptz not null default statement_timestamp(),
+  check ((kind = 'registered' and photo_id is not null) or (kind = 'orphan' and photo_id is null))
+);
 
 create or replace function private.reject_warehouse_photo_audit_mutation()
 returns trigger
@@ -1062,9 +1099,24 @@ begin
 end;
 $$;
 
+create or replace function private.reject_warehouse_photo_delete_receipt_mutation()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  raise exception using errcode = '42501',
+    message = 'warehouse photo delete receipt is immutable';
+end;
+$$;
+
 create trigger reject_warehouse_photo_audit_mutation
 before update or delete on public.warehouse_photo_audit
 for each row execute function private.reject_warehouse_photo_audit_mutation();
+
+create trigger reject_warehouse_photo_delete_receipt_mutation
+before update or delete on private.warehouse_photo_delete_receipts
+for each row execute function private.reject_warehouse_photo_delete_receipt_mutation();
 
 create or replace function private.warehouse_variant_photo_json(
   p_photo_id uuid
@@ -1172,6 +1224,8 @@ for each row execute function private.enforce_warehouse_variant_photo_invariants
 
 revoke all on function private.reject_warehouse_photo_audit_mutation()
   from public, anon, authenticated, service_role;
+revoke all on function private.reject_warehouse_photo_delete_receipt_mutation()
+  from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_variant_photo_json(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_variant_photo_list_json(uuid)
@@ -1181,6 +1235,7 @@ revoke all on function private.enforce_warehouse_variant_photo_invariants()
 
 alter table public.warehouse_variant_photos enable row level security;
 alter table public.warehouse_photo_audit enable row level security;
+alter table public.warehouse_photo_delete_outbox enable row level security;
 
 create policy "warehouse_variant_photos inventory read"
 on public.warehouse_variant_photos for select to authenticated
@@ -1196,6 +1251,10 @@ grant all on table public.warehouse_variant_photos to service_role;
 revoke all on table public.warehouse_photo_audit
   from public, anon, authenticated, service_role;
 revoke all on sequence public.warehouse_photo_audit_id_seq
+  from public, anon, authenticated, service_role;
+revoke all on table public.warehouse_photo_delete_outbox
+  from public, anon, authenticated, service_role;
+revoke all on table private.warehouse_photo_delete_receipts
   from public, anon, authenticated, service_role;
 
 create or replace function public.register_warehouse_variant_photo_secure(
@@ -1251,6 +1310,15 @@ begin
     raise exception using
       errcode = '23503', message = 'warehouse photo variant invalid',
       hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+
+  if exists (
+    select 1 from public.warehouse_photo_delete_outbox pending
+    where pending.variant_id = p_variant_id
+  ) then
+    raise exception using
+      errcode = '55000', message = 'warehouse photo delete pending',
+      hint = 'WAREHOUSE_PHOTO_DELETE_PENDING';
   end if;
 
   select photo.* into existing
@@ -1380,6 +1448,15 @@ begin
       hint = 'WAREHOUSE_PHOTO_ORDER_INVALID';
   end if;
 
+  if exists (
+    select 1 from public.warehouse_photo_delete_outbox pending
+    where pending.variant_id = p_variant_id
+  ) then
+    raise exception using
+      errcode = '55000', message = 'warehouse photo delete pending',
+      hint = 'WAREHOUSE_PHOTO_DELETE_PENDING';
+  end if;
+
   set constraints warehouse_variant_photos_variant_sort_unique deferred;
   update public.warehouse_variant_photos photo
   set sort_order = ordered.ordinality - 1
@@ -1394,10 +1471,161 @@ begin
 end;
 $$;
 
-create or replace function public.delete_warehouse_variant_photo_secure(
+create or replace function public.begin_warehouse_variant_photo_delete_secure(
   p_variant_id uuid,
-  p_photo_id uuid,
+  p_photo_id uuid
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+  target public.warehouse_variant_photos%rowtype;
+  pending public.warehouse_photo_delete_outbox%rowtype;
+  storage_deleted boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+  if p_variant_id is null or p_photo_id is null then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+
+  perform 1 from public.warehouse_variants variant
+  where variant.id = p_variant_id for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+  select photo.* into target from public.warehouse_variant_photos photo
+  where photo.id = p_photo_id for update;
+  if not found or target.variant_id <> p_variant_id then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+  perform 1 from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos' and object.name = target.object_path
+  for update;
+  storage_deleted := not found;
+
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.photo_id = p_photo_id or outbox.object_path = target.object_path
+  for update;
+  if found then
+    if pending.requested_by_employee_profile_id <> actor_id then
+      raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+        hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+    end if;
+    if pending.kind <> 'registered'
+      or pending.variant_id <> p_variant_id
+      or pending.photo_id is distinct from p_photo_id
+      or pending.object_path <> target.object_path
+    then
+      raise exception using errcode = '22023', message = 'warehouse photo delete state invalid',
+        hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+    end if;
+  else
+    insert into public.warehouse_photo_delete_outbox(
+      kind, photo_id, variant_id, object_path, requested_by_employee_profile_id
+    ) values ('registered', p_photo_id, p_variant_id, target.object_path, actor_id)
+    returning * into pending;
+    insert into public.warehouse_photo_audit(
+      action, photo_id, variant_id, actor_employee_profile_id
+    ) values ('delete_pending', p_photo_id, p_variant_id, actor_id);
+  end if;
+
+  return jsonb_build_object(
+    'deletionId', pending.deletion_id, 'kind', pending.kind,
+    'photoId', pending.photo_id, 'variantId', pending.variant_id,
+    'objectPath', pending.object_path, 'storageDeleted', storage_deleted
+  );
+end;
+$$;
+
+create or replace function public.begin_warehouse_photo_orphan_delete_secure(
+  p_variant_id uuid,
   p_object_path text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+  object_owner text;
+  pending public.warehouse_photo_delete_outbox%rowtype;
+  storage_deleted boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+  if p_variant_id is null or p_object_path is null or p_object_path !~ (
+    '^' || p_variant_id::text ||
+    '/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(jpg|png|webp)$'
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse photo path invalid',
+      hint = 'WAREHOUSE_PHOTO_PATH_INVALID';
+  end if;
+
+  perform 1 from public.warehouse_variants variant
+  where variant.id = p_variant_id for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+  perform 1 from public.warehouse_variant_photos photo
+  where photo.object_path = p_object_path for update;
+  if found then
+    raise exception using errcode = '22023', message = 'warehouse photo orphan invalid',
+      hint = 'WAREHOUSE_PHOTO_ORPHAN_INVALID';
+  end if;
+  select object.owner_id into object_owner from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos' and object.name = p_object_path
+  for update;
+  storage_deleted := not found;
+
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.object_path = p_object_path for update;
+  if found then
+    if pending.requested_by_employee_profile_id <> actor_id then
+      raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+        hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+    end if;
+    if pending.kind <> 'orphan' or pending.variant_id <> p_variant_id or pending.photo_id is not null then
+      raise exception using errcode = '22023', message = 'warehouse photo delete state invalid',
+        hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+    end if;
+  else
+    if storage_deleted then
+      raise exception using errcode = '22023', message = 'warehouse photo object invalid',
+        hint = 'WAREHOUSE_PHOTO_OBJECT_INVALID';
+    end if;
+    if object_owner is distinct from auth.uid()::text then
+      raise exception using errcode = '42501', message = 'warehouse photo object not owned',
+        hint = 'WAREHOUSE_PHOTO_OBJECT_NOT_OWNED';
+    end if;
+    insert into public.warehouse_photo_delete_outbox(
+      kind, photo_id, variant_id, object_path, requested_by_employee_profile_id
+    ) values ('orphan', null, p_variant_id, p_object_path, actor_id)
+    returning * into pending;
+  end if;
+
+  return jsonb_build_object(
+    'deletionId', pending.deletion_id, 'kind', pending.kind,
+    'photoId', pending.photo_id, 'variantId', pending.variant_id,
+    'objectPath', pending.object_path, 'storageDeleted', storage_deleted
+  );
+end;
+$$;
+
+create or replace function public.cancel_warehouse_photo_delete_secure(
+  p_deletion_id uuid,
+  p_variant_id uuid,
+  p_photo_id uuid
 )
 returns boolean
 language plpgsql
@@ -1407,48 +1635,199 @@ set search_path = pg_catalog, public, private, storage
 as $$
 declare
   actor_id uuid;
+  pending public.warehouse_photo_delete_outbox%rowtype;
+  receipt private.warehouse_photo_delete_receipts%rowtype;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+  if p_deletion_id is null or p_variant_id is null then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+  perform 1 from public.warehouse_variants variant
+  where variant.id = p_variant_id for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+  if p_photo_id is not null then
+    perform 1 from public.warehouse_variant_photos photo
+    where photo.id = p_photo_id for update;
+  end if;
+
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.deletion_id = p_deletion_id;
+  if not found then
+    select completed.* into receipt from private.warehouse_photo_delete_receipts completed
+    where completed.deletion_id = p_deletion_id;
+    if not found then
+      raise exception using errcode = '22023', message = 'warehouse photo delete state invalid',
+        hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+    end if;
+    if receipt.requested_by_employee_profile_id <> actor_id then
+      raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+        hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+    end if;
+    if receipt.variant_id <> p_variant_id or receipt.photo_id is distinct from p_photo_id then
+      raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+        hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+    end if;
+    if receipt.outcome = 'cancelled' then return true; end if;
+    raise exception using errcode = '55000', message = 'warehouse photo delete already finalized',
+      hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+  end if;
+  if pending.requested_by_employee_profile_id <> actor_id then
+    raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+      hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+  end if;
+  if pending.variant_id <> p_variant_id or pending.photo_id is distinct from p_photo_id then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+
+  perform 1 from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos' and object.name = pending.object_path
+  for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse photo storage absent',
+      hint = 'WAREHOUSE_PHOTO_STORAGE_ABSENT';
+  end if;
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.deletion_id = p_deletion_id for update;
+  if not found or pending.requested_by_employee_profile_id <> actor_id
+    or pending.variant_id <> p_variant_id or pending.photo_id is distinct from p_photo_id
+  then
+    raise exception using errcode = '55000', message = 'warehouse photo delete state changed',
+      hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+  end if;
+
+  insert into private.warehouse_photo_delete_receipts(
+    deletion_id, kind, photo_id, variant_id, object_path,
+    requested_by_employee_profile_id, outcome
+  ) values (
+    pending.deletion_id, pending.kind, pending.photo_id, pending.variant_id,
+    pending.object_path, actor_id, 'cancelled'
+  );
+  delete from public.warehouse_photo_delete_outbox where deletion_id = p_deletion_id;
+  if pending.photo_id is not null then
+    insert into public.warehouse_photo_audit(
+      action, photo_id, variant_id, actor_employee_profile_id
+    ) values ('delete_cancelled', pending.photo_id, pending.variant_id, actor_id);
+  end if;
+  return true;
+end;
+$$;
+
+create or replace function public.finalize_warehouse_photo_delete_secure(
+  p_deletion_id uuid,
+  p_variant_id uuid,
+  p_photo_id uuid
+)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+  pending public.warehouse_photo_delete_outbox%rowtype;
+  receipt private.warehouse_photo_delete_receipts%rowtype;
   target public.warehouse_variant_photos%rowtype;
 begin
   select employee_profile_id into actor_id
   from private.assert_warehouse_permission('warehouse.catalog.manage');
-  if p_variant_id is null or p_photo_id is null or p_object_path is null then
-    raise exception using
-      errcode = '22023', message = 'warehouse photo input invalid',
+  if p_deletion_id is null or p_variant_id is null then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
       hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
   end if;
-  perform 1
-  from public.warehouse_variants variant
-  where variant.id = p_variant_id
-  for update;
+  perform 1 from public.warehouse_variants variant
+  where variant.id = p_variant_id for update;
   if not found then
-    raise exception using
-      errcode = '23503', message = 'warehouse photo variant invalid',
+    raise exception using errcode = '23503', message = 'warehouse photo variant invalid',
       hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
   end if;
-  select photo.* into target
-  from public.warehouse_variant_photos photo
-  where photo.id = p_photo_id
-  for update;
-  if not found then return true; end if;
-  if target.variant_id <> p_variant_id or target.object_path <> p_object_path then
-    raise exception using
-      errcode = '22023', message = 'warehouse photo input invalid',
+  if p_photo_id is not null then
+    select photo.* into target from public.warehouse_variant_photos photo
+    where photo.id = p_photo_id for update;
+  end if;
+
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.deletion_id = p_deletion_id;
+  if not found then
+    select completed.* into receipt from private.warehouse_photo_delete_receipts completed
+    where completed.deletion_id = p_deletion_id;
+    if not found then
+      raise exception using errcode = '22023', message = 'warehouse photo delete state invalid',
+        hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+    end if;
+    if receipt.requested_by_employee_profile_id <> actor_id then
+      raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+        hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+    end if;
+    if receipt.variant_id <> p_variant_id or receipt.photo_id is distinct from p_photo_id then
+      raise exception using errcode = '22023', message = 'warehouse photo input invalid',
+        hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+    end if;
+    if receipt.outcome = 'finalized' then return true; end if;
+    raise exception using errcode = '55000', message = 'warehouse photo delete already cancelled',
+      hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+  end if;
+  if pending.requested_by_employee_profile_id <> actor_id then
+    raise exception using errcode = '42501', message = 'warehouse photo delete owned',
+      hint = 'WAREHOUSE_PHOTO_DELETE_OWNED';
+  end if;
+  if pending.variant_id <> p_variant_id or pending.photo_id is distinct from p_photo_id then
+    raise exception using errcode = '22023', message = 'warehouse photo input invalid',
       hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
   end if;
-  delete from public.warehouse_variant_photos where id = p_photo_id;
-  set constraints warehouse_variant_photos_variant_sort_unique deferred;
-  with ordered as (
-    select photo.id, row_number() over (order by photo.sort_order, photo.id) - 1 as next_order
-    from public.warehouse_variant_photos photo
-    where photo.variant_id = p_variant_id
-  )
-  update public.warehouse_variant_photos photo
-  set sort_order = ordered.next_order
-  from ordered
-  where photo.id = ordered.id;
-  insert into public.warehouse_photo_audit(
-    action, photo_id, variant_id, actor_employee_profile_id
-  ) values ('deleted', p_photo_id, p_variant_id, actor_id);
+  if pending.photo_id is not null and (
+    target.id is null or target.variant_id <> p_variant_id or target.object_path <> pending.object_path
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse photo delete state invalid',
+      hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+  end if;
+
+  perform 1 from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos' and object.name = pending.object_path
+  for update;
+  if found then
+    raise exception using errcode = '55000', message = 'warehouse photo storage present',
+      hint = 'WAREHOUSE_PHOTO_STORAGE_PRESENT';
+  end if;
+  select outbox.* into pending from public.warehouse_photo_delete_outbox outbox
+  where outbox.deletion_id = p_deletion_id for update;
+  if not found or pending.requested_by_employee_profile_id <> actor_id
+    or pending.variant_id <> p_variant_id or pending.photo_id is distinct from p_photo_id
+  then
+    raise exception using errcode = '55000', message = 'warehouse photo delete state changed',
+      hint = 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID';
+  end if;
+
+  insert into private.warehouse_photo_delete_receipts(
+    deletion_id, kind, photo_id, variant_id, object_path,
+    requested_by_employee_profile_id, outcome
+  ) values (
+    pending.deletion_id, pending.kind, pending.photo_id, pending.variant_id,
+    pending.object_path, actor_id, 'finalized'
+  );
+  if pending.photo_id is not null then
+    delete from public.warehouse_variant_photos where id = pending.photo_id;
+    set constraints warehouse_variant_photos_variant_sort_unique deferred;
+    with ordered as (
+      select photo.id,
+        row_number() over (order by photo.sort_order, photo.id) - 1 as next_order
+      from public.warehouse_variant_photos photo
+      where photo.variant_id = p_variant_id
+    )
+    update public.warehouse_variant_photos photo
+    set sort_order = ordered.next_order
+    from ordered where photo.id = ordered.id;
+    insert into public.warehouse_photo_audit(
+      action, photo_id, variant_id, actor_employee_profile_id
+    ) values ('deleted', pending.photo_id, pending.variant_id, actor_id);
+  end if;
+  delete from public.warehouse_photo_delete_outbox where deletion_id = p_deletion_id;
   return true;
 end;
 $$;
@@ -1459,7 +1838,13 @@ revoke all on function public.list_warehouse_variant_photos_secure(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function public.reorder_warehouse_variant_photos_secure(uuid, uuid[])
   from public, anon, authenticated, service_role;
-revoke all on function public.delete_warehouse_variant_photo_secure(uuid, uuid, text)
+revoke all on function public.begin_warehouse_variant_photo_delete_secure(uuid, uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.begin_warehouse_photo_orphan_delete_secure(uuid, text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.cancel_warehouse_photo_delete_secure(uuid, uuid, uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.finalize_warehouse_photo_delete_secure(uuid, uuid, uuid)
   from public, anon, authenticated, service_role;
 grant execute on function public.register_warehouse_variant_photo_secure(uuid, text, text, bigint)
   to authenticated;
@@ -1467,12 +1852,88 @@ grant execute on function public.list_warehouse_variant_photos_secure(uuid)
   to authenticated;
 grant execute on function public.reorder_warehouse_variant_photos_secure(uuid, uuid[])
   to authenticated;
-grant execute on function public.delete_warehouse_variant_photo_secure(uuid, uuid, text)
+grant execute on function public.begin_warehouse_variant_photo_delete_secure(uuid, uuid)
+  to authenticated;
+grant execute on function public.begin_warehouse_photo_orphan_delete_secure(uuid, text)
+  to authenticated;
+grant execute on function public.cancel_warehouse_photo_delete_secure(uuid, uuid, uuid)
+  to authenticated;
+grant execute on function public.finalize_warehouse_photo_delete_secure(uuid, uuid, uuid)
+  to authenticated;
+
+create or replace function public.can_current_employee_delete_warehouse_photo_object(
+  p_object_path text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+  select p_object_path is not null
+    and public.is_current_employee_active()
+    and public.has_current_permission('warehouse.catalog.manage')
+    and exists (
+      select 1
+      from public.warehouse_photo_delete_outbox outbox
+      join public.employee_profiles profile
+        on profile.id = outbox.requested_by_employee_profile_id
+      where outbox.object_path = p_object_path
+        and profile.auth_user_id = auth.uid()
+    )
+$$;
+
+create or replace function public.is_warehouse_photo_object_delete_pending(
+  p_object_path text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+  select p_object_path is not null and exists (
+    select 1 from public.warehouse_photo_delete_outbox outbox
+    where outbox.object_path = p_object_path
+  )
+$$;
+
+create or replace function public.is_active_warehouse_photo_variant_prefix(
+  p_object_path text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+  select p_object_path is not null
+    and public.is_current_employee_active()
+    and public.has_current_permission('warehouse.catalog.manage')
+    and exists (
+    select 1 from public.warehouse_variants variant
+    where variant.id::text = split_part(p_object_path, '/', 1)
+      and variant.active
+  )
+$$;
+
+revoke all on function public.can_current_employee_delete_warehouse_photo_object(text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.is_warehouse_photo_object_delete_pending(text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.is_active_warehouse_photo_variant_prefix(text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.can_current_employee_delete_warehouse_photo_object(text)
+  to authenticated;
+grant execute on function public.is_warehouse_photo_object_delete_pending(text)
+  to authenticated;
+grant execute on function public.is_active_warehouse_photo_variant_prefix(text)
   to authenticated;
 
 drop policy if exists warehouse_item_photos_insert on storage.objects;
 drop policy if exists warehouse_item_photos_select on storage.objects;
 drop policy if exists warehouse_item_photos_orphan_cleanup_select on storage.objects;
+drop policy if exists warehouse_item_photos_pending_delete_select on storage.objects;
 drop policy if exists warehouse_item_photos_delete on storage.objects;
 drop policy if exists warehouse_item_photos_update_deny on storage.objects;
 
@@ -1484,10 +1945,8 @@ with check (
   and name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(jpg|png|webp)$'
   and public.is_current_employee_active()
   and public.has_current_permission('warehouse.catalog.manage')
-  and exists (
-    select 1 from public.warehouse_variants variant
-    where variant.id::text = split_part(name, '/', 1) and variant.active
-  )
+  and not public.is_warehouse_photo_object_delete_pending(name)
+  and public.is_active_warehouse_photo_variant_prefix(name)
 );
 
 create policy warehouse_item_photos_select
@@ -1502,39 +1961,19 @@ using (
   )
 );
 
-create policy warehouse_item_photos_orphan_cleanup_select
+create policy warehouse_item_photos_pending_delete_select
 on storage.objects for select to authenticated
 using (
   bucket_id = 'warehouse-item-photos'
   and current_setting('request.method', true) = 'DELETE'
-  and owner_id = auth.uid()::text
-  and public.is_current_employee_active()
-  and public.has_current_permission('warehouse.catalog.manage')
-  and not exists (
-    select 1 from public.warehouse_variant_photos photo
-    where photo.object_path = name
-  )
+  and public.can_current_employee_delete_warehouse_photo_object(name)
 );
 
 create policy warehouse_item_photos_delete
 on storage.objects for delete to authenticated
 using (
   bucket_id = 'warehouse-item-photos'
-  and public.is_current_employee_active()
-  and public.has_current_permission('warehouse.catalog.manage')
-  and (
-    exists (
-      select 1 from public.warehouse_variant_photos photo
-      where photo.object_path = name
-    )
-    or (
-      owner_id = auth.uid()::text
-      and not exists (
-        select 1 from public.warehouse_variant_photos photo
-        where photo.object_path = name
-      )
-    )
-  )
+  and public.can_current_employee_delete_warehouse_photo_object(name)
 );
 
 create policy warehouse_item_photos_update_deny

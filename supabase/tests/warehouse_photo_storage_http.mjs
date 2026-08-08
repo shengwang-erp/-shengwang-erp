@@ -203,7 +203,7 @@ data(await admin.from('employee_profiles').insert([
     auth_user_id: otherManagerUser.id,
     name: 'Task 3 Other Photo Manager',
     department: '仓库管理部',
-    position: '仓库管理员',
+    position: '大工',
     employment_status: '在职',
     account_status: 'active',
     must_change_password: false,
@@ -215,7 +215,7 @@ data(await admin.from('employee_profiles').insert([
     auth_user_id: managerUser.id,
     name: 'Task 3 Photo Manager',
     department: '仓库管理部',
-    position: '仓库管理员',
+    position: '大工',
     employment_status: '在职',
     account_status: 'active',
     must_change_password: false,
@@ -227,7 +227,7 @@ data(await admin.from('employee_profiles').insert([
     auth_user_id: viewerUser.id,
     name: 'Task 3 Photo Viewer',
     department: '工程部',
-    position: '大工',
+    position: '中工',
     employment_status: '在职',
     account_status: 'active',
     must_change_password: false,
@@ -235,9 +235,8 @@ data(await admin.from('employee_profiles').insert([
   },
 ]), 'failed to create disposable employee profiles')
 data(await admin.from('permission_grants').insert([
-  { subject_type: 'position', subject_code: '仓库管理员', permission_key: 'warehouse.catalog.manage' },
-  { subject_type: 'position', subject_code: '仓库管理员', permission_key: 'module.inventory.view' },
-  { subject_type: 'position', subject_code: '大工', permission_key: 'module.inventory.view' },
+  { subject_type: 'department', subject_code: '仓库管理部', permission_key: 'warehouse.catalog.manage' },
+  { subject_type: 'position', subject_code: '中工', permission_key: 'module.inventory.view' },
 ]), 'failed to create disposable photo permissions')
 
 const itemId = randomUUID()
@@ -307,12 +306,40 @@ const orphanSigned = await viewer.storage.from(bucket).createSignedUrl(orphanPat
 assert.ok(orphanSigned.error, 'viewer signed an unregistered orphan object')
 const ownerOrphanSigned = await manager.storage.from(bucket).createSignedUrl(orphanPath, 300)
 assert.ok(ownerOrphanSigned.error, 'upload owner signed an unregistered orphan object')
+const foreignOrphanTicket = await otherManager.rpc('begin_warehouse_photo_orphan_delete_secure', {
+  p_variant_id: variantId,
+  p_object_path: orphanPath,
+})
+assert.equal(foreignOrphanTicket.error?.hint, 'WAREHOUSE_PHOTO_OBJECT_NOT_OWNED',
+  'another manager created an orphan cleanup ticket for an object they did not upload')
+const orphanTicket = data(await manager.rpc('begin_warehouse_photo_orphan_delete_secure', {
+  p_variant_id: variantId,
+  p_object_path: orphanPath,
+}), 'upload owner could not create an orphan cleanup ticket')
+assert.equal(orphanTicket.objectPath, orphanPath)
+assert.equal(orphanTicket.photoId, null)
 const foreignOrphanCleanup = await otherManager.storage.from(bucket).remove([orphanPath])
 assert.equal(removed(foreignOrphanCleanup, orphanPath), false,
-  'a different catalog manager deleted an unregistered orphan it did not upload')
+  'a different catalog manager used another requester orphan ticket')
+const cancelledOrphan = data(await manager.rpc('cancel_warehouse_photo_delete_secure', {
+  p_deletion_id: orphanTicket.deletionId,
+  p_variant_id: variantId,
+  p_photo_id: null,
+}), 'owner could not cancel a known Storage failure while its orphan still existed')
+assert.equal(cancelledOrphan, true)
+const retriedOrphanTicket = data(await manager.rpc(
+  'begin_warehouse_photo_orphan_delete_secure',
+  { p_variant_id: variantId, p_object_path: orphanPath },
+), 'owner could not retry orphan cleanup after cancellation')
+assert.notEqual(retriedOrphanTicket.deletionId, orphanTicket.deletionId)
 const orphanCleanup = await manager.storage.from(bucket).remove([orphanPath])
 assert.equal(removed(orphanCleanup, orphanPath), true,
   'upload owner could not compensate-delete an unregistered orphan')
+assert.equal(data(await manager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: retriedOrphanTicket.deletionId,
+  p_variant_id: variantId,
+  p_photo_id: null,
+}), 'owner could not finalize orphan cleanup'), true)
 
 const objectPath = `${variantId}/${randomUUID()}.jpg`
 const uploaded = await manager.storage.from(bucket).upload(
@@ -337,6 +364,11 @@ const registered = data(await manager.rpc('register_warehouse_variant_photo_secu
 }), 'photo registration failed')
 assert.equal(registered.objectPath, objectPath)
 assert.equal(registered.sortOrder, 0)
+const managerList = await manager.rpc('list_warehouse_variant_photos_secure', {
+  p_variant_id: variantId,
+})
+assert.ok(managerList.error,
+  'manage-only uploader unexpectedly required or received inventory read permission')
 
 const listed = data(await viewer.rpc('list_warehouse_variant_photos_secure', {
   p_variant_id: variantId,
@@ -371,14 +403,58 @@ const overwrite = await manager.storage.from(bucket).update(
 )
 assert.ok(overwrite.error, 'catalog manager overwrote immutable photo bytes')
 
-const managerDelete = await otherManager.storage.from(bucket).remove([objectPath])
-assert.equal(removed(managerDelete, objectPath), true,
-  'a catalog manager could not delete a registered photo through the registered branch')
-const metadataDelete = data(await manager.rpc('delete_warehouse_variant_photo_secure', {
+const registeredTicket = data(await otherManager.rpc(
+  'begin_warehouse_variant_photo_delete_secure', {
+    p_variant_id: variantId,
+    p_photo_id: registered.id,
+  },
+), 'manage-only manager B could not begin deletion of manager A registered photo')
+assert.equal(registeredTicket.objectPath, objectPath)
+assert.equal(registeredTicket.photoId, registered.id)
+const ownerCannotTakeTicket = await manager.rpc('begin_warehouse_variant_photo_delete_secure', {
   p_variant_id: variantId,
   p_photo_id: registered.id,
-  p_object_path: objectPath,
-}), 'catalog manager could not delete matching photo metadata')
+})
+assert.equal(ownerCannotTakeTicket.error?.hint, 'WAREHOUSE_PHOTO_DELETE_OWNED',
+  'photo uploader took over another requester deletion ticket')
+const finalizeWhilePresent = await otherManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: registeredTicket.deletionId,
+  p_variant_id: variantId,
+  p_photo_id: registered.id,
+})
+assert.equal(finalizeWhilePresent.error?.hint, 'WAREHOUSE_PHOTO_STORAGE_PRESENT',
+  'finalize deleted metadata while the exact Storage object still existed')
+const ownerCannotUseTicket = await manager.storage.from(bucket).remove([objectPath])
+assert.equal(removed(ownerCannotUseTicket, objectPath), false,
+  'photo uploader used another requester deletion ticket')
+const managerDelete = await otherManager.storage.from(bucket).remove([objectPath])
+assert.equal(managerDelete.error, null,
+  'manage-only ticket requester could not delete the exact registered object')
+assert.equal(managerDelete.data?.length, 1,
+  'Storage removal did not return one exact target')
+assert.equal(managerDelete.data?.[0]?.name, objectPath,
+  'Storage removal returned a different target')
+
+const forgedFinalize = await otherManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: registeredTicket.deletionId,
+  p_variant_id: otherVariantId,
+  p_photo_id: registered.id,
+})
+assert.equal(forgedFinalize.error?.hint, 'WAREHOUSE_PHOTO_INPUT_INVALID',
+  'forged variant binding finalized a pending deletion')
+const recoveredTicket = data(await otherManager.rpc(
+  'begin_warehouse_variant_photo_delete_secure', {
+    p_variant_id: variantId,
+    p_photo_id: registered.id,
+  },
+), 'pending ticket was not recoverable after Storage success/finalize failure')
+assert.equal(recoveredTicket.deletionId, registeredTicket.deletionId)
+assert.equal(recoveredTicket.storageDeleted, true)
+const metadataDelete = data(await otherManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: recoveredTicket.deletionId,
+  p_variant_id: variantId,
+  p_photo_id: registered.id,
+}), 'ticket requester could not finalize matching photo metadata')
 assert.equal(metadataDelete, true)
 const afterDelete = data(await viewer.rpc('list_warehouse_variant_photos_secure', {
   p_variant_id: variantId,

@@ -136,6 +136,13 @@ insert into public.permission_grants(subject_type, subject_code, permission_key)
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
 set local role authenticated;
+select is(
+  public.is_active_warehouse_photo_variant_prefix(
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png'
+  ),
+  false,
+  'active employee without exact manage permission cannot query active photo prefixes'
+);
 select throws_ok(
   $$select public.upsert_warehouse_site_secure(
     'b0000000-0000-4000-8000-000000000001',
@@ -148,6 +155,13 @@ reset role;
 
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000003', true);
 set local role authenticated;
+select is(
+  public.is_active_warehouse_photo_variant_prefix(
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png'
+  ),
+  false,
+  'inactive employee cannot query active photo prefixes'
+);
 select throws_ok(
   $$select public.upsert_warehouse_site_secure(
     'b0000000-0000-4000-8000-000000000001',
@@ -782,10 +796,16 @@ select is(
 -- Phase 2 Task 3: private, ordered warehouse variant photos.
 select has_table('public', 'warehouse_variant_photos', 'variant photo metadata table exists');
 select has_table('public', 'warehouse_photo_audit', 'identifier-only photo audit table exists');
+select has_table('public', 'warehouse_photo_delete_outbox', 'photo delete outbox exists');
+select has_table('private', 'warehouse_photo_delete_receipts', 'private photo delete receipts exist');
 select has_function('public', 'register_warehouse_variant_photo_secure', array['uuid', 'text', 'text', 'bigint']);
 select has_function('public', 'list_warehouse_variant_photos_secure', array['uuid']);
 select has_function('public', 'reorder_warehouse_variant_photos_secure', array['uuid', 'uuid[]']);
-select has_function('public', 'delete_warehouse_variant_photo_secure', array['uuid', 'uuid', 'text']);
+select has_function('public', 'begin_warehouse_variant_photo_delete_secure', array['uuid', 'uuid']);
+select has_function('public', 'begin_warehouse_photo_orphan_delete_secure', array['uuid', 'text']);
+select has_function('public', 'cancel_warehouse_photo_delete_secure', array['uuid', 'uuid', 'uuid']);
+select has_function('public', 'finalize_warehouse_photo_delete_secure', array['uuid', 'uuid', 'uuid']);
+select hasnt_function('public', 'delete_warehouse_variant_photo_secure', array['uuid', 'uuid', 'text']);
 
 select is(
   (
@@ -812,6 +832,35 @@ select is(
   'photo audit excludes paths, URLs, MIME metadata, bytes and image payloads'
 );
 select is(
+  (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'public' and table_name = 'warehouse_photo_delete_outbox'
+  ),
+  array[
+    'deletion_id', 'kind', 'photo_id', 'variant_id', 'object_path',
+    'requested_by_employee_profile_id', 'created_at'
+  ]::text[],
+  'delete outbox stores only bound identifiers, server path, requester and creation time'
+);
+select is(
+  (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'private' and table_name = 'warehouse_photo_delete_receipts'
+  ),
+  array[
+    'deletion_id', 'kind', 'photo_id', 'variant_id', 'object_path',
+    'requested_by_employee_profile_id', 'outcome', 'created_at'
+  ]::text[],
+  'private receipts store only exact binding identifiers, outcome and time'
+);
+select has_trigger(
+  'private', 'warehouse_photo_delete_receipts',
+  'reject_warehouse_photo_delete_receipt_mutation',
+  'private delete receipts reject update and delete'
+);
+select is(
   (select public from storage.buckets where id = 'warehouse-item-photos'),
   false,
   'warehouse item photo bucket is private'
@@ -834,7 +883,13 @@ select is(
         (to_regprocedure('public.register_warehouse_variant_photo_secure(uuid,text,text,bigint)'), 'v'::"char"),
         (to_regprocedure('public.list_warehouse_variant_photos_secure(uuid)'), 's'::"char"),
         (to_regprocedure('public.reorder_warehouse_variant_photos_secure(uuid,uuid[])'), 'v'::"char"),
-        (to_regprocedure('public.delete_warehouse_variant_photo_secure(uuid,uuid,text)'), 'v'::"char")
+        (to_regprocedure('public.begin_warehouse_variant_photo_delete_secure(uuid,uuid)'), 'v'::"char"),
+        (to_regprocedure('public.begin_warehouse_photo_orphan_delete_secure(uuid,text)'), 'v'::"char"),
+        (to_regprocedure('public.cancel_warehouse_photo_delete_secure(uuid,uuid,uuid)'), 'v'::"char"),
+        (to_regprocedure('public.finalize_warehouse_photo_delete_secure(uuid,uuid,uuid)'), 'v'::"char"),
+        (to_regprocedure('public.can_current_employee_delete_warehouse_photo_object(text)'), 's'::"char"),
+        (to_regprocedure('public.is_warehouse_photo_object_delete_pending(text)'), 's'::"char"),
+        (to_regprocedure('public.is_active_warehouse_photo_variant_prefix(text)'), 's'::"char")
     )
     select count(*)::integer
     from expected
@@ -859,7 +914,37 @@ select is(
        )
   ),
   0,
-  'photo RPCs are exact-path SECURITY DEFINER and authenticated-only'
+  'photo RPCs and Storage predicates are fixed-path SECURITY DEFINER and authenticated-only'
+);
+select is(
+  (
+    select count(*)
+    from pg_class object
+    cross join lateral aclexplode(
+      coalesce(object.relacl, acldefault('r', object.relowner))
+    ) privilege
+    where object.oid = to_regclass('public.warehouse_photo_delete_outbox')
+      and privilege.grantee in (
+        0, 'anon'::regrole::oid, 'authenticated'::regrole::oid, 'service_role'::regrole::oid
+      )
+  ),
+  0::bigint,
+  'delete outbox has no browser, public, or service-role table privileges'
+);
+select is(
+  (
+    select count(*)
+    from pg_class object
+    cross join lateral aclexplode(
+      coalesce(object.relacl, acldefault('r', object.relowner))
+    ) privilege
+    where object.oid = to_regclass('private.warehouse_photo_delete_receipts')
+      and privilege.grantee in (
+        0, 'anon'::regrole::oid, 'authenticated'::regrole::oid, 'service_role'::regrole::oid
+      )
+  ),
+  0::bigint,
+  'private receipts have no browser, public, or service-role table privileges'
 );
 
 select is(
@@ -871,13 +956,13 @@ select is(
       and policy.policyname in (
         'warehouse_item_photos_insert',
         'warehouse_item_photos_select',
-        'warehouse_item_photos_orphan_cleanup_select',
+        'warehouse_item_photos_pending_delete_select',
         'warehouse_item_photos_delete',
         'warehouse_item_photos_update_deny'
       )
   ),
   5,
-  'Storage has explicit insert, read, method-scoped cleanup, delete and update-deny policies'
+  'Storage has explicit insert, registered read, pending-delete read/delete and update-deny policies'
 );
 select is(
   (
@@ -894,10 +979,7 @@ select is(
 select ok(
   (
     select
-      position('owner_id' in expression) > 0
-      and position('uid()' in expression) > 0
-      and position('NOT (EXISTS' in expression) > 0
-      and regexp_count(expression, 'EXISTS') = 2
+      position('can_current_employee_delete_warehouse_photo_object' in expression) > 0
     from (
       select pg_get_expr(policy.polqual, policy.polrelid) as expression
       from pg_policy policy
@@ -905,25 +987,36 @@ select ok(
         and policy.polrelid = 'storage.objects'::regclass
     ) delete_policy
   ),
-  'delete policy separates registered catalog deletion from owner-only unregistered compensation'
+  'delete policy delegates to the exact requester-bound pending-path predicate'
 );
 select ok(
   (
     select
       position('request.method' in expression) > 0
       and position('DELETE' in expression) > 0
-      and position('owner_id' in expression) > 0
-      and position('uid()' in expression) > 0
-      and position('NOT (EXISTS' in expression) > 0
+      and position('can_current_employee_delete_warehouse_photo_object' in expression) > 0
     from (
       select pg_get_expr(policy.polqual, policy.polrelid) as expression
       from pg_policy policy
-      where policy.polname = 'warehouse_item_photos_orphan_cleanup_select'
+      where policy.polname = 'warehouse_item_photos_pending_delete_select'
         and policy.polrelid = 'storage.objects'::regclass
     ) cleanup_policy
   ),
-  'orphan cleanup SELECT visibility is owner-only, unregistered, and DELETE-method scoped'
+  'pending delete SELECT visibility is requester-bound and DELETE-method scoped'
 );
+select ok(
+  position('warehouse_photo_delete_outbox' in definition) > 0
+  and position('object_path' in definition) > 0
+  and position('requested_by_employee_profile_id' in definition) > 0
+  and position('auth.uid()' in definition) > 0
+  and position('warehouse.catalog.manage' in definition) > 0,
+  'pending-path predicate binds outbox path, requester auth identity and exact manage permission'
+)
+from (
+  select pg_get_functiondef(
+    'public.can_current_employee_delete_warehouse_photo_object(text)'::regprocedure
+  ) as definition
+) predicate;
 
 insert into public.permission_grants(subject_type, subject_code, permission_key)
 values
@@ -972,6 +1065,25 @@ reset role;
 
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
 set local role authenticated;
+select is(
+  public.is_active_warehouse_photo_variant_prefix(
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000001.jpg'
+  ),
+  true,
+  'active catalog manager can validate an active variant prefix'
+);
+select is(
+  public.is_active_warehouse_photo_variant_prefix(
+    'b3000000-0000-4000-8000-000000000010/b8000000-0000-4000-8000-000000000010.jpg'
+  ),
+  false,
+  'active catalog manager cannot validate an inactive variant prefix'
+);
+select is(
+  public.is_active_warehouse_photo_variant_prefix('SW000/not-a-photo.jpg'),
+  false,
+  'non-UUID SW000-style prefixes are never disclosed as active variants'
+);
 select is(
   public.register_warehouse_variant_photo_secure(
     'b3000000-0000-4000-8000-000000000001',
@@ -1127,6 +1239,217 @@ select is(
   'photo audit actor identity is always server-resolved'
 );
 
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select set_config(
+  'warehouse.task3_delete_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (
+      select id from public.warehouse_variant_photos
+      where object_path = 'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp'
+    )
+  )::text,
+  false
+);
+select is(
+  (
+    select array_agg(key order by key)
+    from jsonb_object_keys(current_setting('warehouse.task3_delete_ticket')::jsonb) key
+  ),
+  array['deletionId', 'kind', 'objectPath', 'photoId', 'storageDeleted', 'variantId']::text[],
+  'begin delete returns one exact server-bound ticket envelope'
+);
+select is(
+  current_setting('warehouse.task3_delete_ticket')::jsonb->>'objectPath',
+  'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp',
+  'begin delete returns the trusted database path rather than caller path input'
+);
+select is(
+  public.begin_warehouse_variant_photo_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId')::uuid
+  )->>'deletionId',
+  current_setting('warehouse.task3_delete_ticket')::jsonb->>'deletionId',
+  'same requester begin retry reuses one pending ticket'
+);
+reset role;
+select is(
+  (select count(*) from public.warehouse_photo_delete_outbox),
+  1::bigint,
+  'idempotent begin creates one pending outbox row'
+);
+select is(
+  (select count(*) from public.warehouse_photo_audit where action = 'delete_pending'),
+  1::bigint,
+  'idempotent begin records one observable pending audit event'
+);
+set local role authenticated;
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.reorder_warehouse_variant_photos_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      array(select id from public.warehouse_variant_photos order by sort_order)
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_DELETE_PENDING',
+  'reorder fails closed while the variant has a pending delete'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000009.webp',
+      'image/webp', 102
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_DELETE_PENDING',
+  'registration fails closed before the photo limit while delete is pending'
+);
+reset role;
+
+insert into public.permission_grants(subject_type, subject_code, permission_key)
+values ('position', '大工', 'warehouse.catalog.manage');
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select is(
+  pg_temp.task2_error_hint(format(
+    'select public.begin_warehouse_variant_photo_delete_secure(%L::uuid,%L::uuid)',
+    'b3000000-0000-4000-8000-000000000001',
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId'
+  )),
+  'WAREHOUSE_PHOTO_DELETE_OWNED',
+  'another manager cannot take over an existing requester ticket'
+);
+select is(
+  pg_temp.task2_error_hint(format(
+    'select public.cancel_warehouse_photo_delete_secure(%L::uuid,%L::uuid,%L::uuid)',
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'deletionId',
+    'b3000000-0000-4000-8000-000000000001',
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId'
+  )),
+  'WAREHOUSE_PHOTO_DELETE_OWNED',
+  'another manager cannot cancel a requester-bound ticket'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.cancel_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId')::uuid
+  ),
+  true,
+  'requester cancels pending delete while the Storage object still exists'
+);
+select is(
+  public.cancel_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId')::uuid
+  ),
+  true,
+  'cancel retry is idempotent for the same requester and exact binding'
+);
+reset role;
+
+select throws_ok(
+  $$update private.warehouse_photo_delete_receipts set outcome = 'finalized'$$,
+  '42501', 'warehouse photo delete receipt is immutable',
+  'private delete receipts cannot be updated even by table owner workflows'
+);
+select throws_ok(
+  $$delete from private.warehouse_photo_delete_receipts$$,
+  '42501', 'warehouse photo delete receipt is immutable',
+  'private delete receipts cannot be deleted even by table owner workflows'
+);
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select set_config(
+  'warehouse.task3_delete_ticket_b',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket')::jsonb->>'photoId')::uuid
+  )::text,
+  false
+);
+reset role;
+select is(
+  (select requested_by_employee_profile_id from public.warehouse_photo_delete_outbox),
+  'b6000000-0000-4000-8000-000000000002'::uuid,
+  'manager B can begin deletion of a registered photo uploaded by manager A'
+);
+set local role authenticated;
+select is(
+  pg_temp.task2_error_hint(format(
+    'select public.finalize_warehouse_photo_delete_secure(%L::uuid,%L::uuid,%L::uuid)',
+    current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'deletionId',
+    'b3000000-0000-4000-8000-000000000001',
+    current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'photoId'
+  )),
+  'WAREHOUSE_PHOTO_STORAGE_PRESENT',
+  'finalize refuses to delete metadata while the exact Storage object still exists'
+);
+reset role;
+select is(
+  (select count(*) from public.warehouse_photo_delete_outbox),
+  1::bigint,
+  'failed finalize retains the pending outbox for recovery'
+);
+
+set local session_replication_role = replica;
+delete from storage.objects
+where bucket_id = 'warehouse-item-photos'
+  and name = current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'objectPath';
+set local session_replication_role = origin;
+
+set local role authenticated;
+select is(
+  public.begin_warehouse_variant_photo_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'photoId')::uuid
+  )->>'storageDeleted',
+  'true',
+  'begin retry observes the controlled Storage row is already absent'
+);
+select is(
+  public.finalize_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'photoId')::uuid
+  ),
+  true,
+  'finalize atomically deletes metadata, reorders, audits and clears outbox'
+);
+select is(
+  public.finalize_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001',
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'photoId')::uuid
+  ),
+  true,
+  'finalize retry is idempotent for the exact completed deletion binding'
+);
+reset role;
+
+select is((select count(*) from public.warehouse_photo_delete_outbox), 0::bigint,
+  'successful finalize clears the outbox');
+select is(
+  (select count(*) from public.warehouse_variant_photos
+   where variant_id = 'b3000000-0000-4000-8000-000000000001'),
+  7::bigint,
+  'successful finalize deletes exactly one metadata row'
+);
+select is(
+  (select array_agg(sort_order order by sort_order) from public.warehouse_variant_photos
+   where variant_id = 'b3000000-0000-4000-8000-000000000001'),
+  array[0,1,2,3,4,5,6]::smallint[],
+  'successful finalize compacts photo order without gaps'
+);
+
 select set_config('request.jwt.claim.sub', '', true);
 set local role anon;
 select is(
@@ -1140,7 +1463,7 @@ select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002
 set local role authenticated;
 select is(
   (select count(*) from storage.objects where bucket_id = 'warehouse-item-photos'),
-  8::bigint,
+  7::bigint,
   'active inventory viewer can read only registered photo objects'
 );
 select throws_ok(
@@ -1150,25 +1473,9 @@ select throws_ok(
 );
 reset role;
 
-select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
-set local role authenticated;
-select is(
-  public.delete_warehouse_variant_photo_secure(
-    'b3000000-0000-4000-8000-000000000001',
-    (
-      select id from public.warehouse_variant_photos
-      where object_path = 'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp'
-    ),
-    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp'
-  ),
-  true,
-  'catalog manager deletes exact matching metadata after Storage authorization'
-);
-reset role;
-
 select is(
   (select count(*) from public.warehouse_photo_audit
-   where action not in ('registered', 'reordered', 'deleted')),
+   where action not in ('registered', 'reordered', 'delete_pending', 'delete_cancelled', 'deleted')),
   0::bigint,
   'photo audit contains only fixed action identifiers'
 );
@@ -1176,12 +1483,16 @@ select is(
   (
     select count(*)
     from information_schema.columns
-    where table_schema = 'public'
-      and table_name in ('warehouse_variant_photos', 'warehouse_photo_audit')
+    where (
+      (table_schema = 'public' and table_name in (
+        'warehouse_variant_photos', 'warehouse_photo_audit', 'warehouse_photo_delete_outbox'
+      ))
+      or (table_schema = 'private' and table_name = 'warehouse_photo_delete_receipts')
+    )
       and column_name ~ '(url|base64|blob|data|payload)'
   ),
   0::bigint,
-  'photo metadata and audit contain no URL, base64, blob, data or payload columns'
+  'photo metadata, audit, outbox and receipts contain no URL, base64, blob, data or payload columns'
 );
 
 select * from finish();
