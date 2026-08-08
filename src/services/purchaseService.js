@@ -24,6 +24,12 @@ const SAFE_ERRORS = Object.freeze({
   CONFIGURATION_ERROR: Object.freeze({ message: '云端采购服务未配置，请联系管理员', status: 503 }),
   PURCHASE_INPUT_INVALID: Object.freeze({ message: '采购数据格式无效', status: 400 }),
   PURCHASE_OPERATION_FAILED: Object.freeze({ message: '采购数据操作失败，请稍后重试', status: 503 }),
+  PURCHASE_HAS_WAREHOUSE_RECEIPTS: Object.freeze({
+    message: '该采购已有仓库到货记录，请作废而不要删除', status: 409,
+  }),
+  PURCHASE_QUANTITY_BELOW_WAREHOUSE_RECEIPTS: Object.freeze({
+    message: '采购数量不能低于已提交或已确认的仓库到货数量', status: 409,
+  }),
   PURCHASE_RESPONSE_INVALID: Object.freeze({ message: '采购数据响应格式无效', status: 503 }),
 })
 
@@ -174,6 +180,18 @@ function normalizeSupplierError(error, outerStatus) {
   }
   if (status === 403 || code === '42501') {
     return new PurchaseServiceError('ACCESS_DENIED')
+  }
+  if (
+    status === 409 && code === '23503' &&
+    supplierField(error, 'hint') === 'PURCHASE_HAS_WAREHOUSE_RECEIPTS'
+  ) {
+    return new PurchaseServiceError('PURCHASE_HAS_WAREHOUSE_RECEIPTS')
+  }
+  if (
+    status === 400 && code === '23514' &&
+    supplierField(error, 'hint') === 'PURCHASE_QUANTITY_BELOW_WAREHOUSE_RECEIPTS'
+  ) {
+    return new PurchaseServiceError('PURCHASE_QUANTITY_BELOW_WAREHOUSE_RECEIPTS')
   }
   return new PurchaseServiceError('PURCHASE_OPERATION_FAILED')
 }

@@ -5071,10 +5071,19 @@ reset role;
 select throws_ok(
   $statement$do $attempt$
     begin
-      truncate table public.purchase_records;
-      raise exception using
-        errcode = 'P0001',
-        message = 'unsafe purchase truncate was accepted';
+      begin
+        truncate table public.purchase_records;
+        raise exception using
+          errcode = 'P0001',
+          message = 'unsafe purchase truncate was accepted';
+      exception when others then
+        if sqlstate in ('42501', '0A000') then
+          raise exception using
+            errcode = '42501',
+            message = 'purchase record truncation is not allowed';
+        end if;
+        raise;
+      end;
     end
   $attempt$
   $statement$,

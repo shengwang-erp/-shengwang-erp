@@ -118,11 +118,14 @@ function receiptLine(value) {
   const line = exactObject(value, [
     'variantId', 'requestedQuantity', 'warehouseId', 'locationId',
   ])
+  const warehouseId = nullableUuid(line.warehouseId)
+  const locationId = nullableUuid(line.locationId)
+  if ((warehouseId === null) !== (locationId === null)) throw invalid()
   return {
     variantId: uuid(line.variantId),
     requestedQuantity: quantity(line.requestedQuantity),
-    warehouseId: uuid(line.warehouseId),
-    locationId: uuid(line.locationId),
+    warehouseId,
+    locationId,
   }
 }
 

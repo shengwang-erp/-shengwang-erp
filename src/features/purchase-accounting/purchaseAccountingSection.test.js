@@ -87,10 +87,6 @@ async function loadAppModule() {
             'export async function commitPurchasePaymentMutation({',
           )
           .replace(
-            'async function commitPurchaseStockInMutation({',
-            'export async function commitPurchaseStockInMutation({',
-          )
-          .replace(
             'function DashboardPage({',
             'export function DashboardPage({',
           )
@@ -599,72 +595,6 @@ test('purchase payment mutation orchestration executes durable writes before loc
   })
 })
 
-test('purchase stock-in orchestration uses one atomic durable call before three local commits', async (t) => {
-  assert.ifError(appLoaded.error)
-  assert.ok(appLoaded.module?.commitPurchaseStockInMutation)
-  const commitMutation = appLoaded.module.commitPurchaseStockInMutation
-  const transactionInput = { purchaseRecordKey: 'PO-STOCK-IN' }
-  const nextPurchaseRecords = [{ purchaseId: 'PO-STOCK-IN' }]
-  const nextStockInRecords = [{ stockInId: 'SI-STOCK-IN' }]
-  const nextInventoryItems = [{ inventoryId: 'INV-STOCK-IN' }]
-  const cloudStateOptions = { stateOnly: true, syncLocal: true }
-
-  await t.test('success awaits the atomic RPC before all local state commits', async () => {
-    const events = []
-    const calls = []
-    const committed = await commitMutation({
-      transactionInput,
-      persistTransaction: async (input) => {
-        assert.equal(input, transactionInput)
-        events.push('rpc:start')
-        await Promise.resolve()
-        events.push('rpc:end')
-      },
-      nextPurchaseRecords,
-      nextStockInRecords,
-      nextInventoryItems,
-      setPurchaseRecords: (...args) => { events.push('purchase-state'); calls.push(args) },
-      setStockInRecords: (...args) => { events.push('stock-state'); calls.push(args) },
-      setInventoryItems: (...args) => { events.push('inventory-state'); calls.push(args) },
-      onPersistenceError: (error) => { throw error },
-      demoMode: false,
-    })
-
-    assert.equal(committed, true)
-    assert.deepEqual(events, [
-      'rpc:start', 'rpc:end', 'purchase-state', 'stock-state', 'inventory-state',
-    ])
-    assert.deepEqual(calls, [
-      [nextPurchaseRecords, cloudStateOptions],
-      [nextStockInRecords, cloudStateOptions],
-      [nextInventoryItems, cloudStateOptions],
-    ])
-  })
-
-  await t.test('atomic RPC rejection leaves every local collection untouched', async () => {
-    const failure = new Error('atomic stock-in failed')
-    const events = []
-    const committed = await commitMutation({
-      transactionInput,
-      persistTransaction: async () => { events.push('rpc'); throw failure },
-      nextPurchaseRecords,
-      nextStockInRecords,
-      nextInventoryItems,
-      setPurchaseRecords: () => { events.push('purchase-state') },
-      setStockInRecords: () => { events.push('stock-state') },
-      setInventoryItems: () => { events.push('inventory-state') },
-      onPersistenceError: (error) => {
-        assert.equal(error, failure)
-        events.push('error')
-      },
-      demoMode: false,
-    })
-
-    assert.equal(committed, false)
-    assert.deepEqual(events, ['rpc', 'error'])
-  })
-})
-
 test('App cash normalizers preserve loaded provenance and fail closed for null records', () => {
   assert.ifError(appLoaded.error)
   assert.ok(appLoaded.module?.normalizeFuelRecord)
@@ -831,7 +761,7 @@ test('purchase payment App handlers guard and reconcile add/delete before saving
   const paymentSetter = sliceBetween(
     appSource,
     '  const setPurchasePaymentRecords = ',
-    '\n  const setStockInRecords = ',
+    '\n  const purchaseStateOnlyOptions = ',
   )
   const persistentState = sliceBetween(
     appSource,

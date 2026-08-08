@@ -106,6 +106,14 @@ const SAFE_ERRORS = Object.freeze({
     message: '项目、小工事单或原出库单已不可用，请刷新后重新选择',
     status: 409,
   }),
+  WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT: Object.freeze({
+    message: '该到货提交编号已用于其他内容，请刷新后重试',
+    status: 409,
+  }),
+  WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED: Object.freeze({
+    message: '到货数量超过采购剩余数量，请刷新后重试',
+    status: 409,
+  }),
 })
 const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_CATALOG_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
@@ -123,6 +131,8 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_WORKFLOW_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
   ['WAREHOUSE_RESOURCE_INACTIVE', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_DESTINATION_UNAVAILABLE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT', Object.freeze({ sqlState: '23505', status: 409 })],
+  ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', Object.freeze({ sqlState: '23514', status: 400 })],
 ])
 const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
 
@@ -601,11 +611,14 @@ function validateReceiptLine(candidate, viewCost) {
   ])
   const requestedQuantity = quantityResponse(row.requestedQuantity).value
   if (requestedQuantity <= 0 || (!viewCost && row.unitCost !== null)) throw invalidResponse()
+  const warehouseId = nullableUuid(row.warehouseId)
+  const locationId = nullableUuid(row.locationId)
+  if ((warehouseId === null) !== (locationId === null)) throw invalidResponse()
   return {
     id: uuidValue(row.id), receiptId: uuidValue(row.receiptId),
     variantId: uuidValue(row.variantId), requestedQuantity,
     confirmedQuantity: nullableQuantity(row.confirmedQuantity),
-    warehouseId: uuidValue(row.warehouseId), locationId: uuidValue(row.locationId),
+    warehouseId, locationId,
     unitCost: nullableCost(row.unitCost),
   }
 }
@@ -664,9 +677,15 @@ function validateReceipt(candidate, viewCost) {
   const id = uuidValue(row.id)
   const lines = exactArray(row.lines).map((line) => validateReceiptLine(line, viewCost))
   if (lines.length === 0 || lines.some((line) => line.receiptId !== id)) throw invalidResponse()
+  const audit = validateAuditHeader(row)
+  if (
+    (audit.status === 'confirmed' || audit.status === 'void') &&
+    lines.some((line) => line.confirmedQuantity !== null &&
+      (line.warehouseId === null || line.locationId === null))
+  ) throw invalidResponse()
   return deepFreeze({
     id, purchaseRecordKey: nonemptyString(row.purchaseRecordKey),
-    ...validateAuditHeader(row), lines,
+    ...audit, lines,
   })
 }
 
@@ -762,7 +781,8 @@ function bindReceiptResponse(candidate, request, viewCost) {
     result.purchaseRecordKey !== request.p_purchase_record_key ||
     result.idempotencyKey !== request.p_idempotency_key ||
     result.lines.some((line) =>
-      line.confirmedQuantity !== null || line.unitCost !== null)
+      line.confirmedQuantity !== null || line.unitCost !== null ||
+      ((line.warehouseId === null) !== (line.locationId === null)))
   ) throw invalidResponse()
   sameLineSet(result.lines, request.p_lines, [
     'variantId', 'requestedQuantity', 'warehouseId', 'locationId',

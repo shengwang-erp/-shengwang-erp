@@ -311,11 +311,12 @@ test('purchase sections separate accrual actions from payment sensitive actions'
     'module.purchases.delete',
     'sensitive.purchase_payments_view',
     'sensitive.purchase_payments_update',
+    'warehouse.receipt.submit',
   ]
   assert.deepEqual(getPurchaseAccess(activeUser(keys)), {
     records: { view: true, create: true, update: true, delete: true },
     payments: { view: true, create: true, update: true, delete: true },
-    stockIn: { view: true, create: true, update: true, delete: true },
+    stockIn: { view: true, create: true, update: false, delete: false },
     summary: { view: true },
   })
 
@@ -324,13 +325,38 @@ test('purchase sections separate accrual actions from payment sensitive actions'
     'module.purchases.create',
     'module.purchases.update',
     'module.purchases.delete',
+    'warehouse.receipt.submit',
   ]))
   assert.deepEqual(accrualOnly, {
     records: { view: true, create: true, update: true, delete: true },
     payments: { view: false, create: false, update: false, delete: false },
-    stockIn: { view: true, create: true, update: true, delete: true },
+    stockIn: { view: true, create: true, update: false, delete: false },
     summary: { view: true },
   })
+})
+
+test('purchase arrival submission requires purchase view/create and warehouse receipt submit while confirmation stays independent', () => {
+  assert.deepEqual(getPurchaseAccess(activeUser([
+    'module.purchases.view',
+    'module.purchases.create',
+  ])).stockIn, { view: false, create: false, update: false, delete: false })
+
+  assert.deepEqual(getPurchaseAccess(activeUser([
+    'module.purchases.view',
+    'warehouse.receipt.submit',
+  ])).stockIn, { view: true, create: false, update: false, delete: false })
+
+  assert.deepEqual(getPurchaseAccess(activeUser([
+    'module.purchases.view',
+    'module.purchases.create',
+    'warehouse.receipt.submit',
+  ])).stockIn, { view: true, create: true, update: false, delete: false })
+
+  assert.deepEqual(getPurchaseAccess(activeUser([
+    'module.purchases.view',
+    'module.purchases.create',
+    'warehouse.receipt.confirm',
+  ])).stockIn, { view: false, create: false, update: false, delete: false })
 })
 
 test('legacy personal arrays and action-only effective keys never unlock projections', () => {

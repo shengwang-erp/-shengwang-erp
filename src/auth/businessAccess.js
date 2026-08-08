@@ -270,15 +270,19 @@ export function getPurchaseAccess(user) {
     update: paymentUpdate && canEdit(snapshot, '采购管理'),
     delete: paymentUpdate && canDelete(snapshot, '采购管理'),
   }
+  const receiptSubmit = view && hasEffectivePermissionKey(
+    snapshot,
+    WAREHOUSE_PERMISSION_KEYS.receiptSubmit,
+  )
 
   return freezeProjection({
     records,
     payments,
     stockIn: {
-      view,
-      create: records.create,
-      update: records.update,
-      delete: records.delete,
+      view: receiptSubmit,
+      create: receiptSubmit && records.create,
+      update: false,
+      delete: false,
     },
     summary: { view },
   })

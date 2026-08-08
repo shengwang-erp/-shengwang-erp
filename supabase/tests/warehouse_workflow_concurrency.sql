@@ -77,7 +77,9 @@ insert into public.employee_profiles(
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
   ('position', '仓库管理员', 'warehouse.catalog.manage'),
   ('position', '仓库管理员', 'warehouse.receipt.submit'),
-  ('position', '仓库管理员', 'warehouse.stock_flow.request')
+  ('position', '仓库管理员', 'warehouse.stock_flow.request'),
+  ('position', '仓库管理员', 'module.purchases.view'),
+  ('position', '仓库管理员', 'module.purchases.create')
 on conflict do nothing;
 insert into public.warehouse_sites(id, code, name, kind, active) values
   ('de000000-0000-4000-8000-000000000001', 'WF-RACE', '流程并发仓', 'normal', true);
@@ -93,7 +95,7 @@ insert into public.warehouse_variants(
   ('de300000-0000-4000-8000-000000000001', 'de200000-0000-4000-8000-000000000001', 'WF-RACE-1', '', '', '', '米', 0, 100, 'SWERP:VARIANT:de300000-0000-4000-8000-000000000001', true),
   ('de300000-0000-4000-8000-000000000002', 'de200000-0000-4000-8000-000000000001', 'WF-RACE-2', '', '', '', '米', 0, 100, 'SWERP:VARIANT:de300000-0000-4000-8000-000000000002', true);
 insert into public.purchase_records(record_key, payload, status)
-values ('PO-WF-RACE', '{"purchaseId":"PO-WF-RACE","itemName":"并发铜管"}', 'active');
+values ('PO-WF-RACE', '{"purchaseId":"PO-WF-RACE","itemName":"并发铜管","quantity":2}', 'active');
 
 create or replace function public.task1_pause_stock_out(p_marker bigint)
 returns text

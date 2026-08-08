@@ -33,8 +33,8 @@ test('request builders normalize exact pending workflow payloads without client 
     lines: [{
       variantId: IDS.variant,
       requestedQuantity: 2.125,
-      warehouseId: IDS.warehouse,
-      locationId: IDS.location,
+      warehouseId: null,
+      locationId: null,
     }],
   })
   const outbound = buildWarehouseStockOutRequest({
@@ -67,7 +67,7 @@ test('request builders normalize exact pending workflow payloads without client 
     p_purchase_record_key: 'BUY-001',
     p_lines: [{
       variantId: IDS.variant, requestedQuantity: 2.125,
-      warehouseId: IDS.warehouse, locationId: IDS.location,
+      warehouseId: null, locationId: null,
     }],
     p_idempotency_key: 'receipt-20260809-001',
   })
@@ -139,6 +139,15 @@ test('builders reject extra/accessor/client-authority fields, invalid dates, ids
     accessor,
   ]) assert.throws(() => buildWarehouseReceiptRequest(input), TypeError)
   assert.equal(getterCalls, 0)
+
+  assert.throws(() => buildWarehouseReceiptRequest({
+    ...baseReceipt,
+    lines: [{ ...baseReceipt.lines[0], warehouseId: null }],
+  }), TypeError)
+  assert.throws(() => buildWarehouseReceiptRequest({
+    ...baseReceipt,
+    lines: [{ ...baseReceipt.lines[0], locationId: null }],
+  }), TypeError)
 
   assert.throws(() => buildMinorWorkOrderRequest({
     title: '安装空调', customerName: '', workDate: '2026-02-30',

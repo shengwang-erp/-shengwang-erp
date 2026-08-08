@@ -75,6 +75,10 @@ import { laborAccountingService } from './services/laborAccountingService.js'
 import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
 import { purchaseService } from './services/purchaseService.js'
 import {
+  purchaseWarehouseBridge,
+  resolvePurchaseArrivalStatus,
+} from './features/warehouse/purchaseWarehouseBridge.js'
+import {
   classifyBusinessSourceError,
   toBusinessSourceState,
 } from './services/businessSourceState.js'
@@ -177,7 +181,7 @@ const currencyOptions = ['JPY', 'CNY']
 const purchasePaymentStatusOptions = ['未付款', '部分付款', '已付款']
 const invoiceStatusOptions = ['未取得', '已取得', '不需要']
 const arrivalStatusOptions = ['未到货', '部分到货', '已到货']
-const stockInStatusOptions = ['未入库', '部分入库', '已入库']
+const stockInStatusOptions = ['未入库', '待仓库确认', '部分入库', '已入库']
 const purchaseStatusOptions = ['正常', '作废']
 const paymentMethodOptions = ['银行转账', '信用卡', '现金', 'PayPay', '微信', '支付宝', '公司账户', '个人垫付', '其他']
 const expenseTypeOptions = [
@@ -1107,6 +1111,12 @@ function getPurchaseStockInStatus(purchase, stockInRecords) {
   return '已入库'
 }
 
+function getPurchaseArrivalSummary(purchaseId, arrivalPurchases) {
+  return Array.isArray(arrivalPurchases)
+    ? arrivalPurchases.find((row) => row.purchaseRecordKey === purchaseId) || null
+    : null
+}
+
 function normalizePurchaseRecord(record) {
   const amounts = calculatePurchaseAmounts(record)
   const hasPaymentFacts = [
@@ -1613,18 +1623,6 @@ function createEmptyPurchaseForm() {
     invoiceStatus: '未取得',
     arrivalStatus: '未到货',
     purchaseStatus: '正常',
-    employeeId: '',
-    externalPersonName: '',
-    remark: '',
-  }
-}
-
-function createEmptyStockInForm() {
-  return {
-    purchaseId: '',
-    stockInQuantity: '',
-    stockInDate: todayValue(),
-    warehouseLocation: '',
     employeeId: '',
     externalPersonName: '',
     remark: '',
@@ -3167,22 +3165,6 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const persistPurchasePaymentCache = (record) => localDemoMode
     ? Promise.resolve(record)
     : purchaseService.update(record.purchaseId, record)
-  const setStockInRecords = (nextRecords, updateOptions = {}) => {
-    setStoredStockInRecords((currentRecords) => {
-      const normalizedCurrent = currentRecords.map((record) => normalizeStockInRecord(record))
-      const resolvedRecords =
-        typeof nextRecords === 'function' ? nextRecords(normalizedCurrent) : nextRecords
-      return resolvedRecords.map((record) => normalizeStockInRecord(record))
-    }, updateOptions)
-  }
-  const setInventoryItems = (nextItems, updateOptions = {}) => {
-    setStoredInventoryItems((currentItems) => {
-      const normalizedCurrent = currentItems.map((item) => normalizeInventoryItem(item))
-      const resolvedItems =
-        typeof nextItems === 'function' ? nextItems(normalizedCurrent) : nextItems
-      return resolvedItems.map((item) => normalizeInventoryItem(item))
-    }, updateOptions)
-  }
   const setToolRecords = (nextRecords) => {
     setStoredToolRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) => normalizeToolRecord(record))
@@ -3726,9 +3708,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         setPurchasePaymentRecords={setPurchasePaymentRecords}
         onPersistenceError={setPersistenceFailure}
         stockInRecords={stockInRecords}
-        setStockInRecords={setStockInRecords}
         inventoryItems={inventoryItems}
-        setInventoryItems={setInventoryItems}
         onBack={() => handlePersonnelAwareNavigate('home')}
       />
     )
@@ -7352,9 +7332,7 @@ export function PurchaseManagementPage({
   setPurchasePaymentRecords,
   onPersistenceError,
   stockInRecords,
-  setStockInRecords,
   inventoryItems,
-  setInventoryItems,
   onBack,
 }) {
   const resolvedAccess = access || {
@@ -7373,6 +7351,34 @@ export function PurchaseManagementPage({
     : localDemoMode && Array.isArray(purchasePaymentRecords)
       ? purchasePaymentRecords
       : []
+  const [arrivalContext, setArrivalContext] = useState({
+    status: resolvedAccess.stockIn.view ? 'loading' : 'forbidden',
+    variants: [],
+    purchases: [],
+  })
+  const refreshArrivalContext = useCallback(async () => {
+    if (!resolvedAccess.stockIn.view) {
+      setArrivalContext({ status: 'forbidden', variants: [], purchases: [] })
+      return null
+    }
+    setArrivalContext((current) => ({ ...current, status: 'loading' }))
+    try {
+      const context = await purchaseWarehouseBridge.loadArrivalContext()
+      setArrivalContext({
+        status: 'ready',
+        variants: context.variants,
+        purchases: context.purchases,
+      })
+      return context
+    } catch (error) {
+      setArrivalContext({ status: 'error', variants: [], purchases: [] })
+      onPersistenceError?.(error)
+      return null
+    }
+  }, [onPersistenceError, resolvedAccess.stockIn.view])
+  useEffect(() => {
+    refreshArrivalContext()
+  }, [refreshArrivalContext])
   const sections = [
     ...(resolvedAccess.records.create ? [{ id: 'create', title: '新增采购' }] : []),
     ...(resolvedAccess.records.view ? [{ id: 'list', title: '采购列表' }] : []),
@@ -7429,6 +7435,8 @@ export function PurchaseManagementPage({
           setRecords={setPurchaseRecords}
           paymentRecords={deleteAdvisoryPaymentRecords}
           stockInRecords={stockInRecords}
+          arrivalPurchases={arrivalContext.purchases}
+          arrivalContextStatus={arrivalContext.status}
           access={resolvedAccess.records}
           paymentVisible={paymentReady}
           onUpdate={onUpdatePurchase}
@@ -7441,9 +7449,8 @@ export function PurchaseManagementPage({
           purchaseRecords={purchaseRecords}
           setPurchaseRecords={setPurchaseRecords}
           stockInRecords={stockInRecords}
-          setStockInRecords={setStockInRecords}
-          inventoryItems={inventoryItems}
-          setInventoryItems={setInventoryItems}
+          arrivalContext={arrivalContext}
+          onRefreshArrivalContext={refreshArrivalContext}
           access={resolvedAccess.stockIn}
           onPersistenceError={onPersistenceError}
         />
@@ -7613,6 +7620,8 @@ function PurchaseListSection({
   setRecords,
   paymentRecords,
   stockInRecords,
+  arrivalPurchases = [],
+  arrivalContextStatus = 'loading',
   access,
   paymentVisible,
   onUpdate,
@@ -7631,10 +7640,15 @@ function PurchaseListSection({
     supplier: '',
     keyword: '',
   })
+  const arrivalStatusReady = arrivalContextStatus === 'ready'
 
   const normalRecords = records.filter((record) => record.purchaseStatus !== '作废')
   const filteredRecords = normalRecords.filter((record) => {
-    const stockInStatus = getPurchaseStockInStatus(record, stockInRecords)
+    const stockInStatus = resolvePurchaseArrivalStatus(
+      arrivalContextStatus,
+      record.purchaseId,
+      arrivalPurchases,
+    )
     const startMatched = filters.startDate ? record.purchaseDate >= filters.startDate : true
     const endMatched = filters.endDate ? record.purchaseDate <= filters.endDate : true
 
@@ -7645,7 +7659,7 @@ function PurchaseListSection({
       (!filters.projectId || record.projectId === filters.projectId) &&
       (!paymentVisible || !filters.paymentStatus || record.paymentStatus === filters.paymentStatus) &&
       (!filters.arrivalStatus || record.arrivalStatus === filters.arrivalStatus) &&
-      (!filters.stockInStatus || stockInStatus === filters.stockInStatus) &&
+      (!filters.stockInStatus || (arrivalStatusReady && stockInStatus === filters.stockInStatus)) &&
       startMatched &&
       endMatched &&
       (!filters.supplier || record.supplierName.includes(filters.supplier.trim())) &&
@@ -7665,7 +7679,7 @@ function PurchaseListSection({
           <OptionField label="付款状态" value={filters.paymentStatus} onChange={(value) => setFilters({ ...filters, paymentStatus: value })} options={purchasePaymentStatusOptions} includeAll />
         )}
         <OptionField label="到货状态" value={filters.arrivalStatus} onChange={(value) => setFilters({ ...filters, arrivalStatus: value })} options={arrivalStatusOptions} includeAll />
-        <OptionField label="入库状态" value={filters.stockInStatus} onChange={(value) => setFilters({ ...filters, stockInStatus: value })} options={stockInStatusOptions} includeAll />
+        <OptionField label="入库状态" value={filters.stockInStatus} onChange={(value) => setFilters({ ...filters, stockInStatus: value })} options={stockInStatusOptions} includeAll disabled={!arrivalStatusReady} />
         <Field label="开始日期" type="date" value={filters.startDate} onChange={(value) => setFilters({ ...filters, startDate: value })} />
         <Field label="结束日期" type="date" value={filters.endDate} onChange={(value) => setFilters({ ...filters, endDate: value })} />
         <Field label="供应商" value={filters.supplier} onChange={(value) => setFilters({ ...filters, supplier: value })} />
@@ -7680,7 +7694,11 @@ function PurchaseListSection({
             <PurchaseCard
               key={record.purchaseId}
               record={record}
-              stockInStatus={getPurchaseStockInStatus(record, stockInRecords)}
+              stockInStatus={resolvePurchaseArrivalStatus(
+                arrivalContextStatus,
+                record.purchaseId,
+                arrivalPurchases,
+              )}
               showPayments={paymentVisible}
               canVoid={access.update}
               canDelete={access.delete}
@@ -7700,8 +7718,12 @@ function PurchaseListSection({
                   (item) => item.purchaseId === record.purchaseId,
                 )
                 const hasStockIn = stockInRecords.some((item) => item.sourcePurchaseId === record.purchaseId)
-                if (hasPayment || hasStockIn) {
-                  window.alert('该采购已有付款或入库记录，建议作废，不建议删除。')
+                const hasWarehouseReceipt = getPurchaseArrivalSummary(
+                  record.purchaseId,
+                  arrivalPurchases,
+                )?.hasReceipt === true
+                if (hasPayment || hasStockIn || hasWarehouseReceipt) {
+                  window.alert('该采购已有付款、旧入库或仓库到货记录，建议作废，不建议删除。')
                   return
                 }
                 if (window.confirm('确定删除这条采购记录吗？')) {
@@ -7718,140 +7740,102 @@ function PurchaseListSection({
   )
 }
 
-async function commitPurchaseStockInMutation({
-  transactionInput,
-  persistTransaction,
-  nextPurchaseRecords,
-  nextStockInRecords,
-  nextInventoryItems,
-  setPurchaseRecords,
-  setStockInRecords,
-  setInventoryItems,
-  onPersistenceError,
-  demoMode,
-}) {
-  if (!demoMode) {
-    try {
-      await persistTransaction(transactionInput)
-    } catch (error) {
-      onPersistenceError?.(error)
-      return false
-    }
-  }
-
-  const stateUpdateOptions = demoMode
-    ? {}
-    : { stateOnly: true, syncLocal: true }
-  setPurchaseRecords(nextPurchaseRecords, stateUpdateOptions)
-  setStockInRecords(nextStockInRecords, stateUpdateOptions)
-  setInventoryItems(nextInventoryItems, stateUpdateOptions)
-  return true
-}
-
 function PurchaseStockInSection({
   access,
-  employees,
   purchaseRecords,
-  setPurchaseRecords,
-  stockInRecords,
-  setStockInRecords,
-  inventoryItems,
-  setInventoryItems,
+  arrivalContext,
+  onRefreshArrivalContext,
   onPersistenceError,
+  arrivalBridge = purchaseWarehouseBridge,
+  createIdempotencyId = () => globalThis.crypto?.randomUUID?.(),
 }) {
-  const [form, setForm] = useState(createEmptyStockInForm)
-  const activePurchases = purchaseRecords.filter((record) => record.purchaseStatus !== '作废')
-  const selectedPurchase = activePurchases.find((record) => record.purchaseId === form.purchaseId)
-  const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
+  const [form, setForm] = useState({
+    purchaseRecordKey: '',
+    variantId: '',
+    requestedQuantity: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [submittedMessage, setSubmittedMessage] = useState('')
+  const idempotencyKeyRef = useRef('')
+  const arrivalPurchases = arrivalContext?.purchases || []
+  const variants = arrivalContext?.variants || []
+  const activePurchases = purchaseRecords.filter((record) =>
+    record.purchaseStatus !== '作废' &&
+    getPurchaseArrivalSummary(record.purchaseId, arrivalPurchases)?.remainingQuantity > 0
+  )
+  const selectedPurchase = activePurchases.find(
+    (record) => record.purchaseId === form.purchaseRecordKey,
+  )
+  const selectedSummary = getPurchaseArrivalSummary(form.purchaseRecordKey, arrivalPurchases)
+  const selectedVariant = variants.find((variant) => variant.id === form.variantId)
+  const updateForm = (patch) => {
+    idempotencyKeyRef.current = ''
+    setSubmittedMessage('')
+    setForm((current) => ({ ...current, ...patch }))
+  }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
-    if (!access.create) return
+    if (!access.create || submitting) return
 
     if (!selectedPurchase) {
       window.alert('请选择采购记录')
       return
     }
-
-    if (!selectedEmployee && !form.externalPersonName.trim()) {
-      window.alert('请选择经办人，或填写外部人员')
+    if (!selectedVariant) {
+      window.alert('请选择仓库物品型号')
       return
     }
-
-    const personName = selectedEmployee?.name || form.externalPersonName.trim()
-    const stockIn = normalizeStockInRecord({
-      ...form,
-      stockInId: nextId('SI', stockInRecords, 'stockInId'),
-      sourceType: '采购入库',
-      sourcePurchaseId: selectedPurchase.purchaseId,
-      itemName: selectedPurchase.itemName,
-      specification: selectedPurchase.specification,
-      unit: selectedPurchase.unit,
-      projectId: selectedPurchase.projectId,
-      projectName: selectedPurchase.projectName,
-      employeeId: selectedEmployee?.employeeId || '',
-      employeeName: personName,
-    })
-
-    const nextStockIns = [stockIn, ...stockInRecords]
-    const nextInventoryItems = mergeInventoryItem(
-      inventoryItems, selectedPurchase, stockIn, inventoryItems,
-    )
-    const inventoryToSave = nextInventoryItems.find((item) => {
-      const previous = inventoryItems.find(
-        (candidate) => candidate.inventoryId === item.inventoryId,
-      )
-      return !previous || previous.quantity !== item.quantity ||
-        previous.totalCost !== item.totalCost ||
-        previous.averageCost !== item.averageCost ||
-        previous.updatedAt !== item.updatedAt
-    })
-    if (!inventoryToSave) {
-      onPersistenceError?.(new Error('库存合并结果无效'))
+    const requestedQuantity = Number(form.requestedQuantity)
+    if (!(requestedQuantity > 0) || requestedQuantity > selectedSummary.remainingQuantity) {
+      window.alert('到货数量必须大于 0，且不能超过采购剩余数量')
       return
     }
-    const updatedPurchase = normalizePurchaseRecord({
-      ...selectedPurchase,
-      stockInStatus: getPurchaseStockInStatus(selectedPurchase, nextStockIns),
-      updatedAt: todayValue(),
-    })
-    const nextPurchaseRecords = purchaseRecords.map((record) =>
-      record.purchaseId === selectedPurchase.purchaseId ? updatedPurchase : record
-    )
-    const committed = await commitPurchaseStockInMutation({
-      transactionInput: {
-        purchaseRecordKey: updatedPurchase.purchaseId,
-        purchasePatch: updatedPurchase,
-        stockInRecordKey: stockIn.stockInId,
-        stockInPayload: stockIn,
-        inventoryRecordKey: inventoryToSave.inventoryId,
-        inventoryPayload: inventoryToSave,
-      },
-      persistTransaction: (input) => purchaseService.commitStockIn(input),
-      nextPurchaseRecords,
-      nextStockInRecords: nextStockIns,
-      nextInventoryItems,
-      setPurchaseRecords,
-      setStockInRecords,
-      setInventoryItems,
-      onPersistenceError,
-      demoMode: localDemoMode,
-    })
-    if (!committed) return
-    setForm(createEmptyStockInForm())
+    if (!idempotencyKeyRef.current) {
+      const randomId = createIdempotencyId()
+      if (!randomId) {
+        onPersistenceError?.(new Error('浏览器无法生成安全的到货提交编号'))
+        return
+      }
+      idempotencyKeyRef.current = `arrival-${randomId}`
+    }
+    setSubmitting(true)
+    try {
+      await arrivalBridge.submitWarehouseArrival({
+        purchaseRecordKey: selectedPurchase.purchaseId,
+        variantId: selectedVariant.id,
+        requestedQuantity,
+        idempotencyKey: idempotencyKeyRef.current,
+      })
+      await onRefreshArrivalContext?.()
+      idempotencyKeyRef.current = ''
+      setForm({ purchaseRecordKey: '', variantId: '', requestedQuantity: '' })
+      setSubmittedMessage('到货已提交，等待仓库负责人确认；当前库存尚未增加。')
+    } catch (error) {
+      onPersistenceError?.(error)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
     <>
-      <SectionTitle title="到货入库" note="支持分批入库" />
+      <SectionTitle title="采购到货" note="支持分批提交，仓库负责人确认后才增加库存" />
+      {arrivalContext?.status === 'loading' && <EmptyState text="正在读取仓库到货状态…" />}
+      {arrivalContext?.status === 'error' && <EmptyState text="仓库到货状态暂不可用，请稍后刷新" />}
+      {submittedMessage && <div className="empty-state cost-note">{submittedMessage}</div>}
       {access.create && <form className="form-panel" onSubmit={handleSubmit}>
         <label className="field full-width">
           <span>采购记录</span>
-          <select value={form.purchaseId} onChange={(event) => setForm({ ...form, purchaseId: event.target.value })}>
+          <select
+            value={form.purchaseRecordKey}
+            onChange={(event) => updateForm({ purchaseRecordKey: event.target.value })}
+            disabled={arrivalContext?.status !== 'ready' || submitting}
+          >
             <option value="">请选择采购记录</option>
             {activePurchases.map((record) => (
               <option value={record.purchaseId} key={record.purchaseId}>
-                {record.purchaseId}｜{record.itemName}｜剩余 {Math.max((Number(record.quantity) || 0) - getPurchaseStockInQuantity(record.purchaseId, stockInRecords), 0)} {record.unit}
+                {record.purchaseId}｜{record.itemName}｜剩余 {getPurchaseArrivalSummary(record.purchaseId, arrivalPurchases)?.remainingQuantity ?? 0} {record.unit}
               </option>
             ))}
           </select>
@@ -7859,28 +7843,43 @@ function PurchaseStockInSection({
         {selectedPurchase && (
           <dl className="detail-list compact employee-snapshot">
             <div><dt>商品</dt><dd>{selectedPurchase.itemName}</dd></div>
-            <div><dt>采购数量</dt><dd>{selectedPurchase.quantity} {selectedPurchase.unit}</dd></div>
-            <div><dt>已入库</dt><dd>{getPurchaseStockInQuantity(selectedPurchase.purchaseId, stockInRecords)} {selectedPurchase.unit}</dd></div>
+            <div><dt>采购数量</dt><dd>{selectedSummary?.orderedQuantity ?? 0} {selectedPurchase.unit}</dd></div>
+            <div><dt>待仓库确认</dt><dd>{selectedSummary?.pendingQuantity ?? 0} {selectedPurchase.unit}</dd></div>
+            <div><dt>仓库已确认</dt><dd>{selectedSummary?.confirmedQuantity ?? 0} {selectedPurchase.unit}</dd></div>
+            <div><dt>还可提交</dt><dd>{selectedSummary?.remainingQuantity ?? 0} {selectedPurchase.unit}</dd></div>
             <div><dt>项目</dt><dd>{selectedPurchase.projectName || '未绑定'}</dd></div>
           </dl>
         )}
         <div className="form-grid">
-          <Field label="入库数量" type="number" value={form.stockInQuantity} onChange={(value) => setForm({ ...form, stockInQuantity: value })} required />
-          <Field label="入库日期" type="date" value={form.stockInDate} onChange={(value) => setForm({ ...form, stockInDate: value })} />
-          <Field label="仓库位置" value={form.warehouseLocation} onChange={(value) => setForm({ ...form, warehouseLocation: value })} placeholder="例如 一号仓库A区" />
-          <EmployeeSelect
-            employees={employees}
-            value={form.employeeId}
-            externalValue={form.externalPersonName}
-            label="经办人"
-            onChange={(value) => setForm({ ...form, employeeId: value })}
-            onExternalChange={(value) => setForm({ ...form, externalPersonName: value })}
-            allowExternal
+          <label className="field full-width">
+            <span>仓库物品型号</span>
+            <select
+              value={form.variantId}
+              onChange={(event) => updateForm({ variantId: event.target.value })}
+              disabled={arrivalContext?.status !== 'ready' || submitting}
+              required
+            >
+              <option value="">请选择启用中的物品型号</option>
+              {variants.map((variant) => (
+                <option value={variant.id} key={variant.id}>
+                  {variant.itemName}｜{variant.sku}｜{variant.model || '无型号'}｜{variant.size || '无尺寸'}｜{variant.unit}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Field
+            label="本次到货数量"
+            type="number"
+            value={form.requestedQuantity}
+            onChange={(value) => updateForm({ requestedQuantity: value })}
+            disabled={arrivalContext?.status !== 'ready' || submitting}
+            required
           />
-          <Field label="备注" type="textarea" value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
         </div>
         <div className="form-actions">
-          <button className="primary-button" type="submit">保存入库</button>
+          <button className="primary-button" type="submit" disabled={arrivalContext?.status !== 'ready' || submitting}>
+            {submitting ? '正在提交…' : '提交到货，等待仓库确认'}
+          </button>
         </div>
       </form>}
     </>
@@ -8184,53 +8183,6 @@ function sourceTotal(records, source) {
   return records
     .filter((record) => record.purchaseSource === source)
     .reduce((total, record) => total + toAmount(record.totalCost), 0)
-}
-
-function mergeInventoryItem(currentItems, purchase, stockIn, allItems) {
-  const category = purchase.purchaseType === '工具' || purchase.purchaseType === '设备' ? '工具' : purchase.purchaseType
-  const stockQuantity = Number(stockIn.stockInQuantity) || 0
-  const unitCost = purchase.quantity > 0 ? purchase.totalCost / purchase.quantity : 0
-  const addedCost = Math.round(unitCost * stockQuantity)
-  const matchedItem = currentItems.find(
-    (item) =>
-      item.itemName === purchase.itemName &&
-      item.specification === purchase.specification &&
-      item.category === category &&
-      item.warehouseLocation === stockIn.warehouseLocation,
-  )
-
-  if (!matchedItem) {
-    return [
-      normalizeInventoryItem({
-        inventoryId: nextId('INV', allItems, 'inventoryId'),
-        itemName: purchase.itemName,
-        specification: purchase.specification,
-        category,
-        quantity: stockQuantity,
-        unit: purchase.unit,
-        warehouseLocation: stockIn.warehouseLocation,
-        sourceType: '采购入库',
-        sourcePurchaseId: purchase.purchaseId,
-        averageCost: unitCost,
-        totalCost: addedCost,
-        updatedAt: todayValue(),
-      }),
-      ...currentItems,
-    ]
-  }
-
-  return currentItems.map((item) => {
-    if (item.inventoryId !== matchedItem.inventoryId) return item
-    const quantity = item.quantity + stockQuantity
-    const totalCost = item.totalCost + addedCost
-    return normalizeInventoryItem({
-      ...item,
-      quantity,
-      totalCost,
-      averageCost: quantity > 0 ? totalCost / quantity : 0,
-      updatedAt: todayValue(),
-    })
-  })
 }
 
 function LaborMovementSection({ laborRecords, employees, projects }) {
@@ -8981,11 +8933,11 @@ function CountList({ title, items }) {
   )
 }
 
-function OptionField({ label, value, onChange, options, includeAll = false }) {
+function OptionField({ label, value, onChange, options, includeAll = false, disabled = false }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
         {includeAll && <option value="">全部</option>}
         {options.map((option) => (
           <option value={option} key={option}>
@@ -9006,7 +8958,15 @@ function FormGroup({ title, children }) {
   )
 }
 
-function Field({ label, type = 'text', value, onChange, placeholder, required = false }) {
+function Field({
+  label,
+  type = 'text',
+  value,
+  onChange,
+  placeholder,
+  required = false,
+  disabled = false,
+}) {
   return (
     <label className="field">
       <span>{label}</span>
@@ -9016,6 +8976,7 @@ function Field({ label, type = 'text', value, onChange, placeholder, required = 
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           required={required}
+          disabled={disabled}
           rows="3"
         />
       ) : (
@@ -9025,6 +8986,7 @@ function Field({ label, type = 'text', value, onChange, placeholder, required = 
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           required={required}
+          disabled={disabled}
         />
       )}
     </label>

@@ -482,6 +482,42 @@ test('configuration, authentication, permission, and generic failures keep disti
   }
 })
 
+test('warehouse-receipt linked purchase deletion returns a stable corrective error', async () => {
+  const service = createPurchaseService({
+    rpc: async () => ({
+      data: null,
+      error: { code: '23503', hint: 'PURCHASE_HAS_WAREHOUSE_RECEIPTS' },
+      status: 409,
+    }),
+  }, { configured: true })
+
+  await assert.rejects(
+    () => service.softDelete('PO-SECURE-1'),
+    (error) => error instanceof PurchaseServiceError &&
+      error.code === 'PURCHASE_HAS_WAREHOUSE_RECEIPTS' &&
+      error.status === 409 &&
+      error.message === '该采购已有仓库到货记录，请作废而不要删除',
+  )
+})
+
+test('warehouse-linked purchase quantity reduction returns a stable corrective error', async () => {
+  const service = createPurchaseService({
+    rpc: async () => ({
+      data: null,
+      error: { code: '23514', hint: 'PURCHASE_QUANTITY_BELOW_WAREHOUSE_RECEIPTS' },
+      status: 400,
+    }),
+  }, { configured: true })
+
+  await assert.rejects(
+    () => service.update('PO-SECURE-1', purchase({ quantity: 1 })),
+    (error) => error instanceof PurchaseServiceError &&
+      error.code === 'PURCHASE_QUANTITY_BELOW_WAREHOUSE_RECEIPTS' &&
+      error.status === 409 &&
+      error.message === '采购数量不能低于已提交或已确认的仓库到货数量',
+  )
+})
+
 test('outer transport status is honored when the supplier error omits its status', async () => {
   for (const [status, expectedCode] of [
     [401, 'AUTH_SESSION_INVALID'],

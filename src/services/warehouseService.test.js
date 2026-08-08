@@ -1247,6 +1247,8 @@ test('workflow database hints map only exact trusted tuples to corrective safe e
     ['WAREHOUSE_WORKFLOW_INPUT_INVALID', '22023', 400, 400],
     ['WAREHOUSE_RESOURCE_INACTIVE', '55000', 500, 409],
     ['WAREHOUSE_DESTINATION_UNAVAILABLE', '55000', 500, 409],
+    ['WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT', '23505', 409, 409],
+    ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', '23514', 400, 409],
   ]) {
     const service = createWarehouseService(rpcClient({
       submit_warehouse_receipt_secure: {
@@ -1267,6 +1269,8 @@ test('workflow database hints map only exact trusted tuples to corrective safe e
     ['WAREHOUSE_RESOURCE_INACTIVE', '55000', 409],
     ['WAREHOUSE_WORKFLOW_INPUT_INVALID', '22023', 500],
     ['WAREHOUSE_DESTINATION_UNAVAILABLE', '42501', 500],
+    ['WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT', '23505', 400],
+    ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', '23514', 409],
   ]) {
     const service = createWarehouseService(rpcClient({
       submit_warehouse_receipt_secure: {
