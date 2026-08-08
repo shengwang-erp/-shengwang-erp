@@ -289,17 +289,18 @@ export function getWarehouseAccess(user) {
   const page = snapshot ? hasModule(snapshot, '仓库库存') : false
   const hasWarehouseAction = (permissionKey) =>
     page && hasEffectivePermissionKey(snapshot, permissionKey)
+  const manageCatalog = hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.catalogManage)
 
   return freezeProjection({
     page,
-    manageCatalog: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.catalogManage),
+    manageCatalog,
     submitReceipt: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.receiptSubmit),
     confirmReceipt: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.receiptConfirm),
     requestStockFlow: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stockFlowRequest),
     confirmStockFlow: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stockFlowConfirm),
     transfer: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.transferManage),
     stocktake: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stocktakeConfirm),
-    viewCost: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.costView),
+    viewCost: manageCatalog || hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.costView),
     exportReports: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.reportExport),
   })
 }

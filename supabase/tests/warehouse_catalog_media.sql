@@ -130,8 +130,7 @@ insert into public.employee_profiles(
   ('b6000000-0000-4000-8000-000000000002', 'SW-9802', 'b5000000-0000-4000-8000-000000000002', '仓库无权员工', '工程部', '大工', '在职', 'active', false),
   ('b6000000-0000-4000-8000-000000000003', 'SW-9803', 'b5000000-0000-4000-8000-000000000003', '仓库停用员工', '仓库管理部', '仓库管理员', '在职', 'disabled', false);
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
-  ('position', '仓库管理员', 'warehouse.catalog.manage'),
-  ('position', '仓库管理员', 'warehouse.cost.view');
+  ('position', '仓库管理员', 'warehouse.catalog.manage');
 
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);

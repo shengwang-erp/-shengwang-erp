@@ -608,6 +608,7 @@ test('service options are a closed plain-object contract', () => {
     { configured: true, fallback: 'local' },
     { configured: 'yes' },
     { configured: true, viewCost: 1 },
+    { configured: true, manageCatalog: 1 },
   ]) {
     assert.throws(
       () => createWarehouseService(client, options),
@@ -873,6 +874,23 @@ test('catalog saves validate after await only against the frozen canonical reque
   variantInput.itemId = null
   releaseVariant({ data: savedVariant, error: null, status: 200 })
   assert.deepEqual(await variantPromise, savedVariant)
+})
+
+test('manage-only service configuration accepts warehouse purchase price without other cost scopes', async () => {
+  const catalog = {
+    items: [ITEM],
+    variants: [{ ...VARIANT, defaultPurchasePrice: 118.25 }],
+  }
+  const { client } = rpcClient({
+    list_warehouse_catalog_secure: { data: catalog, error: null, status: 200 },
+  })
+
+  const result = await createWarehouseService(client, {
+    configured: true,
+    manageCatalog: true,
+  }).listCatalog()
+
+  assert.equal(result.variants[0].defaultPurchasePrice, 118.25)
 })
 
 test('catalog transport envelopes reject forged keys and malformed optional fields', async () => {

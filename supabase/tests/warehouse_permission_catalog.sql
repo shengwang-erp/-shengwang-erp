@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(28);
+select plan(32);
 
 create temporary table task3_old_permission_keys (
   permission_key text primary key
@@ -311,10 +311,26 @@ select ok(
   ) @> array['warehouse.catalog.manage']::text[],
   'active president receives exact warehouse catalog management from the central resolver'
 );
+select ok(
+  private.employee_effective_permission_keys(
+    '84000000-0000-4000-8000-000000000001'::uuid
+  ) @> array['warehouse.cost.view']::text[],
+  'effective catalog management automatically includes exact warehouse cost view'
+);
+select ok(
+  not private.employee_effective_permission_keys(
+    '84000000-0000-4000-8000-000000000001'::uuid
+  ) && array['module.accounting.view', 'module.project_costs.view']::text[],
+  'warehouse catalog management does not imply accounting or project cost modules'
+);
 select set_config('request.jwt.claim.sub', '83000000-0000-4000-8000-000000000001', true);
 select ok(
   public.has_current_permission('warehouse.catalog.manage'),
   'active president passes the exact current warehouse management permission check'
+);
+select ok(
+  public.has_current_permission('warehouse.cost.view'),
+  'active catalog manager passes the implied warehouse cost permission check'
 );
 
 select set_config(
@@ -347,6 +363,10 @@ select ok(
 select ok(
   not public.has_current_permission('warehouse.catalog.manage'),
   'a disabled president receives no default warehouse management permission'
+);
+select ok(
+  not public.has_current_permission('warehouse.cost.view'),
+  'a disabled catalog manager receives no implied warehouse cost permission'
 );
 
 select is(

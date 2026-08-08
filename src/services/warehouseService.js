@@ -617,7 +617,7 @@ function normalizeFilters(filters, movement) {
 
 function normalizeOptions(options, client) {
   const descriptors = ownDataDescriptors(options)
-  const allowed = new Set(['configured', 'viewCost'])
+  const allowed = new Set(['configured', 'viewCost', 'manageCatalog'])
   if (!descriptors || Object.keys(descriptors).some((key) => !allowed.has(key))) {
     throw fail('WAREHOUSE_NOT_CONFIGURED')
   }
@@ -627,10 +627,17 @@ function normalizeOptions(options, client) {
   const viewCost = Object.hasOwn(descriptors, 'viewCost')
     ? descriptors.viewCost.value
     : false
-  if (typeof configured !== 'boolean' || typeof viewCost !== 'boolean') {
+  const manageCatalog = Object.hasOwn(descriptors, 'manageCatalog')
+    ? descriptors.manageCatalog.value
+    : false
+  if (
+    typeof configured !== 'boolean' ||
+    typeof viewCost !== 'boolean' ||
+    typeof manageCatalog !== 'boolean'
+  ) {
     throw fail('WAREHOUSE_NOT_CONFIGURED')
   }
-  return { configured, viewCost }
+  return { configured, viewCost: viewCost || manageCatalog }
 }
 
 export function createWarehouseService(client, options = {}) {

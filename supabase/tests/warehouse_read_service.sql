@@ -123,7 +123,7 @@ insert into public.employee_profiles(
   ('a6000000-0000-4000-8000-000000000004', 'SW-9704', 'a5000000-0000-4000-8000-000000000004', '停用读者', '仓库管理部', '仓库管理员', '在职', 'disabled', false);
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
   ('department', '仓库管理部', 'module.inventory.view'),
-  ('position', '仓库管理员', 'warehouse.cost.view');
+  ('position', '仓库管理员', 'warehouse.catalog.manage');
 
 insert into public.warehouse_inventory_movements(
   id, movement_type, variant_id, batch_id, warehouse_id, location_id,
@@ -165,6 +165,10 @@ select throws_ok(
 reset role;
 
 select set_config('request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000004', true);
+select ok(
+  not public.has_current_permission('warehouse.cost.view'),
+  'inactive catalog managers receive no implied warehouse cost permission'
+);
 set local role authenticated;
 select throws_ok(
   $$select public.list_warehouse_locations_secure()$$,
@@ -263,10 +267,19 @@ reset role;
 
 select set_config('request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000002', true);
 set local role authenticated;
+select ok(
+  public.has_current_permission('warehouse.cost.view'),
+  'manage-only actor receives exact warehouse cost view through the central resolver'
+);
+select ok(
+  not public.has_current_permission('module.accounting.view')
+  and not public.has_current_permission('module.project_costs.view'),
+  'manage-only actor receives no accounting or project cost module access'
+);
 select is(
   (public.list_warehouse_catalog_secure()->'variants'->0->>'defaultPurchasePrice')::numeric,
   118.2500,
-  'catalog purchase price appears only for exact cost permission'
+  'catalog purchase price appears for manage-only actor through implied warehouse cost permission'
 );
 select is(
   (public.list_warehouse_balances_secure(

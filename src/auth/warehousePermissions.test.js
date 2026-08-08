@@ -22,7 +22,10 @@ const EXPECTED_WAREHOUSE_PERMISSION_KEYS = Object.freeze({
 })
 
 const EXPECTED_WAREHOUSE_PERMISSION_CATALOG = Object.freeze([
-  Object.freeze({ key: 'warehouse.catalog.manage', label: '管理仓库物品与仓位' }),
+  Object.freeze({
+    key: 'warehouse.catalog.manage',
+    label: '管理仓库物品与仓位（自动包含查看仓库采购价）',
+  }),
   Object.freeze({ key: 'warehouse.receipt.submit', label: '提交采购到货' }),
   Object.freeze({ key: 'warehouse.receipt.confirm', label: '确认采购入库' }),
   Object.freeze({ key: 'warehouse.stock_flow.request', label: '发起出库与退回申请' }),
@@ -127,6 +130,27 @@ test('warehouse page and action projections require independent exact grants', (
     WAREHOUSE_PERMISSION_KEYS.catalogManage,
   ]))
   assert.deepEqual(actionWithoutPage, NO_WAREHOUSE_ACCESS)
+})
+
+test('catalog management implies warehouse price only and never other cost permissions', () => {
+  const manageOnly = activeUser([
+    'module.inventory.view',
+    WAREHOUSE_PERMISSION_KEYS.catalogManage,
+  ])
+  const access = getWarehouseAccess(manageOnly)
+
+  assert.equal(access.manageCatalog, true)
+  assert.equal(access.viewCost, true)
+  assert.equal(
+    hasEffectivePermissionKey(manageOnly, WAREHOUSE_PERMISSION_KEYS.costView),
+    false,
+  )
+  assert.equal(hasEffectivePermissionKey(manageOnly, 'module.accounting.view'), false)
+  assert.equal(hasEffectivePermissionKey(manageOnly, 'module.project_costs.view'), false)
+
+  const viewOnly = getWarehouseAccess(activeUser(['module.inventory.view']))
+  assert.equal(viewOnly.manageCatalog, false)
+  assert.equal(viewOnly.viewCost, false)
 })
 
 test('active SW-000 receives all warehouse actions without a new credential or grant path', () => {

@@ -1,5 +1,7 @@
 -- Extend the closed permission catalog with the nine warehouse action keys.
--- This migration intentionally contains no data writes or automatic grants.
+-- Catalog management implies warehouse purchase-price visibility in the
+-- central effective-permission resolver. It does not create grant rows and
+-- does not imply any project, accounting, or other module cost permission.
 
 alter table public.permission_grants
   drop constraint permission_grants_permission_key_check;
@@ -78,6 +80,80 @@ alter table public.permission_grants
     'warehouse.cost.view',
     'warehouse.report.export'
   ));
+
+create or replace function private.employee_effective_permission_keys(p_employee_id uuid)
+returns text[]
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  employee public.employee_profiles%rowtype;
+  permission_keys text[];
+begin
+  select profile.*
+    into employee
+    from public.employee_profiles as profile
+    where profile.id = p_employee_id
+      and profile.deleted_at is null;
+
+  if not found
+    or employee.auth_user_id is null
+    or employee.employment_status <> '在职'
+    or employee.account_status <> 'active'
+    or employee.must_change_password <> false
+  then
+    return array[]::text[];
+  end if;
+
+  if employee.employee_number = 'SW-000' then
+    return array['all']::text[];
+  end if;
+
+  select coalesce(
+      array_agg(granted.permission_key order by granted.permission_key),
+      array[]::text[]
+    )
+    into permission_keys
+    from (
+      select grant_row.permission_key
+      from public.permission_grants as grant_row
+      where (
+        grant_row.subject_type = 'department'
+        and grant_row.subject_code = employee.department
+      ) or (
+        grant_row.subject_type = 'position'
+        and grant_row.subject_code = employee.position
+      )
+      union
+      select fixed_permission.permission_key
+      from unnest(array[
+        'module.employees.view',
+        'module.employees.create',
+        'module.employees.update',
+        'module.employees.delete',
+        'module.permission_templates.view',
+        'module.permission_templates.update',
+        'warehouse.catalog.manage'
+      ]::text[]) as fixed_permission(permission_key)
+      where employee.position = '社长'
+    ) as granted;
+
+  if 'warehouse.catalog.manage' = any(permission_keys)
+    and not ('warehouse.cost.view' = any(permission_keys))
+  then
+    select array_agg(permission_key order by permission_key)
+      into permission_keys
+      from unnest(permission_keys || 'warehouse.cost.view'::text) as implied(permission_key);
+  end if;
+
+  return permission_keys;
+end;
+$$;
+
+revoke all on function private.employee_effective_permission_keys(uuid)
+  from public, anon, authenticated;
 
 create or replace function public.has_current_permission(p_permission_key text)
 returns boolean

@@ -60,7 +60,7 @@ export const SENSITIVE_PERMISSION_CATALOG = Object.freeze([
 export const WAREHOUSE_PERMISSION_CATALOG = Object.freeze([
   Object.freeze({
     key: WAREHOUSE_PERMISSION_KEYS.catalogManage,
-    label: '管理仓库物品与仓位',
+    label: '管理仓库物品与仓位（自动包含查看仓库采购价）',
   }),
   Object.freeze({
     key: WAREHOUSE_PERMISSION_KEYS.receiptSubmit,
