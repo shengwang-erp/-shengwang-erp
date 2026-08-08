@@ -50,6 +50,8 @@ export function createWarehouseQrScannerController({
   let activeSession = null
   const stoppedControls = new WeakSet()
   const stoppedTracks = new WeakSet()
+  const isResourceObject = (value) => Boolean(value)
+    && (typeof value === 'object' || typeof value === 'function')
 
   const invokeStop = (value) => {
     let result
@@ -64,22 +66,25 @@ export function createWarehouseQrScannerController({
   }
 
   const stopControl = (value) => {
-    if (!value || (typeof value !== 'object' && typeof value !== 'function')) return null
+    if (!isResourceObject(value)) return null
     if (stoppedControls.has(value)) return null
     stoppedControls.add(value)
     return invokeStop(value)
   }
 
   const inspectVideoStream = (video) => {
-    try { return { readable: true, stream: video?.srcObject ?? null } } catch {
-      return { readable: false, stream: null }
+    try { return { ok: true, value: video.srcObject } } catch {
+      return { ok: false, value: undefined }
     }
   }
 
-  const readVideoStream = (video) => inspectVideoStream(video).stream
+  const readVideoStream = (video) => {
+    const inspection = inspectVideoStream(video)
+    return inspection.ok ? inspection.value : null
+  }
 
   const rememberOwnedStream = (session, stream) => {
-    if (!stream || (typeof stream !== 'object' && typeof stream !== 'function')) return
+    if (!isResourceObject(stream)) return
     if (session.ownedStreams.size > 0 && !session.ownedStreams.has(stream)) return
     const owner = streamSessionOwners.get(stream)
     if (owner && owner !== session) return
@@ -87,11 +92,13 @@ export function createWarehouseQrScannerController({
     session.ownedStreams.add(stream)
   }
 
-  const captureCurrentOwnedStream = (session) => {
+  const captureCallbackOwnedStream = (session, callbackControls) => {
+    if (!isResourceObject(callbackControls)) return null
     if (videoSessionOwners.get(session.video) !== session) return null
-    const stream = readVideoStream(session.video)
-    rememberOwnedStream(session, stream)
-    return stream
+    const inspection = inspectVideoStream(session.video)
+    if (!inspection.ok) return null
+    rememberOwnedStream(session, inspection.value)
+    return inspection.value
   }
 
   const finalizeSessionCleanup = (session) => {
@@ -122,7 +129,7 @@ export function createWarehouseQrScannerController({
     const stillOwnsAttachedStream = videoSessionOwners.get(session.video) === session
       && streamSessionOwners.get(readVideoStream(session.video)) === session
     const controlsCleanupComplete = session.controlsResolved
-      && (!session.returnedControls || session.authoritativeControlStopped)
+      && (!isResourceObject(session.returnedControls) || session.authoritativeControlStopped)
     session.cleanupFinalized = session.closeRequested
       && session.openSettled
       && controlsCleanupComplete
@@ -144,7 +151,9 @@ export function createWarehouseQrScannerController({
     session.cleanupInProgress = true
     let controlSettlement = null
     if (!session.authoritativeControlStopped) {
-      const authoritativeControls = session.returnedControls ?? callbackControls
+      const authoritativeControls = isResourceObject(session.returnedControls)
+        ? session.returnedControls
+        : (isResourceObject(callbackControls) ? callbackControls : null)
       if (authoritativeControls) {
         session.authoritativeControlStopped = true
         controlSettlement = stopControl(authoritativeControls)
@@ -202,7 +211,7 @@ export function createWarehouseQrScannerController({
         return null
       }
       const initialStream = inspectVideoStream(video)
-      if (!initialStream.readable || initialStream.stream !== null) {
+      if (!initialStream.ok || initialStream.value !== null) {
         if (isCurrent(token)) {
           try { onError(EXTERNAL_CAMERA_BUSY_MESSAGE) } catch { /* UI callback cannot start over external media */ }
         }
@@ -232,35 +241,29 @@ export function createWarehouseQrScannerController({
         }
         if (typeof zxing?.BrowserQRCodeReader !== 'function') throw new Error('reader unavailable')
         const reader = new zxing.BrowserQRCodeReader()
-        let decoding
-        try {
-          decoding = reader.decodeFromConstraints(
-            { video: { facingMode: { ideal: 'environment' } } },
-            session.video,
-            (result, error, callbackControls) => {
-              captureCurrentOwnedStream(session)
-              if (!isCurrent(token)) {
-                stopSession(session, callbackControls)
-                return
-              }
-              const text = scannedText(result)
-              if (text !== null) {
-                void reportLookup(text, callbackControls)
-                return
-              }
-              if (error && !RETRYABLE_DECODE_ERROR_NAMES.has(error.name)) {
-                generation += 1
-                activeSession = null
-                stopSession(session, callbackControls)
-                onError(scannerMessage(error))
-              }
-            },
-          )
-        } finally {
-          captureCurrentOwnedStream(session)
-        }
+        const decoding = reader.decodeFromConstraints(
+          { video: { facingMode: { ideal: 'environment' } } },
+          session.video,
+          (result, error, callbackControls) => {
+            captureCallbackOwnedStream(session, callbackControls)
+            if (!isCurrent(token)) {
+              stopSession(session, callbackControls)
+              return
+            }
+            const text = scannedText(result)
+            if (text !== null) {
+              void reportLookup(text, callbackControls)
+              return
+            }
+            if (error && !RETRYABLE_DECODE_ERROR_NAMES.has(error.name)) {
+              generation += 1
+              activeSession = null
+              stopSession(session, callbackControls)
+              onError(scannerMessage(error))
+            }
+          },
+        )
         const nextControls = await decoding
-        captureCurrentOwnedStream(session)
         session.returnedControls = nextControls
         session.controlsResolved = true
         if (!isCurrent(token)) {
