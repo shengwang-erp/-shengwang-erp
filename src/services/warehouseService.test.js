@@ -14,6 +14,11 @@ const IDS = Object.freeze({
   batch: '94000000-0000-4000-8000-000000000001',
   operator: '96000000-0000-4000-8000-000000000001',
   movement: '97000000-0000-4000-8000-000000000001',
+  minorWorkOrder: '98000000-0000-4000-8000-000000000001',
+  receipt: '99000000-0000-4000-8000-000000000001',
+  stockOut: '9a000000-0000-4000-8000-000000000001',
+  stockOutLine: '9b000000-0000-4000-8000-000000000001',
+  returnRequest: '9c000000-0000-4000-8000-000000000001',
 })
 
 const ITEM = Object.freeze({
@@ -908,6 +913,186 @@ test('catalog transport envelopes reject forged keys and malformed optional fiel
       safeError('WAREHOUSE_INVALID_RESPONSE', 502),
     )
   }
+})
+
+test('pending workflow methods call only secure RPCs with canonical builders and return immutable exact documents', async () => {
+  const minor = {
+    id: IDS.minorWorkOrder,
+    title: '安装空调', customerName: '未来社', workDate: '2026-08-09',
+    locationText: '東京都港区', description: '', status: 'open',
+    assignedProjectId: null, createdByEmployeeProfileId: IDS.operator,
+    createdAt: '2026-08-09T00:00:00Z', updatedAt: '2026-08-09T00:00:00Z',
+  }
+  const receipt = {
+    id: IDS.receipt, purchaseRecordKey: 'BUY-001', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'receipt-1',
+    lines: [{
+      id: IDS.stockOutLine, receiptId: IDS.receipt, variantId: IDS.variant,
+      requestedQuantity: 2, confirmedQuantity: null, warehouseId: IDS.site,
+      locationId: IDS.location, unitCost: null,
+    }],
+  }
+  const outbound = {
+    id: IDS.stockOut, destinationType: 'minor_work_order', projectId: null,
+    minorWorkOrderId: IDS.minorWorkOrder, destinationNameSnapshot: '未来社安装空调',
+    purpose: '安装', receiver: '王师傅', requestDate: '2026-08-09', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'out-1',
+    lines: [{
+      id: IDS.stockOutLine, requestId: IDS.stockOut, variantId: IDS.variant,
+      requestedQuantity: 1, confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  const returned = {
+    id: IDS.returnRequest, originalStockOutId: IDS.stockOut, reason: '未使用',
+    receiver: '仓库负责人', requestDate: '2026-08-10', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-10T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'return-1',
+    lines: [{
+      id: IDS.receipt, returnId: IDS.returnRequest,
+      originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1,
+      confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  const assigned = { ...minor, status: 'assigned', assignedProjectId: 'P001' }
+  const { client, calls } = rpcClient({
+    create_minor_work_order_secure: { data: minor, error: null, status: 200 },
+    assign_minor_work_order_to_project_secure: { data: assigned, error: null, status: 200 },
+    submit_warehouse_receipt_secure: { data: receipt, error: null, status: 200 },
+    submit_warehouse_stock_out_secure: { data: outbound, error: null, status: 200 },
+    submit_warehouse_return_secure: { data: returned, error: null, status: 200 },
+  })
+  const service = createWarehouseService(client, { configured: true })
+
+  const results = [
+    await service.createMinorWorkOrder({
+      title: ' 安装空调 ', customerName: ' 未来社 ', workDate: '2026-08-09',
+      locationText: ' 東京都港区 ', description: '',
+    }),
+    await service.assignMinorWorkOrder({ minorWorkOrderId: IDS.minorWorkOrder, projectId: 'P001' }),
+    await service.submitReceipt({
+      purchaseRecordKey: 'BUY-001', idempotencyKey: 'receipt-1',
+      lines: [{
+        variantId: IDS.variant, requestedQuantity: 2,
+        warehouseId: IDS.site, locationId: IDS.location,
+      }],
+    }),
+    await service.submitStockOut({
+      destinationType: 'minor_work_order', projectId: null,
+      minorWorkOrderId: IDS.minorWorkOrder, destinationNameSnapshot: '未来社安装空调',
+      purpose: '安装', receiver: '王师傅', requestDate: '2026-08-09',
+      idempotencyKey: 'out-1', lines: [{ variantId: IDS.variant, requestedQuantity: 1 }],
+    }),
+    await service.submitReturn({
+      originalStockOutId: IDS.stockOut, reason: '未使用', receiver: '仓库负责人',
+      requestDate: '2026-08-10', idempotencyKey: 'return-1',
+      lines: [{ originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1 }],
+    }),
+  ]
+
+  assert.deepEqual(calls, [
+    { name: 'create_minor_work_order_secure', args: {
+      p_payload: { title: '安装空调', customerName: '未来社', workDate: '2026-08-09', locationText: '東京都港区', description: '' },
+    } },
+    { name: 'assign_minor_work_order_to_project_secure', args: {
+      p_minor_work_order_id: IDS.minorWorkOrder, p_project_id: 'P001',
+    } },
+    { name: 'submit_warehouse_receipt_secure', args: {
+      p_purchase_record_key: 'BUY-001',
+      p_lines: [{ variantId: IDS.variant, requestedQuantity: 2, warehouseId: IDS.site, locationId: IDS.location }],
+      p_idempotency_key: 'receipt-1',
+    } },
+    { name: 'submit_warehouse_stock_out_secure', args: {
+      p_request: {
+        destinationType: 'minor_work_order', projectId: null,
+        minorWorkOrderId: IDS.minorWorkOrder, destinationNameSnapshot: '未来社安装空调',
+        purpose: '安装', receiver: '王师傅', requestDate: '2026-08-09',
+      },
+      p_lines: [{ variantId: IDS.variant, requestedQuantity: 1 }],
+      p_idempotency_key: 'out-1',
+    } },
+    { name: 'submit_warehouse_return_secure', args: {
+      p_original_stock_out_id: IDS.stockOut,
+      p_request: { reason: '未使用', receiver: '仓库负责人', requestDate: '2026-08-10' },
+      p_lines: [{ originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1 }],
+      p_idempotency_key: 'return-1',
+    } },
+  ])
+  assert.deepEqual(results, [minor, assigned, receipt, outbound, returned])
+  for (const result of results) {
+    assert.equal(Object.isFrozen(result), true)
+    if (result.lines) assert.equal(Object.isFrozen(result.lines[0]), true)
+  }
+})
+
+test('pending workflow service rejects client authority and malformed server documents before exposing success', async () => {
+  const { client, calls } = rpcClient({
+    submit_warehouse_receipt_secure: {
+      data: {
+        id: IDS.receipt, purchaseRecordKey: 'BUY-001', status: 'pending',
+        submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+        confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+        idempotencyKey: 'receipt-1', lines: [], forged: true,
+      },
+      error: null,
+      status: 200,
+    },
+  })
+  const service = createWarehouseService(client, { configured: true })
+  await assert.rejects(service.submitReceipt({
+    purchaseRecordKey: 'BUY-001', idempotencyKey: 'receipt-1',
+    lines: [{
+      variantId: IDS.variant, requestedQuantity: 1, warehouseId: IDS.site,
+      locationId: IDS.location, unitCost: 100,
+    }],
+  }), safeError('WAREHOUSE_WORKFLOW_INPUT_INVALID', 400))
+  assert.equal(calls.length, 0)
+
+  await assert.rejects(service.submitReceipt({
+    purchaseRecordKey: 'BUY-001', idempotencyKey: 'receipt-1',
+    lines: [{
+      variantId: IDS.variant, requestedQuantity: 1,
+      warehouseId: IDS.site, locationId: IDS.location,
+    }],
+  }), safeError('WAREHOUSE_INVALID_RESPONSE', 502))
+  assert.equal(calls.length, 1)
+})
+
+test('pending workflow responses cannot expose warehouse costs without explicit cost permission', async () => {
+  const receipt = {
+    id: IDS.receipt, purchaseRecordKey: 'BUY-001', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'receipt-cost',
+    lines: [{
+      id: IDS.stockOutLine, receiptId: IDS.receipt, variantId: IDS.variant,
+      requestedQuantity: 1, confirmedQuantity: null, warehouseId: IDS.site,
+      locationId: IDS.location, unitCost: 100,
+    }],
+  }
+  const input = {
+    purchaseRecordKey: 'BUY-001', idempotencyKey: 'receipt-cost',
+    lines: [{
+      variantId: IDS.variant, requestedQuantity: 1,
+      warehouseId: IDS.site, locationId: IDS.location,
+    }],
+  }
+  const results = { submit_warehouse_receipt_secure: { data: receipt, error: null, status: 200 } }
+  await assert.rejects(
+    createWarehouseService(rpcClient(results).client, { configured: true }).submitReceipt(input),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+  assert.equal(
+    (await createWarehouseService(
+      rpcClient(results).client,
+      { configured: true, viewCost: true },
+    ).submitReceipt(input)).lines[0].unitCost,
+    100,
+  )
 })
 
 test('QR lookup calls only the bound secure RPC and returns an exact immutable cost-free result', async () => {

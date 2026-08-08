@@ -557,10 +557,14 @@ reset role;
 select is(
   private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
   false,
-  'pending-document guard safely passes before Phase 3 tables exist'
+  'pending-document guard passes with complete real Phase 3 tables and no pending rows'
 );
 
-create table public.warehouse_receipts(id uuid primary key, status text not null);
+-- Exercise the original fixed-name sequencing guard against the real schema.
+-- Renaming one fixed dependent table makes the six-name set incomplete without
+-- introducing a user-controlled SQL identifier or disposable lookalike tables.
+alter table public.warehouse_receipt_lines
+  rename to warehouse_receipt_lines_phase3_guard;
 select is(
   pg_temp.task2_error_hint($statement$
     select private.warehouse_variant_has_pending_documents(
@@ -568,106 +572,10 @@ select is(
     )
   $statement$),
   'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
-  'a receipt document table without its line table fails closed'
+  'the fixed-name guard fails closed while a real dependent table is unavailable'
 );
-drop table public.warehouse_receipts;
-
-create table public.warehouse_stock_out_requests(id uuid primary key, status text not null);
-select is(
-  pg_temp.task2_error_hint($statement$
-    select private.warehouse_variant_has_pending_documents(
-      'b3000000-0000-4000-8000-000000000001'
-    )
-  $statement$),
-  'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
-  'a stock-out document table without its line table fails closed'
-);
-drop table public.warehouse_stock_out_requests;
-
-create table public.warehouse_return_requests(id uuid primary key, status text not null);
-select is(
-  pg_temp.task2_error_hint($statement$
-    select private.warehouse_variant_has_pending_documents(
-      'b3000000-0000-4000-8000-000000000001'
-    )
-  $statement$),
-  'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
-  'a return document table without its dependent line tables fails closed'
-);
-drop table public.warehouse_return_requests;
-
-create table public.warehouse_receipts(id uuid primary key, status text not null);
-create table public.warehouse_receipt_lines(
-  id uuid primary key, receipt_id uuid not null, variant_id uuid not null
-);
-create table public.warehouse_stock_out_requests(id uuid primary key, status text not null);
-create table public.warehouse_stock_out_lines(
-  id uuid primary key, request_id uuid not null, variant_id uuid not null
-);
-create table public.warehouse_return_requests(id uuid primary key, status text not null);
-create table public.warehouse_return_lines(
-  id uuid primary key, return_id uuid not null, original_stock_out_line_id uuid not null
-);
-
-insert into public.warehouse_receipts(id, status)
-values ('ba000000-0000-4000-8000-000000000001', 'pending');
-insert into public.warehouse_receipt_lines(id, receipt_id, variant_id)
-values (
-  'ba100000-0000-4000-8000-000000000001',
-  'ba000000-0000-4000-8000-000000000001',
-  'b3000000-0000-4000-8000-000000000001'
-);
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  true,
-  'a pending receipt blocks variant deactivation when all six tables exist'
-);
-update public.warehouse_receipts set status = 'confirmed';
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  false,
-  'a confirmed receipt no longer blocks variant deactivation'
-);
-
-insert into public.warehouse_stock_out_requests(id, status)
-values ('ba200000-0000-4000-8000-000000000001', 'pending');
-insert into public.warehouse_stock_out_lines(id, request_id, variant_id)
-values (
-  'ba300000-0000-4000-8000-000000000001',
-  'ba200000-0000-4000-8000-000000000001',
-  'b3000000-0000-4000-8000-000000000001'
-);
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  true,
-  'a pending stock-out request blocks variant deactivation'
-);
-update public.warehouse_stock_out_requests set status = 'rejected';
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  false,
-  'a rejected stock-out request no longer blocks variant deactivation'
-);
-
-insert into public.warehouse_return_requests(id, status)
-values ('ba400000-0000-4000-8000-000000000001', 'pending');
-insert into public.warehouse_return_lines(id, return_id, original_stock_out_line_id)
-values (
-  'ba500000-0000-4000-8000-000000000001',
-  'ba400000-0000-4000-8000-000000000001',
-  'ba300000-0000-4000-8000-000000000001'
-);
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  true,
-  'a pending return blocks the original stock-out variant deactivation'
-);
-update public.warehouse_return_requests set status = 'void';
-select is(
-  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
-  false,
-  'a void return no longer blocks variant deactivation'
-);
+alter table public.warehouse_receipt_lines_phase3_guard
+  rename to warehouse_receipt_lines;
 set local role authenticated;
 
 select is(

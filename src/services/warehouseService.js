@@ -12,6 +12,13 @@ import {
   buildWarehouseSiteMutation,
   buildWarehouseVariantMutation,
 } from '../features/warehouse/warehouseCatalogPersistence.js'
+import {
+  buildMinorWorkOrderAssignment,
+  buildMinorWorkOrderRequest,
+  buildWarehouseReceiptRequest,
+  buildWarehouseReturnRequest,
+  buildWarehouseStockOutRequest,
+} from '../features/warehouse/warehouseRequests.js'
 import { normalizeWarehouseQrInput } from '../features/warehouse/warehouseQr.js'
 
 const SAFE_ERRORS = Object.freeze({
@@ -86,6 +93,10 @@ const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_QR_AMBIGUOUS: Object.freeze({
     message: '二维码对应多个型号，请联系管理员检查资料',
     status: 409,
+  }),
+  WAREHOUSE_WORKFLOW_INPUT_INVALID: Object.freeze({
+    message: '仓库申请数据无效，请检查后重试',
+    status: 400,
   }),
 })
 const CATALOG_ERROR_HINTS = new Map([
@@ -523,6 +534,174 @@ function validateMovements(value, viewCost) {
   return deepFreeze(exactArray(value).map((row) => validateMovement(row, viewCost)))
 }
 
+function nullableQuantity(value) {
+  return value === null ? null : quantityResponse(value).value
+}
+
+function nullableCost(value) {
+  return value === null ? null : costResponse(value).value
+}
+
+function dateValue(value) {
+  const text = nonemptyString(value)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(text)
+  if (!match) throw invalidResponse()
+  const [year, month, day] = match.slice(1).map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  if (
+    parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) throw invalidResponse()
+  return text
+}
+
+function workflowStatus(value) {
+  const status = nonemptyString(value)
+  if (!['pending', 'confirmed', 'rejected', 'void'].includes(status)) throw invalidResponse()
+  return status
+}
+
+function validateMinorWorkOrder(candidate) {
+  const row = exactObject(candidate, [
+    'id', 'title', 'customerName', 'workDate', 'locationText', 'description',
+    'status', 'assignedProjectId', 'createdByEmployeeProfileId', 'createdAt', 'updatedAt',
+  ])
+  const status = nonemptyString(row.status)
+  if (!['open', 'assigned', 'closed', 'void'].includes(status)) throw invalidResponse()
+  return deepFreeze({
+    id: uuidValue(row.id),
+    title: nonemptyString(row.title),
+    customerName: nonemptyString(row.customerName),
+    workDate: dateValue(row.workDate),
+    locationText: nonemptyString(row.locationText),
+    description: stringValue(row.description),
+    status,
+    assignedProjectId: nullableString(row.assignedProjectId),
+    createdByEmployeeProfileId: uuidValue(row.createdByEmployeeProfileId),
+    createdAt: timestampValue(row.createdAt),
+    updatedAt: timestampValue(row.updatedAt),
+  })
+}
+
+function validateReceiptLine(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'receiptId', 'variantId', 'requestedQuantity', 'confirmedQuantity',
+    'warehouseId', 'locationId', 'unitCost',
+  ])
+  const requestedQuantity = quantityResponse(row.requestedQuantity).value
+  if (requestedQuantity <= 0 || (!viewCost && row.unitCost !== null)) throw invalidResponse()
+  return {
+    id: uuidValue(row.id), receiptId: uuidValue(row.receiptId),
+    variantId: uuidValue(row.variantId), requestedQuantity,
+    confirmedQuantity: nullableQuantity(row.confirmedQuantity),
+    warehouseId: uuidValue(row.warehouseId), locationId: uuidValue(row.locationId),
+    unitCost: nullableCost(row.unitCost),
+  }
+}
+
+function validateStockOutLine(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'requestId', 'variantId', 'requestedQuantity', 'confirmedQuantity',
+    'frozenTotalCost',
+  ])
+  const requestedQuantity = quantityResponse(row.requestedQuantity).value
+  if (requestedQuantity <= 0 || (!viewCost && row.frozenTotalCost !== null)) {
+    throw invalidResponse()
+  }
+  return {
+    id: uuidValue(row.id), requestId: uuidValue(row.requestId),
+    variantId: uuidValue(row.variantId), requestedQuantity,
+    confirmedQuantity: nullableQuantity(row.confirmedQuantity),
+    frozenTotalCost: nullableCost(row.frozenTotalCost),
+  }
+}
+
+function validateReturnLine(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'returnId', 'originalStockOutLineId', 'requestedQuantity',
+    'confirmedQuantity', 'frozenTotalCost',
+  ])
+  const requestedQuantity = quantityResponse(row.requestedQuantity).value
+  if (requestedQuantity <= 0 || (!viewCost && row.frozenTotalCost !== null)) {
+    throw invalidResponse()
+  }
+  return {
+    id: uuidValue(row.id), returnId: uuidValue(row.returnId),
+    originalStockOutLineId: uuidValue(row.originalStockOutLineId), requestedQuantity,
+    confirmedQuantity: nullableQuantity(row.confirmedQuantity),
+    frozenTotalCost: nullableCost(row.frozenTotalCost),
+  }
+}
+
+function validateAuditHeader(row) {
+  return {
+    status: workflowStatus(row.status),
+    submittedByEmployeeProfileId: uuidValue(row.submittedByEmployeeProfileId),
+    submittedAt: timestampValue(row.submittedAt),
+    confirmedByEmployeeProfileId: nullableUuid(row.confirmedByEmployeeProfileId),
+    confirmedAt: row.confirmedAt === null ? null : timestampValue(row.confirmedAt),
+    rejectionReason: nullableString(row.rejectionReason),
+    idempotencyKey: nonemptyString(row.idempotencyKey),
+  }
+}
+
+function validateReceipt(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'purchaseRecordKey', 'status', 'submittedByEmployeeProfileId', 'submittedAt',
+    'confirmedByEmployeeProfileId', 'confirmedAt', 'rejectionReason', 'idempotencyKey', 'lines',
+  ])
+  const id = uuidValue(row.id)
+  const lines = exactArray(row.lines).map((line) => validateReceiptLine(line, viewCost))
+  if (lines.length === 0 || lines.some((line) => line.receiptId !== id)) throw invalidResponse()
+  return deepFreeze({
+    id, purchaseRecordKey: nonemptyString(row.purchaseRecordKey),
+    ...validateAuditHeader(row), lines,
+  })
+}
+
+function validateStockOut(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'destinationType', 'projectId', 'minorWorkOrderId', 'destinationNameSnapshot',
+    'purpose', 'receiver', 'requestDate', 'status', 'submittedByEmployeeProfileId',
+    'submittedAt', 'confirmedByEmployeeProfileId', 'confirmedAt', 'rejectionReason',
+    'idempotencyKey', 'lines',
+  ])
+  const id = uuidValue(row.id)
+  const destinationType = nonemptyString(row.destinationType)
+  const projectId = nullableString(row.projectId)
+  const minorWorkOrderId = nullableUuid(row.minorWorkOrderId)
+  if (
+    !['project', 'minor_work_order', 'internal_use'].includes(destinationType) ||
+    (destinationType === 'project' && (projectId === null || minorWorkOrderId !== null)) ||
+    (destinationType === 'minor_work_order' && (projectId !== null || minorWorkOrderId === null)) ||
+    (destinationType === 'internal_use' && (projectId !== null || minorWorkOrderId !== null))
+  ) throw invalidResponse()
+  const lines = exactArray(row.lines).map((line) => validateStockOutLine(line, viewCost))
+  if (lines.length === 0 || lines.some((line) => line.requestId !== id)) throw invalidResponse()
+  return deepFreeze({
+    id, destinationType, projectId, minorWorkOrderId,
+    destinationNameSnapshot: nonemptyString(row.destinationNameSnapshot),
+    purpose: nonemptyString(row.purpose), receiver: nonemptyString(row.receiver),
+    requestDate: dateValue(row.requestDate), ...validateAuditHeader(row), lines,
+  })
+}
+
+function validateReturn(candidate, viewCost) {
+  const row = exactObject(candidate, [
+    'id', 'originalStockOutId', 'reason', 'receiver', 'requestDate', 'status',
+    'submittedByEmployeeProfileId', 'submittedAt', 'confirmedByEmployeeProfileId',
+    'confirmedAt', 'rejectionReason', 'idempotencyKey', 'lines',
+  ])
+  const id = uuidValue(row.id)
+  const lines = exactArray(row.lines).map((line) => validateReturnLine(line, viewCost))
+  if (lines.length === 0 || lines.some((line) => line.returnId !== id)) throw invalidResponse()
+  return deepFreeze({
+    id, originalStockOutId: uuidValue(row.originalStockOutId),
+    reason: nonemptyString(row.reason), receiver: nonemptyString(row.receiver),
+    requestDate: dateValue(row.requestDate), ...validateAuditHeader(row), lines,
+  })
+}
+
 function primitiveSupplierStatus(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) && Number.isSafeInteger(value) ? value : null
@@ -696,6 +875,15 @@ export function createWarehouseService(client, options = {}) {
     if (response.id !== request.id) throw invalidResponse()
     return deepFreeze(response)
   }
+  const workflowMutation = async (builder, rpcName, input, validator) => {
+    let request
+    try {
+      request = builder(input)
+    } catch {
+      throw fail('WAREHOUSE_WORKFLOW_INPUT_INVALID')
+    }
+    return validator(await call(rpcName, request))
+  }
 
   return Object.freeze({
     async listCatalog() {
@@ -773,6 +961,46 @@ export function createWarehouseService(client, options = {}) {
           ) throw invalidResponse()
           return response
         },
+      )
+    },
+    async createMinorWorkOrder(input) {
+      return workflowMutation(
+        buildMinorWorkOrderRequest,
+        'create_minor_work_order_secure',
+        input,
+        validateMinorWorkOrder,
+      )
+    },
+    async assignMinorWorkOrder(input) {
+      return workflowMutation(
+        buildMinorWorkOrderAssignment,
+        'assign_minor_work_order_to_project_secure',
+        input,
+        validateMinorWorkOrder,
+      )
+    },
+    async submitReceipt(input) {
+      return workflowMutation(
+        buildWarehouseReceiptRequest,
+        'submit_warehouse_receipt_secure',
+        input,
+        (value) => validateReceipt(value, viewCost),
+      )
+    },
+    async submitStockOut(input) {
+      return workflowMutation(
+        buildWarehouseStockOutRequest,
+        'submit_warehouse_stock_out_secure',
+        input,
+        (value) => validateStockOut(value, viewCost),
+      )
+    },
+    async submitReturn(input) {
+      return workflowMutation(
+        buildWarehouseReturnRequest,
+        'submit_warehouse_return_secure',
+        input,
+        (value) => validateReturn(value, viewCost),
       )
     },
   })
