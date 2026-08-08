@@ -980,4 +980,566 @@ grant execute on function public.upsert_warehouse_item_secure(uuid, jsonb)
 grant execute on function public.upsert_warehouse_variant_secure(uuid, jsonb)
   to authenticated;
 
+-- Private ordered photos for warehouse variants.
+insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'warehouse-item-photos',
+  'warehouse-item-photos',
+  false,
+  2097151,
+  array['image/jpeg', 'image/png', 'image/webp']::text[]
+);
+
+create table public.warehouse_variant_photos (
+  id uuid primary key default gen_random_uuid(),
+  variant_id uuid not null,
+  object_path text not null,
+  sort_order smallint not null,
+  mime_type text not null,
+  byte_size bigint not null,
+  created_by_employee_profile_id uuid not null,
+  created_at timestamptz not null default statement_timestamp(),
+  constraint warehouse_variant_photos_variant_fk foreign key (variant_id)
+    references public.warehouse_variants(id) on delete restrict,
+  constraint warehouse_variant_photos_creator_fk
+    foreign key (created_by_employee_profile_id)
+      references public.employee_profiles(id) on delete restrict,
+  constraint warehouse_variant_photos_path_check check (
+    object_path ~ (
+      '^' || variant_id::text ||
+      '/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(jpg|png|webp)$'
+    )
+  ),
+  constraint warehouse_variant_photos_mime_check check (
+    mime_type in ('image/jpeg', 'image/png', 'image/webp')
+  ),
+  constraint warehouse_variant_photos_mime_path_check check (
+    (mime_type = 'image/jpeg' and right(object_path, 4) = '.jpg')
+    or (mime_type = 'image/png' and right(object_path, 4) = '.png')
+    or (mime_type = 'image/webp' and right(object_path, 5) = '.webp')
+  ),
+  constraint warehouse_variant_photos_byte_size_check check (
+    byte_size between 1 and 2097151
+  ),
+  constraint warehouse_variant_photos_sort_order_check check (
+    sort_order between 0 and 7
+  ),
+  constraint warehouse_variant_photos_variant_path_unique
+    unique (variant_id, object_path),
+  constraint warehouse_variant_photos_variant_sort_unique
+    unique (variant_id, sort_order) deferrable initially immediate
+);
+
+create index warehouse_variant_photos_variant_created_idx
+  on public.warehouse_variant_photos(variant_id, created_at, id);
+
+create table public.warehouse_photo_audit (
+  id bigint generated always as identity primary key,
+  action text not null,
+  photo_id uuid not null,
+  variant_id uuid not null,
+  actor_employee_profile_id uuid not null,
+  created_at timestamptz not null default statement_timestamp(),
+  constraint warehouse_photo_audit_action_check
+    check (action in ('registered', 'reordered', 'deleted')),
+  constraint warehouse_photo_audit_actor_fk
+    foreign key (actor_employee_profile_id)
+      references public.employee_profiles(id) on delete restrict
+);
+
+create index warehouse_photo_audit_variant_time_idx
+  on public.warehouse_photo_audit(variant_id, created_at desc, id);
+create index warehouse_photo_audit_actor_time_idx
+  on public.warehouse_photo_audit(actor_employee_profile_id, created_at desc, id);
+
+create or replace function private.reject_warehouse_photo_audit_mutation()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  raise exception using errcode = '42501', message = 'warehouse photo audit is immutable';
+end;
+$$;
+
+create trigger reject_warehouse_photo_audit_mutation
+before update or delete on public.warehouse_photo_audit
+for each row execute function private.reject_warehouse_photo_audit_mutation();
+
+create or replace function private.warehouse_variant_photo_json(
+  p_photo_id uuid
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'id', photo.id,
+    'variantId', photo.variant_id,
+    'objectPath', photo.object_path,
+    'sortOrder', photo.sort_order,
+    'mimeType', photo.mime_type,
+    'byteSize', photo.byte_size,
+    'createdAt', photo.created_at
+  )
+  from public.warehouse_variant_photos photo
+  where photo.id = p_photo_id
+$$;
+
+create or replace function private.warehouse_variant_photo_list_json(
+  p_variant_id uuid
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select coalesce(jsonb_agg(
+    private.warehouse_variant_photo_json(photo.id)
+    order by photo.sort_order, photo.id
+  ), '[]'::jsonb)
+  from public.warehouse_variant_photos photo
+  where photo.variant_id = p_variant_id
+$$;
+
+create or replace function private.enforce_warehouse_variant_photo_invariants()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public, storage
+as $$
+declare
+  object_metadata jsonb;
+begin
+  if tg_op = 'UPDATE' then
+    if row(
+      new.id, new.variant_id, new.object_path, new.mime_type, new.byte_size,
+      new.created_by_employee_profile_id, new.created_at
+    ) is distinct from row(
+      old.id, old.variant_id, old.object_path, old.mime_type, old.byte_size,
+      old.created_by_employee_profile_id, old.created_at
+    ) then
+      raise exception using
+        errcode = '42501',
+        message = 'warehouse photo metadata immutable';
+    end if;
+    return new;
+  end if;
+
+  perform 1
+  from public.warehouse_variants variant
+  where variant.id = new.variant_id
+  for update;
+  if not found then
+    raise exception using
+      errcode = '23503',
+      message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+
+  select object.metadata into object_metadata
+  from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos'
+    and object.name = new.object_path;
+  if not found
+    or object_metadata->>'mimetype' is distinct from new.mime_type
+    or coalesce(object_metadata->>'size', '') !~ '^[0-9]+$'
+    or (object_metadata->>'size')::bigint is distinct from new.byte_size
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'warehouse photo object invalid',
+      hint = 'WAREHOUSE_PHOTO_OBJECT_INVALID';
+  end if;
+
+  if (
+    select count(*)
+    from public.warehouse_variant_photos photo
+    where photo.variant_id = new.variant_id
+  ) >= 8 then
+    raise exception using
+      errcode = '55000',
+      message = 'warehouse photo limit reached',
+      hint = 'WAREHOUSE_PHOTO_LIMIT_REACHED';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger enforce_warehouse_variant_photo_invariants
+before insert or update on public.warehouse_variant_photos
+for each row execute function private.enforce_warehouse_variant_photo_invariants();
+
+revoke all on function private.reject_warehouse_photo_audit_mutation()
+  from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_variant_photo_json(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_variant_photo_list_json(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.enforce_warehouse_variant_photo_invariants()
+  from public, anon, authenticated, service_role;
+
+alter table public.warehouse_variant_photos enable row level security;
+alter table public.warehouse_photo_audit enable row level security;
+
+create policy "warehouse_variant_photos inventory read"
+on public.warehouse_variant_photos for select to authenticated
+using (
+  public.is_current_employee_active()
+  and public.has_current_permission('module.inventory.view')
+);
+
+revoke all on table public.warehouse_variant_photos
+  from public, anon, authenticated;
+grant select on table public.warehouse_variant_photos to authenticated;
+grant all on table public.warehouse_variant_photos to service_role;
+revoke all on table public.warehouse_photo_audit
+  from public, anon, authenticated, service_role;
+revoke all on sequence public.warehouse_photo_audit_id_seq
+  from public, anon, authenticated, service_role;
+
+create or replace function public.register_warehouse_variant_photo_secure(
+  p_variant_id uuid,
+  p_object_path text,
+  p_mime_type text,
+  p_byte_size bigint
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+  existing public.warehouse_variant_photos%rowtype;
+  created_id uuid;
+  next_order smallint;
+  object_owner text;
+  object_metadata jsonb;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+
+  if p_variant_id is null
+    or p_object_path is null
+    or p_object_path !~ (
+      '^' || p_variant_id::text ||
+      '/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(jpg|png|webp)$'
+    )
+  then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo path invalid',
+      hint = 'WAREHOUSE_PHOTO_PATH_INVALID';
+  end if;
+  if p_mime_type not in ('image/jpeg', 'image/png', 'image/webp')
+    or p_byte_size not between 1 and 2097151
+    or (p_mime_type = 'image/jpeg' and right(p_object_path, 4) <> '.jpg')
+    or (p_mime_type = 'image/png' and right(p_object_path, 4) <> '.png')
+    or (p_mime_type = 'image/webp' and right(p_object_path, 5) <> '.webp')
+  then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo object invalid',
+      hint = 'WAREHOUSE_PHOTO_OBJECT_INVALID';
+  end if;
+
+  perform 1
+  from public.warehouse_variants variant
+  where variant.id = p_variant_id and variant.active
+  for update;
+  if not found then
+    raise exception using
+      errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+
+  select photo.* into existing
+  from public.warehouse_variant_photos photo
+  where photo.variant_id = p_variant_id
+    and photo.object_path = p_object_path;
+  if found then
+    if existing.mime_type <> p_mime_type or existing.byte_size <> p_byte_size then
+      raise exception using
+        errcode = '22023', message = 'warehouse photo object invalid',
+        hint = 'WAREHOUSE_PHOTO_OBJECT_INVALID';
+    end if;
+    return private.warehouse_variant_photo_json(existing.id);
+  end if;
+
+  select object.owner_id, object.metadata
+    into object_owner, object_metadata
+  from storage.objects object
+  where object.bucket_id = 'warehouse-item-photos'
+    and object.name = p_object_path;
+  if not found
+    or object_metadata->>'mimetype' is distinct from p_mime_type
+    or coalesce(object_metadata->>'size', '') !~ '^[0-9]+$'
+    or (object_metadata->>'size')::bigint is distinct from p_byte_size
+  then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo object invalid',
+      hint = 'WAREHOUSE_PHOTO_OBJECT_INVALID';
+  end if;
+  if object_owner is distinct from auth.uid()::text then
+    raise exception using
+      errcode = '42501', message = 'warehouse photo object not owned',
+      hint = 'WAREHOUSE_PHOTO_OBJECT_NOT_OWNED';
+  end if;
+
+  select coalesce(max(photo.sort_order) + 1, 0)::smallint into next_order
+  from public.warehouse_variant_photos photo
+  where photo.variant_id = p_variant_id;
+  if next_order >= 8 then
+    raise exception using
+      errcode = '55000', message = 'warehouse photo limit reached',
+      hint = 'WAREHOUSE_PHOTO_LIMIT_REACHED';
+  end if;
+
+  insert into public.warehouse_variant_photos(
+    variant_id, object_path, sort_order, mime_type, byte_size,
+    created_by_employee_profile_id
+  ) values (
+    p_variant_id, p_object_path, next_order, p_mime_type, p_byte_size, actor_id
+  ) returning id into created_id;
+  insert into public.warehouse_photo_audit(
+    action, photo_id, variant_id, actor_employee_profile_id
+  ) values ('registered', created_id, p_variant_id, actor_id);
+  return private.warehouse_variant_photo_json(created_id);
+end;
+$$;
+
+create or replace function public.list_warehouse_variant_photos_secure(
+  p_variant_id uuid
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+begin
+  perform 1 from private.assert_warehouse_permission('module.inventory.view');
+  if p_variant_id is null or not exists (
+    select 1 from public.warehouse_variants variant where variant.id = p_variant_id
+  ) then
+    raise exception using
+      errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+  return private.warehouse_variant_photo_list_json(p_variant_id);
+end;
+$$;
+
+create or replace function public.reorder_warehouse_variant_photos_secure(
+  p_variant_id uuid,
+  p_photo_ids uuid[]
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+  if p_variant_id is null
+    or p_photo_ids is null
+    or cardinality(p_photo_ids) not between 1 and 8
+    or cardinality(p_photo_ids) <> (
+      select count(distinct id) from unnest(p_photo_ids) id
+    )
+  then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo order invalid',
+      hint = 'WAREHOUSE_PHOTO_ORDER_INVALID';
+  end if;
+  perform 1
+  from public.warehouse_variants variant
+  where variant.id = p_variant_id
+  for update;
+  if not found
+    or cardinality(p_photo_ids) <> (
+      select count(*)
+      from public.warehouse_variant_photos photo
+      where photo.variant_id = p_variant_id
+    )
+    or exists (
+      select 1
+      from unnest(p_photo_ids) id
+      where not exists (
+        select 1 from public.warehouse_variant_photos photo
+        where photo.variant_id = p_variant_id and photo.id = id
+      )
+    )
+  then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo order invalid',
+      hint = 'WAREHOUSE_PHOTO_ORDER_INVALID';
+  end if;
+
+  set constraints warehouse_variant_photos_variant_sort_unique deferred;
+  update public.warehouse_variant_photos photo
+  set sort_order = ordered.ordinality - 1
+  from unnest(p_photo_ids) with ordinality ordered(id, ordinality)
+  where photo.variant_id = p_variant_id and photo.id = ordered.id;
+  insert into public.warehouse_photo_audit(
+    action, photo_id, variant_id, actor_employee_profile_id
+  )
+  select 'reordered', id, p_variant_id, actor_id
+  from unnest(p_photo_ids) id;
+  return private.warehouse_variant_photo_list_json(p_variant_id);
+end;
+$$;
+
+create or replace function public.delete_warehouse_variant_photo_secure(
+  p_variant_id uuid,
+  p_photo_id uuid,
+  p_object_path text
+)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private, storage
+as $$
+declare
+  actor_id uuid;
+  target public.warehouse_variant_photos%rowtype;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.catalog.manage');
+  if p_variant_id is null or p_photo_id is null or p_object_path is null then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+  perform 1
+  from public.warehouse_variants variant
+  where variant.id = p_variant_id
+  for update;
+  if not found then
+    raise exception using
+      errcode = '23503', message = 'warehouse photo variant invalid',
+      hint = 'WAREHOUSE_PHOTO_VARIANT_INVALID';
+  end if;
+  select photo.* into target
+  from public.warehouse_variant_photos photo
+  where photo.id = p_photo_id
+  for update;
+  if not found then return true; end if;
+  if target.variant_id <> p_variant_id or target.object_path <> p_object_path then
+    raise exception using
+      errcode = '22023', message = 'warehouse photo input invalid',
+      hint = 'WAREHOUSE_PHOTO_INPUT_INVALID';
+  end if;
+  delete from public.warehouse_variant_photos where id = p_photo_id;
+  set constraints warehouse_variant_photos_variant_sort_unique deferred;
+  with ordered as (
+    select photo.id, row_number() over (order by photo.sort_order, photo.id) - 1 as next_order
+    from public.warehouse_variant_photos photo
+    where photo.variant_id = p_variant_id
+  )
+  update public.warehouse_variant_photos photo
+  set sort_order = ordered.next_order
+  from ordered
+  where photo.id = ordered.id;
+  insert into public.warehouse_photo_audit(
+    action, photo_id, variant_id, actor_employee_profile_id
+  ) values ('deleted', p_photo_id, p_variant_id, actor_id);
+  return true;
+end;
+$$;
+
+revoke all on function public.register_warehouse_variant_photo_secure(uuid, text, text, bigint)
+  from public, anon, authenticated, service_role;
+revoke all on function public.list_warehouse_variant_photos_secure(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function public.reorder_warehouse_variant_photos_secure(uuid, uuid[])
+  from public, anon, authenticated, service_role;
+revoke all on function public.delete_warehouse_variant_photo_secure(uuid, uuid, text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.register_warehouse_variant_photo_secure(uuid, text, text, bigint)
+  to authenticated;
+grant execute on function public.list_warehouse_variant_photos_secure(uuid)
+  to authenticated;
+grant execute on function public.reorder_warehouse_variant_photos_secure(uuid, uuid[])
+  to authenticated;
+grant execute on function public.delete_warehouse_variant_photo_secure(uuid, uuid, text)
+  to authenticated;
+
+drop policy if exists warehouse_item_photos_insert on storage.objects;
+drop policy if exists warehouse_item_photos_select on storage.objects;
+drop policy if exists warehouse_item_photos_orphan_cleanup_select on storage.objects;
+drop policy if exists warehouse_item_photos_delete on storage.objects;
+drop policy if exists warehouse_item_photos_update_deny on storage.objects;
+
+create policy warehouse_item_photos_insert
+on storage.objects for insert to authenticated
+with check (
+  bucket_id = 'warehouse-item-photos'
+  and owner_id = auth.uid()::text
+  and name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(jpg|png|webp)$'
+  and public.is_current_employee_active()
+  and public.has_current_permission('warehouse.catalog.manage')
+  and exists (
+    select 1 from public.warehouse_variants variant
+    where variant.id::text = split_part(name, '/', 1) and variant.active
+  )
+);
+
+create policy warehouse_item_photos_select
+on storage.objects for select to authenticated
+using (
+  bucket_id = 'warehouse-item-photos'
+  and public.is_current_employee_active()
+  and public.has_current_permission('module.inventory.view')
+  and exists (
+    select 1 from public.warehouse_variant_photos photo
+    where photo.object_path = name
+  )
+);
+
+create policy warehouse_item_photos_orphan_cleanup_select
+on storage.objects for select to authenticated
+using (
+  bucket_id = 'warehouse-item-photos'
+  and current_setting('request.method', true) = 'DELETE'
+  and owner_id = auth.uid()::text
+  and public.is_current_employee_active()
+  and public.has_current_permission('warehouse.catalog.manage')
+  and not exists (
+    select 1 from public.warehouse_variant_photos photo
+    where photo.object_path = name
+  )
+);
+
+create policy warehouse_item_photos_delete
+on storage.objects for delete to authenticated
+using (
+  bucket_id = 'warehouse-item-photos'
+  and public.is_current_employee_active()
+  and public.has_current_permission('warehouse.catalog.manage')
+  and (
+    exists (
+      select 1 from public.warehouse_variant_photos photo
+      where photo.object_path = name
+    )
+    or (
+      owner_id = auth.uid()::text
+      and not exists (
+        select 1 from public.warehouse_variant_photos photo
+        where photo.object_path = name
+      )
+    )
+  )
+);
+
+create policy warehouse_item_photos_update_deny
+on storage.objects as restrictive for update to authenticated
+using (false)
+with check (false);
+
 commit;

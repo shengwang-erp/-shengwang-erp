@@ -2,7 +2,44 @@ create extension if not exists pgtap with schema extensions;
 create extension if not exists dblink with schema extensions;
 set search_path = public, auth, extensions;
 
-select plan(4);
+select plan(5);
+
+do $$
+declare
+  target record;
+begin
+  if to_regclass('private.warehouse_task3_test_target') is null
+  then
+    raise exception 'explicit isolated warehouse Task 3 target required';
+  end if;
+  select * into target from private.warehouse_task3_test_target;
+  if not found
+    or (select count(*) from private.warehouse_task3_test_target) <> 1
+    or target.db_port not between 1024 and 65535
+    or target.db_port = 54322
+    or target.api_port not between 1024 and 65535
+    or target.api_port = 54321
+    or target.project_id !~ '^warehouse-task3-[a-z0-9-]+$'
+    or target.test_workdir !~ '^/private/tmp/warehouse-task3-[A-Za-z0-9._-]+$'
+  then
+    raise exception 'explicit isolated warehouse Task 3 target required';
+  end if;
+  if to_regprocedure(
+      'public.register_warehouse_variant_photo_secure(uuid,text,text,bigint)'
+    ) is null
+    or not exists (
+      select 1 from storage.buckets
+      where id = 'warehouse-item-photos' and public = false
+    )
+    or not exists (
+      select 1 from supabase_migrations.schema_migrations
+      where version = '202608080003'
+    )
+  then
+    raise exception 'warehouse Task 3 migration marker missing on isolated target';
+  end if;
+end;
+$$;
 
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -77,6 +114,29 @@ begin
 end;
 $$;
 
+create or replace function public.task3_pause_photo_registration(
+  p_variant_id uuid,
+  p_object_path text,
+  p_marker bigint
+)
+returns jsonb
+language plpgsql
+volatile
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+begin
+  result := public.register_warehouse_variant_photo_secure(
+    p_variant_id, p_object_path, 'image/jpeg', 100
+  );
+  perform pg_advisory_lock(p_marker);
+  perform pg_sleep(0.5);
+  perform pg_advisory_unlock(p_marker);
+  return result;
+end;
+$$;
+
 revoke all on function public.task2_pause_site_deactivation(uuid, jsonb, bigint)
   from public, anon, service_role;
 revoke all on function public.task2_pause_item_deactivation(uuid, jsonb, bigint)
@@ -84,6 +144,10 @@ revoke all on function public.task2_pause_item_deactivation(uuid, jsonb, bigint)
 grant execute on function public.task2_pause_site_deactivation(uuid, jsonb, bigint)
   to authenticated;
 grant execute on function public.task2_pause_item_deactivation(uuid, jsonb, bigint)
+  to authenticated;
+revoke all on function public.task3_pause_photo_registration(uuid, text, bigint)
+  from public, anon, service_role;
+grant execute on function public.task3_pause_photo_registration(uuid, text, bigint)
   to authenticated;
 
 create or replace function pg_temp.task2_wait_for_marker(p_marker bigint)
@@ -163,22 +227,45 @@ begin
 end;
 $$;
 
+create or replace function pg_temp.task3_finish_limit_child(p_connection text)
+returns text
+language plpgsql
+as $$
+declare
+  result_count integer;
+  error_message text;
+begin
+  result_count := pg_temp.task2_drain_json(p_connection, false);
+  error_message := extensions.dblink_error_message(p_connection);
+  if result_count = 1 then
+    perform extensions.dblink_exec(p_connection, 'commit');
+  else
+    perform extensions.dblink_exec(p_connection, 'rollback');
+  end if;
+  return error_message;
+end;
+$$;
+
 create or replace function pg_temp.task2_connection_string()
 returns text
 language plpgsql
 as $$
 declare
-  external_port integer := coalesce(
-    nullif(current_setting('warehouse.test_external_port', true), ''),
-    '54322'
-  )::integer;
+  target record;
 begin
-  if external_port < 1024 or external_port > 65535 then
+  if to_regclass('private.warehouse_task3_test_target') is null then
     raise exception 'warehouse test database port is invalid';
   end if;
+  select * into target from private.warehouse_task3_test_target;
+  if not found
+    or target.db_port not between 1024 and 65535
+    or target.db_port = 54322
+    or target.project_id !~ '^warehouse-task3-[a-z0-9-]+$'
+  then raise exception 'warehouse test database port is invalid'; end if;
   return format(
-    'host=host.docker.internal port=%s dbname=postgres user=postgres password=postgres',
-    external_port
+    'host=host.docker.internal port=%s dbname=postgres user=postgres password=postgres application_name=%s',
+    target.db_port,
+    target.project_id
   );
 end;
 $$;
@@ -388,6 +475,89 @@ select ok(
   'variant reactivation cannot commit under a concurrently deactivated item'
 );
 
+-- Two photo registrations racing for the eighth and ninth slots.
+update public.warehouse_items set active = true
+where id = 'bc200000-0000-4000-8000-000000000001';
+update public.warehouse_variants set active = true
+where id = 'bc300000-0000-4000-8000-000000000002';
+insert into storage.objects(id, bucket_id, name, owner_id, metadata)
+select
+  gen_random_uuid(),
+  'warehouse-item-photos',
+  format(
+    'bc300000-0000-4000-8000-000000000002/bd800000-0000-4000-8000-%s.jpg',
+    lpad(sequence::text, 12, '0')
+  ),
+  'bc500000-0000-4000-8000-000000000001',
+  '{"mimetype":"image/jpeg","size":100}'::jsonb
+from generate_series(1, 9) sequence;
+insert into public.warehouse_variant_photos(
+  variant_id, object_path, sort_order, mime_type, byte_size,
+  created_by_employee_profile_id
+)
+select
+  'bc300000-0000-4000-8000-000000000002',
+  format(
+    'bc300000-0000-4000-8000-000000000002/bd800000-0000-4000-8000-%s.jpg',
+    lpad(sequence::text, 12, '0')
+  ),
+  sequence - 1,
+  'image/jpeg',
+  100,
+  'bc600000-0000-4000-8000-000000000001'
+from generate_series(1, 7) sequence;
+
+select pg_temp.task2_begin_remote('task2_parent');
+select pg_temp.task2_begin_remote('task2_child');
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    $query$select public.task3_pause_photo_registration(
+      'bc300000-0000-4000-8000-000000000002',
+      'bc300000-0000-4000-8000-000000000002/bd800000-0000-4000-8000-000000000008.jpg',
+      %s
+    )$query$,
+    hashtextextended('task3-photo-limit-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(
+    hashtextextended('task3-photo-limit-marker', 0)
+  ) then
+    raise exception 'photo limit race did not synchronize';
+  end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  $query$select public.register_warehouse_variant_photo_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    'bc300000-0000-4000-8000-000000000002/bd800000-0000-4000-8000-000000000009.jpg',
+    'image/jpeg', 100
+  )$query$
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.photo_limit_child_error',
+  pg_temp.task3_finish_limit_child('task2_child'),
+  false
+);
+select ok(
+  current_setting('warehouse.photo_limit_child_error')
+    like '%warehouse photo limit reached%'
+  and (
+    select count(*) = 8
+      and count(*) filter (
+        where object_path like '%000000000008.jpg'
+           or object_path like '%000000000009.jpg'
+      ) = 1
+    from public.warehouse_variant_photos
+    where variant_id = 'bc300000-0000-4000-8000-000000000002'
+  ),
+  'concurrent eighth and ninth registrations commit exactly one photo'
+);
+
 select * from finish();
 
 select extensions.dblink_disconnect('task2_parent');
@@ -400,6 +570,20 @@ where actor_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
 alter table public.warehouse_catalog_audit
   enable trigger reject_warehouse_catalog_audit_mutation;
 
+alter table public.warehouse_photo_audit
+  disable trigger reject_warehouse_photo_audit_mutation;
+delete from public.warehouse_photo_audit
+where actor_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
+alter table public.warehouse_photo_audit
+  enable trigger reject_warehouse_photo_audit_mutation;
+delete from public.warehouse_variant_photos
+where variant_id = 'bc300000-0000-4000-8000-000000000002';
+set session_replication_role = replica;
+delete from storage.objects
+where bucket_id = 'warehouse-item-photos'
+  and name like 'bc300000-0000-4000-8000-000000000002/%';
+set session_replication_role = origin;
+
 delete from public.warehouse_variants
 where item_id = 'bc200000-0000-4000-8000-000000000001';
 delete from public.warehouse_locations
@@ -411,6 +595,7 @@ where id = 'bc000000-0000-4000-8000-000000000001';
 
 drop function public.task2_pause_site_deactivation(uuid, jsonb, bigint);
 drop function public.task2_pause_item_deactivation(uuid, jsonb, bigint);
+drop function public.task3_pause_photo_registration(uuid, text, bigint);
 delete from public.permission_grants
 where subject_type = 'department'
   and subject_code = '仓库管理部'

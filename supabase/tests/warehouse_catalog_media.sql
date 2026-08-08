@@ -779,5 +779,410 @@ select is(
   'catalog audit ACL remains exactly closed after service-role trigger proofs'
 );
 
+-- Phase 2 Task 3: private, ordered warehouse variant photos.
+select has_table('public', 'warehouse_variant_photos', 'variant photo metadata table exists');
+select has_table('public', 'warehouse_photo_audit', 'identifier-only photo audit table exists');
+select has_function('public', 'register_warehouse_variant_photo_secure', array['uuid', 'text', 'text', 'bigint']);
+select has_function('public', 'list_warehouse_variant_photos_secure', array['uuid']);
+select has_function('public', 'reorder_warehouse_variant_photos_secure', array['uuid', 'uuid[]']);
+select has_function('public', 'delete_warehouse_variant_photo_secure', array['uuid', 'uuid', 'text']);
+
+select is(
+  (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'public' and table_name = 'warehouse_variant_photos'
+  ),
+  array[
+    'id', 'variant_id', 'object_path', 'sort_order', 'mime_type', 'byte_size',
+    'created_by_employee_profile_id', 'created_at'
+  ]::text[],
+  'photo metadata has only the required normalized fields'
+);
+select is(
+  (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'public' and table_name = 'warehouse_photo_audit'
+  ),
+  array[
+    'id', 'action', 'photo_id', 'variant_id',
+    'actor_employee_profile_id', 'created_at'
+  ]::text[],
+  'photo audit excludes paths, URLs, MIME metadata, bytes and image payloads'
+);
+select is(
+  (select public from storage.buckets where id = 'warehouse-item-photos'),
+  false,
+  'warehouse item photo bucket is private'
+);
+select is(
+  (select file_size_limit from storage.buckets where id = 'warehouse-item-photos'),
+  2097151::bigint,
+  'Storage rejects files that are not strictly below 2 MiB'
+);
+select is(
+  (select allowed_mime_types from storage.buckets where id = 'warehouse-item-photos'),
+  array['image/jpeg', 'image/png', 'image/webp']::text[],
+  'Storage accepts only the three warehouse photo MIME types'
+);
+
+select is(
+  (
+    with expected(signature, volatility) as (
+      values
+        (to_regprocedure('public.register_warehouse_variant_photo_secure(uuid,text,text,bigint)'), 'v'::"char"),
+        (to_regprocedure('public.list_warehouse_variant_photos_secure(uuid)'), 's'::"char"),
+        (to_regprocedure('public.reorder_warehouse_variant_photos_secure(uuid,uuid[])'), 'v'::"char"),
+        (to_regprocedure('public.delete_warehouse_variant_photo_secure(uuid,uuid,text)'), 'v'::"char")
+    )
+    select count(*)::integer
+    from expected
+    left join pg_proc procedure on procedure.oid = expected.signature
+    where expected.signature is null
+       or not procedure.prosecdef
+       or procedure.provolatile <> expected.volatility
+       or procedure.proconfig is null
+       or not procedure.proconfig @> array['search_path=pg_catalog, public, private, storage']
+       or not has_function_privilege('authenticated', expected.signature, 'EXECUTE')
+       or has_function_privilege('anon', expected.signature, 'EXECUTE')
+       or has_function_privilege('service_role', expected.signature, 'EXECUTE')
+       or exists (
+         select 1
+         from aclexplode(coalesce(procedure.proacl, acldefault('f', procedure.proowner))) privilege
+         where privilege.privilege_type = 'EXECUTE'
+           and (
+             privilege.grantee = 0
+             or privilege.grantee not in (procedure.proowner, 'authenticated'::regrole::oid)
+             or (privilege.grantee = 'authenticated'::regrole::oid and privilege.is_grantable)
+           )
+       )
+  ),
+  0,
+  'photo RPCs are exact-path SECURITY DEFINER and authenticated-only'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_policies policy
+    where policy.schemaname = 'storage'
+      and policy.tablename = 'objects'
+      and policy.policyname in (
+        'warehouse_item_photos_insert',
+        'warehouse_item_photos_select',
+        'warehouse_item_photos_orphan_cleanup_select',
+        'warehouse_item_photos_delete',
+        'warehouse_item_photos_update_deny'
+      )
+  ),
+  5,
+  'Storage has explicit insert, read, method-scoped cleanup, delete and update-deny policies'
+);
+select is(
+  (
+    select count(*)::integer
+    from pg_policies policy
+    where policy.schemaname = 'storage'
+      and policy.tablename = 'objects'
+      and policy.policyname like 'warehouse_item_photos_%'
+      and policy.roles <> array['authenticated']::name[]
+  ),
+  0,
+  'every warehouse photo Storage policy targets authenticated only'
+);
+select ok(
+  (
+    select
+      position('owner_id' in expression) > 0
+      and position('uid()' in expression) > 0
+      and position('NOT (EXISTS' in expression) > 0
+      and regexp_count(expression, 'EXISTS') = 2
+    from (
+      select pg_get_expr(policy.polqual, policy.polrelid) as expression
+      from pg_policy policy
+      where policy.polname = 'warehouse_item_photos_delete'
+        and policy.polrelid = 'storage.objects'::regclass
+    ) delete_policy
+  ),
+  'delete policy separates registered catalog deletion from owner-only unregistered compensation'
+);
+select ok(
+  (
+    select
+      position('request.method' in expression) > 0
+      and position('DELETE' in expression) > 0
+      and position('owner_id' in expression) > 0
+      and position('uid()' in expression) > 0
+      and position('NOT (EXISTS' in expression) > 0
+    from (
+      select pg_get_expr(policy.polqual, policy.polrelid) as expression
+      from pg_policy policy
+      where policy.polname = 'warehouse_item_photos_orphan_cleanup_select'
+        and policy.polrelid = 'storage.objects'::regclass
+    ) cleanup_policy
+  ),
+  'orphan cleanup SELECT visibility is owner-only, unregistered, and DELETE-method scoped'
+);
+
+insert into public.permission_grants(subject_type, subject_code, permission_key)
+values
+  ('position', '仓库管理员', 'module.inventory.view'),
+  ('position', '大工', 'module.inventory.view');
+
+insert into storage.objects(id, bucket_id, name, owner_id, metadata)
+values
+  (
+    'b7000000-0000-4000-8000-000000000001', 'warehouse-item-photos',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000001.jpg',
+    'b5000000-0000-4000-8000-000000000001',
+    '{"mimetype":"image/jpeg","size":100}'::jsonb
+  ),
+  (
+    'b7000000-0000-4000-8000-000000000002', 'warehouse-item-photos',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+    'b5000000-0000-4000-8000-000000000002',
+    '{"mimetype":"image/png","size":101}'::jsonb
+  );
+
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.register_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+    'image/png', 101
+  )$$,
+  '42501', 'warehouse permission required',
+  'inventory viewer without catalog permission cannot register photo metadata'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_variant_photos_secure(
+    'b3000000-0000-4000-8000-000000000001'
+  )$$,
+  '42501', 'active employee required',
+  'inactive employee cannot list or sign warehouse photos'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.register_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000001.jpg',
+    'image/jpeg', 100
+  )->>'objectPath',
+  'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000001.jpg',
+  'catalog manager registers one owned object under the exact variant prefix'
+);
+select is(
+  (
+    select jsonb_array_length(
+      public.list_warehouse_variant_photos_secure(
+        'b3000000-0000-4000-8000-000000000001'
+      )
+    )
+  ),
+  1,
+  'an inventory viewer RPC lists registered metadata in order'
+);
+
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000010',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+      'image/png', 101
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_PATH_INVALID',
+  'metadata registration rejects a cross-variant object path'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+      'image/jpeg', 101
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_OBJECT_INVALID',
+  'metadata registration rejects a MIME or extension mismatch'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+      'image/png', 101
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_OBJECT_NOT_OWNED',
+  'a manager cannot register an object owned by another authenticated user'
+);
+
+reset role;
+update storage.objects
+set owner_id = 'b5000000-0000-4000-8000-000000000001'
+where id = 'b7000000-0000-4000-8000-000000000002';
+set local role authenticated;
+select is(
+  public.register_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000002.png',
+    'image/png', 101
+  )->>'sortOrder',
+  '1',
+  'a second photo receives the next stable order'
+);
+select is(
+  (
+    select jsonb_agg(entry->>'id' order by (entry->>'sortOrder')::integer)
+    from jsonb_array_elements(public.reorder_warehouse_variant_photos_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      array[
+        (select id from public.warehouse_variant_photos where object_path like '%.png'),
+        (select id from public.warehouse_variant_photos where object_path like '%.jpg')
+      ]
+    )) entry
+  ),
+  (
+    select jsonb_agg(id::text order by object_path desc)
+    from public.warehouse_variant_photos
+    where variant_id = 'b3000000-0000-4000-8000-000000000001'
+  ),
+  'reorder atomically accepts the complete exact variant-owned permutation'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.reorder_warehouse_variant_photos_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      array[(select id from public.warehouse_variant_photos limit 1)]
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_ORDER_INVALID',
+  'reorder rejects an incomplete photo-id list'
+);
+reset role;
+
+insert into storage.objects(id, bucket_id, name, owner_id, metadata)
+select
+  gen_random_uuid(),
+  'warehouse-item-photos',
+  format(
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-%s.webp',
+    lpad(sequence::text, 12, '0')
+  ),
+  'b5000000-0000-4000-8000-000000000001',
+  '{"mimetype":"image/webp","size":102}'::jsonb
+from generate_series(3, 9) sequence;
+
+set local role authenticated;
+select lives_ok(
+  $$select public.register_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    format(
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-%s.webp',
+      lpad(sequence::text, 12, '0')
+    ),
+    'image/webp', 102
+  ) from generate_series(3, 8) sequence$$,
+  'up to eight photos can be registered for one variant'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000009.webp',
+      'image/webp', 102
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_LIMIT_REACHED',
+  'the trusted database rejects a ninth photo'
+);
+reset role;
+
+select is(
+  (select count(*) from public.warehouse_variant_photos
+   where variant_id = 'b3000000-0000-4000-8000-000000000001'),
+  8::bigint,
+  'failed ninth registration leaves exactly eight metadata rows'
+);
+select is(
+  (select count(*) from public.warehouse_variant_photos
+   where created_by_employee_profile_id <> 'b6000000-0000-4000-8000-000000000001'),
+  0::bigint,
+  'photo creator identity is always resolved from the server actor'
+);
+select is(
+  (select count(*) from public.warehouse_photo_audit
+   where actor_employee_profile_id <> 'b6000000-0000-4000-8000-000000000001'),
+  0::bigint,
+  'photo audit actor identity is always server-resolved'
+);
+
+select set_config('request.jwt.claim.sub', '', true);
+set local role anon;
+select is(
+  (select count(*) from storage.objects where bucket_id = 'warehouse-item-photos'),
+  0::bigint,
+  'anonymous users cannot read photo objects or obtain signed access'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select is(
+  (select count(*) from storage.objects where bucket_id = 'warehouse-item-photos'),
+  8::bigint,
+  'active inventory viewer can read only registered photo objects'
+);
+select throws_ok(
+  $$delete from storage.objects where bucket_id = 'warehouse-item-photos'$$,
+  '42501', null,
+  'inventory viewer cannot delete photo objects'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.delete_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (
+      select id from public.warehouse_variant_photos
+      where object_path = 'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp'
+    ),
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000008.webp'
+  ),
+  true,
+  'catalog manager deletes exact matching metadata after Storage authorization'
+);
+reset role;
+
+select is(
+  (select count(*) from public.warehouse_photo_audit
+   where action not in ('registered', 'reordered', 'deleted')),
+  0::bigint,
+  'photo audit contains only fixed action identifiers'
+);
+select is(
+  (
+    select count(*)
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('warehouse_variant_photos', 'warehouse_photo_audit')
+      and column_name ~ '(url|base64|blob|data|payload)'
+  ),
+  0::bigint,
+  'photo metadata and audit contain no URL, base64, blob, data or payload columns'
+);
+
 select * from finish();
 rollback;
