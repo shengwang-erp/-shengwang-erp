@@ -41,19 +41,18 @@ function mediaFixture(trackCount = 2) {
     stops: 0,
     stop() { this.stops += 1; this.readyState = 'ended' },
   }))
-  return {
-    tracks,
-    video: { srcObject: { getTracks: () => tracks } },
-  }
+  const stream = { getTracks: () => tracks }
+  return { tracks, stream, video: { srcObject: null } }
 }
 
-function deferredReader() {
+function deferredReader(stream) {
   let callback
   const controls = { stops: 0, stop() { this.stops += 1 } }
   class BrowserQRCodeReader {
     async decodeFromConstraints(constraints, video, next) {
       assert.deepEqual(constraints, { video: { facingMode: { ideal: 'environment' } } })
       assert.ok(video)
+      video.srcObject = stream
       callback = next
       return controls
     }
@@ -89,8 +88,8 @@ test('scanner dependency stays unloaded until open and manual entry resolves wit
 
 test('successful camera decode stops ZXing controls and every media track before resolving', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
-  const reader = deferredReader()
   const media = mediaFixture(3)
+  const reader = deferredReader(media.stream)
   const resolved = []
   const controller = scannerModule.createWarehouseQrScannerController({
     loadZxing: reader.load,
@@ -112,7 +111,8 @@ test('successful camera decode stops ZXing controls and every media track before
 test('real-like returned wrapper is the one cleanup authority and stops original controls and tracks once', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
   const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
-  const video = { srcObject: { getTracks: () => [track] } }
+  const stream = { getTracks: () => [track] }
+  const video = { srcObject: null }
   let callback
   const originalControls = {
     stops: 0,
@@ -127,7 +127,8 @@ test('real-like returned wrapper is the one cleanup authority and stops original
     },
   }
   class BrowserQRCodeReader {
-    async decodeFromConstraints(_constraints, _video, next) {
+    async decodeFromConstraints(_constraints, nextVideo, next) {
+      nextVideo.srcObject = stream
       callback = next
       return returnedWrapper
     }
@@ -153,7 +154,8 @@ test('real-like returned wrapper is the one cleanup authority and stops original
 test('early callback cleanup uses original controls once and discards a late returned wrapper', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
   const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
-  const video = { srcObject: { getTracks: () => [track] } }
+  const stream = { getTracks: () => [track] }
+  const video = { srcObject: null }
   let releaseWrapper
   const originalControls = {
     stops: 0,
@@ -164,7 +166,8 @@ test('early callback cleanup uses original controls once and discards a late ret
     stop() { this.stops += 1; originalControls.stop() },
   }
   class BrowserQRCodeReader {
-    decodeFromConstraints(_constraints, _video, callback) {
+    decodeFromConstraints(_constraints, nextVideo, callback) {
+      nextVideo.srcObject = stream
       callback({ getText: () => 'EARLY' }, null, originalControls)
       return new Promise((resolve) => { releaseWrapper = () => resolve(returnedWrapper) })
     }
@@ -200,7 +203,10 @@ test('async controls stop rejection is observed without unhandled cleanup failur
     },
   }
   class BrowserQRCodeReader {
-    async decodeFromConstraints() { return controls }
+    async decodeFromConstraints(_constraints, video) {
+      video.srcObject = media.stream
+      return controls
+    }
   }
   const unhandled = []
   const captureUnhandled = (error) => unhandled.push(error)
@@ -225,8 +231,8 @@ test('async controls stop rejection is observed without unhandled cleanup failur
 
 test('close and unmount cleanup are idempotent and stop controls plus every track', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
-  const reader = deferredReader()
   const media = mediaFixture()
+  const reader = deferredReader(media.stream)
   const controller = scannerModule.createWarehouseQrScannerController({
     loadZxing: reader.load,
     resolveQr: async () => null,
@@ -261,7 +267,7 @@ test('close during a late import or late controls resolution never starts or lea
   await importOpening
 
   assert.equal(readerConstructions, 0)
-  assert.deepEqual(importMedia.tracks.map((track) => track.stops), [1, 1])
+  assert.deepEqual(importMedia.tracks.map((track) => track.stops), [0, 0])
 
   let releaseControls
   let decodeStarted
@@ -269,7 +275,8 @@ test('close during a late import or late controls resolution never starts or lea
   const controlsStarted = new Promise((resolve) => { decodeStarted = resolve })
   const controlsMedia = mediaFixture(3)
   class BrowserQRCodeReader {
-    decodeFromConstraints() {
+    decodeFromConstraints(_constraints, video) {
+      video.srcObject = controlsMedia.stream
       decodeStarted()
       return new Promise((resolve) => { releaseControls = () => resolve(controls) })
     }
@@ -739,6 +746,173 @@ test('a throwing busy error callback is contained and cannot bypass the held vid
   assert.equal(newLoaderCalls, 1)
 })
 
+test('a preoccupied video stays external and can be opened only after it becomes empty', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const externalTrackA = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const externalTrackB = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const scannerTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const externalStreamA = { getTracks: () => [externalTrackA] }
+  const externalStreamB = { getTracks: () => [externalTrackB] }
+  const scannerStream = { getTracks: () => [scannerTrack] }
+  const video = { srcObject: externalStreamA }
+  const controls = { stops: 0, stop() { this.stops += 1 } }
+  let loaderCalls = 0
+  const messages = []
+  class BrowserQRCodeReader {
+    async decodeFromConstraints() {
+      video.srcObject = scannerStream
+      return controls
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => { loaderCalls += 1; return { BrowserQRCodeReader } },
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {},
+    onError(message) {
+      messages.push(message)
+      video.srcObject = externalStreamB
+    },
+  })
+
+  assert.equal(await controller.open(video), null)
+  assert.equal(loaderCalls, 0)
+  assert.deepEqual(messages, ['相机正在被其他操作使用，请稍后或手动输入'])
+  assert.equal(externalTrackA.stops, 0)
+  assert.equal(externalTrackB.stops, 0)
+  assert.equal(video.srcObject, externalStreamB)
+
+  video.srcObject = null
+  assert.equal(await controller.open(video), controls)
+  assert.equal(loaderCalls, 1)
+  controller.close()
+  assert.equal(scannerTrack.stops, 1)
+})
+
+test('a throwing external-camera busy callback is contained without loading or touching its stream', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const stream = { getTracks: () => [track] }
+  const video = { srcObject: stream }
+  let loaderCalls = 0
+  let errorCalls = 0
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => { loaderCalls += 1; return {} },
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {},
+    onError() { errorCalls += 1; throw new Error('private UI callback failure') },
+  })
+
+  assert.equal(await controller.open(video), null)
+  assert.equal(errorCalls, 1)
+  assert.equal(loaderCalls, 0)
+  assert.equal(track.stops, 0)
+  assert.equal(video.srcObject, stream)
+})
+
+test('an unreadable video source fails closed without a lease and opens after its getter recovers', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let readThrows = true
+  let attachedStream = null
+  const video = {
+    get srcObject() {
+      if (readThrows) throw new Error('private srcObject getter failure')
+      return attachedStream
+    },
+    set srcObject(value) { attachedStream = value },
+  }
+  const controls = { stop() {} }
+  let loaderCalls = 0
+  const messages = []
+  class BrowserQRCodeReader {
+    async decodeFromConstraints() { return controls }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => { loaderCalls += 1; return { BrowserQRCodeReader } },
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {},
+    onError: (message) => messages.push(message),
+  })
+
+  assert.equal(await controller.open(video), null)
+  assert.equal(loaderCalls, 0)
+  assert.deepEqual(messages, ['相机正在被其他操作使用，请稍后或手动输入'])
+
+  readThrows = false
+  assert.equal(await controller.open(video), controls)
+  assert.equal(loaderCalls, 1)
+})
+
+test('scanner cleanup owns its first stream but leaves a later external replacement attached', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const scannerTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const externalTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const scannerStream = { getTracks: () => [scannerTrack] }
+  const externalStream = { getTracks: () => [externalTrack] }
+  const video = { srcObject: null }
+  const controls = { stops: 0, stop() { this.stops += 1 } }
+  let releaseControls
+  let markStarted
+  const started = new Promise((resolve) => { markStarted = resolve })
+  class BrowserQRCodeReader {
+    decodeFromConstraints() {
+      video.srcObject = scannerStream
+      markStarted()
+      return new Promise((resolve) => { releaseControls = () => resolve(controls) })
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => ({ BrowserQRCodeReader }),
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {}, onError() {},
+  })
+
+  const opening = controller.open(video)
+  await started
+  video.srcObject = externalStream
+  releaseControls()
+  assert.equal(await opening, controls)
+  controller.close()
+
+  assert.equal(controls.stops, 1)
+  assert.equal(scannerTrack.stops, 1)
+  assert.equal(externalTrack.stops, 0)
+  assert.equal(video.srcObject, externalStream)
+})
+
+test('the first scanner stream may be observed when decode controls settle', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const stream = { getTracks: () => [track] }
+  const video = { srcObject: null }
+  const controls = { stops: 0, stop() { this.stops += 1 } }
+  let releaseControls
+  class BrowserQRCodeReader {
+    decodeFromConstraints() {
+      return new Promise((resolve) => {
+        releaseControls = () => {
+          video.srcObject = stream
+          resolve(controls)
+        }
+      })
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => ({ BrowserQRCodeReader }),
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {}, onError() {},
+  })
+
+  const opening = controller.open(video)
+  await new Promise((resolve) => setImmediate(resolve))
+  releaseControls()
+  assert.equal(await opening, controls)
+  controller.close()
+
+  assert.equal(controls.stops, 1)
+  assert.equal(track.stops, 1)
+  assert.equal(video.srcObject, null)
+})
+
 for (const failure of ['loader reject', 'decode reject', 'decode sync throw']) {
   test(`video lease releases after ${failure}`, async () => {
     assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
@@ -855,7 +1029,10 @@ test('permission denial and fatal reader errors stop resources and expose friend
     const media = mediaFixture()
     const messages = []
     class BrowserQRCodeReader {
-      async decodeFromConstraints() { throw error }
+      async decodeFromConstraints(_constraints, video) {
+        video.srcObject = media.stream
+        throw error
+      }
     }
     const controller = scannerModule.createWarehouseQrScannerController({
       loadZxing: async () => ({ BrowserQRCodeReader }),

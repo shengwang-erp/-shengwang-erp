@@ -7,6 +7,7 @@ const RETRYABLE_DECODE_ERROR_NAMES = new Set([
   'NotFoundException', 'ChecksumException', 'FormatException',
 ])
 const CAMERA_BUSY_MESSAGE = '相机正在关闭，请稍后重试或改用手动输入'
+const EXTERNAL_CAMERA_BUSY_MESSAGE = '相机正在被其他操作使用，请稍后或手动输入'
 const videoSessionOwners = new WeakMap()
 const streamSessionOwners = new WeakMap()
 const componentIdentityKeys = new WeakMap()
@@ -69,12 +70,17 @@ export function createWarehouseQrScannerController({
     return invokeStop(value)
   }
 
-  const readVideoStream = (video) => {
-    try { return video?.srcObject ?? null } catch { return null }
+  const inspectVideoStream = (video) => {
+    try { return { readable: true, stream: video?.srcObject ?? null } } catch {
+      return { readable: false, stream: null }
+    }
   }
+
+  const readVideoStream = (video) => inspectVideoStream(video).stream
 
   const rememberOwnedStream = (session, stream) => {
     if (!stream || (typeof stream !== 'object' && typeof stream !== 'function')) return
+    if (session.ownedStreams.size > 0 && !session.ownedStreams.has(stream)) return
     const owner = streamSessionOwners.get(stream)
     if (owner && owner !== session) return
     streamSessionOwners.set(stream, session)
@@ -195,6 +201,13 @@ export function createWarehouseQrScannerController({
         }
         return null
       }
+      const initialStream = inspectVideoStream(video)
+      if (!initialStream.readable || initialStream.stream !== null) {
+        if (isCurrent(token)) {
+          try { onError(EXTERNAL_CAMERA_BUSY_MESSAGE) } catch { /* UI callback cannot start over external media */ }
+        }
+        return null
+      }
       const session = {
         video,
         returnedControls: null,
@@ -209,7 +222,6 @@ export function createWarehouseQrScannerController({
       }
       if (canLeaseVideo) {
         videoSessionOwners.set(video, session)
-        captureCurrentOwnedStream(session)
       }
       activeSession = session
       try {
