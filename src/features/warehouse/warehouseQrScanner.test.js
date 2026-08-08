@@ -7,6 +7,7 @@ import test from 'node:test'
 import { createServer } from 'vite'
 
 import {
+  findWarehouseTestElement,
   installWarehouseReactDom,
 } from './warehouseReactDomTestUtils.js'
 
@@ -447,6 +448,271 @@ test('late cleanup skips ended tracks and stops every live track exactly once', 
   assert.equal(video.srcObject, null)
 })
 
+test('old returned controls clean only their stream when a new controller owns the shared video', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const video = { srcObject: null }
+  const oldTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const newTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const oldStream = { getTracks: () => [oldTrack] }
+  const newStream = { getTracks: () => [newTrack] }
+  let releaseOldControls
+  let markOldStarted
+  const oldStarted = new Promise((resolve) => { markOldStarted = resolve })
+  const oldControls = {
+    stops: 0,
+    stop() {
+      this.stops += 1
+      if (oldTrack.readyState !== 'ended') oldTrack.stop()
+      video.srcObject = null
+    },
+  }
+  const newControls = { stops: 0, stop() { this.stops += 1 } }
+  class OldReader {
+    decodeFromConstraints() {
+      video.srcObject = oldStream
+      markOldStarted()
+      return new Promise((resolve) => { releaseOldControls = () => resolve(oldControls) })
+    }
+  }
+  class NewReader {
+    async decodeFromConstraints() {
+      video.srcObject = newStream
+      return newControls
+    }
+  }
+  const callbacks = { resolveQr: async () => null, onResolved() {}, onUnknown() {}, onError() {} }
+  const oldController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: OldReader }),
+  })
+  const newController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: NewReader }),
+  })
+
+  const oldOpening = oldController.open(video)
+  await oldStarted
+  await newController.open(video)
+  oldController.close()
+  releaseOldControls()
+  await oldOpening
+
+  assert.equal(oldControls.stops, 1)
+  assert.equal(oldTrack.stops, 1)
+  assert.equal(newControls.stops, 0)
+  assert.equal(newTrack.stops, 0)
+  assert.equal(video.srcObject, newStream)
+})
+
+test('old callback controls cannot stop or detach the new owner stream on a shared video', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const video = { srcObject: null }
+  const oldTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const newTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const oldStream = { getTracks: () => [oldTrack] }
+  const newStream = { getTracks: () => [newTrack] }
+  let oldCallback
+  let releaseOldWrapper
+  let markOldStarted
+  const oldStarted = new Promise((resolve) => { markOldStarted = resolve })
+  const originalControls = {
+    stops: 0,
+    stop() {
+      this.stops += 1
+      if (oldTrack.readyState !== 'ended') oldTrack.stop()
+      video.srcObject = null
+    },
+  }
+  const returnedWrapper = { stops: 0, stop() { this.stops += 1 } }
+  const newControls = { stops: 0, stop() { this.stops += 1 } }
+  class OldReader {
+    decodeFromConstraints(_constraints, _video, callback) {
+      oldCallback = callback
+      video.srcObject = oldStream
+      markOldStarted()
+      return new Promise((resolve) => { releaseOldWrapper = () => resolve(returnedWrapper) })
+    }
+  }
+  class NewReader {
+    async decodeFromConstraints() {
+      video.srcObject = newStream
+      return newControls
+    }
+  }
+  const callbacks = { resolveQr: async () => null, onResolved() {}, onUnknown() {}, onError() {} }
+  const oldController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: OldReader }),
+  })
+  const newController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: NewReader }),
+  })
+
+  const oldOpening = oldController.open(video)
+  await oldStarted
+  await newController.open(video)
+  oldController.close()
+  oldCallback(null, Object.assign(new Error('old reader stopped'), { name: 'NotFoundException' }), originalControls)
+  releaseOldWrapper()
+  await oldOpening
+
+  assert.equal(originalControls.stops, 1)
+  assert.equal(returnedWrapper.stops, 0)
+  assert.equal(oldTrack.stops, 1)
+  assert.equal(newControls.stops, 0)
+  assert.equal(newTrack.stops, 0)
+  assert.equal(video.srcObject, newStream)
+})
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`old asynchronous controls keep the new stream protected until ${outcome}`, async () => {
+    assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+    const video = { srcObject: null }
+    const oldTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+    const newTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+    const oldStream = { getTracks: () => [oldTrack] }
+    const newStream = { getTracks: () => [newTrack] }
+    let releaseOldControls
+    let finishOldStop
+    let markOldStarted
+    const oldStarted = new Promise((resolve) => { markOldStarted = resolve })
+    const oldControls = {
+      stops: 0,
+      stop() {
+        this.stops += 1
+        return new Promise((resolve, reject) => {
+          finishOldStop = () => {
+            video.srcObject = null
+            if (outcome === 'resolve') resolve()
+            else reject(new Error('private old async cleanup failure'))
+          }
+        })
+      },
+    }
+    const newControls = { stops: 0, stop() { this.stops += 1 } }
+    class OldReader {
+      decodeFromConstraints() {
+        video.srcObject = oldStream
+        markOldStarted()
+        return new Promise((resolve) => { releaseOldControls = () => resolve(oldControls) })
+      }
+    }
+    class NewReader {
+      async decodeFromConstraints() {
+        video.srcObject = newStream
+        return newControls
+      }
+    }
+    const callbacks = { resolveQr: async () => null, onResolved() {}, onUnknown() {}, onError() {} }
+    const oldController = scannerModule.createWarehouseQrScannerController({
+      ...callbacks,
+      loadZxing: async () => ({ BrowserQRCodeReader: OldReader }),
+    })
+    const newController = scannerModule.createWarehouseQrScannerController({
+      ...callbacks,
+      loadZxing: async () => ({ BrowserQRCodeReader: NewReader }),
+    })
+    const unhandled = []
+    const captureUnhandled = (error) => unhandled.push(error)
+    process.on('unhandledRejection', captureUnhandled)
+    try {
+      const oldOpening = oldController.open(video)
+      await oldStarted
+      await newController.open(video)
+      oldController.close()
+      releaseOldControls()
+      await oldOpening
+      await new Promise((resolve) => setImmediate(resolve))
+
+      assert.equal(video.srcObject, null)
+      assert.equal(newTrack.stops, 0)
+
+      finishOldStop()
+      await new Promise((resolve) => setImmediate(resolve))
+
+      assert.equal(video.srcObject, newStream)
+      assert.equal(oldControls.stops, 1)
+      assert.equal(oldTrack.stops, 1)
+      assert.equal(newControls.stops, 0)
+      assert.equal(newTrack.stops, 0)
+      assert.deepEqual(unhandled, [])
+    } finally {
+      process.off('unhandledRejection', captureUnhandled)
+    }
+  })
+}
+
+test('new owner stream replacement during old async cleanup is restored without stale overwrite', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const video = { srcObject: null }
+  const oldTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const newTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const replacementTrack = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const oldStream = { getTracks: () => [oldTrack] }
+  const newStream = { getTracks: () => [newTrack] }
+  const replacementStream = { getTracks: () => [replacementTrack] }
+  let newCallback
+  let releaseOldControls
+  let finishOldStop
+  let markOldStarted
+  const oldStarted = new Promise((resolve) => { markOldStarted = resolve })
+  const oldControls = {
+    stops: 0,
+    stop() {
+      this.stops += 1
+      return new Promise((resolve) => {
+        finishOldStop = () => { video.srcObject = null; resolve() }
+      })
+    },
+  }
+  const newControls = { stops: 0, stop() { this.stops += 1 } }
+  class OldReader {
+    decodeFromConstraints() {
+      video.srcObject = oldStream
+      markOldStarted()
+      return new Promise((resolve) => { releaseOldControls = () => resolve(oldControls) })
+    }
+  }
+  class NewReader {
+    async decodeFromConstraints(_constraints, _video, callback) {
+      newCallback = callback
+      video.srcObject = newStream
+      return newControls
+    }
+  }
+  const callbacks = { resolveQr: async () => null, onResolved() {}, onUnknown() {}, onError() {} }
+  const oldController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: OldReader }),
+  })
+  const newController = scannerModule.createWarehouseQrScannerController({
+    ...callbacks,
+    loadZxing: async () => ({ BrowserQRCodeReader: NewReader }),
+  })
+
+  const oldOpening = oldController.open(video)
+  await oldStarted
+  await newController.open(video)
+  oldController.close()
+  releaseOldControls()
+  await oldOpening
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(video.srcObject, null)
+
+  video.srcObject = replacementStream
+  newCallback(null, Object.assign(new Error('keep scanning'), { name: 'NotFoundException' }), newControls)
+  finishOldStop()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(video.srcObject, replacementStream)
+  assert.equal(oldControls.stops, 1)
+  assert.equal(oldTrack.stops, 1)
+  assert.equal(newControls.stops, 0)
+  assert.equal(newTrack.stops, 0)
+  assert.equal(replacementTrack.stops, 0)
+})
+
 test('close disposes pending manual lookup and rejects every later manual submission', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
   let release
@@ -615,6 +881,50 @@ test('StrictMode cleanup and reopen suppress stale scanner callbacks and clean e
       assert.deepEqual(session.tracks.map((track) => track.stops), [1])
     }
   } finally {
+    dom.cleanup()
+  }
+})
+
+test('React gives every restarted or reopened camera session a distinct keyed video element', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const createLoader = () => async () => ({
+    BrowserQRCodeReader: class {
+      async decodeFromConstraints() { return { stop() {} } }
+    },
+  })
+  let loadZxing = createLoader()
+  const warehouseService = { resolveQr: async () => null }
+  const onResolved = () => {}
+  const render = (open) => createElement(scannerModule.default, {
+    open,
+    loadZxing,
+    warehouseService,
+    onResolved,
+    onClose() {},
+  })
+
+  try {
+    await act(async () => { root.render(render(true)) })
+    const firstVideo = findWarehouseTestElement(container, (element) => element.nodeName === 'VIDEO')
+    assert.ok(firstVideo)
+
+    loadZxing = createLoader()
+    await act(async () => { root.render(render(true)) })
+    const restartedVideo = findWarehouseTestElement(container, (element) => element.nodeName === 'VIDEO')
+    assert.ok(restartedVideo)
+    assert.notEqual(restartedVideo, firstVideo)
+
+    await act(async () => { root.render(render(false)) })
+    assert.equal(container.contains(restartedVideo), false)
+    await act(async () => { root.render(render(true)) })
+    const secondVideo = findWarehouseTestElement(container, (element) => element.nodeName === 'VIDEO')
+
+    assert.ok(secondVideo)
+    assert.notEqual(secondVideo, restartedVideo)
+  } finally {
+    await act(async () => { root.unmount() })
     dom.cleanup()
   }
 })
