@@ -527,6 +527,33 @@ test('cost balances derive four-decimal stock value and reject invalid zero-quan
   )
 })
 
+test('large four-decimal costs stay exact and scaled quantity/value contracts fail closed', async () => {
+  const exactCost = 100000000000.0001
+  const exactClient = rpcClient({
+    list_warehouse_balances_secure: {
+      data: [{ ...BALANCE, quantity: 1, unitCost: exactCost, stockValue: 1 }],
+      error: null,
+    },
+  }).client
+  assert.deepEqual(
+    await createWarehouseService(exactClient, { configured: true, viewCost: true }).listBalances(),
+    [{ ...BALANCE, quantity: 1, unitCost: exactCost, stockValue: exactCost }],
+  )
+
+  for (const balanceRow of [
+    { ...BALANCE, quantity: 1.0001, unitCost: 1, stockValue: 1 },
+    { ...BALANCE, quantity: 0, unitCost: 0, stockValue: 0.0001 },
+  ]) {
+    const client = rpcClient({
+      list_warehouse_balances_secure: { data: [balanceRow], error: null },
+    }).client
+    await assert.rejects(
+      createWarehouseService(client, { configured: true, viewCost: true }).listBalances(),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
+})
+
 test('movement metadata rejects nested cost keys without permission and preserves them with permission', async () => {
   const metadata = {
     safe: 'keep',

@@ -200,6 +200,55 @@ test('snapshot fails closed when finite input quantities overflow during aggrega
   }), /仓库快照数据无效/u)
 })
 
+test('large costs remain exact across locations, weighted totals, and repeated aggregation', () => {
+  const exactCost = 100000000000.0001
+  const input = {
+    items: [ITEM_A],
+    variants: [{ ...VARIANT_A, defaultPurchasePrice: exactCost }],
+    locations: LOCATIONS,
+    balances: [
+      balance(VARIANT_A.id, LOCATIONS[0].id, 1, { unitCost: exactCost, stockValue: 1 }),
+      balance(VARIANT_A.id, LOCATIONS[1].id, 1, { unitCost: exactCost, stockValue: 2 }),
+    ],
+    viewCost: true,
+  }
+  const first = buildWarehouseSnapshot(input)
+  assert.deepEqual(
+    first.inventory[0].locations.map(({ unitCost, stockValue }) => ({ unitCost, stockValue })),
+    [
+      { unitCost: exactCost, stockValue: exactCost },
+      { unitCost: exactCost, stockValue: exactCost },
+    ],
+  )
+  assert.equal(first.inventory[0].stockValue, 200000000000.0002)
+  assert.equal(first.inventory[0].unitCost, exactCost)
+  assert.equal(first.overview.totalStockValue, 200000000000.0002)
+
+  const repeated = buildWarehouseSnapshot({
+    ...input,
+    balances: first.inventory[0].locations.map((location) => ({
+      variantId: VARIANT_A.id,
+      warehouseId: location.warehouseId,
+      locationId: location.locationId,
+      quantity: location.quantity,
+      unitCost: location.unitCost,
+      stockValue: location.stockValue,
+    })),
+  })
+  assert.equal(repeated.inventory[0].stockValue, 200000000000.0002)
+  assert.equal(repeated.inventory[0].unitCost, exactCost)
+})
+
+test('snapshot rejects nonzero supplier stock value for a zero-quantity balance', () => {
+  assert.throws(() => buildWarehouseSnapshot({
+    items: [ITEM_A],
+    variants: [{ ...VARIANT_A, defaultPurchasePrice: 0 }],
+    locations: LOCATIONS,
+    balances: [balance(VARIANT_A.id, LOCATIONS[0].id, 0, { unitCost: 0, stockValue: 0.0001 })],
+    viewCost: true,
+  }), /仓库快照数据无效/u)
+})
+
 test('snapshot results are deep frozen copies and do not mutate inputs', () => {
   const items = [{ ...ITEM_A }]
   const variants = [{ ...VARIANT_A }]

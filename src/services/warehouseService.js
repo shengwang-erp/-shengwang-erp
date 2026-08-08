@@ -1,4 +1,11 @@
 import { MOVEMENT_TYPES } from '../features/warehouse/warehouseConstants.js'
+import {
+  costUnitsToNumber,
+  deriveStockValueUnits,
+  parseCostUnits,
+  parseQuantityUnits,
+  quantityUnitsToNumber,
+} from '../features/warehouse/warehouseDecimal.js'
 
 const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_NOT_CONFIGURED: Object.freeze({
@@ -29,7 +36,6 @@ const SAFE_ERRORS = Object.freeze({
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOVEMENT_TYPE_SET = new Set(Object.values(MOVEMENT_TYPES))
-const COST_FACTOR = 10_000
 const SENSITIVE_COST_KEYS = new Set([
   'unitCost',
   'unit_cost',
@@ -183,36 +189,26 @@ function finiteNumber(value, { nonnegative = false } = {}) {
   return value
 }
 
-function roundCost(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+function decimalResponse(operation) {
+  try {
+    return operation()
+  } catch {
     throw invalidResponse()
   }
-  const scaled = value * COST_FACTOR
-  if (!Number.isFinite(scaled) || scaled > Number.MAX_SAFE_INTEGER) {
-    throw invalidResponse()
-  }
-  const epsilon = Number.EPSILON * Math.max(1, scaled) * 4
-  const roundedScaled = Math.floor(scaled + 0.5 + epsilon)
-  if (!Number.isSafeInteger(roundedScaled)) throw invalidResponse()
-  return roundedScaled / COST_FACTOR
 }
 
-function costNumber(value) {
-  const cost = finiteNumber(value, { nonnegative: true })
-  const rounded = roundCost(cost)
-  const tolerance = Number.EPSILON * Math.max(1, cost) * 8
-  if (Math.abs(cost - rounded) > tolerance) throw invalidResponse()
-  return rounded
+function quantityResponse(value) {
+  return decimalResponse(() => {
+    const units = parseQuantityUnits(value)
+    return { units, value: quantityUnitsToNumber(units) }
+  })
 }
 
-function deriveStockValue(quantity, unitCost) {
-  if (quantity === 0) {
-    if (unitCost !== 0) throw invalidResponse()
-    return 0
-  }
-  const value = quantity * unitCost
-  if (!Number.isFinite(value)) throw invalidResponse()
-  return roundCost(value)
+function costResponse(value) {
+  return decimalResponse(() => {
+    const units = parseCostUnits(value)
+    return { units, value: costUnitsToNumber(units) }
+  })
 }
 
 function booleanValue(value) {
@@ -309,7 +305,7 @@ function validateVariant(candidate, viewCost) {
     size: stringValue(row.size),
     material: stringValue(row.material),
     unit: nonemptyString(row.unit),
-    minimumStock: finiteNumber(row.minimumStock, { nonnegative: true }),
+    minimumStock: quantityResponse(row.minimumStock).value,
     systemQr: nonemptyString(row.systemQr),
     manufacturerQr: nullableString(row.manufacturerQr),
     active: booleanValue(row.active),
@@ -317,7 +313,7 @@ function validateVariant(candidate, viewCost) {
     updatedAt: timestampValue(row.updatedAt),
   }
   if (viewCost) {
-    result.defaultPurchasePrice = costNumber(row.defaultPurchasePrice)
+    result.defaultPurchasePrice = costResponse(row.defaultPurchasePrice).value
   }
   return result
 }
@@ -371,17 +367,24 @@ function validateBalance(candidate, viewCost) {
     candidate,
     viewCost ? [...BALANCE_FIELDS, 'unitCost', 'stockValue'] : BALANCE_FIELDS,
   )
+  const quantity = quantityResponse(row.quantity)
   const result = {
     variantId: uuidValue(row.variantId),
     warehouseId: uuidValue(row.warehouseId),
     locationId: uuidValue(row.locationId),
-    quantity: finiteNumber(row.quantity, { nonnegative: true }),
+    quantity: quantity.value,
   }
   if (viewCost) {
-    const unitCost = costNumber(row.unitCost)
-    costNumber(row.stockValue)
-    result.unitCost = unitCost
-    result.stockValue = deriveStockValue(result.quantity, unitCost)
+    const unitCost = costResponse(row.unitCost)
+    const suppliedStockValue = costResponse(row.stockValue)
+    if (
+      quantity.units === 0n &&
+      (unitCost.units !== 0n || suppliedStockValue.units !== 0n)
+    ) throw invalidResponse()
+    const stockValueUnits = decimalResponse(() =>
+      deriveStockValueUnits(quantity.units, unitCost.units))
+    result.unitCost = unitCost.value
+    result.stockValue = decimalResponse(() => costUnitsToNumber(stockValueUnits))
   }
   return result
 }
@@ -417,7 +420,7 @@ function validateMovement(candidate, viewCost) {
     reversalOfMovementId: nullableUuid(row.reversalOfMovementId),
     metadata: cloneJsonValue(row.metadata, viewCost),
   }
-  if (viewCost) result.unitCost = costNumber(row.unitCost)
+  if (viewCost) result.unitCost = costResponse(row.unitCost).value
   return result
 }
 

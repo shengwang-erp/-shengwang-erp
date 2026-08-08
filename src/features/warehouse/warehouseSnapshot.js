@@ -1,3 +1,13 @@
+import {
+  addScaledUnits,
+  costUnitsToNumber,
+  deriveStockValueUnits,
+  deriveWeightedUnitCostUnits,
+  parseCostUnits,
+  parseQuantityUnits,
+  quantityUnitsToNumber,
+} from './warehouseDecimal.js'
+
 const ITEM_FIELDS = Object.freeze([
   'id', 'name', 'category', 'brand', 'description', 'active', 'createdAt', 'updatedAt',
 ])
@@ -10,7 +20,6 @@ const LOCATION_FIELDS = Object.freeze([
 ])
 const BALANCE_FIELDS = Object.freeze(['variantId', 'warehouseId', 'locationId', 'quantity'])
 const INVALID = '仓库快照数据无效'
-const COST_FACTOR = 10_000
 
 function invalid() {
   return new TypeError(INVALID)
@@ -73,60 +82,34 @@ function text(value, { empty = false, nullable = false } = {}) {
   return value
 }
 
-function finite(value, { nonnegative = false } = {}) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || (nonnegative && value < 0)) {
+function decimalSnapshot(operation) {
+  try {
+    return operation()
+  } catch {
     throw invalid()
   }
-  return value
 }
 
-function roundCost(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw invalid()
-  const scaled = value * COST_FACTOR
-  if (!Number.isFinite(scaled) || scaled > Number.MAX_SAFE_INTEGER) throw invalid()
-  const epsilon = Number.EPSILON * Math.max(1, scaled) * 4
-  const roundedScaled = Math.floor(scaled + 0.5 + epsilon)
-  if (!Number.isSafeInteger(roundedScaled)) throw invalid()
-  return roundedScaled / COST_FACTOR
+function quantitySnapshot(value) {
+  return decimalSnapshot(() => {
+    const units = parseQuantityUnits(value)
+    return { units, value: quantityUnitsToNumber(units) }
+  })
 }
 
-function cost(value) {
-  const result = finite(value, { nonnegative: true })
-  const rounded = roundCost(result)
-  const tolerance = Number.EPSILON * Math.max(1, result) * 8
-  if (Math.abs(result - rounded) > tolerance) throw invalid()
-  return rounded
+function costSnapshot(value) {
+  return decimalSnapshot(() => {
+    const units = parseCostUnits(value)
+    return { units, value: costUnitsToNumber(units) }
+  })
 }
 
-function deriveStockValue(quantity, unitCost) {
-  if (quantity === 0) {
-    if (unitCost !== 0) throw invalid()
-    return 0
-  }
-  const value = quantity * unitCost
-  if (!Number.isFinite(value)) throw invalid()
-  return roundCost(value)
-}
-
-function sumFinite(values) {
-  let total = 0
-  for (const value of values) {
-    total += value
-    if (!Number.isFinite(total)) throw invalid()
-  }
-  return total
-}
-
-function sumCosts(values) {
-  let scaledTotal = 0
-  for (const value of values) {
-    const scaled = Math.round(cost(value) * COST_FACTOR)
-    if (!Number.isSafeInteger(scaled) || !Number.isSafeInteger(scaledTotal + scaled)) {
-      throw invalid()
-    }
-    scaledTotal += scaled
-  }
-  return scaledTotal / COST_FACTOR
+function sumUnits(values) {
+  return decimalSnapshot(() => {
+    let total = 0n
+    for (const value of values) total = addScaledUnits(total, value)
+    return total
+  })
 }
 
 function boolean(value) {
@@ -159,6 +142,7 @@ function variantValue(value, viewCost) {
     value,
     viewCost ? [...VARIANT_FIELDS, 'defaultPurchasePrice'] : VARIANT_FIELDS,
   )
+  const minimumStock = quantitySnapshot(row.minimumStock)
   const result = {
     id: text(row.id),
     itemId: text(row.itemId),
@@ -167,7 +151,8 @@ function variantValue(value, viewCost) {
     size: text(row.size, { empty: true }),
     material: text(row.material, { empty: true }),
     unit: text(row.unit),
-    minimumStock: finite(row.minimumStock, { nonnegative: true }),
+    minimumStock: minimumStock.value,
+    minimumStockUnits: minimumStock.units,
     systemQr: text(row.systemQr),
     manufacturerQr: text(row.manufacturerQr, { nullable: true }),
     active: boolean(row.active),
@@ -175,7 +160,7 @@ function variantValue(value, viewCost) {
     updatedAt: timestamp(row.updatedAt),
   }
   if (viewCost) {
-    result.defaultPurchasePrice = cost(row.defaultPurchasePrice)
+    result.defaultPurchasePrice = costSnapshot(row.defaultPurchasePrice).value
   }
   return result
 }
@@ -198,17 +183,27 @@ function balanceValue(value, viewCost) {
     value,
     viewCost ? [...BALANCE_FIELDS, 'unitCost', 'stockValue'] : BALANCE_FIELDS,
   )
+  const quantity = quantitySnapshot(row.quantity)
   const result = {
     variantId: text(row.variantId),
     warehouseId: text(row.warehouseId),
     locationId: text(row.locationId),
-    quantity: finite(row.quantity, { nonnegative: true }),
+    quantity: quantity.value,
+    quantityUnits: quantity.units,
   }
   if (viewCost) {
-    const unitCost = cost(row.unitCost)
-    cost(row.stockValue)
-    result.unitCost = unitCost
-    result.stockValue = deriveStockValue(result.quantity, unitCost)
+    const unitCost = costSnapshot(row.unitCost)
+    const suppliedStockValue = costSnapshot(row.stockValue)
+    if (
+      quantity.units === 0n &&
+      (unitCost.units !== 0n || suppliedStockValue.units !== 0n)
+    ) throw invalid()
+    const stockValueUnits = decimalSnapshot(() =>
+      deriveStockValueUnits(quantity.units, unitCost.units))
+    result.unitCost = unitCost.value
+    result.unitCostUnits = unitCost.units
+    result.stockValue = decimalSnapshot(() => costUnitsToNumber(stockValueUnits))
+    result.stockValueUnits = stockValueUnits
   }
   return result
 }
@@ -266,7 +261,7 @@ export function buildWarehouseSnapshot(input) {
     balancesByVariant.set(balance.variantId, list)
   }
 
-  const inventory = [...variants]
+  const inventoryDetails = [...variants]
     .sort((left, right) => compareText(left.sku, right.sku) || compareText(left.id, right.id))
     .map((variant) => {
       const item = itemsById.get(variant.itemId)
@@ -277,7 +272,10 @@ export function buildWarehouseSnapshot(input) {
           return compareText(leftLocation.shelfCode, rightLocation.shelfCode) ||
             compareText(left.locationId, right.locationId)
         })
-      const quantity = sumFinite(variantBalances.map((balance) => balance.quantity))
+      const quantityUnits = sumUnits(
+        variantBalances.map((balance) => balance.quantityUnits),
+      )
+      const quantity = decimalSnapshot(() => quantityUnitsToNumber(quantityUnits))
       const locationRows = variantBalances.map((balance) => {
         const location = locationsById.get(balance.locationId)
         const row = {
@@ -304,27 +302,40 @@ export function buildWarehouseSnapshot(input) {
         unit: variant.unit,
         minimumStock: variant.minimumStock,
         quantity,
-        isLowStock: quantity < variant.minimumStock,
+        isLowStock: quantityUnits < variant.minimumStockUnits,
         locations: locationRows,
       }
       if (viewCost) {
-        row.stockValue = sumCosts(variantBalances.map((balance) => balance.stockValue))
-        row.unitCost = quantity > 0 ? roundCost(row.stockValue / quantity) : 0
+        const stockValueUnits = sumUnits(
+          variantBalances.map((balance) => balance.stockValueUnits),
+        )
+        const unitCostUnits = decimalSnapshot(() =>
+          deriveWeightedUnitCostUnits(stockValueUnits, quantityUnits))
+        row.stockValue = decimalSnapshot(() => costUnitsToNumber(stockValueUnits))
+        row.unitCost = decimalSnapshot(() => costUnitsToNumber(unitCostUnits))
+        return { row, quantityUnits, stockValueUnits }
       }
-      return row
+      return { row, quantityUnits, stockValueUnits: 0n }
     })
 
+  const inventory = inventoryDetails.map((detail) => detail.row)
   const lowStock = inventory.filter((row) => row.isLowStock)
+  const totalQuantityUnits = sumUnits(
+    inventoryDetails.map((detail) => detail.quantityUnits),
+  )
   const overview = {
     itemCount: items.length,
     variantCount: variants.length,
     locationCount: locations.length,
     stockedVariantCount: inventory.filter((row) => row.quantity > 0).length,
-    totalQuantity: sumFinite(inventory.map((row) => row.quantity)),
+    totalQuantity: decimalSnapshot(() => quantityUnitsToNumber(totalQuantityUnits)),
     lowStockCount: lowStock.length,
   }
   if (viewCost) {
-    overview.totalStockValue = sumCosts(inventory.map((row) => row.stockValue))
+    const totalStockValueUnits = sumUnits(
+      inventoryDetails.map((detail) => detail.stockValueUnits),
+    )
+    overview.totalStockValue = decimalSnapshot(() => costUnitsToNumber(totalStockValueUnits))
   }
 
   return deepFreeze({ overview, inventory, lowStock })
