@@ -10,6 +10,7 @@ const LOCATION_FIELDS = Object.freeze([
 ])
 const BALANCE_FIELDS = Object.freeze(['variantId', 'warehouseId', 'locationId', 'quantity'])
 const INVALID = '仓库快照数据无效'
+const COST_FACTOR = 10_000
 
 function invalid() {
   return new TypeError(INVALID)
@@ -79,6 +80,55 @@ function finite(value, { nonnegative = false } = {}) {
   return value
 }
 
+function roundCost(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw invalid()
+  const scaled = value * COST_FACTOR
+  if (!Number.isFinite(scaled) || scaled > Number.MAX_SAFE_INTEGER) throw invalid()
+  const epsilon = Number.EPSILON * Math.max(1, scaled) * 4
+  const roundedScaled = Math.floor(scaled + 0.5 + epsilon)
+  if (!Number.isSafeInteger(roundedScaled)) throw invalid()
+  return roundedScaled / COST_FACTOR
+}
+
+function cost(value) {
+  const result = finite(value, { nonnegative: true })
+  const rounded = roundCost(result)
+  const tolerance = Number.EPSILON * Math.max(1, result) * 8
+  if (Math.abs(result - rounded) > tolerance) throw invalid()
+  return rounded
+}
+
+function deriveStockValue(quantity, unitCost) {
+  if (quantity === 0) {
+    if (unitCost !== 0) throw invalid()
+    return 0
+  }
+  const value = quantity * unitCost
+  if (!Number.isFinite(value)) throw invalid()
+  return roundCost(value)
+}
+
+function sumFinite(values) {
+  let total = 0
+  for (const value of values) {
+    total += value
+    if (!Number.isFinite(total)) throw invalid()
+  }
+  return total
+}
+
+function sumCosts(values) {
+  let scaledTotal = 0
+  for (const value of values) {
+    const scaled = Math.round(cost(value) * COST_FACTOR)
+    if (!Number.isSafeInteger(scaled) || !Number.isSafeInteger(scaledTotal + scaled)) {
+      throw invalid()
+    }
+    scaledTotal += scaled
+  }
+  return scaledTotal / COST_FACTOR
+}
+
 function boolean(value) {
   if (typeof value !== 'boolean') throw invalid()
   return value
@@ -125,7 +175,7 @@ function variantValue(value, viewCost) {
     updatedAt: timestamp(row.updatedAt),
   }
   if (viewCost) {
-    result.defaultPurchasePrice = finite(row.defaultPurchasePrice, { nonnegative: true })
+    result.defaultPurchasePrice = cost(row.defaultPurchasePrice)
   }
   return result
 }
@@ -155,8 +205,10 @@ function balanceValue(value, viewCost) {
     quantity: finite(row.quantity, { nonnegative: true }),
   }
   if (viewCost) {
-    result.unitCost = finite(row.unitCost, { nonnegative: true })
-    result.stockValue = finite(row.stockValue, { nonnegative: true })
+    const unitCost = cost(row.unitCost)
+    cost(row.stockValue)
+    result.unitCost = unitCost
+    result.stockValue = deriveStockValue(result.quantity, unitCost)
   }
   return result
 }
@@ -225,7 +277,7 @@ export function buildWarehouseSnapshot(input) {
           return compareText(leftLocation.shelfCode, rightLocation.shelfCode) ||
             compareText(left.locationId, right.locationId)
         })
-      const quantity = variantBalances.reduce((sum, balance) => sum + balance.quantity, 0)
+      const quantity = sumFinite(variantBalances.map((balance) => balance.quantity))
       const locationRows = variantBalances.map((balance) => {
         const location = locationsById.get(balance.locationId)
         const row = {
@@ -256,8 +308,8 @@ export function buildWarehouseSnapshot(input) {
         locations: locationRows,
       }
       if (viewCost) {
-        row.stockValue = variantBalances.reduce((sum, balance) => sum + balance.stockValue, 0)
-        row.unitCost = quantity > 0 ? row.stockValue / quantity : 0
+        row.stockValue = sumCosts(variantBalances.map((balance) => balance.stockValue))
+        row.unitCost = quantity > 0 ? roundCost(row.stockValue / quantity) : 0
       }
       return row
     })
@@ -268,11 +320,11 @@ export function buildWarehouseSnapshot(input) {
     variantCount: variants.length,
     locationCount: locations.length,
     stockedVariantCount: inventory.filter((row) => row.quantity > 0).length,
-    totalQuantity: inventory.reduce((sum, row) => sum + row.quantity, 0),
+    totalQuantity: sumFinite(inventory.map((row) => row.quantity)),
     lowStockCount: lowStock.length,
   }
   if (viewCost) {
-    overview.totalStockValue = inventory.reduce((sum, row) => sum + row.stockValue, 0)
+    overview.totalStockValue = sumCosts(inventory.map((row) => row.stockValue))
   }
 
   return deepFreeze({ overview, inventory, lowStock })

@@ -158,6 +158,48 @@ test('explicit viewCost adds weighted costs without changing low-stock decisions
   ])
 })
 
+test('snapshot derives four-decimal cost values, rounds halves away, and rejects invalid zero cost', () => {
+  const derived = buildWarehouseSnapshot({
+    items: [ITEM_A],
+    variants: [{ ...VARIANT_A, defaultPurchasePrice: 100 }],
+    locations: LOCATIONS,
+    balances: [balance(VARIANT_A.id, LOCATIONS[0].id, 2, { unitCost: 100, stockValue: 999 })],
+    viewCost: true,
+  })
+  assert.equal(derived.inventory[0].locations[0].stockValue, 200)
+  assert.equal(derived.inventory[0].stockValue, 200)
+
+  const halfAway = buildWarehouseSnapshot({
+    items: [ITEM_A],
+    variants: [{ ...VARIANT_A, defaultPurchasePrice: 0 }],
+    locations: LOCATIONS,
+    balances: [balance(VARIANT_A.id, LOCATIONS[0].id, 0.5, { unitCost: 0.0001, stockValue: 0 })],
+    viewCost: true,
+  })
+  assert.equal(halfAway.inventory[0].locations[0].stockValue, 0.0001)
+  assert.equal(halfAway.overview.totalStockValue, 0.0001)
+
+  assert.throws(() => buildWarehouseSnapshot({
+    items: [ITEM_A],
+    variants: [{ ...VARIANT_A, defaultPurchasePrice: 0 }],
+    locations: LOCATIONS,
+    balances: [balance(VARIANT_A.id, LOCATIONS[0].id, 0, { unitCost: 1, stockValue: 0 })],
+    viewCost: true,
+  }), /仓库快照数据无效/u)
+})
+
+test('snapshot fails closed when finite input quantities overflow during aggregation', () => {
+  assert.throws(() => buildWarehouseSnapshot({
+    items: [ITEM_A],
+    variants: [VARIANT_A],
+    locations: LOCATIONS,
+    balances: [
+      balance(VARIANT_A.id, LOCATIONS[0].id, Number.MAX_VALUE),
+      balance(VARIANT_A.id, LOCATIONS[1].id, Number.MAX_VALUE),
+    ],
+  }), /仓库快照数据无效/u)
+})
+
 test('snapshot results are deep frozen copies and do not mutate inputs', () => {
   const items = [{ ...ITEM_A }]
   const variants = [{ ...VARIANT_A }]

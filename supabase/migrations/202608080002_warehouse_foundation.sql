@@ -503,6 +503,48 @@ grant all on table public.warehouse_batch_locations to service_role;
 revoke all on table public.warehouse_inventory_movements from service_role;
 grant select, insert on table public.warehouse_inventory_movements to service_role;
 
+create or replace function private.redact_warehouse_cost_metadata(p_value jsonb)
+returns jsonb
+language plpgsql
+immutable
+strict
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  case jsonb_typeof(p_value)
+    when 'object' then
+      return coalesce((
+        select jsonb_object_agg(
+          entry.key,
+          private.redact_warehouse_cost_metadata(entry.value)
+          order by entry.key
+        )
+        from jsonb_each(p_value) as entry(key, value)
+        where entry.key not in (
+          'unitCost', 'unit_cost',
+          'stockValue', 'stock_value',
+          'defaultPurchasePrice', 'default_purchase_price'
+        )
+      ), '{}'::jsonb);
+    when 'array' then
+      return coalesce((
+        select jsonb_agg(
+          private.redact_warehouse_cost_metadata(element.value)
+          order by element.ordinality
+        )
+        from jsonb_array_elements(p_value) with ordinality
+          as element(value, ordinality)
+      ), '[]'::jsonb);
+    else
+      return p_value;
+  end case;
+end;
+$$;
+
+revoke all on function private.redact_warehouse_cost_metadata(jsonb)
+  from public, anon, authenticated, service_role;
+
 create or replace function public.list_warehouse_catalog_secure()
 returns jsonb
 language plpgsql
@@ -694,7 +736,7 @@ begin
   v_view_cost := public.has_current_permission('warehouse.cost.view');
 
   return coalesce((
-    with balance_rows as (
+    with balance_aggregates as (
       select
         variant.id as variant_id,
         variant.sku,
@@ -703,11 +745,7 @@ begin
         location.id as location_id,
         location.shelf_code,
         sum(balance.quantity)::numeric(18,3) as quantity,
-        case when sum(balance.quantity) > 0 then
-          (sum(balance.quantity * batch.unit_cost) / sum(balance.quantity))::numeric(18,4)
-        else 0::numeric(18,4)
-        end as unit_cost,
-        sum(balance.quantity * batch.unit_cost)::numeric(18,4) as stock_value
+        sum(balance.quantity * batch.unit_cost) as raw_stock_value
       from public.warehouse_batch_locations as balance
       join public.warehouse_batches as batch on batch.id = balance.batch_id
       join public.warehouse_variants as variant on variant.id = batch.variant_id
@@ -719,6 +757,23 @@ begin
       group by
         variant.id, variant.sku, site.id, site.code,
         location.id, location.shelf_code
+    ), balance_rows as (
+      select
+        aggregate.variant_id,
+        aggregate.sku,
+        aggregate.warehouse_id,
+        aggregate.warehouse_code,
+        aggregate.location_id,
+        aggregate.shelf_code,
+        aggregate.quantity,
+        case when aggregate.quantity > 0 then
+          round(
+            aggregate.raw_stock_value / aggregate.quantity,
+            4
+          )::numeric(18,4)
+        else 0::numeric(18,4)
+        end as unit_cost
+      from balance_aggregates as aggregate
     ), paged as (
       select *
       from balance_rows
@@ -735,7 +790,10 @@ begin
       ) || case
         when v_view_cost then jsonb_build_object(
           'unitCost', row.unit_cost,
-          'stockValue', row.stock_value
+          'stockValue', round(
+            row.quantity * row.unit_cost,
+            4
+          )::numeric(18,4)
         )
         else '{}'::jsonb
       end
@@ -916,7 +974,10 @@ begin
         'operatorEmployeeProfileId', movement.operator_employee_profile_id,
         'occurredAt', movement.occurred_at,
         'reversalOfMovementId', movement.reversal_of_movement_id,
-        'metadata', movement.metadata
+        'metadata', case
+          when v_view_cost then movement.metadata
+          else private.redact_warehouse_cost_metadata(movement.metadata)
+        end
       ) || case
         when v_view_cost then jsonb_build_object('unitCost', movement.unit_cost)
         else '{}'::jsonb

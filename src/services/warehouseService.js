@@ -29,6 +29,15 @@ const SAFE_ERRORS = Object.freeze({
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOVEMENT_TYPE_SET = new Set(Object.values(MOVEMENT_TYPES))
+const COST_FACTOR = 10_000
+const SENSITIVE_COST_KEYS = new Set([
+  'unitCost',
+  'unit_cost',
+  'stockValue',
+  'stock_value',
+  'defaultPurchasePrice',
+  'default_purchase_price',
+])
 const ITEM_FIELDS = Object.freeze([
   'id', 'name', 'category', 'brand', 'description', 'active', 'createdAt', 'updatedAt',
 ])
@@ -174,6 +183,38 @@ function finiteNumber(value, { nonnegative = false } = {}) {
   return value
 }
 
+function roundCost(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw invalidResponse()
+  }
+  const scaled = value * COST_FACTOR
+  if (!Number.isFinite(scaled) || scaled > Number.MAX_SAFE_INTEGER) {
+    throw invalidResponse()
+  }
+  const epsilon = Number.EPSILON * Math.max(1, scaled) * 4
+  const roundedScaled = Math.floor(scaled + 0.5 + epsilon)
+  if (!Number.isSafeInteger(roundedScaled)) throw invalidResponse()
+  return roundedScaled / COST_FACTOR
+}
+
+function costNumber(value) {
+  const cost = finiteNumber(value, { nonnegative: true })
+  const rounded = roundCost(cost)
+  const tolerance = Number.EPSILON * Math.max(1, cost) * 8
+  if (Math.abs(cost - rounded) > tolerance) throw invalidResponse()
+  return rounded
+}
+
+function deriveStockValue(quantity, unitCost) {
+  if (quantity === 0) {
+    if (unitCost !== 0) throw invalidResponse()
+    return 0
+  }
+  const value = quantity * unitCost
+  if (!Number.isFinite(value)) throw invalidResponse()
+  return roundCost(value)
+}
+
 function booleanValue(value) {
   if (typeof value !== 'boolean') throw invalidResponse()
   return value
@@ -185,20 +226,21 @@ function timestampValue(value) {
   return text
 }
 
-function cloneJsonValue(value) {
+function cloneJsonValue(value, allowCost) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw invalidResponse()
     return value
   }
-  if (Array.isArray(value)) return exactArray(value).map(cloneJsonValue)
+  if (Array.isArray(value)) {
+    return exactArray(value).map((entry) => cloneJsonValue(entry, allowCost))
+  }
   const descriptors = ownDataDescriptors(value)
   if (!descriptors) throw invalidResponse()
-  const output = {}
-  for (const key of Object.keys(descriptors).sort()) {
-    output[key] = cloneJsonValue(descriptors[key].value)
-  }
-  return output
+  return Object.fromEntries(Object.keys(descriptors).sort().map((key) => {
+    if (!allowCost && SENSITIVE_COST_KEYS.has(key)) throw invalidResponse()
+    return [key, cloneJsonValue(descriptors[key].value, allowCost)]
+  }))
 }
 
 function deepFreeze(value) {
@@ -275,7 +317,7 @@ function validateVariant(candidate, viewCost) {
     updatedAt: timestampValue(row.updatedAt),
   }
   if (viewCost) {
-    result.defaultPurchasePrice = finiteNumber(row.defaultPurchasePrice, { nonnegative: true })
+    result.defaultPurchasePrice = costNumber(row.defaultPurchasePrice)
   }
   return result
 }
@@ -336,8 +378,10 @@ function validateBalance(candidate, viewCost) {
     quantity: finiteNumber(row.quantity, { nonnegative: true }),
   }
   if (viewCost) {
-    result.unitCost = finiteNumber(row.unitCost, { nonnegative: true })
-    result.stockValue = finiteNumber(row.stockValue, { nonnegative: true })
+    const unitCost = costNumber(row.unitCost)
+    costNumber(row.stockValue)
+    result.unitCost = unitCost
+    result.stockValue = deriveStockValue(result.quantity, unitCost)
   }
   return result
 }
@@ -371,9 +415,9 @@ function validateMovement(candidate, viewCost) {
     operatorEmployeeProfileId: uuidValue(row.operatorEmployeeProfileId),
     occurredAt: timestampValue(row.occurredAt),
     reversalOfMovementId: nullableUuid(row.reversalOfMovementId),
-    metadata: cloneJsonValue(row.metadata),
+    metadata: cloneJsonValue(row.metadata, viewCost),
   }
-  if (viewCost) result.unitCost = finiteNumber(row.unitCost, { nonnegative: true })
+  if (viewCost) result.unitCost = costNumber(row.unitCost)
   return result
 }
 
@@ -381,11 +425,23 @@ function validateMovements(value, viewCost) {
   return deepFreeze(exactArray(value).map((row) => validateMovement(row, viewCost)))
 }
 
+function primitiveSupplierStatus(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && Number.isSafeInteger(value) ? value : null
+  }
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/u.test(value)) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && Number.isSafeInteger(parsed) ? parsed : null
+}
+
 function normalizeSupplierError(error, responseStatus) {
   if (error instanceof WarehouseServiceError) return error
-  const status = Number(responseStatus ?? ownDataValue(error, 'status'))
+  const responsePrimitive = primitiveSupplierStatus(responseStatus)
+  const status = responsePrimitive ?? primitiveSupplierStatus(ownDataValue(error, 'status'))
   const rawCode = ownDataValue(error, 'code')
-  const code = typeof rawCode === 'string' ? rawCode.toUpperCase() : ''
+  const code = typeof rawCode === 'string' && rawCode.length <= 32
+    ? rawCode.toUpperCase()
+    : ''
   if (status === 401 || ['PGRST301', 'JWT_EXPIRED'].includes(code)) {
     return fail('AUTH_SESSION_INVALID', { authInvalid: true })
   }

@@ -8,6 +8,23 @@ select has_function('public', 'list_warehouse_catalog_secure', array[]::text[]);
 select has_function('public', 'list_warehouse_locations_secure', array[]::text[]);
 select has_function('public', 'list_warehouse_balances_secure', array['jsonb']);
 select has_function('public', 'list_warehouse_movements_secure', array['jsonb']);
+select has_function('private', 'redact_warehouse_cost_metadata', array['jsonb']);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_proc procedure
+    where procedure.oid = to_regprocedure('private.redact_warehouse_cost_metadata(jsonb)')
+      and procedure.provolatile = 'i'
+      and procedure.prosecdef
+      and procedure.proconfig @> array['search_path=pg_catalog']
+      and not has_function_privilege('authenticated', procedure.oid, 'EXECUTE')
+      and not has_function_privilege('anon', procedure.oid, 'EXECUTE')
+      and not has_function_privilege('service_role', procedure.oid, 'EXECUTE')
+  ),
+  1,
+  'metadata cost redactor is immutable, fixed-path and not executable by API roles'
+);
 
 select is(
   (
@@ -78,11 +95,15 @@ insert into public.warehouse_batches(
 ) values
   ('a4000000-0000-4000-8000-000000000002', 'a3000000-0000-4000-8000-000000000001', '2026-08-07T00:00:00Z', 120.0000, 5),
   ('a4000000-0000-4000-8000-000000000001', 'a3000000-0000-4000-8000-000000000001', '2026-08-06T00:00:00Z', 100.0000, 10),
-  ('a4000000-0000-4000-8000-000000000003', 'a3000000-0000-4000-8000-000000000002', '2026-08-08T00:00:00Z', 25.5000, 6);
+  ('a4000000-0000-4000-8000-000000000003', 'a3000000-0000-4000-8000-000000000002', '2026-08-08T00:00:00Z', 25.5000, 6),
+  ('a4000000-0000-4000-8000-000000000004', 'a3000000-0000-4000-8000-000000000001', '2026-08-08T00:00:00Z', 120.0000, 5),
+  ('a4000000-0000-4000-8000-000000000005', 'a3000000-0000-4000-8000-000000000002', '2026-08-08T01:00:00Z', 30.0000, 1);
 insert into public.warehouse_batch_locations(batch_id, location_id, quantity) values
   ('a4000000-0000-4000-8000-000000000002', 'a1000000-0000-4000-8000-000000000002', 5),
   ('a4000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001', 10),
-  ('a4000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000003', 6);
+  ('a4000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000003', 6),
+  ('a4000000-0000-4000-8000-000000000004', 'a1000000-0000-4000-8000-000000000001', 5),
+  ('a4000000-0000-4000-8000-000000000005', 'a1000000-0000-4000-8000-000000000002', 0);
 
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -121,7 +142,17 @@ insert into public.warehouse_inventory_movements(
    'a0000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000002',
    -2, 120, 'stock_out', 'OUT-1', 'TASK5-IDEMPOTENCY-2',
    'small_job', 'SMALL-1', '空调小工事', 'a6000000-0000-4000-8000-000000000002',
-   '2026-08-07T00:00:00Z', '{"sequence":2}'::jsonb);
+   '2026-08-07T00:00:00Z', '{
+     "sequence": 2,
+     "pricing": {
+       "unitCost": 120,
+       "unit_cost": 120,
+       "nested": [
+         {"stockValue": 240, "stock_value": 240, "label": "keep"},
+         {"defaultPurchasePrice": 118, "default_purchase_price": 118}
+       ]
+     }
+   }'::jsonb);
 
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000003', true);
@@ -170,7 +201,7 @@ select is(
 );
 select is(
   jsonb_array_length(public.list_warehouse_balances_secure()),
-  3,
+  4,
   'balance list defaults to a validated first page'
 );
 select is(
@@ -193,7 +224,7 @@ select is(
   jsonb_array_length(public.list_warehouse_balances_secure(
     jsonb_build_object('page', 2, 'pageSize', 2)
   )),
-  1,
+  2,
   'balance pagination uses a maximum-bounded deterministic page'
 );
 select is(
@@ -202,8 +233,14 @@ select is(
   'movements use occurred-at descending stable ordering'
 );
 select ok(
-  public.list_warehouse_movements_secure()::text !~ 'unitCost|stockValue',
-  'movements do not serialize cost keys without exact cost permission'
+  public.list_warehouse_movements_secure()::text !~
+    'unitCost|unit_cost|stockValue|stock_value|defaultPurchasePrice|default_purchase_price',
+  'movements recursively remove every cost key without exact cost permission'
+);
+select is(
+  public.list_warehouse_movements_secure()->0->'metadata',
+  '{"sequence":2,"pricing":{"nested":[{"label":"keep"},{}]}}'::jsonb,
+  'movement metadata preserves safe nested structure while removing cost keys'
 );
 select is(
   jsonb_array_length(public.list_warehouse_movements_secure(
@@ -238,8 +275,8 @@ select is(
       'locationId', 'a1000000-0000-4000-8000-000000000001'
     )
   )->0->>'unitCost')::numeric,
-  100.0000,
-  'balance weighted unit cost appears for exact cost permission'
+  106.6667,
+  'balance weighted unit cost uses all batches at a location'
 );
 select is(
   (public.list_warehouse_balances_secure(
@@ -248,13 +285,45 @@ select is(
       'locationId', 'a1000000-0000-4000-8000-000000000001'
     )
   )->0->>'stockValue')::numeric,
-  1000.0000,
-  'balance stock value appears for exact cost permission'
+  1600.0005,
+  'balance stock value is four-decimal and consistent with quantity times unit cost'
+);
+select is(
+  public.list_warehouse_balances_secure(
+    jsonb_build_object(
+      'variantId', 'a3000000-0000-4000-8000-000000000002',
+      'locationId', 'a1000000-0000-4000-8000-000000000002'
+    )
+  )->0,
+  jsonb_build_object(
+    'variantId', 'a3000000-0000-4000-8000-000000000002',
+    'warehouseId', 'a0000000-0000-4000-8000-000000000001',
+    'locationId', 'a1000000-0000-4000-8000-000000000002',
+    'quantity', 0.000,
+    'unitCost', 0.0000,
+    'stockValue', 0.0000
+  ),
+  'zero-quantity balances have zero weighted unit cost and stock value'
 );
 select is(
   (public.list_warehouse_movements_secure()->0->>'unitCost')::numeric,
   120.0000,
   'movement historical unit cost appears for exact cost permission'
+);
+select is(
+  public.list_warehouse_movements_secure()->0->'metadata',
+  '{
+    "sequence": 2,
+    "pricing": {
+      "unitCost": 120,
+      "unit_cost": 120,
+      "nested": [
+        {"stockValue": 240, "stock_value": 240, "label": "keep"},
+        {"defaultPurchasePrice": 118, "default_purchase_price": 118}
+      ]
+    }
+  }'::jsonb,
+  'cost-authorized movement reads preserve original metadata exactly'
 );
 
 select lives_ok(

@@ -190,6 +190,40 @@ test('the four read methods call only their exact secure RPCs and return deep im
   assert.equal(MOVEMENT.metadata.note, '首次入库')
 })
 
+test('metadata cloning preserves dangerous JSON keys as frozen own data without prototype mutation', async () => {
+  const metadata = JSON.parse(
+    '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"nested":{"__proto__":"kept"}}',
+  )
+  const { client } = rpcClient({
+    list_warehouse_movements_secure: {
+      data: [{ ...MOVEMENT, metadata }],
+      error: null,
+    },
+  })
+
+  const [movement] = await createWarehouseService(client, { configured: true }).listMovements()
+  const returned = movement.metadata
+
+  assert.equal(Object.getPrototypeOf(returned), Object.prototype)
+  assert.equal(Object.getPrototypeOf(returned.nested), Object.prototype)
+  for (const [object, key] of [
+    [returned, '__proto__'],
+    [returned, 'constructor'],
+    [returned.nested, '__proto__'],
+  ]) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key)
+    assert.equal(descriptor?.enumerable, true)
+    assert.equal('value' in descriptor, true)
+    assert.equal(typeof descriptor.get, 'undefined')
+  }
+  assert.deepEqual(returned.__proto__, { polluted: true })
+  assert.deepEqual(returned.constructor, { prototype: { polluted: true } })
+  assert.equal(returned.nested.__proto__, 'kept')
+  assert.equal(Object.isFrozen(returned.__proto__), true)
+  assert.equal(Object.prototype.polluted, undefined)
+  assert.equal(({}).polluted, undefined)
+})
+
 test('balance and movement filters are normalized to exact server payloads', async () => {
   const { client, calls } = rpcClient({
     list_warehouse_balances_secure: { data: [], error: null },
@@ -326,6 +360,60 @@ test('inherited and accessor supplier signals fail closed without invoking unsaf
   assert.equal(rpcGetterCalls, 0)
 })
 
+test('supplier statuses use trusted primitives only and never execute coercion hooks', async () => {
+  let coercionCalls = 0
+  const hostileStatus = {
+    valueOf() {
+      coercionCalls += 1
+      throw new Error('private valueOf detail')
+    },
+    toString() {
+      coercionCalls += 1
+      throw new Error('private toString detail')
+    },
+    [Symbol.toPrimitive]() {
+      coercionCalls += 1
+      throw new Error('private primitive detail')
+    },
+  }
+  const unsupported = [hostileStatus, Symbol('401'), 401n, () => 401]
+  for (const status of unsupported) {
+    const { client } = rpcClient({
+      list_warehouse_catalog_secure: { data: null, error: { status } },
+    })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).listCatalog(),
+      safeError('WAREHOUSE_SERVICE_UNAVAILABLE', 503),
+    )
+  }
+  assert.equal(coercionCalls, 0)
+
+  for (const status of [' 401', '0401', '+401', '401.0', '4.01e2']) {
+    const { client } = rpcClient({
+      list_warehouse_catalog_secure: { data: null, error: { status } },
+    })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).listCatalog(),
+      safeError('WAREHOUSE_SERVICE_UNAVAILABLE', 503),
+    )
+  }
+
+  for (const [status, code, safeStatus, authInvalid] of [
+    [401, 'AUTH_SESSION_INVALID', 401, true],
+    ['401', 'AUTH_SESSION_INVALID', 401, true],
+    [403, 'ACCESS_DENIED', 403, false],
+    ['403', 'ACCESS_DENIED', 403, false],
+  ]) {
+    const { client } = rpcClient({
+      list_warehouse_catalog_secure: { data: null, error: { status } },
+    })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).listCatalog(),
+      safeError(code, safeStatus, authInvalid),
+    )
+  }
+})
+
 test('strict response validation rejects non-plain containers, accessors, extra keys and wrong field types', async () => {
   let getterCalls = 0
   const accessorItem = { ...ITEM }
@@ -399,6 +487,74 @@ test('cost fields are rejected unless viewCost is explicit and accepted only as 
     createWarehouseService(invalidCostClient, { configured: true, viewCost: true }).listBalances(),
     safeError('WAREHOUSE_INVALID_RESPONSE', 502),
   )
+})
+
+test('cost balances derive four-decimal stock value and reject invalid zero-quantity cost semantics', async () => {
+  const { client } = rpcClient({
+    list_warehouse_balances_secure: {
+      data: [{ ...BALANCE, quantity: 2, unitCost: 100, stockValue: 999 }],
+      error: null,
+    },
+  })
+  assert.deepEqual(
+    await createWarehouseService(client, { configured: true, viewCost: true }).listBalances(),
+    [{ ...BALANCE, quantity: 2, unitCost: 100, stockValue: 200 }],
+  )
+
+  const halfAwayClient = rpcClient({
+    list_warehouse_balances_secure: {
+      data: [{ ...BALANCE, quantity: 0.5, unitCost: 0.0001, stockValue: 0 }],
+      error: null,
+    },
+  }).client
+  assert.equal(
+    (await createWarehouseService(
+      halfAwayClient,
+      { configured: true, viewCost: true },
+    ).listBalances())[0].stockValue,
+    0.0001,
+  )
+
+  const zeroClient = rpcClient({
+    list_warehouse_balances_secure: {
+      data: [{ ...BALANCE, quantity: 0, unitCost: 1, stockValue: 0 }],
+      error: null,
+    },
+  }).client
+  await assert.rejects(
+    createWarehouseService(zeroClient, { configured: true, viewCost: true }).listBalances(),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+})
+
+test('movement metadata rejects nested cost keys without permission and preserves them with permission', async () => {
+  const metadata = {
+    safe: 'keep',
+    nested: [
+      { unitCost: 1, unit_cost: 2 },
+      { deeper: { stockValue: 3, stock_value: 4 } },
+      { defaultPurchasePrice: 5, default_purchase_price: 6 },
+    ],
+  }
+  const movement = { ...MOVEMENT, metadata }
+  const results = {
+    list_warehouse_movements_secure: { data: [movement], error: null },
+  }
+
+  await assert.rejects(
+    createWarehouseService(rpcClient(results).client, { configured: true }).listMovements(),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+
+  const costMovement = { ...movement, unitCost: 120.5 }
+  const { client } = rpcClient({
+    list_warehouse_movements_secure: { data: [costMovement], error: null },
+  })
+  const [returned] = await createWarehouseService(
+    client,
+    { configured: true, viewCost: true },
+  ).listMovements()
+  assert.deepEqual(returned.metadata, metadata)
 })
 
 test('service options are a closed plain-object contract', () => {
