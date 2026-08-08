@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { parse } from '@babel/parser'
-import { WarehouseServiceError } from '../../services/warehouseService.js'
+import {
+  WarehouseServiceError,
+  createWarehouseService,
+} from '../../services/warehouseService.js'
 
 import {
   PurchaseWarehouseBridgeError,
@@ -89,6 +92,53 @@ test('arrival submission delegates to the secure pending receipt service without
     }],
   }])
   assert.equal(result, receipt)
+})
+
+test('bridge accepts a cost-redacted terminal exact retry and rejects a cost-bearing terminal response', async () => {
+  const terminal = {
+    ...receipt,
+    status: 'confirmed',
+    confirmedByEmployeeProfileId: EMPLOYEE_ID,
+    confirmedAt: '2026-08-09T01:00:00.000Z',
+    lines: [{
+      ...receipt.lines[0], confirmedQuantity: 2,
+      warehouseId: '86000000-0000-4000-8000-000000000001',
+      locationId: '87000000-0000-4000-8000-000000000001',
+    }],
+  }
+  const input = {
+    purchaseRecordKey: 'PO-001', variantId: VARIANT_ID,
+    requestedQuantity: 2, idempotencyKey: 'arrival-001',
+  }
+  const bridgeFor = (data, viewCost = false) => {
+    const rpcClient = {
+      async rpc(name) {
+        if (name === 'submit_warehouse_receipt_secure') {
+          return { data, error: null, status: 200 }
+        }
+        return { data: contextPayload(), error: null, status: 200 }
+      },
+    }
+    return createPurchaseWarehouseBridge({
+      warehouseService: createWarehouseService(
+        rpcClient,
+        { configured: true, viewCost },
+      ),
+      rpcClient,
+      configured: true,
+    })
+  }
+
+  assert.deepEqual(await bridgeFor(terminal).submitWarehouseArrival(input), terminal)
+  await assert.rejects(
+    bridgeFor({
+      ...terminal,
+      lines: [{ ...terminal.lines[0], unitCost: 100 }],
+    }, true).submitWarehouseArrival(input),
+    (error) => error instanceof PurchaseWarehouseBridgeError &&
+      error.code === 'PURCHASE_ARRIVAL_FAILED' &&
+      !/100|cost|price/iu.test(error.message),
+  )
 })
 
 test('arrival context validates and freezes server-authoritative active variants and purchase quantities', async () => {
@@ -224,6 +274,11 @@ test('bridge rejects extra authority, non-positive quantities and malformed iden
 
 test('App purchase arrival source cannot call the legacy immediate-inventory RPC path', async () => {
   const source = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
+  const summaryStart = source.indexOf('function PurchaseSummarySection({')
+  const summaryEnd = source.indexOf('\nfunction PurchaseCard({', summaryStart)
+  assert.notEqual(summaryStart, -1)
+  assert.notEqual(summaryEnd, -1)
+  const summarySource = source.slice(summaryStart, summaryEnd)
   const ast = parse(source, { sourceType: 'module', plugins: ['jsx'] })
   let legacyCalls = 0
   let arrivalBridgeCalls = 0
@@ -258,4 +313,8 @@ test('App purchase arrival source cannot call the legacy immediate-inventory RPC
   assert.match(source, /arrivalContextStatus=\{arrivalContext\.status\}/u)
   assert.match(source, /disabled=\{!arrivalStatusReady\}/u)
   assert.match(source, /状态暂不可用/u)
+  assert.doesNotMatch(summarySource, /getPurchaseStockInStatus|stockInRecords/u)
+  assert.match(summarySource, /resolvePurchaseArrivalStatus/u)
+  assert.match(summarySource, /待仓库确认采购数量/u)
+  assert.match(summarySource, /入库状态暂不可用/u)
 })

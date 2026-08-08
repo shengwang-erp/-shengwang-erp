@@ -1096,6 +1096,97 @@ test('pending workflow responses cannot expose costs even when warehouse cost pe
     ).submitReceipt(input),
     safeError('WAREHOUSE_INVALID_RESPONSE', 502),
   )
+
+  const confirmedWithCost = {
+    ...receipt,
+    status: 'confirmed',
+    confirmedByEmployeeProfileId: IDS.operator,
+    confirmedAt: '2026-08-09T01:00:00Z',
+    lines: [{
+      ...receipt.lines[0], confirmedQuantity: 1,
+      warehouseId: IDS.site, locationId: IDS.location, unitCost: 100,
+    }],
+  }
+  await assert.rejects(
+    createWarehouseService(
+      rpcClient({
+        submit_warehouse_receipt_secure: {
+          data: confirmedWithCost, error: null, status: 200,
+        },
+      }).client,
+      { configured: true, viewCost: true },
+    ).submitReceipt(input),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+})
+
+test('warehouse receipt exact retries accept safe terminal states while binding immutable request identity', async () => {
+  const input = {
+    purchaseRecordKey: 'BUY-TERMINAL', idempotencyKey: 'receipt-terminal',
+    lines: [{
+      variantId: IDS.variant, requestedQuantity: 2,
+      warehouseId: null, locationId: null,
+    }],
+  }
+  const base = {
+    id: IDS.receipt, purchaseRecordKey: 'BUY-TERMINAL', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'receipt-terminal',
+    lines: [{
+      id: IDS.stockOutLine, receiptId: IDS.receipt, variantId: IDS.variant,
+      requestedQuantity: 2, confirmedQuantity: null,
+      warehouseId: null, locationId: null, unitCost: null,
+    }],
+  }
+  const terminalCases = [
+    {
+      ...base, status: 'confirmed', confirmedByEmployeeProfileId: IDS.operator,
+      confirmedAt: '2026-08-09T01:00:00Z',
+      lines: [{
+        ...base.lines[0], confirmedQuantity: 2,
+        warehouseId: IDS.site, locationId: IDS.location,
+      }],
+    },
+    {
+      ...base, status: 'rejected', confirmedByEmployeeProfileId: IDS.operator,
+      confirmedAt: '2026-08-09T01:00:00Z', rejectionReason: '数量不符',
+    },
+    {
+      ...base, status: 'void', confirmedByEmployeeProfileId: IDS.operator,
+      confirmedAt: '2026-08-09T01:00:00Z', rejectionReason: '确认前撤销',
+    },
+    {
+      ...base, status: 'void', confirmedByEmployeeProfileId: IDS.operator,
+      confirmedAt: '2026-08-09T01:00:00Z', rejectionReason: '确认后冲销',
+      lines: [{
+        ...base.lines[0], confirmedQuantity: 2,
+        warehouseId: IDS.site, locationId: IDS.location,
+      }],
+    },
+  ]
+  const serviceFor = (data) => createWarehouseService(rpcClient({
+    submit_warehouse_receipt_secure: { data, error: null, status: 200 },
+  }).client, { configured: true })
+
+  for (const terminal of terminalCases) {
+    assert.deepEqual(await serviceFor(terminal).submitReceipt(input), terminal)
+  }
+  for (const forged of [
+    {
+      ...terminalCases[0],
+      lines: [{ ...terminalCases[0].lines[0], requestedQuantity: 1 }],
+    },
+    {
+      ...terminalCases[0],
+      lines: [{ ...terminalCases[0].lines[0], variantId: IDS.variant2 }],
+    },
+  ]) {
+    await assert.rejects(
+      serviceFor(forged).submitReceipt(input),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
 })
 
 test('workflow submission binds the normalized request to the exact returned document and line set', async () => {

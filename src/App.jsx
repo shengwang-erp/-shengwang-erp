@@ -1096,21 +1096,6 @@ function formatOriginalAmount(value, currency) {
     : formatYen(amount)
 }
 
-function getPurchaseStockInQuantity(purchaseId, stockInRecords) {
-  return stockInRecords
-    .filter((record) => record.sourcePurchaseId === purchaseId)
-    .reduce((total, record) => total + (Number(record.stockInQuantity) || 0), 0)
-}
-
-function getPurchaseStockInStatus(purchase, stockInRecords) {
-  const stockInQuantity = getPurchaseStockInQuantity(purchase.purchaseId, stockInRecords)
-  const quantity = Number(purchase.quantity) || 0
-
-  if (stockInQuantity <= 0) return '未入库'
-  if (stockInQuantity < quantity) return '部分入库'
-  return '已入库'
-}
-
 function getPurchaseArrivalSummary(purchaseId, arrivalPurchases) {
   return Array.isArray(arrivalPurchases)
     ? arrivalPurchases.find((row) => row.purchaseRecordKey === purchaseId) || null
@@ -7471,8 +7456,8 @@ export function PurchaseManagementPage({
       {visibleSection === 'summary' && (
         <PurchaseSummarySection
           purchaseRecords={purchaseRecords}
-          stockInRecords={stockInRecords}
           inventoryItems={inventoryItems}
+          arrivalContext={arrivalContext}
           paymentVisible={paymentReady}
           paymentState={purchasePaymentState}
         />
@@ -7872,6 +7857,8 @@ function PurchaseStockInSection({
             type="number"
             value={form.requestedQuantity}
             onChange={(value) => updateForm({ requestedQuantity: value })}
+            min="0.001"
+            step="0.001"
             disabled={arrivalContext?.status !== 'ready' || submitting}
             required
           />
@@ -8098,8 +8085,8 @@ function PurchasePaymentSection({
 
 function PurchaseSummarySection({
   purchaseRecords,
-  stockInRecords,
   inventoryItems,
+  arrivalContext,
   paymentVisible = true,
   paymentState,
 }) {
@@ -8111,8 +8098,20 @@ function PurchaseSummarySection({
   const unpaid = activePurchases.reduce((sum, record) => sum + toAmount(record.unpaidAmount), 0)
   const showPayments = paymentVisible &&
     (paymentState === undefined || paymentState?.status === 'ready')
+  const arrivalPurchases = arrivalContext?.purchases
+  const arrivalStatusReady = arrivalContext?.status === 'ready' &&
+    Array.isArray(arrivalPurchases) &&
+    activePurchases.every((record) => resolvePurchaseArrivalStatus(
+      arrivalContext.status,
+      record.purchaseId,
+      arrivalPurchases,
+    ) !== '状态暂不可用')
   const stockStatusCount = (status) =>
-    activePurchases.filter((record) => getPurchaseStockInStatus(record, stockInRecords) === status).length
+    activePurchases.filter((record) => resolvePurchaseArrivalStatus(
+      arrivalContext.status,
+      record.purchaseId,
+      arrivalPurchases,
+    ) === status).length
   const inventoryTotal = inventoryItems.reduce((sum, item) => sum + toAmount(item.totalCost), 0)
 
   return (
@@ -8130,9 +8129,14 @@ function PurchaseSummarySection({
         {showPayments && (
           <div className="stat-card money"><strong>{formatYen(unpaid)}</strong><span>未付款采购金额</span></div>
         )}
-        <div className="stat-card"><strong>{stockStatusCount('未入库')}</strong><span>未入库采购数量</span></div>
-        <div className="stat-card"><strong>{stockStatusCount('部分入库')}</strong><span>部分入库采购数量</span></div>
-        <div className="stat-card"><strong>{stockStatusCount('已入库')}</strong><span>已入库采购数量</span></div>
+        {arrivalStatusReady ? <>
+          <div className="stat-card"><strong>{stockStatusCount('未入库')}</strong><span>未入库采购数量</span></div>
+          <div className="stat-card"><strong>{stockStatusCount('待仓库确认')}</strong><span>待仓库确认采购数量</span></div>
+          <div className="stat-card"><strong>{stockStatusCount('部分入库')}</strong><span>部分入库采购数量</span></div>
+          <div className="stat-card"><strong>{stockStatusCount('已入库')}</strong><span>已入库采购数量</span></div>
+        </> : (
+          <div className="stat-card"><strong>--</strong><span>入库状态暂不可用</span></div>
+        )}
         <div className="stat-card money"><strong>{formatYen(inventoryTotal)}</strong><span>仓库库存总成本</span></div>
       </div>
     </section>
@@ -8966,6 +8970,8 @@ function Field({
   placeholder,
   required = false,
   disabled = false,
+  min,
+  step,
 }) {
   return (
     <label className="field">
@@ -8987,6 +8993,8 @@ function Field({
           placeholder={placeholder}
           required={required}
           disabled={disabled}
+          min={min}
+          step={step}
         />
       )}
     </label>

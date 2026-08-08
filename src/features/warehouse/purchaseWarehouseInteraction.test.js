@@ -37,6 +37,10 @@ async function loadArrivalComponents() {
             'function PurchaseStockInSection({',
             'export function PurchaseStockInSection({',
           )
+          .replace(
+            'function PurchaseSummarySection({',
+            'export function PurchaseSummarySection({',
+          )
       },
     }],
     ssr: { noExternal: ['leaflet'] },
@@ -46,7 +50,11 @@ async function loadArrivalComponents() {
   finally { await server.close() }
 }
 
-const { PurchaseListSection, PurchaseStockInSection } = await loadArrivalComponents()
+const {
+  PurchaseListSection,
+  PurchaseStockInSection,
+  PurchaseSummarySection,
+} = await loadArrivalComponents()
 
 function elements(root, predicate, result = []) {
   if (root?.nodeType === 1 && predicate(root)) result.push(root)
@@ -134,6 +142,47 @@ test('arrival loading/error UI disables controls and never labels unknown data a
   }
 })
 
+test('purchase summary uses authoritative arrival status and fails closed when it is unavailable', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const statusCard = (label) => elements(container, (element) =>
+    element.className.split(/\s+/u).includes('stat-card') &&
+    element.textContent.endsWith(label))[0]
+  try {
+    await act(async () => { root.render(createElement(PurchaseSummarySection, {
+      purchaseRecords: [purchase],
+      stockInRecords: [{ sourcePurchaseId: 'PO-001', stockInQuantity: 5 }],
+      inventoryItems: [], paymentVisible: false,
+      arrivalContext: {
+        ...readyContext,
+        purchases: [{
+          ...readyContext.purchases[0], pendingQuantity: 2, remainingQuantity: 3,
+          hasReceipt: true,
+        }],
+      },
+    })) })
+    assert.equal(statusCard('未入库采购数量').textContent, '0未入库采购数量')
+    assert.equal(statusCard('待仓库确认采购数量').textContent, '1待仓库确认采购数量')
+    assert.equal(statusCard('部分入库采购数量').textContent, '0部分入库采购数量')
+    assert.equal(statusCard('已入库采购数量').textContent, '0已入库采购数量')
+
+    await act(async () => { root.render(createElement(PurchaseSummarySection, {
+      purchaseRecords: [purchase], stockInRecords: [], inventoryItems: [],
+      paymentVisible: false,
+      arrivalContext: { status: 'error', variants: [], purchases: [] },
+    })) })
+    assert.match(container.textContent, /入库状态暂不可用/u)
+    assert.equal(statusCard('未入库采购数量'), undefined)
+    assert.equal(statusCard('待仓库确认采购数量'), undefined)
+    assert.equal(statusCard('部分入库采购数量'), undefined)
+    assert.equal(statusCard('已入库采购数量'), undefined)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('arrival interaction retries the same exact request and refreshes only after success', async () => {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
@@ -160,14 +209,17 @@ test('arrival interaction retries the same exact request and refreshes only afte
     })) })
     await change(field(container, '采购记录'), 'PO-001')
     await change(field(container, '仓库物品型号'), variant.id)
-    await change(field(container, '本次到货数量'), '2.5')
+    const quantityField = field(container, '本次到货数量')
+    assert.equal(quantityField.getAttribute('min'), '0.001')
+    assert.equal(quantityField.getAttribute('step'), '0.001')
+    await change(quantityField, '2.125')
     const arrivalForm = elements(container, (element) => element.nodeName === 'FORM')[0]
 
     await submit(arrivalForm)
     assert.equal(calls.length, 1)
     assert.deepEqual(calls[0], {
       purchaseRecordKey: 'PO-001', variantId: variant.id,
-      requestedQuantity: 2.5, idempotencyKey: 'arrival-stable-random-id',
+      requestedQuantity: 2.125, idempotencyKey: 'arrival-stable-random-id',
     })
     assert.equal(field(container, '采购记录').disabled, true)
     assert.equal(field(container, '仓库物品型号').disabled, true)
@@ -180,7 +232,7 @@ test('arrival interaction retries the same exact request and refreshes only afte
     assert.equal(errors.length, 1)
     assert.doesNotMatch(container.textContent, /当前库存尚未增加/u)
     assert.equal(field(container, '采购记录').value, 'PO-001')
-    assert.equal(field(container, '本次到货数量').value, '2.5')
+    assert.equal(field(container, '本次到货数量').value, '2.125')
 
     await submit(arrivalForm)
     await act(async () => {})

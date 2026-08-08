@@ -46,6 +46,40 @@ exception when others then
 end;
 $$;
 
+create or replace function pg_temp.task2_terminal_retry_violation(
+  p_purchase_record_key text,
+  p_idempotency_key text,
+  p_expected_id uuid,
+  p_expected_status text
+)
+returns text
+language plpgsql
+as $$
+declare payload jsonb;
+begin
+  payload := public.submit_warehouse_receipt_secure(
+    p_purchase_record_key,
+    '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+    p_idempotency_key
+  );
+  if payload->>'id' is distinct from p_expected_id::text
+    or payload->>'status' is distinct from p_expected_status
+  then
+    return 'terminal retry identity or status mismatch';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(payload->'lines') entry
+    where not (entry ? 'unitCost')
+      or entry->'unitCost' is distinct from 'null'::jsonb
+  ) then
+    return 'terminal retry exposed unit cost';
+  end if;
+  return null;
+exception when others then
+  return sqlstate || ':' || sqlerrm;
+end;
+$$;
+
 select has_table('public', 'warehouse_receipts', 'pending receipts table exists');
 select has_table('public', 'warehouse_receipt_lines', 'pending receipt lines table exists');
 select has_table('public', 'warehouse_stock_out_requests', 'pending stock-out table exists');
@@ -411,6 +445,117 @@ select is(
   $statement$),
   'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT',
   'the same arrival idempotency key cannot be reused for different content'
+);
+reset role;
+insert into public.purchase_records(record_key, payload, status) values
+  ('PO-WF-RETRY-CONFIRMED', '{"purchaseId":"PO-WF-RETRY-CONFIRMED","itemName":"空调铜管","quantity":1,"unit":"米"}', 'active'),
+  ('PO-WF-RETRY-REJECTED', '{"purchaseId":"PO-WF-RETRY-REJECTED","itemName":"空调铜管","quantity":1,"unit":"米"}', 'active'),
+  ('PO-WF-RETRY-VOID-BEFORE', '{"purchaseId":"PO-WF-RETRY-VOID-BEFORE","itemName":"空调铜管","quantity":1,"unit":"米"}', 'active'),
+  ('PO-WF-RETRY-VOID-AFTER', '{"purchaseId":"PO-WF-RETRY-VOID-AFTER","itemName":"空调铜管","quantity":1,"unit":"米"}', 'active');
+set local role authenticated;
+create temporary table retry_confirmed as
+select public.submit_warehouse_receipt_secure(
+  'PO-WF-RETRY-CONFIRMED',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  'receipt-retry-confirmed'
+) as payload;
+create temporary table retry_rejected as
+select public.submit_warehouse_receipt_secure(
+  'PO-WF-RETRY-REJECTED',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  'receipt-retry-rejected'
+) as payload;
+create temporary table retry_void_before as
+select public.submit_warehouse_receipt_secure(
+  'PO-WF-RETRY-VOID-BEFORE',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  'receipt-retry-void-before'
+) as payload;
+create temporary table retry_void_after as
+select public.submit_warehouse_receipt_secure(
+  'PO-WF-RETRY-VOID-AFTER',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  'receipt-retry-void-after'
+) as payload;
+reset role;
+update public.warehouse_receipt_lines
+set confirmed_quantity = 1,
+    warehouse_id = 'd0000000-0000-4000-8000-000000000001',
+    location_id = 'd0100000-0000-4000-8000-000000000001',
+    unit_cost = 100
+where receipt_id = (select (payload->>'id')::uuid from retry_confirmed);
+update public.warehouse_receipts
+set status = 'confirmed',
+    confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+    confirmed_at = statement_timestamp()
+where id = (select (payload->>'id')::uuid from retry_confirmed);
+update public.warehouse_receipts
+set status = 'rejected',
+    confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+    confirmed_at = statement_timestamp(),
+    rejection_reason = '数量不符'
+where id = (select (payload->>'id')::uuid from retry_rejected);
+update public.warehouse_receipts
+set status = 'void',
+    confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+    confirmed_at = statement_timestamp(),
+    rejection_reason = '确认前撤销'
+where id = (select (payload->>'id')::uuid from retry_void_before);
+update public.warehouse_receipt_lines
+set confirmed_quantity = 1,
+    warehouse_id = 'd0000000-0000-4000-8000-000000000001',
+    location_id = 'd0100000-0000-4000-8000-000000000001',
+    unit_cost = 120
+where receipt_id = (select (payload->>'id')::uuid from retry_void_after);
+update public.warehouse_receipts
+set status = 'void',
+    confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+    confirmed_at = statement_timestamp(),
+    rejection_reason = '确认后冲销'
+where id = (select (payload->>'id')::uuid from retry_void_after);
+set local role authenticated;
+select is(
+  pg_temp.task2_terminal_retry_violation(
+    'PO-WF-RETRY-CONFIRMED', 'receipt-retry-confirmed',
+    (select (payload->>'id')::uuid from retry_confirmed), 'confirmed'
+  ),
+  null,
+  'an exact confirmed receipt retry returns the same cost-redacted terminal document'
+);
+select is(
+  pg_temp.task2_terminal_retry_violation(
+    'PO-WF-RETRY-REJECTED', 'receipt-retry-rejected',
+    (select (payload->>'id')::uuid from retry_rejected), 'rejected'
+  ),
+  null,
+  'an exact rejected receipt retry returns the same cost-redacted terminal document'
+);
+select is(
+  pg_temp.task2_terminal_retry_violation(
+    'PO-WF-RETRY-VOID-BEFORE', 'receipt-retry-void-before',
+    (select (payload->>'id')::uuid from retry_void_before), 'void'
+  ),
+  null,
+  'an exact void-before-confirmation retry returns the same cost-redacted terminal document'
+);
+select is(
+  pg_temp.task2_terminal_retry_violation(
+    'PO-WF-RETRY-VOID-AFTER', 'receipt-retry-void-after',
+    (select (payload->>'id')::uuid from retry_void_after), 'void'
+  ),
+  null,
+  'an exact void-after-confirmation retry returns the same cost-redacted terminal document'
+);
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_receipt_secure(
+      'PO-WF-RETRY-CONFIRMED',
+      '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5,"warehouseId":null,"locationId":null}]',
+      'receipt-retry-confirmed'
+    )
+  $statement$),
+  'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT',
+  'a terminal receipt idempotency key still rejects a conflicting canonical payload'
 );
 select is(
   pg_temp.task1_error_hint($statement$

@@ -776,17 +776,38 @@ function bindMinorAssignmentResponse(candidate, request) {
 }
 
 function bindReceiptResponse(candidate, request, viewCost) {
-  const result = requirePendingDocument(validateReceipt(candidate, viewCost))
+  const result = validateReceipt(candidate, viewCost)
+  const allConfirmed = result.lines.every((line) => line.confirmedQuantity !== null)
+  const noneConfirmed = result.lines.every((line) => line.confirmedQuantity === null)
+  const pendingAudit = result.confirmedByEmployeeProfileId === null &&
+    result.confirmedAt === null && result.rejectionReason === null
+  const terminalAudit = result.confirmedByEmployeeProfileId !== null &&
+    result.confirmedAt !== null
+  const validState = (
+    result.status === 'pending' && pendingAudit && noneConfirmed
+  ) || (
+    result.status === 'confirmed' && terminalAudit &&
+    result.rejectionReason === null && allConfirmed
+  ) || (
+    result.status === 'rejected' && terminalAudit &&
+    result.rejectionReason !== null && noneConfirmed
+  ) || (
+    result.status === 'void' && terminalAudit &&
+    result.rejectionReason !== null && (allConfirmed || noneConfirmed)
+  )
   if (
+    !validState ||
     result.purchaseRecordKey !== request.p_purchase_record_key ||
     result.idempotencyKey !== request.p_idempotency_key ||
-    result.lines.some((line) =>
-      line.confirmedQuantity !== null || line.unitCost !== null ||
-      ((line.warehouseId === null) !== (line.locationId === null)))
+    result.lines.some((line) => line.unitCost !== null)
   ) throw invalidResponse()
-  sameLineSet(result.lines, request.p_lines, [
-    'variantId', 'requestedQuantity', 'warehouseId', 'locationId',
-  ])
+  sameLineSet(
+    result.lines,
+    request.p_lines,
+    result.status === 'pending'
+      ? ['variantId', 'requestedQuantity', 'warehouseId', 'locationId']
+      : ['variantId', 'requestedQuantity'],
+  )
   return result
 }
 

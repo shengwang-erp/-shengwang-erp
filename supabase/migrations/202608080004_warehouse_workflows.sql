@@ -870,6 +870,33 @@ as $$
   ) from public.warehouse_receipts receipt where receipt.id = p_id
 $$;
 
+create or replace function private.warehouse_receipt_submission_json(p_id uuid)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'id', receipt.id, 'purchaseRecordKey', receipt.purchase_record_key,
+    'status', receipt.status,
+    'submittedByEmployeeProfileId', receipt.submitted_by_employee_profile_id,
+    'submittedAt', receipt.submitted_at,
+    'confirmedByEmployeeProfileId', receipt.confirmed_by_employee_profile_id,
+    'confirmedAt', receipt.confirmed_at, 'rejectionReason', receipt.rejection_reason,
+    'idempotencyKey', receipt.idempotency_key,
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', line.id, 'receiptId', line.receipt_id, 'variantId', line.variant_id,
+        'requestedQuantity', line.requested_quantity,
+        'confirmedQuantity', line.confirmed_quantity,
+        'warehouseId', line.warehouse_id, 'locationId', line.location_id,
+        'unitCost', null
+      ) order by line.id)
+      from public.warehouse_receipt_lines line where line.receipt_id = receipt.id
+    ), '[]'::jsonb)
+  ) from public.warehouse_receipts receipt where receipt.id = p_id
+$$;
+
 create or replace function private.warehouse_stock_out_json(p_id uuid)
 returns jsonb
 language sql
@@ -1078,9 +1105,8 @@ begin
   if found then
     if existing_receipt.purchase_record_key = p_purchase_record_key
       and existing_receipt.submission_payload = canonical_payload
-      and existing_receipt.status = 'pending'
     then
-      return private.warehouse_receipt_json(existing_receipt.id);
+      return private.warehouse_receipt_submission_json(existing_receipt.id);
     end if;
     raise exception using errcode = '23505', message = 'warehouse workflow idempotency conflict',
       hint = 'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT';
@@ -1162,7 +1188,7 @@ begin
     case when jsonb_typeof(value->'locationId') = 'string'
       then (value->>'locationId')::uuid else null end
   from jsonb_array_elements(p_lines);
-  return private.warehouse_receipt_json(saved_id);
+  return private.warehouse_receipt_submission_json(saved_id);
 end;
 $$;
 
@@ -1421,6 +1447,7 @@ revoke all on function private.check_warehouse_return_document_state() from publ
 revoke all on function private.reject_warehouse_destination_mutation() from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_minor_work_order_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_receipt_json(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_receipt_submission_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_stock_out_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_return_json(uuid) from public, anon, authenticated, service_role;
 
