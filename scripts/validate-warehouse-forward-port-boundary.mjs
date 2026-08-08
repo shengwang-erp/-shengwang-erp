@@ -152,6 +152,75 @@ function isBrowserGlobal(node) {
   return node?.type === 'Identifier' && ['globalThis', 'window', 'self'].includes(node.name)
 }
 
+function walkAst(node, visitor, parent = null, parentKey = '') {
+  if (!node || typeof node !== 'object') return
+  visitor(node, parent, parentKey)
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
+    if (Array.isArray(value)) {
+      for (const child of value) walkAst(child, visitor, node, key)
+    } else if (value && typeof value === 'object') {
+      walkAst(value, visitor, node, key)
+    }
+  }
+}
+
+function resolveStaticString(node, stringConstants) {
+  const literal = stringLiteralValue(node)
+  if (literal !== null) return literal
+  if (node?.type === 'Identifier') return stringConstants.get(node.name) ?? null
+  if (node?.type === 'BinaryExpression' && node.operator === '+') {
+    const left = resolveStaticString(node.left, stringConstants)
+    const right = resolveStaticString(node.right, stringConstants)
+    if (left !== null && right !== null) return left + right
+  }
+  return null
+}
+
+function resolvesToBrowserGlobal(node, browserGlobalConstants) {
+  return isBrowserGlobal(node) || (
+    node?.type === 'Identifier' && browserGlobalConstants.has(node.name)
+  )
+}
+
+function resolveConstBindings(ast) {
+  const bindings = new Map()
+  walkAst(ast, (node, parent) => {
+    if (
+      node.type === 'VariableDeclarator'
+      && parent?.type === 'VariableDeclaration'
+      && parent.kind === 'const'
+      && node.id?.type === 'Identifier'
+    ) {
+      bindings.set(node.id.name, node.init)
+    }
+  })
+
+  const stringConstants = new Map()
+  const browserGlobalConstants = new Set()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, initializer] of bindings) {
+      if (!stringConstants.has(name)) {
+        const value = resolveStaticString(initializer, stringConstants)
+        if (value !== null) {
+          stringConstants.set(name, value)
+          changed = true
+        }
+      }
+      if (
+        !browserGlobalConstants.has(name)
+        && resolvesToBrowserGlobal(initializer, browserGlobalConstants)
+      ) {
+        browserGlobalConstants.add(name)
+        changed = true
+      }
+    }
+  }
+  return { stringConstants, browserGlobalConstants }
+}
+
 function propertyNamesLocalStorage(property, stringConstants) {
   if (!property) return false
   if (!property.computed && property.key?.type === 'Identifier') {
@@ -166,26 +235,28 @@ function propertyNamesLocalStorage(property, stringConstants) {
   )
 }
 
-function isLocalStorageReference(node, parent, parentKey, stringConstants) {
+function isLocalStorageReference(
+  node,
+  parent,
+  parentKey,
+  stringConstants,
+  browserGlobalConstants,
+) {
   if (
     node.type === 'VariableDeclarator'
     && node.id?.type === 'ObjectPattern'
-    && isBrowserGlobal(node.init)
+    && resolvesToBrowserGlobal(node.init, browserGlobalConstants)
   ) {
     return node.id.properties.some((property) => propertyNamesLocalStorage(property, stringConstants))
   }
   if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
     const property = node.property
-    return (
-      (!node.computed && property?.type === 'Identifier' && property.name === 'localStorage')
-      || (node.computed && stringLiteralValue(property) === 'localStorage')
-      || (
-        node.computed
-        && isBrowserGlobal(node.object)
-        && property?.type === 'Identifier'
-        && stringConstants.get(property.name) === 'localStorage'
-      )
-    )
+    if (!node.computed) {
+      return property?.type === 'Identifier' && property.name === 'localStorage'
+    }
+    if (!resolvesToBrowserGlobal(node.object, browserGlobalConstants)) return false
+    const propertyName = resolveStaticString(property, stringConstants)
+    return propertyName === null || propertyName === 'localStorage'
   }
   if (node.type !== 'Identifier' || node.name !== 'localStorage') return false
   if (
@@ -215,19 +286,9 @@ function analyzeModule(source, file) {
 
   const dependencies = []
   const unresolvedDependencies = []
-  const stringConstants = new Map()
+  const { stringConstants, browserGlobalConstants } = resolveConstBindings(ast)
   let usesLocalStorage = false
-  const visit = (node, parent = null, parentKey = '') => {
-    if (!node || typeof node !== 'object') return
-    if (
-      node.type === 'VariableDeclarator'
-      && parent?.type === 'VariableDeclaration'
-      && parent.kind === 'const'
-      && node.id?.type === 'Identifier'
-    ) {
-      const value = stringLiteralValue(node.init)
-      if (value !== null) stringConstants.set(node.id.name, value)
-    }
+  walkAst(ast, (node, parent, parentKey) => {
     if (
       node.type === 'ImportDeclaration'
       || node.type === 'ExportNamedDeclaration'
@@ -262,18 +323,17 @@ function analyzeModule(source, file) {
         )
       }
     }
-    if (isLocalStorageReference(node, parent, parentKey, stringConstants)) usesLocalStorage = true
+    if (
+      isLocalStorageReference(
+        node,
+        parent,
+        parentKey,
+        stringConstants,
+        browserGlobalConstants,
+      )
+    ) usesLocalStorage = true
 
-    for (const [key, value] of Object.entries(node)) {
-      if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
-      if (Array.isArray(value)) {
-        for (const child of value) visit(child, node, key)
-      } else if (value && typeof value === 'object') {
-        visit(value, node, key)
-      }
-    }
-  }
-  visit(ast)
+  })
   return {
     dependencies: [...new Set(dependencies)],
     unresolvedDependencies: [...new Set(unresolvedDependencies)],
@@ -432,6 +492,26 @@ async function resolveDependencyFile(basePath) {
   return basePath
 }
 
+async function validateDestinationRealPath(destination, realDestinationPath, warehouseRoot) {
+  const { entry, destinationPath } = destination
+  if (entry.destinationKind === 'adapter') {
+    if (realDestinationPath !== destinationPath) {
+      fail(`Adapter destination realpath must match declared path: ${entry.destination}`)
+    }
+    return
+  }
+
+  let realWarehouseRoot
+  try {
+    realWarehouseRoot = await realpath(warehouseRoot)
+  } catch {
+    fail(`Warehouse destination realpath must stay under src/features/warehouse/: ${entry.destination}`)
+  }
+  if (realWarehouseRoot !== warehouseRoot || !isInside(realWarehouseRoot, realDestinationPath)) {
+    fail(`Warehouse destination realpath must stay under src/features/warehouse/: ${entry.destination}`)
+  }
+}
+
 async function auditDestination(manifest, destinationRootValue, destinationStage) {
   const destinationRoot = await realDirectory(destinationRootValue, 'destination')
   const warehouseRoot = path.resolve(destinationRoot, 'src/features/warehouse')
@@ -465,6 +545,7 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
       `Missing destination: ${entry.destination}`,
       `Destination path escapes destination root: ${entry.destination}`,
     )
+    await validateDestinationRealPath(destination, destination.realDestinationPath, warehouseRoot)
   }
 
   const forbiddenModules = moduleForbiddenSet(manifest, 'destination')
@@ -484,6 +565,7 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
         `Missing destination: ${current}`,
         `Destination path escapes destination root: ${current}`,
       )
+      await validateDestinationRealPath(destination, destination.realDestinationPath, warehouseRoot)
     }
     const analysis = await readModule(destination.realDestinationPath, current)
     if (analysis.unresolvedDependencies.length > 0) {
@@ -515,7 +597,9 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
         `Missing dependency: ${current} -> ${dependency}`,
         `Dependency path escapes destination root: ${current} -> ${dependency}`,
       )
-      destinations.get(dependency).realDestinationPath = realDependencyPath
+      const dependencyDestination = destinations.get(dependency)
+      await validateDestinationRealPath(dependencyDestination, realDependencyPath, warehouseRoot)
+      dependencyDestination.realDestinationPath = realDependencyPath
       queue.push(dependency)
     }
   }
