@@ -10,18 +10,22 @@ import LoginPage from './LoginPage.jsx'
 import { runCoalescedSessionValidation } from './authGateSession.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
-const localDemoCredentials = { employeeNumber: 'SW-000', password: '320086' }
-const localDemoUser = {
-  employeeNumber: 'SW-000',
-  employeeId: 'SW-000',
-  name: 'システム管理者',
-  department: '总务部',
-  position: '社长',
-  employmentStatus: '在职',
-  accountStatus: 'active',
-  mustChangePassword: false,
-  effectivePermissionKeys: ['module.projects.view', 'module.projects.create', 'module.projects.update'],
-}
+const localDemoCredentials = import.meta.env.DEV
+  ? { employeeNumber: 'SW-000', password: '320086' }
+  : null
+const localDemoUser = import.meta.env.DEV
+  ? {
+      employeeNumber: 'SW-000',
+      employeeId: 'SW-000',
+      name: 'システム管理者',
+      department: '总务部',
+      position: '社长',
+      employmentStatus: '在职',
+      accountStatus: 'active',
+      mustChangePassword: false,
+      effectivePermissionKeys: ['module.projects.view', 'module.projects.create', 'module.projects.update'],
+    }
+  : null
 
 const TERMINAL_AUTH_ERROR_CODES = new Set([
   'ACCOUNT_DISABLED',

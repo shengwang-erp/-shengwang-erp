@@ -17,6 +17,8 @@
 **Files:**
 - Read-only deployment source: `/private/tmp/shengwang-deployment-source-dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN`
 - Create: `docs/superpowers/handoffs/2026-08-08-deployed-second-version-baseline.md`
+- Create: `docs/superpowers/handoffs/2026-08-08-deployed-second-version-source-manifest.json`
+- Create: `docs/superpowers/handoffs/2026-08-08-local-demo-security-exception.md`
 - Create: `.superpowers/sdd/2026-08-08-warehouse-ledger-foundation/task-00-report.md`
 - Modify: this plan, the roadmap, the warehouse design, and the warehouse checkpoint
 
@@ -32,31 +34,34 @@
 - Create: `docs/warehouse-forward-port-manifest.json`
 - Create: `scripts/validate-warehouse-forward-port-boundary.mjs`
 - Create: `scripts/validate-warehouse-forward-port-boundary.test.mjs`
-- Create fixtures: `scripts/fixtures/warehouse-forward-port-boundary/{valid,indirect-forbidden,dynamic-forbidden,path-escape,local-storage}/`
+- Create fixtures: `scripts/fixtures/warehouse-forward-port-boundary/{source-valid,destination-valid,missing-destination,indirect-forbidden,dynamic-forbidden,path-escape,local-storage}/`
 - Read-only reference: `/Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management/src/features/warehouse/`
 
-- [ ] Write fixture-based behavior tests that execute the validator as a process. The valid fixture must exit 0; fixtures containing a direct import, transitive import, dynamic import, path escape, or runtime `localStorage` dependency must exit nonzero with the exact offending edge and file.
-- [ ] Implement an executable dependency-boundary validator that loads the manifest, resolves every declared source/destination path, parses module imports and global references, traverses the complete destination dependency graph, and rejects undeclared or forbidden edges. Do not implement the boundary as grep or raw source-token assertions.
+- [ ] Write fixture-based behavior tests that execute the validator as a process. `source-valid` must pass `--audit-source` even when no destination files exist. `destination-valid` must pass `--audit-destination`; `missing-destination` must fail it with the exact absent path. Fixtures containing a direct import, transitive import, dynamic import, path escape, or runtime `localStorage` dependency must exit nonzero with the exact offending edge and file.
+- [ ] Implement explicit `--audit-source` and `--audit-destination` modes. Source audit loads the manifest, requires every source path under the read-only warehouse root, parses each declared source module, and verifies that pure-copy dependencies are warehouse-local and classified; it does not resolve or require destination files. Destination audit requires every selected destination path to exist before traversing its complete dependency graph and rejecting undeclared or forbidden edges. Do not implement the boundary as grep or raw source-token assertions.
 - [ ] Keep the forbidden dependency semantics unchanged: source `App.jsx`, `authSession`, `sessionOperationFence`, `cloudPersistenceCoordinator`, `baseRecordService`, and `localStorage` remain forbidden. Every source path must resolve under `src/features/warehouse/`; every destination must resolve to a warehouse-owned path or an explicitly declared second-version adapter.
-- [ ] Add a manifest with four arrays: `pureCopy`, `adapt`, `rewrite`, and `forbidden`. Put `warehouseDate.js`, `warehouseQr.js`, `warehouseCatalog.js`, `warehouseDomain.js`, `warehousePage.js`, and `warehouseAccounting.js` in `pureCopy`; place React components, CSS, media, export, and operations in `adapt`; place permissions and confirmation service in `rewrite`; list all source shared files in `forbidden`.
-- [ ] Run `node --test scripts/validate-warehouse-forward-port-boundary.test.mjs` and `node scripts/validate-warehouse-forward-port-boundary.mjs --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management --destination-root .`; confirm both green.
+- [ ] Add a manifest with four arrays: `pureCopy`, `adapt`, `rewrite`, and `forbidden`. Put `warehouseDate.js`, `warehouseQr.js`, `warehouseCatalog.js`, `warehouseDomain.js`, `warehousePage.js`, and `warehouseAccounting.js` in `pureCopy`; place React components, CSS, media, export, and operations in `adapt`; put `warehouseConstants.js`, permissions, and confirmation service in `rewrite`; list all source shared files in `forbidden`. Record a destination stage on each entry so later destination audits can select only files whose implementation task is complete. The source audit must record that three pure modules depend on the declared rewrite `warehouseConstants.js`, whose source import of `../../utils/permissions.js` is precisely why constants are not `pureCopy`.
+- [ ] Run `node --test scripts/validate-warehouse-forward-port-boundary.test.mjs` and `node scripts/validate-warehouse-forward-port-boundary.mjs --audit-source --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management`; confirm both green. Do not run the real destination audit in Task 1 because its selected destination files do not exist yet.
 - [ ] Commit with message `test: lock warehouse forward-port boundary`.
 
 ### Task 2: Port pure warehouse rules without old runtime dependencies
 
 **Files:**
+- Create: `src/features/warehouse/warehouseConstants.js`
 - Create: `src/features/warehouse/warehouseDate.js`
 - Create: `src/features/warehouse/warehouseQr.js`
 - Create: `src/features/warehouse/warehouseCatalog.js`
 - Create: `src/features/warehouse/warehouseDomain.js`
 - Create: `src/features/warehouse/warehousePage.js`
 - Create: `src/features/warehouse/warehouseAccounting.js`
-- Create/adapt tests: `src/features/warehouse/warehouseDate.test.js`, `warehouseQr.test.js`, `warehouseCatalog.test.js`, `warehouseDomain.test.js`, `warehousePage.test.js`, `warehouseAccounting.test.js`
+- Create/adapt tests: `src/features/warehouse/warehouseConstants.test.js`, `warehouseDate.test.js`, `warehouseQr.test.js`, `warehouseCatalog.test.js`, `warehouseDomain.test.js`, `warehousePage.test.js`, `warehouseAccounting.test.js`
 
-- [ ] Copy the six whitelisted pure modules from the read-only source, preserving behavior but removing any import that is not relative to `src/features/warehouse/`.
+- [ ] First write a failing constants contract, then create a second-version-owned `warehouseConstants.js`. Preserve neutral warehouse status/movement constants, define the roadmap's stable warehouse action keys locally, and import nothing from the first-version `src/utils/permissions.js`. This is an intentional rewrite, not a byte-for-byte copy.
+- [ ] Only after the rewritten constants contract passes, copy the six whitelisted pure modules byte-for-byte from the read-only source. Their existing relative imports may resolve to the new second-version-owned constants; do not rewrite those pure modules to reach first-version shared code.
 - [ ] Port focused tests for finite/nonnegative quantities, FIFO across two prices, historical cost snapshot, partial return at original cost, transfer conservation, stocktake differences, deterministic reversal ids, SKU/QR normalization, and Tokyo dates.
-- [ ] Add a contract test asserting no pure module imports React, Supabase, storage, `App.jsx`, or a service under `src/services/`.
-- [ ] Run `node --test src/features/warehouse/warehouseDate.test.js src/features/warehouse/warehouseQr.test.js src/features/warehouse/warehouseCatalog.test.js src/features/warehouse/warehouseDomain.test.js src/features/warehouse/warehousePage.test.js src/features/warehouse/warehouseAccounting.test.js`.
+- [ ] Add a contract test asserting the rewritten constants and all pure modules import no React, Supabase, storage, `App.jsx`, source shared permission file, or service under `src/services/`.
+- [ ] After all seven Task 2 destination files exist, run `node scripts/validate-warehouse-forward-port-boundary.mjs --audit-destination --destination-stage phase-1-pure --manifest docs/warehouse-forward-port-manifest.json --destination-root .`. This audit must fail if any selected destination is absent before it traverses dependencies.
+- [ ] Run `node --test src/features/warehouse/warehouseConstants.test.js src/features/warehouse/warehouseDate.test.js src/features/warehouse/warehouseQr.test.js src/features/warehouse/warehouseCatalog.test.js src/features/warehouse/warehouseDomain.test.js src/features/warehouse/warehousePage.test.js src/features/warehouse/warehouseAccounting.test.js`.
 - [ ] Commit with message `feat: port isolated warehouse domain rules`.
 
 ### Task 3: Add second-version warehouse action permissions
@@ -125,7 +130,8 @@
 ## Phase 1 completion gate
 
 - [ ] The Task 0 provenance audit still accounts for the exact recovered deployment baseline; later diffs are reviewed against the Task 0 baseline commit, not `d5953c5` alone.
-- [ ] `node scripts/validate-warehouse-forward-port-boundary.mjs --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management --destination-root .` proves the destination dependency graph contains no forbidden first-version auth/session/persistence dependency.
+- [ ] `node scripts/validate-warehouse-forward-port-boundary.mjs --audit-source --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management` proves every source entry exists and is classified without requiring unimplemented destinations.
+- [ ] `node scripts/validate-warehouse-forward-port-boundary.mjs --audit-destination --destination-stage phase-1-pure --manifest docs/warehouse-forward-port-manifest.json --destination-root .` requires every selected destination to exist and proves its complete dependency graph contains no forbidden first-version auth/session/persistence dependency.
 - [ ] `npm test` passes.
 - [ ] `npm run build` passes.
 - [ ] `npx supabase db reset` passes against the isolated local project.

@@ -1,0 +1,1425 @@
+{
+  "deploymentId": "dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN",
+  "deploymentCreatedAt": "2026-08-05T19:01:38+09:00",
+  "scope": "shengwang-erp",
+  "recoveredAt": "2026-08-08T06:00:17.479Z",
+  "sourceManifestSha256": "e326437ba23a2be495f47ce89184fe3942b8117c74568502522d4487405b0ad4",
+  "fileCount": 283,
+  "files": [
+    {
+      "path": "README.md",
+      "sha1": "ad7f71d913f5f423ef209482f08526cdfb2d9f65",
+      "bytes": 6061
+    },
+    {
+      "path": "public/WW_verify_6dPENCZThRf7NfmR.txt",
+      "sha1": "43c47baa643addc99003d652ce5bdb7d6d010c6c",
+      "bytes": 16
+    },
+    {
+      "path": "public/apple-touch-icon-152x152.png",
+      "sha1": "9f329ffe9f410454091bf9a702a43550946bf634",
+      "bytes": 26617
+    },
+    {
+      "path": "public/apple-touch-icon-167x167.png",
+      "sha1": "d51c465bda536e9b779e3a09915406a5bf7794e8",
+      "bytes": 32382
+    },
+    {
+      "path": "public/apple-touch-icon.png",
+      "sha1": "0f11522924d997238ebf71f0f21acda54340b67c",
+      "bytes": 37063
+    },
+    {
+      "path": "public/favicon-32x32.png",
+      "sha1": "cc722917953e084b2b043abbeac86ffaf6f041c1",
+      "bytes": 2188
+    },
+    {
+      "path": "public/manifest.webmanifest",
+      "sha1": "b99df8b2d864bf79aa5cb98dae1a87c1b561ea35",
+      "bytes": 359
+    },
+    {
+      "path": "public/pwa-192x192.png",
+      "sha1": "801a7d71b03530a519437f8c781e68ca0c8a2462",
+      "bytes": 41210
+    },
+    {
+      "path": "public/pwa-512x512.png",
+      "sha1": "c4eb2fe4ba86442eb629f86d496b9038641497e2",
+      "bytes": 177286
+    },
+    {
+      "path": "public/sw-erp-logo.jpg",
+      "sha1": "234b2731efff6de026c8405d984e6d07cb5c53f2",
+      "bytes": 106398
+    },
+    {
+      "path": "docs/attendance-accounting-operations.md",
+      "sha1": "50eeb1acac7b7fb154cbe0d8afcddd1e0eed5fef",
+      "bytes": 9998
+    },
+    {
+      "path": "docs/migrations/2026-07-14-contract-revenue-chain.sql",
+      "sha1": "c9bcbeb09f40be2dd3b78f8dab916f6752c4729c",
+      "bytes": 2572
+    },
+    {
+      "path": "docs/supabase-schema.md",
+      "sha1": "3f8d6159f1071c5656a1d7ccb07bd1c96a4cbeff",
+      "bytes": 20153
+    },
+    {
+      "path": "docs/supabase-schema.sql",
+      "sha1": "3849256b4e54d555fe440730765506b9b224c790",
+      "bytes": 204667
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-14-employee-auth-and-permissions.md",
+      "sha1": "82d690d497b5a3d0eac6588bad13410f3a48cfda",
+      "bytes": 17482
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-15-project-core-location-financial-security.md",
+      "sha1": "5271b5b9a1384d7235a11fd997709999d9f3a874",
+      "bytes": 96077
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-15-project-documents.md",
+      "sha1": "d7fe9fecc12d77db134d472ef7167a28b57d954e",
+      "bytes": 91883
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-15-project-file-archive.md",
+      "sha1": "3037ee46cb7a3334f27ca7288a80c73f707aa6b6",
+      "bytes": 91951
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-15-today-attendance-site-log.md",
+      "sha1": "d7c80c21f8303aed9bbcd1f83dd34aa7d618301d",
+      "bytes": 222621
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-16-attendance-payroll-project-labor-dashboard.md",
+      "sha1": "b4fb134191aebd8bf3b245d2a9ea01a7ff350f4d",
+      "bytes": 45158
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-16-black-gold-erp-dashboard-implementation.md",
+      "sha1": "b25b2dff9a9baf8b3ef2824735356c583a079276",
+      "bytes": 92096
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-16-purchase-accounting-data-link.md",
+      "sha1": "8660081094ed8761cebabe2c6987c788a1c1cf0d",
+      "bytes": 12099
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-19-production-auth-backup-deploy.md",
+      "sha1": "263e94ffb7ef46f8b51fd37e846becd08b1b1ab3",
+      "bytes": 11696
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-05-accounting-gold-text.md",
+      "sha1": "0c37e1ff1d11bbe5cc13003290bf5d07c9bf3d8a",
+      "bytes": 5916
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-14-employee-auth-and-permissions-design.md",
+      "sha1": "163b2f75aad2ce0cdb62fc7f06e07b12707e9555",
+      "bytes": 20930
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-15-project-file-archive-permanent-storage-design.md",
+      "sha1": "3abb55ebae41a34dd9a7fd92b5cde18e4ed6fa8b",
+      "bytes": 41762
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-15-project-page-location-roles-financials-documents-design.md",
+      "sha1": "9819d7a2322860adb35fb6f987023c8175947498",
+      "bytes": 18721
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-15-today-attendance-site-log-design.md",
+      "sha1": "b8660f5f650c413f3f00692e517d924440d548f5",
+      "bytes": 21789
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-16-attendance-payroll-project-labor-dashboard-design.md",
+      "sha1": "662c10738a46189ea3c1d57a458929f52e0b909b",
+      "bytes": 21354
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-16-black-gold-erp-dashboard-design.md",
+      "sha1": "f5d87238d7637798fba0758d496fa4f0b1ea273c",
+      "bytes": 26267
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-16-purchase-accounting-data-link-design.md",
+      "sha1": "f707a0e92705babc88cb3507e4fb9b6114aa2bf6",
+      "bytes": 6340
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-05-accounting-gold-text-design.md",
+      "sha1": "13360400e47b61079e175561e58ac61c9b10da04",
+      "bytes": 1586
+    },
+    {
+      "path": "docs/today-attendance-operations.md",
+      "sha1": "4a32a196a34481ea7a1327e19fa021ec2b9c7ec1",
+      "bytes": 15260
+    },
+    {
+      "path": "index.html",
+      "sha1": "969b47f2b709f1f48b01ecd45dcec8cf1d909403",
+      "bytes": 780
+    },
+    {
+      "path": "local-session-seed.html",
+      "sha1": "36195157d4105513e527d598c67cb98291d722b5",
+      "bytes": 1796
+    },
+    {
+      "path": "package-lock.json",
+      "sha1": "f23cded2c0b7a961fb6bf7911574c22eab5c44a3",
+      "bytes": 92956
+    },
+    {
+      "path": "package.json",
+      "sha1": "0ad2d0954ded4a73d6b119f15acbf02959f24b83",
+      "bytes": 579
+    },
+    {
+      "path": "scripts/bootstrap-sw000.mjs",
+      "sha1": "ed7c306b2666e78231bf3a3c34d35668374f74da",
+      "bytes": 3211
+    },
+    {
+      "path": "src/App.jsx",
+      "sha1": "53e8a0fb8cbcfb92f8b8d9de6a0bf19de132952c",
+      "bytes": 352920
+    },
+    {
+      "path": "src/DesktopAdminShell.jsx",
+      "sha1": "8a516e7a24f253c5b9d99995fa396e9a56823d9f",
+      "bytes": 4136
+    },
+    {
+      "path": "src/auth/AuthGate.jsx",
+      "sha1": "99e0f6218958920bbb404fa0b6ea4922b2a49b00",
+      "bytes": 7233
+    },
+    {
+      "path": "src/auth/ChangeTemporaryPasswordPage.jsx",
+      "sha1": "af7758e6fda75b821c181e93499e4dfb7bceb753",
+      "bytes": 4324
+    },
+    {
+      "path": "src/auth/LoginPage.jsx",
+      "sha1": "4e7a4145a56cc4070254080d9ddf7f38279810d0",
+      "bytes": 2892
+    },
+    {
+      "path": "src/auth/authGateSession.js",
+      "sha1": "b9fba1517e5b8f8221c9cdcf6196fc7c86ab669f",
+      "bytes": 648
+    },
+    {
+      "path": "src/auth/authGateSession.test.js",
+      "sha1": "a684098fd720667feed9adc9ca1398c61a495e82",
+      "bytes": 1761
+    },
+    {
+      "path": "src/auth/businessAccess.js",
+      "sha1": "eccde48d300691fc105d0ef474afbd837c9a2bb1",
+      "bytes": 9472
+    },
+    {
+      "path": "src/auth/businessAccess.test.js",
+      "sha1": "880f7bc725f81623939a405651b657671bb30d51",
+      "bytes": 14292
+    },
+    {
+      "path": "src/auth/businessAccessIntegration.test.js",
+      "sha1": "2a39aa1b80500ad368433646e02401a97502e349",
+      "bytes": 39655
+    },
+    {
+      "path": "src/auth/employeeAuthDomain.js",
+      "sha1": "e557058b43e25ceee6a78ade083cfd33adcd7ac3",
+      "bytes": 4143
+    },
+    {
+      "path": "src/auth/employeeAuthDomain.test.js",
+      "sha1": "5f3fdae796da02ba57e4d6d80637d04e6a736e3f",
+      "bytes": 7353
+    },
+    {
+      "path": "src/auth/frontendAuthContract.test.js",
+      "sha1": "981d7b49493c79e1bac6e9d01bf14faceaf9e601",
+      "bytes": 5620
+    },
+    {
+      "path": "src/auth/permissionCatalog.js",
+      "sha1": "c9a16d040c45b837a1dac9cca1f6c684ff1be73b",
+      "bytes": 3262
+    },
+    {
+      "path": "src/auth/presidentPermissionMatrix.test.js",
+      "sha1": "4165608459f0f2d39ba73a7de114554a140b7bb9",
+      "bytes": 14569
+    },
+    {
+      "path": "src/blackGoldTheme.css",
+      "sha1": "1bb99948f0a283700956d7cb6959787124cde3cf",
+      "bytes": 26138
+    },
+    {
+      "path": "src/blackGoldTheme.test.js",
+      "sha1": "28f5cc17ce9db1c17826a3e5aa2c3c3fe2420416",
+      "bytes": 12578
+    },
+    {
+      "path": "src/dashboardLayout.test.js",
+      "sha1": "1787c3863b8e511028839cca53f5acd167acb16c",
+      "bytes": 2564
+    },
+    {
+      "path": "src/desktopAdminShell.test.js",
+      "sha1": "06cccf5feeb6f15665c3278c505208ebc0df35cd",
+      "bytes": 6222
+    },
+    {
+      "path": "src/features/attendance/ActiveAttendanceSession.jsx",
+      "sha1": "40528828b82d834f5665e36ff92a6fa4ee96e45e",
+      "bytes": 4415
+    },
+    {
+      "path": "src/features/attendance/AttendanceLocationAction.jsx",
+      "sha1": "cd7e76b569fb3cf6960fa572fd964283560c4ddc",
+      "bytes": 13647
+    },
+    {
+      "path": "src/features/attendance/AttendanceProjectPicker.jsx",
+      "sha1": "7ae7aad7be9eee151aeee7ef6bdd750fb50fe949",
+      "bytes": 2734
+    },
+    {
+      "path": "src/features/attendance/AttendanceRecordViewer.jsx",
+      "sha1": "d6b3f86239994fb3c5b1857146245a2360d508b8",
+      "bytes": 12036
+    },
+    {
+      "path": "src/features/attendance/AttendanceWorkPointCard.jsx",
+      "sha1": "18dbb099da6c04fa440318b6212eab3abc9610c4",
+      "bytes": 11423
+    },
+    {
+      "path": "src/features/attendance/TodayAttendanceHistory.jsx",
+      "sha1": "03562f32ed335878f08b9a17b8f261aa3da1c341",
+      "bytes": 3252
+    },
+    {
+      "path": "src/features/attendance/TodayAttendancePage.jsx",
+      "sha1": "c15dce96b0fad26691bfc33139997ffb43af947a",
+      "bytes": 51238
+    },
+    {
+      "path": "src/features/attendance/attendanceDomain.js",
+      "sha1": "09d3efc4b3d25bd0928109083b8c154639bd56db",
+      "bytes": 5439
+    },
+    {
+      "path": "src/features/attendance/attendanceDomain.test.js",
+      "sha1": "b43ccdfdad4f8542875c0e074d4529baa0ccc210",
+      "bytes": 6760
+    },
+    {
+      "path": "src/features/attendance/attendanceLocationAttempt.js",
+      "sha1": "e17f1d0f08ddddb6e96fd6c1b7ecd7297c425b98",
+      "bytes": 10334
+    },
+    {
+      "path": "src/features/attendance/attendanceLocationAttempt.test.js",
+      "sha1": "7f01034626ca3566751fe065adf83466291857c4",
+      "bytes": 22028
+    },
+    {
+      "path": "src/features/attendance/attendanceLocationService.js",
+      "sha1": "5f4bb7be53f6ee175779a26be0e21a2340193c65",
+      "bytes": 2964
+    },
+    {
+      "path": "src/features/attendance/attendanceLocationService.test.js",
+      "sha1": "6481b579b45a48541cf97ff8324223a3b2ddbf8b",
+      "bytes": 2482
+    },
+    {
+      "path": "src/features/attendance/attendancePhotoDomain.js",
+      "sha1": "6db81115b7a04ccee345f49f13c05dec5dea5b39",
+      "bytes": 2571
+    },
+    {
+      "path": "src/features/attendance/attendancePhotoDomain.test.js",
+      "sha1": "894db038ccf7688ed4a78f1dcc9d774301878b3a",
+      "bytes": 3289
+    },
+    {
+      "path": "src/features/attendance/attendancePhotoUploadState.js",
+      "sha1": "cf6d59a75dc8bd10b24e23401cd5b23dc4ff518d",
+      "bytes": 5858
+    },
+    {
+      "path": "src/features/attendance/attendancePhotoUploadState.test.js",
+      "sha1": "5b45d8fc317cf9d6ad727b039fa4766ee022fcbd",
+      "bytes": 16535
+    },
+    {
+      "path": "src/features/attendance/todayAttendance.css",
+      "sha1": "1606cfb12bf4712d28682f93806e12a04ccfea2c",
+      "bytes": 8647
+    },
+    {
+      "path": "src/features/attendance/todayAttendanceAppIntegration.test.js",
+      "sha1": "bd2bd2bfaefbff16733e232526f31f22746179e9",
+      "bytes": 11650
+    },
+    {
+      "path": "src/features/attendance/todayAttendancePageContract.test.js",
+      "sha1": "feab8aded4ed0ed1bbf27a84ad0ed559b23cc894",
+      "bytes": 110721
+    },
+    {
+      "path": "src/features/contract-revenue/ContractChangesSection.jsx",
+      "sha1": "14c3d51094880e2207c5636d0a3d0090bc9f46a7",
+      "bytes": 12605
+    },
+    {
+      "path": "src/features/contract-revenue/ContractRevenueMigrationPanel.jsx",
+      "sha1": "05bc81f249ebfbc4a731fb6b760e4e3c51b375a8",
+      "bytes": 5149
+    },
+    {
+      "path": "src/features/contract-revenue/ContractRevenuePage.jsx",
+      "sha1": "536bef553a80d92956e411cbc1355f1b0b0dfbfc",
+      "bytes": 3856
+    },
+    {
+      "path": "src/features/contract-revenue/CustomerReceiptsSection.jsx",
+      "sha1": "59e1a00422463c3769ff40da86786a0051b7f0e3",
+      "bytes": 18141
+    },
+    {
+      "path": "src/features/contract-revenue/OriginalContractSection.jsx",
+      "sha1": "c1ab67af8c88128e8220ea98e0a6b2b371229e15",
+      "bytes": 12709
+    },
+    {
+      "path": "src/features/contract-revenue/PaymentPlanSection.jsx",
+      "sha1": "e233e7dec71d7ced9dec4f0f37a33c2f45cfe116",
+      "bytes": 11204
+    },
+    {
+      "path": "src/features/contract-revenue/appRevenueIntegration.test.js",
+      "sha1": "33d93e11ff96d95cc0c26ff73ae81a7c27a3800d",
+      "bytes": 3133
+    },
+    {
+      "path": "src/features/contract-revenue/contractChanges.js",
+      "sha1": "9dfba5222eb1bd7f695d0438d3e7cb6ca0970718",
+      "bytes": 7825
+    },
+    {
+      "path": "src/features/contract-revenue/contractChanges.test.js",
+      "sha1": "44f172602a83d095596238672a1ca9f181636d99",
+      "bytes": 11416
+    },
+    {
+      "path": "src/features/contract-revenue/contractChangesPage.test.js",
+      "sha1": "2e232aba3f619fd73c97b79c982bed104e1c2d9e",
+      "bytes": 4089
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueCalculations.js",
+      "sha1": "8b4f398a67509106122f56d50ba1bf79e4805d79",
+      "bytes": 15797
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueCalculations.test.js",
+      "sha1": "e9d58fe2e9099d8edc072fe23e284f67f28c0aea",
+      "bytes": 12260
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueLayout.test.js",
+      "sha1": "53c3c15ba856e7c89d425bab9ebe5c460a69ee39",
+      "bytes": 1179
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueMigrationPanel.test.js",
+      "sha1": "36ddfa629800bbab6df2dc5d518c9ddb3ddf2348",
+      "bytes": 3470
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenuePage.test.js",
+      "sha1": "fdfd7e7547006b66a43fd0cafd08e589b1018135",
+      "bytes": 2808
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueSnapshot.test.js",
+      "sha1": "d1c1678c75babc95cd42450adb2a7e6dc4466ba5",
+      "bytes": 11992
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueValidation.js",
+      "sha1": "18e87aac52b444ea2e880ca35dd3977c39cee18e",
+      "bytes": 2563
+    },
+    {
+      "path": "src/features/contract-revenue/contractRevenueValidation.test.js",
+      "sha1": "546966f0effa79641185232b67cc6a0a2f8e70f1",
+      "bytes": 3464
+    },
+    {
+      "path": "src/features/contract-revenue/customerReceipts.js",
+      "sha1": "06d0cb1d11fe5f509bb4a0f74f6274e744b56689",
+      "bytes": 11303
+    },
+    {
+      "path": "src/features/contract-revenue/customerReceipts.test.js",
+      "sha1": "ea4e602b398b43169f70a8908b6e9b35e31f12cb",
+      "bytes": 13823
+    },
+    {
+      "path": "src/features/contract-revenue/customerReceiptsPage.test.js",
+      "sha1": "80d593e70867107e07584e9923da03c7ee1f6a74",
+      "bytes": 5054
+    },
+    {
+      "path": "src/features/contract-revenue/originalContract.js",
+      "sha1": "f2dc1104832b5d10779dbde2eecdbedd58c28e2d",
+      "bytes": 6622
+    },
+    {
+      "path": "src/features/contract-revenue/originalContract.test.js",
+      "sha1": "a889d4e8e23b17562ff4f1283b573d61a1a7a742",
+      "bytes": 10822
+    },
+    {
+      "path": "src/features/contract-revenue/paymentPlanPage.test.js",
+      "sha1": "8d319b2ccfe0a995e47e61a2d750165a984296a9",
+      "bytes": 3916
+    },
+    {
+      "path": "src/features/contract-revenue/paymentPlans.js",
+      "sha1": "e4449646c28dcd7ad4e321637d748accbfabe4ad",
+      "bytes": 14317
+    },
+    {
+      "path": "src/features/contract-revenue/paymentPlans.test.js",
+      "sha1": "df48f8ec0502bd5a8bbaf9e45c0deab81ad15156",
+      "bytes": 11675
+    },
+    {
+      "path": "src/features/contract-revenue/systemSettingsMigrationWiring.test.js",
+      "sha1": "2a399ec7b78500dcfa30855f88347b1bb9ca41b1",
+      "bytes": 1066
+    },
+    {
+      "path": "src/features/cost-accounting/cashFactProvenance.js",
+      "sha1": "f0f36e9dd9e05f4c52190361c83e7dc6e15580f6",
+      "bytes": 4371
+    },
+    {
+      "path": "src/features/cost-accounting/cashFactProvenance.test.js",
+      "sha1": "9423e0288e7f92ae041128737a5c8ee418778c5a",
+      "bytes": 6570
+    },
+    {
+      "path": "src/features/cost-accounting/costAccountingAppIntegration.test.js",
+      "sha1": "05bda026d83e75301313a563a5293843cc7d3230",
+      "bytes": 18834
+    },
+    {
+      "path": "src/features/cost-accounting/costAccountingDomain.js",
+      "sha1": "7f97202d7c77ec54a70582cd34c30ab7beb6b475",
+      "bytes": 26319
+    },
+    {
+      "path": "src/features/cost-accounting/costAccountingDomain.test.js",
+      "sha1": "183ebea1ef762b613f4bd548796f821bce9c3f58",
+      "bytes": 22883
+    },
+    {
+      "path": "src/features/cost-accounting/laborCostWindow.js",
+      "sha1": "85eb4395f6c43dfc88b369fecf1dabafd0456174",
+      "bytes": 7015
+    },
+    {
+      "path": "src/features/cost-accounting/laborCostWindow.test.js",
+      "sha1": "0e45600ea4ff6a98fd3f3742ee0991d0d035d31b",
+      "bytes": 10935
+    },
+    {
+      "path": "src/features/cost-accounting/recordedCashFlowDomain.js",
+      "sha1": "f4de3ab6f3f1adfb1a22abf95e2b761fbc435522",
+      "bytes": 21357
+    },
+    {
+      "path": "src/features/cost-accounting/recordedCashFlowDomain.test.js",
+      "sha1": "758b9e09a73492c8d0ec36464fc097ca8f409552",
+      "bytes": 16573
+    },
+    {
+      "path": "src/features/employees/EmployeeCredentialsDialog.jsx",
+      "sha1": "b719c821d418e9eea2008e13885e631560ef73dd",
+      "bytes": 4045
+    },
+    {
+      "path": "src/features/employees/PermissionTemplateEditor.jsx",
+      "sha1": "314250b4fc24435041d9c8e06d7e25bbf79425bb",
+      "bytes": 17208
+    },
+    {
+      "path": "src/features/employees/PersonnelPage.jsx",
+      "sha1": "f4c7bc2557b085527f7306e28c8ec6d96f4ab119",
+      "bytes": 29935
+    },
+    {
+      "path": "src/features/employees/permissionTemplateContract.test.js",
+      "sha1": "e0fbe75aa3104a500ec769d5a9866a79340f5885",
+      "bytes": 9891
+    },
+    {
+      "path": "src/features/employees/permissionTemplateEditorState.js",
+      "sha1": "18565673a4ba22a6d25349c2a9b27e9be30488bd",
+      "bytes": 6294
+    },
+    {
+      "path": "src/features/employees/permissionTemplateEditorState.test.js",
+      "sha1": "9b74374d13066214e1f1f2797ab7c7e5dc47f630",
+      "bytes": 9178
+    },
+    {
+      "path": "src/features/employees/personnelCriticalState.js",
+      "sha1": "a745da018d419ceb542e5656eb0de945804424ee",
+      "bytes": 741
+    },
+    {
+      "path": "src/features/employees/personnelCriticalState.test.js",
+      "sha1": "a4398a9e5ad63a000f3599c8444176a84a0e72d7",
+      "bytes": 2562
+    },
+    {
+      "path": "src/features/employees/personnelMutationPolicy.js",
+      "sha1": "c9dca696aca3eb55bb0b34697fb4372e649f4f9c",
+      "bytes": 1337
+    },
+    {
+      "path": "src/features/employees/personnelMutationPolicy.test.js",
+      "sha1": "fbb96f9f06e741af41e04c8bc0f5ae8d89de4e3c",
+      "bytes": 3321
+    },
+    {
+      "path": "src/features/employees/personnelPageContract.test.js",
+      "sha1": "0cf39252f975285dd94592c08f64f4aae39f03db",
+      "bytes": 17995
+    },
+    {
+      "path": "src/features/executive-dashboard/ExecutiveCharts.jsx",
+      "sha1": "1281894de26fd91ab022c3b1d02e08b0fdc6e5cf",
+      "bytes": 19774
+    },
+    {
+      "path": "src/features/executive-dashboard/ExecutiveDashboardPage.jsx",
+      "sha1": "d16c26dfa7f6c3cebb010d4223dc0805320d9851",
+      "bytes": 35842
+    },
+    {
+      "path": "src/features/executive-dashboard/dashboardTime.js",
+      "sha1": "973276f7b32ab731f73b1febec5a8073acb2bf34",
+      "bytes": 1673
+    },
+    {
+      "path": "src/features/executive-dashboard/dashboardTime.test.js",
+      "sha1": "f59a60dfcfb11817f8b62407777d65600e91e30e",
+      "bytes": 910
+    },
+    {
+      "path": "src/features/executive-dashboard/executiveDashboard.css",
+      "sha1": "558b7235397989e3f3fc47a0241f0b63bc41e1ba",
+      "bytes": 19662
+    },
+    {
+      "path": "src/features/executive-dashboard/executiveDashboardAppIntegration.test.js",
+      "sha1": "6f82f6e6240ceb14f71044654189a2a6fdebe52c",
+      "bytes": 11123
+    },
+    {
+      "path": "src/features/executive-dashboard/executiveDashboardDomain.js",
+      "sha1": "82056f59dca2939160769f49eadd2764175d8f51",
+      "bytes": 88124
+    },
+    {
+      "path": "src/features/executive-dashboard/executiveDashboardDomain.test.js",
+      "sha1": "ecd23c76e5573c87d3e86c0505264317e4cba78b",
+      "bytes": 87919
+    },
+    {
+      "path": "src/features/executive-dashboard/executiveDashboardPage.test.js",
+      "sha1": "7bbf2631afdff60da4ee75fdabbe917b6432e93b",
+      "bytes": 35096
+    },
+    {
+      "path": "src/features/labor-accounting/AccountingExceptionQueue.jsx",
+      "sha1": "3c8fe371d9f0ae7b735264adcb35b00ff7f62ab3",
+      "bytes": 4038
+    },
+    {
+      "path": "src/features/labor-accounting/AttendanceAccountingSettings.jsx",
+      "sha1": "9ef827232a367b216e9053b7c8ce1f26179bbb78",
+      "bytes": 13722
+    },
+    {
+      "path": "src/features/labor-accounting/AttendanceResolutionDialog.jsx",
+      "sha1": "7fd8142e3119d16e771e02cdb7da27c1be6a6044",
+      "bytes": 29568
+    },
+    {
+      "path": "src/features/labor-accounting/AttendanceStatusTable.jsx",
+      "sha1": "5fe502b84ffb3538d98ee0dfeda523ec2ee6573a",
+      "bytes": 8836
+    },
+    {
+      "path": "src/features/labor-accounting/DailyAttendanceBoard.jsx",
+      "sha1": "54c098a1947bb4205c7ced129ea525bd9eea8714",
+      "bytes": 8774
+    },
+    {
+      "path": "src/features/labor-accounting/LaborAccountingPage.jsx",
+      "sha1": "5f91add47f39726b13845e71fb707301c0ab9ef9",
+      "bytes": 20010
+    },
+    {
+      "path": "src/features/labor-accounting/MonthlyPayrollTab.jsx",
+      "sha1": "69e42c5e5305e0eb36e9e670745563ba40806512",
+      "bytes": 43408
+    },
+    {
+      "path": "src/features/labor-accounting/ProjectLaborCostTab.jsx",
+      "sha1": "8038c5aa49b34325fe3c749f07964deaaf859569",
+      "bytes": 21458
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccounting.css",
+      "sha1": "20edd6bb93b93014f27da1cfe95b6832c19bbd4a",
+      "bytes": 47033
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingAppIntegration.test.js",
+      "sha1": "d0be9f6383d8f0cdf271cb94ea79bea53d5bdda5",
+      "bytes": 24159
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingBridge.js",
+      "sha1": "27c23423733cfca119aec0c382e9e1290611664e",
+      "bytes": 6375
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingBridge.test.js",
+      "sha1": "1d2aa3ada09faeb6bb5412c599516181cf4d2e51",
+      "bytes": 9949
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingDomain.js",
+      "sha1": "42db0577a88dccd37b5ffa190241043224de0ad4",
+      "bytes": 9097
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingDomain.test.js",
+      "sha1": "1e1a33e0276209252ed42b831716b6b8d10dbdd8",
+      "bytes": 11528
+    },
+    {
+      "path": "src/features/labor-accounting/laborAccountingPageContract.test.js",
+      "sha1": "60971d544c28fb9ab0aa82f0939173061a170060",
+      "bytes": 56307
+    },
+    {
+      "path": "src/features/labor-accounting/useLaborAlertCount.js",
+      "sha1": "0d6e3aff22eaa37f03ca378adbefebab343671e2",
+      "bytes": 6247
+    },
+    {
+      "path": "src/features/projects/ProjectLocationPicker.jsx",
+      "sha1": "0387d737e1ae8280279e331aca08af11c40c075f",
+      "bytes": 11854
+    },
+    {
+      "path": "src/features/projects/ProjectPage.jsx",
+      "sha1": "fcd6dbd9a2a7570d0839d425d49c281f08175831",
+      "bytes": 18803
+    },
+    {
+      "path": "src/features/projects/projectAppIntegration.test.js",
+      "sha1": "b95699f6edc731dbd232424a8b762702bf434d41",
+      "bytes": 1591
+    },
+    {
+      "path": "src/features/projects/projectDocumentDomain.js",
+      "sha1": "4e41bd01bade1fa91c4ad0971ea5ff461368bff9",
+      "bytes": 1784
+    },
+    {
+      "path": "src/features/projects/projectDocumentDomain.test.js",
+      "sha1": "d83dd58514af395f9f145bed0e4e18555bd629e0",
+      "bytes": 2210
+    },
+    {
+      "path": "src/features/projects/projectDocumentPermissions.js",
+      "sha1": "027f986187a1a8d69be833083c3f0bc055e66310",
+      "bytes": 578
+    },
+    {
+      "path": "src/features/projects/projectDocumentPermissions.test.js",
+      "sha1": "4d535e9476805df6cb609fe6662c0aedb79589f1",
+      "bytes": 1338
+    },
+    {
+      "path": "src/features/projects/projectDocumentUploadState.js",
+      "sha1": "b407a7384dcb60c0542b5e886877092c298084fd",
+      "bytes": 887
+    },
+    {
+      "path": "src/features/projects/projectDocumentUploadState.test.js",
+      "sha1": "e5954d6502d47e4314c4d12a558a6a45c9aca7f8",
+      "bytes": 1116
+    },
+    {
+      "path": "src/features/projects/projectDomain.js",
+      "sha1": "637f75f814f419471f03724f2db84fb34cea3a6b",
+      "bytes": 6113
+    },
+    {
+      "path": "src/features/projects/projectDomain.test.js",
+      "sha1": "ca4a83da6225e65f933b652b9b403b6a6fd6969d",
+      "bytes": 6690
+    },
+    {
+      "path": "src/features/projects/projectLocationPickerContract.test.js",
+      "sha1": "9c09ab3cf6325e87ffaa9927b39c76cb9ba24fd3",
+      "bytes": 4555
+    },
+    {
+      "path": "src/features/projects/projectLocationService.js",
+      "sha1": "5952be1d0bcbb933e582b5662a44bf355413f9dc",
+      "bytes": 3983
+    },
+    {
+      "path": "src/features/projects/projectLocationService.test.js",
+      "sha1": "0d4e44bd581416c1f12d979342e47fd249909926",
+      "bytes": 10203
+    },
+    {
+      "path": "src/features/projects/projectPageContract.test.js",
+      "sha1": "ecd0e4771661d37b54cec485b0db1b402937de90",
+      "bytes": 1748
+    },
+    {
+      "path": "src/features/projects/projectPermissions.js",
+      "sha1": "f06048e850363bb48b6601a4448f2bf12a7f881f",
+      "bytes": 917
+    },
+    {
+      "path": "src/features/projects/projectPermissions.test.js",
+      "sha1": "edd029b95f18773c2f6f7a7a8b39981246d4e1d6",
+      "bytes": 2304
+    },
+    {
+      "path": "src/features/purchase-accounting/PurchaseAccountingSection.jsx",
+      "sha1": "31d2a1372133cb88029a72ebb6248972c8b86fdd",
+      "bytes": 11033
+    },
+    {
+      "path": "src/features/purchase-accounting/purchaseAccountingDomain.js",
+      "sha1": "c98b915d104999ff765ecc2403c42b3f1b41d9fa",
+      "bytes": 15820
+    },
+    {
+      "path": "src/features/purchase-accounting/purchaseAccountingDomain.test.js",
+      "sha1": "5d4fe1f2b5f2a7e4f387e41ac75e410bab2250b2",
+      "bytes": 20633
+    },
+    {
+      "path": "src/features/purchase-accounting/purchaseAccountingSection.test.js",
+      "sha1": "359fe7367ca61ac84903f7a2d7335709934c5066",
+      "bytes": 45970
+    },
+    {
+      "path": "src/features/workbench/MobileMessagesPage.jsx",
+      "sha1": "79b3379a2202a389963f4feba78637bbcc237cfe",
+      "bytes": 2052
+    },
+    {
+      "path": "src/features/workbench/MobileProfilePage.jsx",
+      "sha1": "79606d4258fa45de72dc3f21f2915a309bd08cbb",
+      "bytes": 1560
+    },
+    {
+      "path": "src/features/workbench/MobileWorkbenchPage.jsx",
+      "sha1": "789cc74193deae8559c3fd50b1e8cd8127bcac11",
+      "bytes": 1627
+    },
+    {
+      "path": "src/features/workbench/authorizedHomeModel.js",
+      "sha1": "360c0c3114f1e2e0f84fac1eeaacdb5524787025",
+      "bytes": 9944
+    },
+    {
+      "path": "src/features/workbench/authorizedHomeModel.test.js",
+      "sha1": "a1a77ceae41c217898f540a63a9806221ecd3833",
+      "bytes": 10505
+    },
+    {
+      "path": "src/features/workbench/workbenchModel.js",
+      "sha1": "d43e604c315d05570a626e38a4da5702ff7f1751",
+      "bytes": 11308
+    },
+    {
+      "path": "src/features/workbench/workbenchModel.test.js",
+      "sha1": "a7b2ca60515fd6307036ca736be3fe4631877e56",
+      "bytes": 14847
+    },
+    {
+      "path": "src/homeScreenIcon.test.js",
+      "sha1": "6b30172860f1ea102751485f0139ccd7dc8a7470",
+      "bytes": 1752
+    },
+    {
+      "path": "src/lib/supabaseClient.js",
+      "sha1": "42177b451651602ededdf80c985dfcc266a6e9db",
+      "bytes": 2447
+    },
+    {
+      "path": "src/lib/supabaseClient.test.js",
+      "sha1": "fc7cb7f800765017b38f850e474e667140674212",
+      "bytes": 1640
+    },
+    {
+      "path": "src/main.jsx",
+      "sha1": "c8040c03b966f703b61c6ad9dfe9ae2b8be8436f",
+      "bytes": 263
+    },
+    {
+      "path": "src/navigation/MobileBottomNavigation.jsx",
+      "sha1": "6cee267ef3cadabe840b0c4ca89df60eb6b3c0ce",
+      "bytes": 1897
+    },
+    {
+      "path": "src/navigation/adminRoutes.js",
+      "sha1": "1604f3a55133cebcbc833a13d86de729c52dbc21",
+      "bytes": 4192
+    },
+    {
+      "path": "src/navigation/adminRoutes.test.js",
+      "sha1": "04e1b8f29c9fb25eeb38155f6304ddd37b1f54e4",
+      "bytes": 4256
+    },
+    {
+      "path": "src/navigation/mobileBottomNavigation.test.js",
+      "sha1": "0c87418791005543466103d56aca36f3286689e7",
+      "bytes": 6035
+    },
+    {
+      "path": "src/services/accountingService.js",
+      "sha1": "53488736d7a871c089af53022a1e32df819f48b4",
+      "bytes": 651
+    },
+    {
+      "path": "src/services/attendancePhotoStorage.js",
+      "sha1": "5a605cbf36d21ec862ba5f9ada53ada6820ab723",
+      "bytes": 3096
+    },
+    {
+      "path": "src/services/attendancePhotoStorage.test.js",
+      "sha1": "4c2215179f109ffef9bd5db7fd51648ec19d424d",
+      "bytes": 6490
+    },
+    {
+      "path": "src/services/attendanceSchema.test.js",
+      "sha1": "ce947b671a8974e93743e773a0362c032d754976",
+      "bytes": 15504
+    },
+    {
+      "path": "src/services/attendanceService.js",
+      "sha1": "8fb20990892073b338517cc770da8164967a2701",
+      "bytes": 14974
+    },
+    {
+      "path": "src/services/attendanceService.test.js",
+      "sha1": "319142ae4291f2c9e30f8c2f406c7a51ac05f37c",
+      "bytes": 10907
+    },
+    {
+      "path": "src/services/baseRecordService.js",
+      "sha1": "fe280f8be865e059e6570ef60eb24c9db7fd4aee",
+      "bytes": 13306
+    },
+    {
+      "path": "src/services/baseRecordService.test.js",
+      "sha1": "d207c475c3477bf1f603070d4c288bb4225c729a",
+      "bytes": 15156
+    },
+    {
+      "path": "src/services/businessSourceState.js",
+      "sha1": "f25ea443729e02165763ac783874901b4c8f72b5",
+      "bytes": 2270
+    },
+    {
+      "path": "src/services/businessSourceState.test.js",
+      "sha1": "824d96eeeb3238488e8f1ad7d7e738fa37eac435",
+      "bytes": 2122
+    },
+    {
+      "path": "src/services/contractRevenueLocalMigration.js",
+      "sha1": "eebf361e4e2655c7b5575cb1df17fe6470769312",
+      "bytes": 5763
+    },
+    {
+      "path": "src/services/contractRevenueLocalMigration.test.js",
+      "sha1": "f96f820a2e5848515794f22992322d7a8673adcb",
+      "bytes": 8339
+    },
+    {
+      "path": "src/services/contractRevenueMigration.js",
+      "sha1": "c2ef2d38e3512b832ca98dcba62185786a9863dc",
+      "bytes": 6817
+    },
+    {
+      "path": "src/services/contractRevenueMigration.test.js",
+      "sha1": "da6a4e8279aac4e2ecbe6632769eb4ba68c428b2",
+      "bytes": 9021
+    },
+    {
+      "path": "src/services/contractRevenueSchema.test.js",
+      "sha1": "7282078fafeaaf719ba809306bb92524d91e6921",
+      "bytes": 1697
+    },
+    {
+      "path": "src/services/contractRevenueService.js",
+      "sha1": "1a253726c43858741dbb89ba469a563528600cff",
+      "bytes": 9358
+    },
+    {
+      "path": "src/services/contractRevenueService.test.js",
+      "sha1": "69f341a6d7e31dc4a0d10bc76105bcfca0310407",
+      "bytes": 10400
+    },
+    {
+      "path": "src/services/dashboardLaborBridgeService.js",
+      "sha1": "8698314158a58b5260d273d347991d7e996be67c",
+      "bytes": 12004
+    },
+    {
+      "path": "src/services/dashboardLaborBridgeService.test.js",
+      "sha1": "09db654b0f50343e2e6858b5dabc0595c5b3df52",
+      "bytes": 19042
+    },
+    {
+      "path": "src/services/dashboardService.js",
+      "sha1": "8fd3cae1f7799b3c01c3d670cd1d4ef2ffc87979",
+      "bytes": 1455
+    },
+    {
+      "path": "src/services/dashboardService.test.js",
+      "sha1": "29258bdb405c4f989ebabb17abf1b86ef8f3a292",
+      "bytes": 1456
+    },
+    {
+      "path": "src/services/employeeAdminService.js",
+      "sha1": "2b2d82198dedbd132a3d9d6cc18ec344723090f2",
+      "bytes": 18640
+    },
+    {
+      "path": "src/services/employeeAdminService.test.js",
+      "sha1": "01c746cc953e421794a484ed1030f96a09b5c6f2",
+      "bytes": 17553
+    },
+    {
+      "path": "src/services/employeeAuthSchema.test.js",
+      "sha1": "f33df59cde0c12ee436bb9f4537c650cec876500",
+      "bytes": 13661
+    },
+    {
+      "path": "src/services/employeeAuthService.js",
+      "sha1": "7d95a7baba706a3c483661a62d1daaa364d0ef6e",
+      "bytes": 9769
+    },
+    {
+      "path": "src/services/employeeAuthService.test.js",
+      "sha1": "d8d8d730dc6943ba356c28c06ec19ad1161b42c9",
+      "bytes": 12653
+    },
+    {
+      "path": "src/services/employeeMigrationService.js",
+      "sha1": "0e9ddb5eb9ac41232574f2a0bcaeed44fda9ce1d",
+      "bytes": 7768
+    },
+    {
+      "path": "src/services/employeeMigrationService.test.js",
+      "sha1": "33bdddb3e2d9f5a0091654b21c3a4c3066831967",
+      "bytes": 9646
+    },
+    {
+      "path": "src/services/employeeService.js",
+      "sha1": "dae26d2cc2a9ab28baea7833fd93d1a03069ca73",
+      "bytes": 393
+    },
+    {
+      "path": "src/services/inventoryService.js",
+      "sha1": "ba44527908019836467a21b6408a926981cbb6c0",
+      "bytes": 585
+    },
+    {
+      "path": "src/services/laborAccountingSchema.test.js",
+      "sha1": "fda8a94d708190eca1a7af2c71e9cbe69054bc52",
+      "bytes": 15200
+    },
+    {
+      "path": "src/services/laborAccountingService.js",
+      "sha1": "da2b2c788484a75e4ad9623111722ffa0b3a2f7e",
+      "bytes": 66097
+    },
+    {
+      "path": "src/services/laborAccountingService.test.js",
+      "sha1": "3936a820ebcfd0b7dfdd453c4e4e9db0096199ee",
+      "bytes": 65120
+    },
+    {
+      "path": "src/services/laborService.js",
+      "sha1": "17204ebfa03d326b0aae0c2c4fe217f4ed640fc8",
+      "bytes": 393
+    },
+    {
+      "path": "src/services/permissionTemplateService.js",
+      "sha1": "94008ff3903754b6030fc8ae4f964607080ca03a",
+      "bytes": 6182
+    },
+    {
+      "path": "src/services/permissionTemplateService.test.js",
+      "sha1": "89451ac7877c44b73c0df4262e77209ba53b094f",
+      "bytes": 12077
+    },
+    {
+      "path": "src/services/persistenceSecurityContract.test.js",
+      "sha1": "b519ec2a3e6e1ed40e22bc5fe06f5c66e49c462d",
+      "bytes": 9194
+    },
+    {
+      "path": "src/services/projectCoreSecuritySchema.test.js",
+      "sha1": "ea901ee4f3c7b2f3504311ab0ed744e65e649f34",
+      "bytes": 4760
+    },
+    {
+      "path": "src/services/projectDocumentSchema.test.js",
+      "sha1": "886862180a4ca721097f720a73c8d1c8d795a26b",
+      "bytes": 1691
+    },
+    {
+      "path": "src/services/projectService.js",
+      "sha1": "96113f1d5ca559673f3ebd76d8fe72ced5f85e63",
+      "bytes": 2372
+    },
+    {
+      "path": "src/services/projectService.test.js",
+      "sha1": "4ea129d57a9f8af6200864898d54d42597f54829",
+      "bytes": 1364
+    },
+    {
+      "path": "src/services/purchaseService.js",
+      "sha1": "497ccbf26177c7aa805b95eea0e6d9f47b478b4c",
+      "bytes": 14827
+    },
+    {
+      "path": "src/services/purchaseService.test.js",
+      "sha1": "525aea42f3942c1ed351c3a0d7c7d0a0af037157",
+      "bytes": 16689
+    },
+    {
+      "path": "src/services/recordTableConfig.js",
+      "sha1": "70783c130f6eb84d198156aded6c1e8321f12278",
+      "bytes": 2205
+    },
+    {
+      "path": "src/services/toolService.js",
+      "sha1": "f4ecd484639842dc89622ae5ad0c025fd37b6cfe",
+      "bytes": 391
+    },
+    {
+      "path": "src/services/vehicleService.js",
+      "sha1": "5dd15bd95ec38f8f0cf49896e4dd2659965be3ce",
+      "bytes": 397
+    },
+    {
+      "path": "src/styles.css",
+      "sha1": "f0e881a2ceaba59be97a0cc2a8da9d8465994f58",
+      "bytes": 85237
+    },
+    {
+      "path": "src/utils/permissions.js",
+      "sha1": "0c2522abe0691d81c62378bae500e4858775a2c2",
+      "bytes": 5515
+    },
+    {
+      "path": "supabase/config.toml",
+      "sha1": "6ad9bcda076d914f2dd086d02132f9da676f8938",
+      "bytes": 814
+    },
+    {
+      "path": "supabase/functions/_shared/clients.ts",
+      "sha1": "071076c610acc3c0a9a001d366dd060e08a907cb",
+      "bytes": 5882
+    },
+    {
+      "path": "supabase/functions/_shared/cors.ts",
+      "sha1": "64912dae2cff23171422a91ddbd5f6f7f347fa07",
+      "bytes": 3162
+    },
+    {
+      "path": "supabase/functions/_shared/employee-auth.test.js",
+      "sha1": "21a8996e66719ce197794fab1a72839982d33731",
+      "bytes": 18825
+    },
+    {
+      "path": "supabase/functions/_shared/employee-auth.ts",
+      "sha1": "59d76788f4a5b6fea8f263bad7302fe4b9ef90c7",
+      "bytes": 7303
+    },
+    {
+      "path": "supabase/functions/_shared/responses.ts",
+      "sha1": "9227b1e47970bbeeaee1ad27c4c5d2f1a5842a72",
+      "bytes": 841
+    },
+    {
+      "path": "supabase/functions/attendance-photo-cleanup/handler.js",
+      "sha1": "8575480d4b4f1c52944feae916a796455376d3bc",
+      "bytes": 5069
+    },
+    {
+      "path": "supabase/functions/attendance-photo-cleanup/handler.test.js",
+      "sha1": "bba8e9fb24033b0458f5172103d3d6a52e3fd2b4",
+      "bytes": 16132
+    },
+    {
+      "path": "supabase/functions/attendance-photo-cleanup/index.ts",
+      "sha1": "308b57a942946d9d172f8795dc18022bf97c2c67",
+      "bytes": 143
+    },
+    {
+      "path": "supabase/functions/employee-admin/handler.js",
+      "sha1": "486e105111a7a54e51e0d232f0e0d8de69118afc",
+      "bytes": 17153
+    },
+    {
+      "path": "supabase/functions/employee-admin/handler.test.js",
+      "sha1": "c1e0489c17590300c887b1e649a21d213c669774",
+      "bytes": 17911
+    },
+    {
+      "path": "supabase/functions/employee-admin/index.ts",
+      "sha1": "67df31fed7aea7ebb5cc787105d7469f3bafbbc8",
+      "bytes": 203
+    },
+    {
+      "path": "supabase/functions/employee-bootstrap-admin/handler.js",
+      "sha1": "16b79a5a313bc95069f76cd58524c2fa0be37f56",
+      "bytes": 11885
+    },
+    {
+      "path": "supabase/functions/employee-bootstrap-admin/handler.test.js",
+      "sha1": "0497ec3c0269e5650d9c5e28a479f6312a36da5f",
+      "bytes": 22253
+    },
+    {
+      "path": "supabase/functions/employee-bootstrap-admin/index.ts",
+      "sha1": "c4c9e73bea099007ecb0cb406546a66632ed33cc",
+      "bytes": 221
+    },
+    {
+      "path": "supabase/functions/employee-change-password/handler.js",
+      "sha1": "268e8a9736fed3bbdc20bb73dd218b4ae2412f0f",
+      "bytes": 5857
+    },
+    {
+      "path": "supabase/functions/employee-change-password/handler.test.js",
+      "sha1": "3979fe8294be82844a5f164e47f023ae0c09e095",
+      "bytes": 9254
+    },
+    {
+      "path": "supabase/functions/employee-change-password/index.ts",
+      "sha1": "7bad152025569edc96ad65a863ca6a6a34582ef8",
+      "bytes": 221
+    },
+    {
+      "path": "supabase/functions/employee-login/handler.js",
+      "sha1": "33042a28d9140c942e22a7fda15b673f951b741f",
+      "bytes": 15680
+    },
+    {
+      "path": "supabase/functions/employee-login/handler.test.js",
+      "sha1": "8bc28ea3e2b0c9f3ba044966e30bd2039554b2fb",
+      "bytes": 22769
+    },
+    {
+      "path": "supabase/functions/employee-login/index.ts",
+      "sha1": "23a0867efc6bdf833c37dfa48931ed43afb03e25",
+      "bytes": 203
+    },
+    {
+      "path": "supabase/functions/employee-login/security-contract.test.js",
+      "sha1": "6e426775e5401fdd916bf3300603ec02426e6b90",
+      "bytes": 7477
+    },
+    {
+      "path": "supabase/functions/employee-provision/handler.js",
+      "sha1": "dd32047cd7f58f74fc8ab22f3c5735bf1d590b52",
+      "bytes": 28626
+    },
+    {
+      "path": "supabase/functions/employee-provision/handler.test.js",
+      "sha1": "797b58b2dac6df864453d2a71da60c51b7b7c8b3",
+      "bytes": 21014
+    },
+    {
+      "path": "supabase/functions/employee-provision/index.ts",
+      "sha1": "d9fe4d58e509e8133d09680b678c417ece35aed8",
+      "bytes": 211
+    },
+    {
+      "path": "supabase/functions/employee-provision/security-contract.test.js",
+      "sha1": "699eb772c0821f1a827dd2584c3ee35b9cb6859e",
+      "bytes": 3007
+    },
+    {
+      "path": "supabase/functions/permission-templates/handler.js",
+      "sha1": "c84f020b02960d79aceae62fdd597be07403a612",
+      "bytes": 6979
+    },
+    {
+      "path": "supabase/functions/permission-templates/handler.test.js",
+      "sha1": "3a26e28cd4df83f93161c4d1524c52f77b4b7b90",
+      "bytes": 12465
+    },
+    {
+      "path": "supabase/functions/permission-templates/index.ts",
+      "sha1": "d29f16778e85b33ea015cfb2bd8a18cf34754bb8",
+      "bytes": 215
+    },
+    {
+      "path": "supabase/functions/permission-templates/security-contract.test.js",
+      "sha1": "75a5ca99ef19a8ec8c68b3f2fceca925929b03c1",
+      "bytes": 4328
+    },
+    {
+      "path": "supabase/migrations/202607140001_employee_auth.sql",
+      "sha1": "32125fd83de940fdb406fc6e054fe33a24031e28",
+      "bytes": 31419
+    },
+    {
+      "path": "supabase/migrations/202607140002_employee_login_security.sql",
+      "sha1": "8186b7b694b4165e8dc966afab08a77f74435089",
+      "bytes": 13116
+    },
+    {
+      "path": "supabase/migrations/202607140003_employee_account_lifecycle.sql",
+      "sha1": "7b1e731040760abaa3afe517723a3c9b8feec44e",
+      "bytes": 45144
+    },
+    {
+      "path": "supabase/migrations/202607140004_permission_templates.sql",
+      "sha1": "792b5de3afbb49e4010af3f13164e874ee89417a",
+      "bytes": 8247
+    },
+    {
+      "path": "supabase/migrations/202607150001_project_core_security.sql",
+      "sha1": "05e475878141faf0fd71ecbf63f6a45cc1111413",
+      "bytes": 48195
+    },
+    {
+      "path": "supabase/migrations/202607150002_project_documents.sql",
+      "sha1": "0dde3d51deaa32c25fc1656ff63ad6a5adf8e8a8",
+      "bytes": 14194
+    },
+    {
+      "path": "supabase/migrations/202607150003_today_attendance.sql",
+      "sha1": "12cdc067a08c23a779aabdf3849427c7e3cfc6a1",
+      "bytes": 64059
+    },
+    {
+      "path": "supabase/migrations/202607160001_attendance_accounting.sql",
+      "sha1": "b94c7aa2f03955c4bb35c9f6de194fa7ea4f24e4",
+      "bytes": 172652
+    },
+    {
+      "path": "supabase/migrations/202607160002_purchase_accrual_access.sql",
+      "sha1": "d24b28f98c669abbeab089f4a1391db5311ebff4",
+      "bytes": 39810
+    },
+    {
+      "path": "supabase/tests/attendance_accounting.sql",
+      "sha1": "a3cead6d486b41bda12328264faf1f11012ce2eb",
+      "bytes": 193519
+    },
+    {
+      "path": "supabase/tests/employee_account_lifecycle.sql",
+      "sha1": "0d00890a64457df2e051807e3b541f9388402459",
+      "bytes": 30314
+    },
+    {
+      "path": "supabase/tests/employee_auth.sql",
+      "sha1": "926455a56d65ef1a6e5eb57d6a0c7e87759a26b8",
+      "bytes": 21530
+    },
+    {
+      "path": "supabase/tests/employee_login_security.sql",
+      "sha1": "da976bf156f84066db2df0fa935125824a1f4402",
+      "bytes": 14172
+    },
+    {
+      "path": "supabase/tests/permission_templates.sql",
+      "sha1": "201a6820246488fd1e43e32ea837e00182dc4ebb",
+      "bytes": 13173
+    },
+    {
+      "path": "supabase/tests/project_core_security.sql",
+      "sha1": "0824058673d620dc28eaa481b011274065ade0fd",
+      "bytes": 51118
+    },
+    {
+      "path": "supabase/tests/project_documents.sql",
+      "sha1": "cff8331099fce87b42d4848e1f42c716c15f35cc",
+      "bytes": 215
+    },
+    {
+      "path": "supabase/tests/purchase_accrual_access.sql",
+      "sha1": "0705cafcef9b787b14bc78543d959bb4fe556aab",
+      "bytes": 170849
+    },
+    {
+      "path": "supabase/tests/today_attendance.sql",
+      "sha1": "6d831e6d07b95575d2413bdc3be7dbaf82c7af54",
+      "bytes": 161220
+    },
+    {
+      "path": "supabase/tests/today_attendance_storage_http.mjs",
+      "sha1": "b484e4c7d2a1e8017af165289bd894791bc0369d",
+      "bytes": 34363
+    },
+    {
+      "path": "vite.config.js",
+      "sha1": "f357a7962febd90e7c576e35d7b7e4c74bf1f046",
+      "bytes": 133
+    }
+  ]
+}
