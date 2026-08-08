@@ -12,10 +12,12 @@ create table public.warehouse_sites (
   created_at timestamptz not null default statement_timestamp(),
   updated_at timestamptz not null default statement_timestamp(),
   constraint warehouse_sites_code_check check (
-    code = btrim(code) and char_length(code) between 1 and 100
+    code = regexp_replace(code, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(code) between 1 and 100
   ),
   constraint warehouse_sites_name_check check (
-    name = btrim(name) and char_length(name) between 1 and 200
+    name = regexp_replace(name, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(name) between 1 and 200
   ),
   constraint warehouse_sites_kind_check check (
     kind in ('normal', 'project_site', 'shared_tool')
@@ -25,19 +27,26 @@ create table public.warehouse_sites (
 
 create table public.warehouse_locations (
   id uuid primary key default gen_random_uuid(),
-  warehouse_id uuid not null
-    references public.warehouse_sites(id) on delete restrict,
+  warehouse_id uuid not null,
   shelf_code text not null,
   shelf_name text not null,
   active boolean not null default true,
   created_at timestamptz not null default statement_timestamp(),
   updated_at timestamptz not null default statement_timestamp(),
   constraint warehouse_locations_shelf_code_check check (
-    shelf_code = btrim(shelf_code) and char_length(shelf_code) between 1 and 100
+    shelf_code = regexp_replace(
+      shelf_code, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
+    and char_length(shelf_code) between 1 and 100
   ),
   constraint warehouse_locations_shelf_name_check check (
-    shelf_name = btrim(shelf_name) and char_length(shelf_name) between 1 and 200
+    shelf_name = regexp_replace(
+      shelf_name, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
+    and char_length(shelf_name) between 1 and 200
   ),
+  constraint warehouse_locations_warehouse_fk foreign key (warehouse_id)
+    references public.warehouse_sites(id) on delete restrict,
   constraint warehouse_locations_warehouse_shelf_unique
     unique (warehouse_id, shelf_code),
   constraint warehouse_locations_id_warehouse_unique
@@ -54,22 +63,28 @@ create table public.warehouse_items (
   created_at timestamptz not null default statement_timestamp(),
   updated_at timestamptz not null default statement_timestamp(),
   constraint warehouse_items_name_check check (
-    name = btrim(name) and char_length(name) between 1 and 300
+    name = regexp_replace(name, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(name) between 1 and 300
   ),
   constraint warehouse_items_category_check check (
-    category = btrim(category) and char_length(category) <= 200
+    category = regexp_replace(category, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(category) <= 200
   ),
   constraint warehouse_items_brand_check check (
-    brand = btrim(brand) and char_length(brand) <= 200
+    brand = regexp_replace(brand, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(brand) <= 200
   ),
   constraint warehouse_items_description_check check (
-    description = btrim(description) and char_length(description) <= 2000
+    description = regexp_replace(
+      description, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
+    and char_length(description) <= 2000
   )
 );
 
 create table public.warehouse_variants (
   id uuid primary key default gen_random_uuid(),
-  item_id uuid not null references public.warehouse_items(id) on delete restrict,
+  item_id uuid not null,
   sku text not null,
   model text not null default '',
   size text not null default '',
@@ -83,19 +98,24 @@ create table public.warehouse_variants (
   created_at timestamptz not null default statement_timestamp(),
   updated_at timestamptz not null default statement_timestamp(),
   constraint warehouse_variants_sku_check check (
-    sku = btrim(sku) and char_length(sku) between 1 and 100
+    sku = regexp_replace(sku, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(sku) between 1 and 100
   ),
   constraint warehouse_variants_model_check check (
-    model = btrim(model) and char_length(model) <= 300
+    model = regexp_replace(model, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(model) <= 300
   ),
   constraint warehouse_variants_size_check check (
-    size = btrim(size) and char_length(size) <= 300
+    size = regexp_replace(size, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(size) <= 300
   ),
   constraint warehouse_variants_material_check check (
-    material = btrim(material) and char_length(material) <= 300
+    material = regexp_replace(material, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(material) <= 300
   ),
   constraint warehouse_variants_unit_check check (
-    unit = btrim(unit) and char_length(unit) between 1 and 50
+    unit = regexp_replace(unit, '^[[:space:]]+|[[:space:]]+$', '', 'g')
+    and char_length(unit) between 1 and 50
   ),
   constraint warehouse_variants_minimum_stock_check check (
     minimum_stock >= 0
@@ -110,18 +130,27 @@ create table public.warehouse_variants (
     and default_purchase_price <> '-Infinity'::numeric
   ),
   constraint warehouse_variants_system_qr_check check (
-    system_qr = btrim(system_qr)
+    system_qr = regexp_replace(
+      system_qr, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
     and char_length(system_qr) between 15 and 500
     and lower(system_qr) like 'swerp:variant:%'
+    and substring(
+      system_qr from char_length('SWERP:VARIANT:') + 1
+    ) ~ '[^[:space:]]'
   ),
   constraint warehouse_variants_manufacturer_qr_check check (
     manufacturer_qr is null
     or (
-      manufacturer_qr = btrim(manufacturer_qr)
+      manufacturer_qr = regexp_replace(
+        manufacturer_qr, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+      )
       and char_length(manufacturer_qr) between 1 and 500
       and lower(manufacturer_qr) not like 'swerp:variant:%'
     )
   ),
+  constraint warehouse_variants_item_fk foreign key (item_id)
+    references public.warehouse_items(id) on delete restrict,
   constraint warehouse_variants_sku_unique unique (sku),
   constraint warehouse_variants_system_qr_unique unique (system_qr)
 );
@@ -134,7 +163,7 @@ create index warehouse_variants_item_active_idx
 
 create table public.warehouse_batches (
   id uuid primary key default gen_random_uuid(),
-  variant_id uuid not null references public.warehouse_variants(id) on delete restrict,
+  variant_id uuid not null,
   receipt_line_id uuid,
   received_at timestamptz not null,
   unit_cost numeric(18,4) not null,
@@ -152,6 +181,8 @@ create table public.warehouse_batches (
     and original_quantity <> 'Infinity'::numeric
     and original_quantity <> '-Infinity'::numeric
   ),
+  constraint warehouse_batches_variant_fk foreign key (variant_id)
+    references public.warehouse_variants(id) on delete restrict,
   constraint warehouse_batches_id_variant_unique unique (id, variant_id)
 );
 
@@ -162,8 +193,8 @@ create index warehouse_batches_receipt_line_idx
   where receipt_line_id is not null;
 
 create table public.warehouse_batch_locations (
-  batch_id uuid not null references public.warehouse_batches(id) on delete restrict,
-  location_id uuid not null references public.warehouse_locations(id) on delete restrict,
+  batch_id uuid not null,
+  location_id uuid not null,
   quantity numeric(18,3) not null default 0,
   updated_at timestamptz not null default statement_timestamp(),
   constraint warehouse_batch_locations_quantity_check check (
@@ -172,6 +203,10 @@ create table public.warehouse_batch_locations (
     and quantity <> 'Infinity'::numeric
     and quantity <> '-Infinity'::numeric
   ),
+  constraint warehouse_batch_locations_batch_fk foreign key (batch_id)
+    references public.warehouse_batches(id) on delete restrict,
+  constraint warehouse_batch_locations_location_fk foreign key (location_id)
+    references public.warehouse_locations(id) on delete restrict,
   constraint warehouse_batch_locations_pkey primary key (batch_id, location_id)
 );
 
@@ -181,21 +216,20 @@ create index warehouse_batch_locations_location_idx
 create table public.warehouse_inventory_movements (
   id uuid primary key default gen_random_uuid(),
   movement_type text not null,
-  variant_id uuid not null references public.warehouse_variants(id) on delete restrict,
+  variant_id uuid not null,
   batch_id uuid,
-  warehouse_id uuid not null references public.warehouse_sites(id) on delete restrict,
+  warehouse_id uuid not null,
   location_id uuid not null,
   quantity_delta numeric(18,3) not null,
   unit_cost numeric(18,4) not null,
   source_document_type text not null,
   source_document_id text not null,
   idempotency_key text not null,
-  project_id text references public.projects(record_key) on delete restrict,
+  project_id text,
   destination_type text,
   destination_id text,
   destination_name text,
-  operator_employee_profile_id uuid not null
-    references public.employee_profiles(id) on delete restrict,
+  operator_employee_profile_id uuid not null,
   occurred_at timestamptz not null,
   reversal_of_movement_id uuid,
   metadata jsonb not null default '{}'::jsonb,
@@ -205,10 +239,18 @@ create table public.warehouse_inventory_movements (
       '盘盈', '盘亏', '盘点无差异', '损坏', '报废', '冲销'
     )
   ),
+  constraint warehouse_movements_variant_fk foreign key (variant_id)
+    references public.warehouse_variants(id) on delete restrict,
+  constraint warehouse_movements_warehouse_fk foreign key (warehouse_id)
+    references public.warehouse_sites(id) on delete restrict,
   constraint warehouse_movements_batch_variant_fk foreign key (batch_id, variant_id)
     references public.warehouse_batches(id, variant_id) on delete restrict,
   constraint warehouse_movements_location_warehouse_fk foreign key (location_id, warehouse_id)
     references public.warehouse_locations(id, warehouse_id) on delete restrict,
+  constraint warehouse_movements_project_fk foreign key (project_id)
+    references public.projects(record_key) on delete restrict,
+  constraint warehouse_movements_operator_fk foreign key (operator_employee_profile_id)
+    references public.employee_profiles(id) on delete restrict,
   constraint warehouse_movements_quantity_check check (
     quantity_delta <> 'NaN'::numeric
     and quantity_delta <> 'Infinity'::numeric
@@ -221,35 +263,47 @@ create table public.warehouse_inventory_movements (
     and unit_cost <> '-Infinity'::numeric
   ),
   constraint warehouse_movements_source_type_check check (
-    source_document_type = btrim(source_document_type)
+    source_document_type = regexp_replace(
+      source_document_type, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
     and char_length(source_document_type) between 1 and 100
   ),
   constraint warehouse_movements_source_id_check check (
-    source_document_id = btrim(source_document_id)
+    source_document_id = regexp_replace(
+      source_document_id, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
     and char_length(source_document_id) between 1 and 300
   ),
   constraint warehouse_movements_idempotency_check check (
-    idempotency_key = btrim(idempotency_key)
+    idempotency_key = regexp_replace(
+      idempotency_key, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+    )
     and char_length(idempotency_key) between 1 and 300
   ),
   constraint warehouse_movements_destination_type_check check (
     destination_type is null
     or (
-      destination_type = btrim(destination_type)
+      destination_type = regexp_replace(
+        destination_type, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+      )
       and char_length(destination_type) between 1 and 100
     )
   ),
   constraint warehouse_movements_destination_id_check check (
     destination_id is null
     or (
-      destination_id = btrim(destination_id)
+      destination_id = regexp_replace(
+        destination_id, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+      )
       and char_length(destination_id) between 1 and 300
     )
   ),
   constraint warehouse_movements_destination_name_check check (
     destination_name is null
     or (
-      destination_name = btrim(destination_name)
+      destination_name = regexp_replace(
+        destination_name, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+      )
       and char_length(destination_name) between 1 and 300
     )
   ),
@@ -446,6 +500,7 @@ grant all on table public.warehouse_items to service_role;
 grant all on table public.warehouse_variants to service_role;
 grant all on table public.warehouse_batches to service_role;
 grant all on table public.warehouse_batch_locations to service_role;
-grant all on table public.warehouse_inventory_movements to service_role;
+revoke all on table public.warehouse_inventory_movements from service_role;
+grant select, insert on table public.warehouse_inventory_movements to service_role;
 
 commit;

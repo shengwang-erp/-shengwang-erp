@@ -3,16 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(100);
-
-create temporary table task4_baseline_counts (
-  employee_count bigint not null,
-  project_count bigint not null
-) on commit drop;
-
-insert into task4_baseline_counts
-select (select count(*) from public.employee_profiles),
-       (select count(*) from public.projects);
+select plan(138);
 
 select has_table('public', 'warehouse_sites', 'warehouse sites table exists');
 select has_table('public', 'warehouse_locations', 'warehouse locations table exists');
@@ -22,6 +13,106 @@ select has_table('public', 'warehouse_batches', 'warehouse batches table exists'
 select has_table('public', 'warehouse_batch_locations', 'warehouse balances table exists');
 select has_table('public', 'warehouse_inventory_movements', 'warehouse movement ledger exists');
 
+create temporary table task4_expected_constraints (
+  table_name text not null,
+  constraint_name text not null,
+  constraint_type "char" not null,
+  primary key (table_name, constraint_name)
+) on commit drop;
+
+insert into task4_expected_constraints(table_name, constraint_name, constraint_type) values
+  ('warehouse_sites', 'warehouse_sites_code_check', 'c'),
+  ('warehouse_sites', 'warehouse_sites_name_check', 'c'),
+  ('warehouse_sites', 'warehouse_sites_kind_check', 'c'),
+  ('warehouse_sites', 'warehouse_sites_code_unique', 'u'),
+  ('warehouse_locations', 'warehouse_locations_shelf_code_check', 'c'),
+  ('warehouse_locations', 'warehouse_locations_shelf_name_check', 'c'),
+  ('warehouse_locations', 'warehouse_locations_warehouse_shelf_unique', 'u'),
+  ('warehouse_locations', 'warehouse_locations_id_warehouse_unique', 'u'),
+  ('warehouse_locations', 'warehouse_locations_warehouse_fk', 'f'),
+  ('warehouse_items', 'warehouse_items_name_check', 'c'),
+  ('warehouse_items', 'warehouse_items_category_check', 'c'),
+  ('warehouse_items', 'warehouse_items_brand_check', 'c'),
+  ('warehouse_items', 'warehouse_items_description_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_sku_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_model_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_size_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_material_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_unit_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_minimum_stock_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_default_price_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_system_qr_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_manufacturer_qr_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_sku_unique', 'u'),
+  ('warehouse_variants', 'warehouse_variants_system_qr_unique', 'u'),
+  ('warehouse_variants', 'warehouse_variants_item_fk', 'f'),
+  ('warehouse_batches', 'warehouse_batches_unit_cost_check', 'c'),
+  ('warehouse_batches', 'warehouse_batches_original_quantity_check', 'c'),
+  ('warehouse_batches', 'warehouse_batches_id_variant_unique', 'u'),
+  ('warehouse_batches', 'warehouse_batches_variant_fk', 'f'),
+  ('warehouse_batch_locations', 'warehouse_batch_locations_quantity_check', 'c'),
+  ('warehouse_batch_locations', 'warehouse_batch_locations_batch_fk', 'f'),
+  ('warehouse_batch_locations', 'warehouse_batch_locations_location_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_type_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_quantity_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_unit_cost_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_source_type_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_source_id_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_idempotency_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_destination_type_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_destination_id_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_destination_name_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_metadata_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_reversal_self_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_reversal_shape_check', 'c'),
+  ('warehouse_inventory_movements', 'warehouse_movements_variant_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_warehouse_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_batch_variant_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_location_warehouse_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_project_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_operator_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_movements_reversal_fk', 'f');
+
+select is(
+  (select array_agg(
+      constraint_row.table_name || ':' || constraint_row.constraint_name || ':' || constraint_row.constraint_type
+      order by constraint_row.table_name collate "C", constraint_row.constraint_name collate "C"
+    )
+   from (
+     select relation.relname::text as table_name,
+            constraint_record.conname::text as constraint_name,
+            constraint_record.contype::text as constraint_type
+     from pg_catalog.pg_constraint as constraint_record
+     join pg_catalog.pg_class as relation on relation.oid = constraint_record.conrelid
+     join pg_catalog.pg_namespace as namespace on namespace.oid = relation.relnamespace
+     where namespace.nspname = 'public'
+       and relation.relname like 'warehouse_%'
+       and constraint_record.contype in ('c', 'u', 'f')
+   ) as constraint_row),
+  (select array_agg(
+      expected.table_name || ':' || expected.constraint_name || ':' || expected.constraint_type::text
+      order by expected.table_name collate "C", expected.constraint_name collate "C"
+    )
+   from task4_expected_constraints as expected),
+  'the complete named warehouse check, unique, and foreign-key inventory is exact'
+);
+select is(
+  (select array_agg(indexname::text order by indexname)
+   from pg_catalog.pg_indexes
+   where schemaname = 'public'
+     and indexname in (
+       'warehouse_variants_manufacturer_qr_ci_unique',
+       'warehouse_movements_idempotency_unique',
+       'warehouse_movements_reversal_unique'
+     )),
+  array[
+    'warehouse_movements_idempotency_unique',
+    'warehouse_movements_reversal_unique',
+    'warehouse_variants_manufacturer_qr_ci_unique'
+  ]::text[],
+  'the three expression or partial unique indexes are present by name'
+);
+
 select is((select count(*) from public.warehouse_sites), 0::bigint, 'sites start empty');
 select is((select count(*) from public.warehouse_locations), 0::bigint, 'locations start empty');
 select is((select count(*) from public.warehouse_items), 0::bigint, 'items start empty');
@@ -29,16 +120,6 @@ select is((select count(*) from public.warehouse_variants), 0::bigint, 'variants
 select is((select count(*) from public.warehouse_batches), 0::bigint, 'batches start empty');
 select is((select count(*) from public.warehouse_batch_locations), 0::bigint, 'balances start empty');
 select is((select count(*) from public.warehouse_inventory_movements), 0::bigint, 'movements start empty');
-select is(
-  (select count(*) from public.employee_profiles),
-  (select employee_count from task4_baseline_counts),
-  'warehouse migration preserves every employee row'
-);
-select is(
-  (select count(*) from public.projects),
-  (select project_count from task4_baseline_counts),
-  'warehouse migration preserves every project row'
-);
 
 select col_type_is('public', 'warehouse_batch_locations', 'quantity', 'numeric(18,3)', 'balance quantity has exact precision');
 select col_type_is('public', 'warehouse_batches', 'original_quantity', 'numeric(18,3)', 'batch quantity has exact precision');
@@ -69,6 +150,14 @@ select throws_ok(
   $$insert into public.warehouse_sites(code, name, kind) values ('PADDED', ' 坏仓名', 'normal')$$,
   '23514', null, 'padded site names are rejected'
 );
+select throws_ok(
+  $$insert into public.warehouse_sites(code, name, kind) values (E'\tTAB-CODE', '制表符仓', 'normal')$$,
+  '23514', null, 'site codes reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_sites(code, name, kind) values ('NEWLINE-NAME', E'换行仓\n', 'normal')$$,
+  '23514', null, 'site names reject POSIX whitespace at the edge'
+);
 
 select lives_ok(
   $$insert into public.warehouse_locations(id, warehouse_id, shelf_code, shelf_name) values
@@ -96,6 +185,16 @@ select throws_ok(
     ('90000000-0000-4000-8000-000000000001', 'A-03', ' ')$$,
   '23514', null, 'blank shelf names are rejected'
 );
+select throws_ok(
+  $$insert into public.warehouse_locations(warehouse_id, shelf_code, shelf_name) values
+    ('90000000-0000-4000-8000-000000000001', E'\tA-04', '制表符货架')$$,
+  '23514', null, 'shelf codes reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_locations(warehouse_id, shelf_code, shelf_name) values
+    ('90000000-0000-4000-8000-000000000001', 'A-05', E'换行货架\n')$$,
+  '23514', null, 'shelf names reject POSIX whitespace at the edge'
+);
 
 select lives_ok(
   $$insert into public.warehouse_items(id, name, category, brand, description) values
@@ -109,6 +208,22 @@ select throws_ok(
 select throws_ok(
   $$insert into public.warehouse_items(name, brand) values ('测试', ' 厂家')$$,
   '23514', null, 'padded optional item text is rejected'
+);
+select throws_ok(
+  $$insert into public.warehouse_items(name) values (E'\t')$$,
+  '23514', null, 'item names reject POSIX-whitespace-only values'
+);
+select throws_ok(
+  $$insert into public.warehouse_items(name, category) values ('类别测试', E'类别\n')$$,
+  '23514', null, 'item categories reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_items(name, brand) values ('品牌测试', E'\t厂家')$$,
+  '23514', null, 'item brands reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_items(name, description) values ('说明测试', E'说明\n')$$,
+  '23514', null, 'item descriptions reject POSIX whitespace at the edge'
 );
 
 select lives_ok(
@@ -199,6 +314,48 @@ select throws_ok(
     ('92000000-0000-4000-8000-000000000001', 'SW-NEG-PRICE', '个', 'SWERP:VARIANT:NEG-PRICE', -0.0001)$$,
   '23514', null, 'default purchase price cannot be negative'
 );
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', E'\tSW-TAB-SKU', '个', 'SWERP:VARIANT:TAB-SKU')$$,
+  '23514', null, 'variant SKUs reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, model, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-TAB-MODEL', E'\t型号', '个', 'SWERP:VARIANT:TAB-MODEL')$$,
+  '23514', null, 'variant models reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, size, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-NL-SIZE', E'尺寸\n', '个', 'SWERP:VARIANT:NL-SIZE')$$,
+  '23514', null, 'variant sizes reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, material, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-TAB-MATERIAL', E'\t铜', '个', 'SWERP:VARIANT:TAB-MATERIAL')$$,
+  '23514', null, 'variant materials reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-NL-UNIT', E'个\n', 'SWERP:VARIANT:NL-UNIT')$$,
+  '23514', null, 'variant units reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, unit, system_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-EMPTY-SYSTEM-QR', '个', E'SWERP:VARIANT:\t')$$,
+  '23514', null, 'system QR requires a meaningful non-whitespace suffix'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, unit, system_qr, manufacturer_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-TAB-MANUFACTURER-QR', '个',
+     'SWERP:VARIANT:TAB-MANUFACTURER-QR', E'\t')$$,
+  '23514', null, 'manufacturer QR rejects POSIX-whitespace-only values'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(item_id, sku, unit, system_qr, manufacturer_qr) values
+    ('92000000-0000-4000-8000-000000000001', 'SW-NL-MANUFACTURER-QR', '个',
+     'SWERP:VARIANT:NL-MANUFACTURER-QR', E'maker-qr-newline\n')$$,
+  '23514', null, 'manufacturer QR rejects POSIX whitespace at the edge'
+);
 
 select lives_ok(
   $$insert into public.warehouse_batches(
@@ -278,14 +435,29 @@ values
   ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'warehouse-no-access@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000003', 'authenticated', 'authenticated', 'warehouse-inactive@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000004', 'authenticated', 'authenticated', 'warehouse-password@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
-  ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'warehouse-former@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
+  ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'warehouse-former@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000006', 'authenticated', 'authenticated', 'warehouse-deleted@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', '95000000-0000-4000-8000-000000000007', 'authenticated', 'authenticated', 'warehouse-sw000@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
 insert into public.employee_profiles(id, employee_number, auth_user_id, name, department, position, employment_status, account_status, must_change_password)
 values
   ('96000000-0000-4000-8000-000000000001', 'SW-9601', '95000000-0000-4000-8000-000000000001', '仓库读者', '仓库管理部', '仓库管理员', '在职', 'active', false),
   ('96000000-0000-4000-8000-000000000002', 'SW-9602', '95000000-0000-4000-8000-000000000002', '无权限员工', '工程部', '大工', '在职', 'active', false),
   ('96000000-0000-4000-8000-000000000003', 'SW-9603', '95000000-0000-4000-8000-000000000003', '停用员工', '仓库管理部', '仓库管理员', '在职', 'disabled', false),
   ('96000000-0000-4000-8000-000000000004', 'SW-9604', '95000000-0000-4000-8000-000000000004', '待改密员工', '仓库管理部', '仓库管理员', '在职', 'active', true),
-  ('96000000-0000-4000-8000-000000000005', 'SW-9605', '95000000-0000-4000-8000-000000000005', '离职员工', '仓库管理部', '仓库管理员', '离职', 'active', false);
+  ('96000000-0000-4000-8000-000000000005', 'SW-9605', '95000000-0000-4000-8000-000000000005', '离职员工', '仓库管理部', '仓库管理员', '离职', 'active', false),
+  ('96000000-0000-4000-8000-000000000006', 'SW-9606', '95000000-0000-4000-8000-000000000006', '已删除员工', '仓库管理部', '仓库管理员', '在职', 'active', false);
+insert into public.employee_profiles(
+  id, employee_number, auth_user_id, name, department, position,
+  employment_status, account_status, must_change_password,
+  is_hidden_system_account
+) values (
+  '96000000-0000-4000-8000-000000000007', 'SW-000',
+  '95000000-0000-4000-8000-000000000007', '系统恢复管理员',
+  '总务部', '社长', '在职', 'active', false, true
+);
+update public.employee_profiles
+set deleted_at = '2026-08-08T00:00:00Z'
+where id = '96000000-0000-4000-8000-000000000006';
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
   ('department', '仓库管理部', 'module.inventory.view'),
   ('department', '仓库管理部', 'warehouse.cost.view');
@@ -441,6 +613,168 @@ select throws_ok(
       1, 'NaN', 'stocktake', 'BAD-13', 'BAD-13', '96000000-0000-4000-8000-000000000001', now())$$,
   '23514', null, 'movement unit cost must be finite'
 );
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '99999999-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-14', 'BAD-14', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23503', null, 'movements require an existing variant'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '99999999-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-15', 'BAD-15', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23503', null, 'movements require an existing warehouse'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '99999999-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-16', 'BAD-16', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23503', null, 'movements require an existing location'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', E'BAD-17\n', 'BAD-17', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement source ids reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, E'\tstocktake', 'BAD-17B', 'BAD-17B', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement source types reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-17C', E'BAD-17C\n', '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement idempotency keys reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      destination_type, operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-18', 'BAD-18', E'\twarehouse',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement destination types reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      destination_id, operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-19', 'BAD-19', E'MAIN\n',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement destination ids reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      destination_name, operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-20', 'BAD-20', E'\t本社仓',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'movement destination names reject POSIX whitespace at the edge'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      reversal_of_movement_id, operator_employee_profile_id, occurred_at
+    ) values ('盘盈', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      1, 1, 'stocktake', 'BAD-21', 'BAD-21', '97000000-0000-4000-8000-000000000001',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'non-reversal movements cannot reference a reversal target'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      operator_employee_profile_id, occurred_at
+    ) values ('冲销', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      -1, 1, 'reversal', 'BAD-22', 'BAD-22',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23514', null, 'reversal movements require an original movement reference'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, warehouse_id, location_id, quantity_delta,
+      unit_cost, source_document_type, source_document_id, idempotency_key,
+      reversal_of_movement_id, operator_employee_profile_id, occurred_at
+    ) values ('冲销', '93000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001', '91000000-0000-4000-8000-000000000001',
+      -1, 1, 'reversal', 'BAD-23', 'BAD-23', '99999999-0000-4000-8000-000000000001',
+      '96000000-0000-4000-8000-000000000001', now())$$,
+  '23503', null, 'reversal movements require an existing original movement'
+);
+select lives_ok(
+  $$insert into public.warehouse_inventory_movements(
+      id, movement_type, variant_id, batch_id, warehouse_id, location_id,
+      quantity_delta, unit_cost, source_document_type, source_document_id,
+      idempotency_key, operator_employee_profile_id, occurred_at,
+      reversal_of_movement_id, metadata
+    ) values (
+      '97000000-0000-4000-8000-000000000002', '冲销',
+      '93000000-0000-4000-8000-000000000001',
+      '94000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001',
+      '91000000-0000-4000-8000-000000000001',
+      -10.000, 120.5000, 'reversal', 'REVERSAL-1', 'REVERSAL-IDEMPOTENCY-1',
+      '96000000-0000-4000-8000-000000000001', '2026-08-08T01:00:00Z',
+      '97000000-0000-4000-8000-000000000001', '{}'::jsonb
+    )$$,
+  'the first append-only reversal of a movement is accepted'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      id, movement_type, variant_id, batch_id, warehouse_id, location_id,
+      quantity_delta, unit_cost, source_document_type, source_document_id,
+      idempotency_key, operator_employee_profile_id, occurred_at,
+      reversal_of_movement_id, metadata
+    ) values (
+      '97000000-0000-4000-8000-000000000003', '冲销',
+      '93000000-0000-4000-8000-000000000001',
+      '94000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001',
+      '91000000-0000-4000-8000-000000000001',
+      -10.000, 120.5000, 'reversal', 'REVERSAL-2', 'REVERSAL-IDEMPOTENCY-2',
+      '96000000-0000-4000-8000-000000000001', '2026-08-08T02:00:00Z',
+      '97000000-0000-4000-8000-000000000001', '{}'::jsonb
+    )$$,
+  '23505', null, 'an original movement can be reversed only once'
+);
 
 select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000001', true);
 select set_config('request.jwt.claim.role', 'authenticated', true);
@@ -506,6 +840,19 @@ select throws_ok(
   $$select * from private.assert_warehouse_permission('warehouse.receipt.confirm')$$,
   '42501', 'warehouse permission required', 'permission assertion checks the exact key'
 );
+select throws_ok(
+  $$select * from private.assert_warehouse_permission('')$$,
+  '42501', 'warehouse permission required', 'permission assertion rejects a blank key'
+);
+select throws_ok(
+  $$select * from private.assert_warehouse_permission(' warehouse.cost.view')$$,
+  '42501', 'warehouse permission required', 'permission assertion rejects a padded key'
+);
+select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000099', true);
+select throws_ok(
+  $$select * from private.assert_warehouse_permission('warehouse.cost.view')$$,
+  '42501', 'active employee required', 'permission assertion rejects a missing profile'
+);
 select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000003', true);
 select throws_ok(
   $$select * from private.assert_warehouse_permission('warehouse.cost.view')$$,
@@ -521,18 +868,28 @@ select throws_ok(
   $$select * from private.assert_warehouse_permission('warehouse.cost.view')$$,
   '42501', 'active employee required', 'permission assertion fails closed for former employees'
 );
+select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000006', true);
+select throws_ok(
+  $$select * from private.assert_warehouse_permission('warehouse.cost.view')$$,
+  '42501', 'active employee required', 'permission assertion fails closed for deleted profiles'
+);
+select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000007', true);
+select is(
+  (select employee_profile_id::text || ':' || employee_name
+   from private.assert_warehouse_permission('warehouse.receipt.confirm')),
+  '96000000-0000-4000-8000-000000000007:系统恢复管理员',
+  'active SW-000 receives exact warehouse permission assertion audit identity'
+);
 
 select set_config('request.jwt.claim.role', 'service_role', true);
-set local role service_role;
 select throws_ok(
   $$update public.warehouse_inventory_movements set destination_name = '篡改' where id = '97000000-0000-4000-8000-000000000001'$$,
-  '42501', 'warehouse inventory movements are immutable', 'service role cannot update immutable movements'
+  '42501', 'warehouse inventory movements are immutable', 'table owner cannot bypass the movement update trigger'
 );
 select throws_ok(
   $$delete from public.warehouse_inventory_movements where id = '97000000-0000-4000-8000-000000000001'$$,
-  '42501', 'warehouse inventory movements are immutable', 'service role cannot delete immutable movements'
+  '42501', 'warehouse inventory movements are immutable', 'table owner cannot bypass the movement delete trigger'
 );
-reset role;
 
 select is(
   (select count(*)
@@ -557,6 +914,30 @@ select is(
    where has_table_privilege('anon', protected.table_name, operation.privilege_name)),
   0::bigint,
   'anonymous has no direct batch, balance, or movement write privilege'
+);
+select ok(
+  not has_table_privilege(
+    'service_role',
+    'public.warehouse_inventory_movements',
+    'TRUNCATE'
+  ),
+  'service role cannot truncate the immutable movement ledger'
+);
+select ok(
+  not has_table_privilege(
+    'service_role',
+    'public.warehouse_inventory_movements',
+    'UPDATE'
+  ),
+  'service role cannot update the immutable movement ledger'
+);
+select ok(
+  not has_table_privilege(
+    'service_role',
+    'public.warehouse_inventory_movements',
+    'DELETE'
+  ),
+  'service role cannot delete the immutable movement ledger'
 );
 
 set local role anon;

@@ -7,6 +7,103 @@ const migration = await readFile(new URL(
   import.meta.url,
 ), 'utf8').catch(() => '')
 
+function stripSqlBodiesCommentsAndStrings(source) {
+  let output = ''
+  let index = 0
+  let blockDepth = 0
+
+  while (index < source.length) {
+    if (blockDepth > 0) {
+      if (source.startsWith('/*', index)) {
+        blockDepth += 1
+        output += '  '
+        index += 2
+      } else if (source.startsWith('*/', index)) {
+        blockDepth -= 1
+        output += '  '
+        index += 2
+      } else {
+        output += source[index] === '\n' ? '\n' : ' '
+        index += 1
+      }
+      continue
+    }
+
+    if (source.startsWith('--', index)) {
+      const lineEnd = source.indexOf('\n', index + 2)
+      const end = lineEnd === -1 ? source.length : lineEnd
+      output += ' '.repeat(end - index)
+      index = end
+      continue
+    }
+
+    if (source.startsWith('/*', index)) {
+      blockDepth = 1
+      output += '  '
+      index += 2
+      continue
+    }
+
+    if (source[index] === "'") {
+      output += ' '
+      index += 1
+      let closed = false
+      while (index < source.length) {
+        if (source[index] === "'" && source[index + 1] === "'") {
+          output += '  '
+          index += 2
+        } else if (source[index] === "'") {
+          output += ' '
+          index += 1
+          closed = true
+          break
+        } else {
+          output += source[index] === '\n' ? '\n' : ' '
+          index += 1
+        }
+      }
+      if (!closed) {
+        throw new Error('unterminated SQL string')
+      }
+      continue
+    }
+
+    if (source[index] === '$') {
+      const tag = source.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0]
+      if (tag) {
+        const bodyEnd = source.indexOf(tag, index + tag.length)
+        if (bodyEnd === -1) {
+          throw new Error('unterminated SQL dollar body')
+        }
+        const end = bodyEnd + tag.length
+        const body = source.slice(index, end)
+        output += body.replace(/[^\n]/g, ' ')
+        index = end
+        continue
+      }
+    }
+
+    output += source[index]
+    index += 1
+  }
+
+  if (blockDepth > 0) {
+    throw new Error('unterminated SQL block comment')
+  }
+
+  return output
+}
+
+function protectedTopLevelDml(source) {
+  const stripped = stripSqlBodiesCommentsAndStrings(source)
+  const protectedTarget = '(?:public\\.)?(?:employee_profiles|projects|permission_grants)'
+  const dml = new RegExp(
+    `\\b(?:insert\\s+into|update|delete\\s+from|merge\\s+into|truncate(?:\\s+table)?)\\s+(?:only\\s+)?${protectedTarget}\\b`,
+    'gi',
+  )
+  return [...stripped.matchAll(dml)].map((match) => match[0])
+}
+
 const expectedTables = [
   'warehouse_sites',
   'warehouse_locations',
@@ -98,4 +195,39 @@ test('warehouse permission assertion is fail-closed and movement rows are immuta
     /create trigger reject_warehouse_movement_mutation\s+before update or delete\s+on public\.warehouse_inventory_movements/i,
   )
   assert.match(migration, /warehouse inventory movements are immutable/i)
+})
+
+test('top-level protected-table DML detector ignores comments, strings and function bodies', () => {
+  const decoys = `
+    -- update public.projects set status = 'deleted';
+    /* delete from public.employee_profiles; /* nested comment */ */
+    select 'truncate public.permission_grants';
+    create function private.decoy() returns void language plpgsql as $body$
+    begin
+      insert into public.projects(record_key) values ('inside-function');
+    end
+    $body$;
+  `
+  assert.deepEqual(protectedTopLevelDml(decoys), [])
+  assert.deepEqual(
+    protectedTopLevelDml('merge into public.permission_grants as target using source on true;'),
+    ['merge into public.permission_grants'],
+  )
+})
+
+test('top-level protected-table DML detector fails closed on unterminated SQL bodies', () => {
+  for (const malformed of [
+    "select 'unterminated",
+    '/* unterminated block comment',
+    'create function private.bad() returns void as $body$ begin',
+  ]) {
+    assert.throws(
+      () => protectedTopLevelDml(malformed),
+      /unterminated SQL (string|block comment|dollar body)/,
+    )
+  }
+})
+
+test('warehouse foundation performs no top-level employee, project or grant DML', () => {
+  assert.deepEqual(protectedTopLevelDml(migration), [])
 })
