@@ -12,6 +12,22 @@ const SOURCE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',
   '.ts', '.tsx', '.mts', '.cts',
 ])
+const FUNCTION_SCOPE_TYPES = new Set([
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ArrowFunctionExpression',
+  'ObjectMethod',
+  'ClassMethod',
+  'ClassPrivateMethod',
+  'TSDeclareFunction',
+  'TSDeclareMethod',
+  'TSFunctionType',
+  'TSMethodSignature',
+  'TSCallSignatureDeclaration',
+  'TSConstructSignatureDeclaration',
+  'TSConstructorType',
+])
+const LOOP_SCOPE_TYPES = new Set(['ForStatement', 'ForInStatement', 'ForOfStatement'])
 
 function dependencyForSpecifier(value) {
   if (typeof value !== 'string') return null
@@ -45,18 +61,34 @@ function addPatternBindings(pattern, bindings) {
   }
 }
 
+function declarationInside(statement) {
+  if (
+    statement?.type === 'ExportNamedDeclaration'
+    || statement?.type === 'ExportDefaultDeclaration'
+  ) return statement.declaration
+  return statement
+}
+
 function collectDirectBindings(statements, bindings) {
   for (const statement of statements ?? []) {
-    if (statement.type === 'VariableDeclaration') {
-      for (const declaration of statement.declarations) {
+    const declarationNode = declarationInside(statement)
+    if (!declarationNode) continue
+    if (declarationNode.type === 'VariableDeclaration') {
+      for (const declaration of declarationNode.declarations) {
         addPatternBindings(declaration.id, bindings)
       }
-    } else if (statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration') {
-      addPatternBindings(statement.id, bindings)
-    } else if (statement.type === 'ImportDeclaration') {
-      for (const specifier of statement.specifiers) addPatternBindings(specifier.local, bindings)
-    } else if (statement.type === 'TSImportEqualsDeclaration') {
-      addPatternBindings(statement.id, bindings)
+    } else if (
+      declarationNode.type === 'FunctionDeclaration'
+      || declarationNode.type === 'ClassDeclaration'
+      || declarationNode.type === 'TSDeclareFunction'
+    ) {
+      addPatternBindings(declarationNode.id, bindings)
+    } else if (declarationNode.type === 'ImportDeclaration') {
+      for (const specifier of declarationNode.specifiers) {
+        addPatternBindings(specifier.local, bindings)
+      }
+    } else if (declarationNode.type === 'TSImportEqualsDeclaration') {
+      addPatternBindings(declarationNode.id, bindings)
     }
   }
 }
@@ -64,9 +96,10 @@ function collectDirectBindings(statements, bindings) {
 function collectFunctionVarBindings(node, bindings) {
   if (!node || typeof node !== 'object') return
   if (
-    node.type === 'FunctionDeclaration'
-    || node.type === 'FunctionExpression'
-    || node.type === 'ArrowFunctionExpression'
+    FUNCTION_SCOPE_TYPES.has(node.type)
+    || node.type === 'ClassDeclaration'
+    || node.type === 'ClassExpression'
+    || node.type === 'StaticBlock'
   ) return
   if (node.type === 'VariableDeclaration' && node.kind === 'var') {
     for (const declaration of node.declarations) addPatternBindings(declaration.id, bindings)
@@ -83,18 +116,29 @@ function collectFunctionVarBindings(node, bindings) {
 
 function createScope(node, parent) {
   const bindings = new Set()
-  if (node.type === 'Program' || node.type === 'BlockStatement') {
+  if (node.type === 'Program') {
     collectDirectBindings(node.body, bindings)
-  } else if (
-    node.type === 'FunctionDeclaration'
-    || node.type === 'FunctionExpression'
-    || node.type === 'ArrowFunctionExpression'
-  ) {
+    collectFunctionVarBindings(node, bindings)
+  } else if (node.type === 'BlockStatement' || node.type === 'StaticBlock') {
+    collectDirectBindings(node.body, bindings)
+  } else if (FUNCTION_SCOPE_TYPES.has(node.type)) {
     addPatternBindings(node.id, bindings)
-    for (const parameter of node.params) addPatternBindings(parameter, bindings)
+    for (const parameter of node.params ?? node.parameters ?? []) {
+      addPatternBindings(parameter, bindings)
+    }
     collectFunctionVarBindings(node.body, bindings)
   } else if (node.type === 'CatchClause') {
     addPatternBindings(node.param, bindings)
+  } else if (LOOP_SCOPE_TYPES.has(node.type)) {
+    const declaration = node.type === 'ForStatement' ? node.init : node.left
+    if (declaration?.type === 'VariableDeclaration') {
+      for (const item of declaration.declarations) addPatternBindings(item.id, bindings)
+    }
+  } else if (node.type === 'SwitchStatement') {
+    collectDirectBindings(
+      node.cases.flatMap((switchCase) => switchCase.consequent),
+      bindings,
+    )
   }
   return { bindings, parent }
 }
@@ -102,9 +146,10 @@ function createScope(node, parent) {
 function createsScope(node) {
   return node.type === 'Program'
     || node.type === 'BlockStatement'
-    || node.type === 'FunctionDeclaration'
-    || node.type === 'FunctionExpression'
-    || node.type === 'ArrowFunctionExpression'
+    || node.type === 'StaticBlock'
+    || FUNCTION_SCOPE_TYPES.has(node.type)
+    || LOOP_SCOPE_TYPES.has(node.type)
+    || node.type === 'SwitchStatement'
     || node.type === 'CatchClause'
 }
 
@@ -114,10 +159,14 @@ function visit(node, parentScope, onNode) {
   onNode(node, scope)
   for (const [key, value] of Object.entries(node)) {
     if (key === 'loc' || key === 'start' || key === 'end') continue
+    const childScope = FUNCTION_SCOPE_TYPES.has(node.type)
+      && (key === 'key' || key === 'decorators')
+      ? parentScope
+      : scope
     if (Array.isArray(value)) {
-      for (const child of value) visit(child, scope, onNode)
+      for (const child of value) visit(child, childScope, onNode)
     } else if (value && typeof value === 'object') {
-      visit(value, scope, onNode)
+      visit(value, childScope, onNode)
     }
   }
 }

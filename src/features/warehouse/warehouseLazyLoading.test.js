@@ -148,6 +148,131 @@ export { text, loader }
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
 })
 
+test('nested object and class method var bindings never hide outer global require calls', async (t) => {
+  const root = await createFixture(`
+function fromObjectMethod() {
+  const holder = { load() { var require } }
+  require('exceljs')
+  return holder
+}
+function fromClassMethod() {
+  class Loader { load() { var require } }
+  require('qrcode')
+  return Loader
+}
+export { fromObjectMethod, fromClassMethod }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*exceljs/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*qrcode/iu)
+})
+
+test('export-wrapped local require function and module constant shadow CommonJS globals', async (t) => {
+  const root = await createFixture(`
+export function require(value) { return value }
+export const module = { require(value) { return value } }
+require('exceljs')
+module.require('qrcode')
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('export-default local require function shadows the CommonJS global', async (t) => {
+  const root = await createFixture(`
+export default function require(value) { return value }
+require('@zxing/browser')
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('object and class method parameters shadow require and module only inside each method', async (t) => {
+  const root = await createFixture(`
+const objectLoader = {
+  load(require) { return require('exceljs') },
+}
+class ClassLoader {
+  load(module) { return module.require('qrcode') }
+}
+export { objectLoader, ClassLoader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('for-of, switch, and block lexical bindings shadow CommonJS names only in their scopes', async (t) => {
+  const root = await createFixture(`
+for (const require of [(value) => value]) {
+  require('exceljs')
+}
+switch ('warehouse') {
+  case 'warehouse':
+    const module = { require(value) { return value } }
+    module.require('qrcode')
+    break
+}
+{
+  const require = (value) => value
+  require('@zxing/browser')
+}
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('nested method shadows never weaken global require and module.require checks', async (t) => {
+  const root = await createFixture(`
+const objectLoader = { load(require) { return require('safe-local-package') } }
+class ClassLoader { load(module) { return module.require('safe-local-package') } }
+require('exceljs')
+module.require('qrcode')
+export { objectLoader, ClassLoader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*exceljs/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /module\.require.*qrcode/iu)
+})
+
+test('method parameters do not shadow global CommonJS calls in computed method keys', async (t) => {
+  const root = await createFixture(`
+const objectLoader = {
+  [require('exceljs')](require) { return require('safe-local-package') },
+}
+class ClassLoader {
+  [module.require('qrcode')](module) { return module.require('safe-local-package') }
+}
+export { objectLoader, ClassLoader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*exceljs/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /module\.require.*qrcode/iu)
+})
+
 test('literal dynamic imports of all warehouse media dependencies pass the executable boundary', async (t) => {
   const root = await createFixture(`
 export async function loadWarehouseMedia() {
