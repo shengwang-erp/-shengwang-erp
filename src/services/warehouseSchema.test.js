@@ -7,7 +7,7 @@ const migration = await readFile(new URL(
   import.meta.url,
 ), 'utf8').catch(() => '')
 
-function stripSqlBodiesCommentsAndStrings(source) {
+function stripSqlCommentsStringsAndRoutineBodies(source) {
   let output = ''
   let index = 0
   let blockDepth = 0
@@ -71,14 +71,24 @@ function stripSqlBodiesCommentsAndStrings(source) {
     if (source[index] === '$') {
       const tag = source.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0]
       if (tag) {
-        const bodyEnd = source.indexOf(tag, index + tag.length)
-        if (bodyEnd === -1) {
-          throw new Error('unterminated SQL dollar body')
+        const statementStart = output.lastIndexOf(';') + 1
+        const statementPrefix = output.slice(statementStart)
+        const startsRoutineBody = /^\s*create\s+(?:or\s+replace\s+)?(?:function|procedure)\b[\s\S]*\bas\s*$/i
+          .test(statementPrefix)
+        if (startsRoutineBody) {
+          const bodyEnd = source.indexOf(tag, index + tag.length)
+          if (bodyEnd === -1) {
+            throw new Error('unterminated SQL dollar body')
+          }
+          const end = bodyEnd + tag.length
+          const body = source.slice(index, end)
+          output += body.replace(/[^\n]/g, ' ')
+          index = end
+          continue
         }
-        const end = bodyEnd + tag.length
-        const body = source.slice(index, end)
-        output += body.replace(/[^\n]/g, ' ')
-        index = end
+
+        output += tag
+        index += tag.length
         continue
       }
     }
@@ -95,7 +105,10 @@ function stripSqlBodiesCommentsAndStrings(source) {
 }
 
 function protectedTopLevelDml(source) {
-  const stripped = stripSqlBodiesCommentsAndStrings(source)
+  const stripped = stripSqlCommentsStringsAndRoutineBodies(source)
+  if (/(?:^|;)\s*do\b/i.test(stripped)) {
+    throw new Error('top-level DO blocks are forbidden')
+  }
   const protectedTarget = '(?:public\\.)?(?:employee_profiles|projects|permission_grants)'
   const dml = new RegExp(
     `\\b(?:insert\\s+into|update|delete\\s+from|merge\\s+into|truncate(?:\\s+table)?)\\s+(?:only\\s+)?${protectedTarget}\\b`,
@@ -202,16 +215,45 @@ test('top-level protected-table DML detector ignores comments, strings and funct
     -- update public.projects set status = 'deleted';
     /* delete from public.employee_profiles; /* nested comment */ */
     select 'truncate public.permission_grants';
-    create function private.decoy() returns void language plpgsql as $body$
+    create function private.decoy() returns void language plpgsql as $routine_body_17$
     begin
+      /* update public.employee_profiles set deleted_at = now(); /* nested */ */
+      perform 'delete from public.permission_grants';
       insert into public.projects(record_key) values ('inside-function');
     end
-    $body$;
+    $routine_body_17$;
+    create procedure private.decoy_procedure() language plpgsql as $procedure_body$
+    begin
+      update public.employee_profiles set deleted_at = now();
+    end
+    $procedure_body$;
   `
   assert.deepEqual(protectedTopLevelDml(decoys), [])
   assert.deepEqual(
     protectedTopLevelDml('merge into public.permission_grants as target using source on true;'),
     ['merge into public.permission_grants'],
+  )
+})
+
+test('top-level protected-table DML detector forbids executable DO dollar bodies', () => {
+  assert.throws(
+    () => protectedTopLevelDml(`
+      do $executable$
+      begin
+        update public.projects set status = 'deleted';
+      end
+      $executable$;
+    `),
+    /top-level DO blocks are forbidden/,
+  )
+})
+
+test('top-level protected-table DML detector scans non-routine dollar content', () => {
+  assert.deepEqual(
+    protectedTopLevelDml(`select $review_probe$
+      update public.projects set status = 'deleted';
+    $review_probe$`),
+    ['update public.projects'],
   )
 })
 

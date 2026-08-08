@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(138);
+select plan(144);
 
 select has_table('public', 'warehouse_sites', 'warehouse sites table exists');
 select has_table('public', 'warehouse_locations', 'warehouse locations table exists');
@@ -20,20 +20,29 @@ create temporary table task4_expected_constraints (
   primary key (table_name, constraint_name)
 ) on commit drop;
 
+create table public.warehouse_task4_scope_probe (
+  id uuid constraint warehouse_task4_scope_probe_pkey primary key,
+  note text constraint warehouse_task4_scope_probe_note_check check (note <> '')
+);
+
 insert into task4_expected_constraints(table_name, constraint_name, constraint_type) values
+  ('warehouse_sites', 'warehouse_sites_pkey', 'p'),
   ('warehouse_sites', 'warehouse_sites_code_check', 'c'),
   ('warehouse_sites', 'warehouse_sites_name_check', 'c'),
   ('warehouse_sites', 'warehouse_sites_kind_check', 'c'),
   ('warehouse_sites', 'warehouse_sites_code_unique', 'u'),
+  ('warehouse_locations', 'warehouse_locations_pkey', 'p'),
   ('warehouse_locations', 'warehouse_locations_shelf_code_check', 'c'),
   ('warehouse_locations', 'warehouse_locations_shelf_name_check', 'c'),
   ('warehouse_locations', 'warehouse_locations_warehouse_shelf_unique', 'u'),
   ('warehouse_locations', 'warehouse_locations_id_warehouse_unique', 'u'),
   ('warehouse_locations', 'warehouse_locations_warehouse_fk', 'f'),
+  ('warehouse_items', 'warehouse_items_pkey', 'p'),
   ('warehouse_items', 'warehouse_items_name_check', 'c'),
   ('warehouse_items', 'warehouse_items_category_check', 'c'),
   ('warehouse_items', 'warehouse_items_brand_check', 'c'),
   ('warehouse_items', 'warehouse_items_description_check', 'c'),
+  ('warehouse_variants', 'warehouse_variants_pkey', 'p'),
   ('warehouse_variants', 'warehouse_variants_sku_check', 'c'),
   ('warehouse_variants', 'warehouse_variants_model_check', 'c'),
   ('warehouse_variants', 'warehouse_variants_size_check', 'c'),
@@ -46,13 +55,16 @@ insert into task4_expected_constraints(table_name, constraint_name, constraint_t
   ('warehouse_variants', 'warehouse_variants_sku_unique', 'u'),
   ('warehouse_variants', 'warehouse_variants_system_qr_unique', 'u'),
   ('warehouse_variants', 'warehouse_variants_item_fk', 'f'),
+  ('warehouse_batches', 'warehouse_batches_pkey', 'p'),
   ('warehouse_batches', 'warehouse_batches_unit_cost_check', 'c'),
   ('warehouse_batches', 'warehouse_batches_original_quantity_check', 'c'),
   ('warehouse_batches', 'warehouse_batches_id_variant_unique', 'u'),
   ('warehouse_batches', 'warehouse_batches_variant_fk', 'f'),
+  ('warehouse_batch_locations', 'warehouse_batch_locations_pkey', 'p'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_quantity_check', 'c'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_batch_fk', 'f'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_location_fk', 'f'),
+  ('warehouse_inventory_movements', 'warehouse_inventory_movements_pkey', 'p'),
   ('warehouse_inventory_movements', 'warehouse_movements_type_check', 'c'),
   ('warehouse_inventory_movements', 'warehouse_movements_quantity_check', 'c'),
   ('warehouse_inventory_movements', 'warehouse_movements_unit_cost_check', 'c'),
@@ -86,8 +98,16 @@ select is(
      join pg_catalog.pg_class as relation on relation.oid = constraint_record.conrelid
      join pg_catalog.pg_namespace as namespace on namespace.oid = relation.relnamespace
      where namespace.nspname = 'public'
-       and relation.relname like 'warehouse_%'
-       and constraint_record.contype in ('c', 'u', 'f')
+       and relation.relname in (
+         'warehouse_sites',
+         'warehouse_locations',
+         'warehouse_items',
+         'warehouse_variants',
+         'warehouse_batches',
+         'warehouse_batch_locations',
+         'warehouse_inventory_movements'
+       )
+       and constraint_record.contype in ('p', 'c', 'u', 'f')
    ) as constraint_row),
   (select array_agg(
       expected.table_name || ':' || expected.constraint_name || ':' || expected.constraint_type::text
@@ -147,6 +167,11 @@ select throws_ok(
   '23505', null, 'site codes are unique'
 );
 select throws_ok(
+  $$insert into public.warehouse_sites(id, code, name, kind) values
+    ('90000000-0000-4000-8000-000000000001', 'DUPLICATE-ID', '重复主键仓', 'normal')$$,
+  '23505', null, 'warehouse site primary keys reject duplicate ids'
+);
+select throws_ok(
   $$insert into public.warehouse_sites(code, name, kind) values ('PADDED', ' 坏仓名', 'normal')$$,
   '23514', null, 'padded site names are rejected'
 );
@@ -174,6 +199,12 @@ select throws_ok(
   $$insert into public.warehouse_locations(warehouse_id, shelf_code, shelf_name) values
     ('90000000-0000-4000-8000-000000000001', 'A-01', '重复货架')$$,
   '23505', null, 'shelf codes are unique inside a warehouse'
+);
+select throws_ok(
+  $$insert into public.warehouse_locations(id, warehouse_id, shelf_code, shelf_name) values
+    ('91000000-0000-4000-8000-000000000001',
+     '90000000-0000-4000-8000-000000000001', 'DUPLICATE-ID', '重复主键货架')$$,
+  '23505', null, 'warehouse location primary keys reject duplicate ids'
 );
 select throws_ok(
   $$insert into public.warehouse_locations(warehouse_id, shelf_code, shelf_name) values
@@ -208,6 +239,11 @@ select throws_ok(
 select throws_ok(
   $$insert into public.warehouse_items(name, brand) values ('测试', ' 厂家')$$,
   '23514', null, 'padded optional item text is rejected'
+);
+select throws_ok(
+  $$insert into public.warehouse_items(id, name) values
+    ('92000000-0000-4000-8000-000000000001', '重复主键物品')$$,
+  '23505', null, 'warehouse item primary keys reject duplicate ids'
 );
 select throws_ok(
   $$insert into public.warehouse_items(name) values (E'\t')$$,
@@ -258,6 +294,13 @@ select throws_ok(
   $$insert into public.warehouse_variants(item_id, sku, unit, system_qr) values
     ('92000000-0000-4000-8000-000000000001', 'SW-000001', '个', 'SWERP:VARIANT:X2')$$,
   '23505', null, 'variant SKUs are unique'
+);
+select throws_ok(
+  $$insert into public.warehouse_variants(id, item_id, sku, unit, system_qr) values
+    ('93000000-0000-4000-8000-000000000001',
+     '92000000-0000-4000-8000-000000000001', 'SW-DUPLICATE-ID', '个',
+     'SWERP:VARIANT:DUPLICATE-ID')$$,
+  '23505', null, 'warehouse variant primary keys reject duplicate ids'
 );
 select throws_ok(
   $$insert into public.warehouse_variants(item_id, sku, unit, system_qr) values
@@ -374,6 +417,15 @@ select throws_ok(
   '23514', null, 'batch unit cost cannot be negative'
 );
 select throws_ok(
+  $$insert into public.warehouse_batches(
+      id, variant_id, received_at, unit_cost, original_quantity
+    ) values (
+      '94000000-0000-4000-8000-000000000001',
+      '93000000-0000-4000-8000-000000000002', now(), 1, 1
+    )$$,
+  '23505', null, 'warehouse batch primary keys reject duplicate ids'
+);
+select throws_ok(
   $$insert into public.warehouse_batches(variant_id, received_at, unit_cost, original_quantity) values
     ('93000000-0000-4000-8000-000000000001', now(), 1, 0)$$,
   '23514', null, 'batch original quantity must be positive'
@@ -479,6 +531,22 @@ select lives_ok(
       '96000000-0000-4000-8000-000000000001', '2026-08-08T00:00:00Z', '{}'::jsonb
     )$$,
   'a valid immutable movement is accepted'
+);
+select throws_ok(
+  $$insert into public.warehouse_inventory_movements(
+      id, movement_type, variant_id, batch_id, warehouse_id, location_id,
+      quantity_delta, unit_cost, source_document_type, source_document_id,
+      idempotency_key, operator_employee_profile_id, occurred_at, metadata
+    ) values (
+      '97000000-0000-4000-8000-000000000001', '采购入库',
+      '93000000-0000-4000-8000-000000000001',
+      '94000000-0000-4000-8000-000000000001',
+      '90000000-0000-4000-8000-000000000001',
+      '91000000-0000-4000-8000-000000000001',
+      1, 120.5000, 'stockIn', 'DUPLICATE-ID', 'DUPLICATE-MOVEMENT-ID',
+      '96000000-0000-4000-8000-000000000001', now(), '{}'::jsonb
+    )$$,
+  '23505', null, 'warehouse movement primary keys reject duplicate ids'
 );
 select throws_ok(
   $$insert into public.warehouse_inventory_movements(
