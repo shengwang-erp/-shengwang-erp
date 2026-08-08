@@ -401,7 +401,7 @@ test('photo delete projects exact metadata and clears the deleted image when sig
   }
 })
 
-test('same-variant photo mutations serialize against real server state and ignore completion after unmount', async () => {
+test('same-variant photo mutations accept a new intent only after real server refresh and ignore completion after unmount', async () => {
   const photos = [
     {
       id: 'photo-first', variantId: 'variant-a1', objectPath: 'variant-a1/photo-first.jpg',
@@ -442,10 +442,12 @@ test('same-variant photo mutations serialize against real server state and ignor
     firstDelete.resolve(true)
     await act(async () => {})
     assert.equal(listCalls, 1)
-    assert.deepEqual(deleteCalls, ['photo-first', 'photo-second'])
+    assert.deepEqual(deleteCalls, ['photo-first'])
     assert.equal(elements(container, (element) => element.getAttribute('src') === photos[0].signedUrl).length, 0)
     assert.equal(elements(container, (element) => element.getAttribute('src') === photos[1].signedUrl).length, 1)
 
+    await click(byText(container, 'BUTTON', '删除照片'))
+    assert.deepEqual(deleteCalls, ['photo-first', 'photo-second'])
     serverPhotos = []
     secondDelete.resolve(true)
     await act(async () => {})
@@ -479,7 +481,7 @@ test('same-variant photo mutations serialize against real server state and ignor
   }
 })
 
-test('photo mutation queues continue after failure and remain independent across variants', async () => {
+test('photo mutation guards release after failure and remain independent across variants', async () => {
   const firstPhoto = {
     id: 'photo-fails', variantId: 'variant-a1', objectPath: 'variant-a1/photo-fails.jpg',
     sortOrder: 0, mimeType: 'image/jpeg', byteSize: 201, createdAt: '2026-01-01T00:00:00Z',
@@ -512,8 +514,11 @@ test('photo mutation queues continue after failure and remain independent across
 
     failedDelete.reject(new Error('第一张删除失败'))
     await act(async () => {})
-    assert.deepEqual(calls, [firstPhoto.id, secondPhoto.id])
+    assert.deepEqual(calls, [firstPhoto.id])
 
+    const retryDeleteButtons = elements(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '删除照片')
+    await click(retryDeleteButtons[1])
+    assert.deepEqual(calls, [firstPhoto.id, secondPhoto.id])
     serverPhotos = [firstPhoto]
     recoveredDelete.resolve(true)
     await act(async () => {})
@@ -576,13 +581,21 @@ test('a pending same-variant mutation disables mixed photo actions through signe
       sortOrder: 1, mimeType: 'image/jpeg', byteSize: 302, createdAt: '2026-01-01T00:00:00Z',
       signedUrl: 'https://signed.invalid/busy-b',
     },
+    {
+      id: 'photo-busy-c', variantId: 'variant-a1', objectPath: 'variant-a1/photo-busy-c.jpg',
+      sortOrder: 2, mimeType: 'image/jpeg', byteSize: 303, createdAt: '2026-01-01T00:00:00Z',
+      signedUrl: 'https://signed.invalid/busy-c',
+    },
   ]
   const deletion = deferred()
   const signedRefresh = deferred()
+  let deleteCalls = 0
   let reorderCalls = 0
+  let uploadCalls = 0
   const warehouseMediaService = {
-    deleteVariantPhoto: () => deletion.promise,
+    deleteVariantPhoto: () => { deleteCalls += 1; return deletion.promise },
     reorderVariantPhotos: async () => { reorderCalls += 1 },
+    uploadVariantPhoto: async () => { uploadCalls += 1 },
     listVariantPhotos: () => signedRefresh.promise,
   }
   const dom = installWarehouseReactDom()
@@ -591,22 +604,40 @@ test('a pending same-variant mutation disables mixed photo actions through signe
   const fileInput = () => elements(container, (element) => element.nodeName === 'INPUT' && element.type === 'file')[0]
   try {
     await act(async () => { root.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService, initialPhotosByVariant: { 'variant-a1': photos } }))) })
-    await click(byText(container, 'BUTTON', '删除照片'))
+    const deleteButton = byText(container, 'BUTTON', '删除照片')
+    const moveButton = elements(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '下移' && !element.disabled)[0]
+    const uploadInput = fileInput()
+    await act(async () => {
+      deleteButton.click()
+      moveButton.click()
+      uploadInput.files = [{ name: 'same-batch.jpg', type: 'image/jpeg', size: 10 }]
+      uploadInput.dispatchEvent(new TestEvent('change'))
+    })
 
     assert.equal(fileInput().disabled, true)
     assert.equal(elements(container, (element) => element.nodeName === 'BUTTON' && ['上移', '下移', '删除照片'].includes(element.textContent)).every((button) => button.disabled), true)
+    assert.equal(deleteCalls, 1)
     assert.equal(reorderCalls, 0)
+    assert.equal(uploadCalls, 0)
 
     deletion.resolve(true)
     await act(async () => {})
     assert.equal(fileInput().disabled, true)
     assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
 
-    signedRefresh.resolve([photos[1]])
+    signedRefresh.resolve([photos[1], photos[2]])
     await act(async () => {})
     assert.equal(fileInput().disabled, false)
     assert.equal(byText(container, 'BUTTON', '删除照片').disabled, false)
     assert.equal(reorderCalls, 0)
+    assert.equal(uploadCalls, 0)
+
+    const enabledMove = elements(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '下移' && !element.disabled)[0]
+    const nextDelete = byText(container, 'BUTTON', '删除照片')
+    await act(async () => { enabledMove.click(); nextDelete.click() })
+    await act(async () => {})
+    assert.equal(reorderCalls, 1)
+    assert.equal(deleteCalls, 1)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()

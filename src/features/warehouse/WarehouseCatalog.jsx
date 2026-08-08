@@ -114,6 +114,8 @@ export default function WarehouseCatalog({
   const mountedRef = useRef(false)
   const photoGenerationRef = useRef(new Map())
   const photoMutationQueuesRef = useRef(new Map())
+  const photoMutationBusyRef = useRef(new Set())
+  const photoMutationOperationRef = useRef(new Map())
   const catalogRef = useRef(catalog)
   catalogRef.current = catalog
   const issuePhotoGeneration = useCallback((variantId) => {
@@ -125,26 +127,37 @@ export default function WarehouseCatalog({
     mountedRef.current && photoGenerationRef.current.get(variantId) === token
   ), [])
   const enqueuePhotoMutation = useCallback((variantId, operation) => {
-    const wasIdle = !photoMutationQueuesRef.current.has(variantId)
-    const previous = photoMutationQueuesRef.current.get(variantId) ?? Promise.resolve()
-    if (wasIdle && mountedRef.current) {
+    if (photoMutationBusyRef.current.has(variantId)) {
+      if (mountedRef.current) setMessage('照片操作进行中，请稍后再试')
+      return Promise.resolve(false)
+    }
+    const operationToken = Symbol(variantId)
+    photoMutationBusyRef.current.add(variantId)
+    photoMutationOperationRef.current.set(variantId, operationToken)
+    if (mountedRef.current) {
       setPhotoMutationBusyByVariant((current) => ({ ...current, [variantId]: true }))
     }
-    const queued = previous.catch(() => {}).then(() => {
-      if (!mountedRef.current) return false
+    const queued = Promise.resolve().then(() => {
+      if (
+        !mountedRef.current
+        || photoMutationOperationRef.current.get(variantId) !== operationToken
+      ) return false
       return operation()
     })
     photoMutationQueuesRef.current.set(variantId, queued)
     return queued.finally(() => {
+      if (photoMutationOperationRef.current.get(variantId) !== operationToken) return
+      photoMutationOperationRef.current.delete(variantId)
+      photoMutationBusyRef.current.delete(variantId)
       if (photoMutationQueuesRef.current.get(variantId) === queued) {
         photoMutationQueuesRef.current.delete(variantId)
-        if (mountedRef.current) {
-          setPhotoMutationBusyByVariant((current) => {
-            const next = { ...current }
-            delete next[variantId]
-            return next
-          })
-        }
+      }
+      if (mountedRef.current) {
+        setPhotoMutationBusyByVariant((current) => {
+          const next = { ...current }
+          delete next[variantId]
+          return next
+        })
       }
     })
   }, [])
@@ -155,6 +168,8 @@ export default function WarehouseCatalog({
       mountedRef.current = false
       photoGenerationRef.current.clear()
       photoMutationQueuesRef.current.clear()
+      photoMutationBusyRef.current.clear()
+      photoMutationOperationRef.current.clear()
     }
   }, [])
 
@@ -357,13 +372,14 @@ export default function WarehouseCatalog({
     }
   }
   const movePhoto = async (index, offset) => {
-    const target = index + offset
-    if (!selectedVariant || target < 0 || target >= photos.length) return
-    const next = [...photos]
-    ;[next[index], next[target]] = [next[target], next[index]]
+    if (!selectedVariant) return
     const variantId = selectedVariant.id
     try {
       await enqueuePhotoMutation(variantId, async () => {
+        const target = index + offset
+        if (target < 0 || target >= photos.length) return false
+        const next = [...photos]
+        ;[next[index], next[target]] = [next[target], next[index]]
         await warehouseMediaService.reorderVariantPhotos(
           variantId,
           next.map((photo) => photo.id),
