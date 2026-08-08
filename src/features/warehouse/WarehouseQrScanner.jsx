@@ -6,6 +6,7 @@ const PERMISSION_ERROR_NAMES = new Set(['NotAllowedError', 'PermissionDeniedErro
 const RETRYABLE_DECODE_ERROR_NAMES = new Set([
   'NotFoundException', 'ChecksumException', 'FormatException',
 ])
+const CAMERA_BUSY_MESSAGE = '相机正在关闭，请稍后重试或改用手动输入'
 const videoSessionOwners = new WeakMap()
 const streamSessionOwners = new WeakMap()
 const componentIdentityKeys = new WeakMap()
@@ -78,7 +79,6 @@ export function createWarehouseQrScannerController({
     if (owner && owner !== session) return
     streamSessionOwners.set(stream, session)
     session.ownedStreams.add(stream)
-    session.latestOwnedStream = stream
   }
 
   const captureCurrentOwnedStream = (session) => {
@@ -88,39 +88,7 @@ export function createWarehouseQrScannerController({
     return stream
   }
 
-  const protectForeignStream = (session) => {
-    const owner = videoSessionOwners.get(session.video)
-    if (!owner || owner === session || owner.closeRequested) return null
-    const stream = readVideoStream(session.video)
-    if (!stream) return null
-    rememberOwnedStream(owner, stream)
-    try {
-      if (session.video.srcObject !== stream) return null
-      session.video.srcObject = null
-      return { owner, stream, video: session.video }
-    } catch {
-      return null
-    }
-  }
-
-  const restoreProtectedStream = (protection) => {
-    if (!protection) return
-    const { owner, stream, video } = protection
-    if (videoSessionOwners.get(video) !== owner || owner.closeRequested) return
-    if (readVideoStream(video) !== null) return
-    const latest = owner.latestOwnedStream ?? stream
-    if (streamSessionOwners.get(latest) !== owner) return
-    try {
-      if (
-        videoSessionOwners.get(video) === owner
-        && !owner.closeRequested
-        && video.srcObject === null
-      ) video.srcObject = latest
-    } catch {}
-  }
-
   const finalizeSessionCleanup = (session) => {
-    captureCurrentOwnedStream(session)
     for (const stream of session.ownedStreams) {
       if (streamSessionOwners.get(stream) !== session) continue
       let tracks = []
@@ -147,11 +115,15 @@ export function createWarehouseQrScannerController({
     }
     const stillOwnsAttachedStream = videoSessionOwners.get(session.video) === session
       && streamSessionOwners.get(readVideoStream(session.video)) === session
+    const controlsCleanupComplete = session.controlsResolved
+      && (!session.returnedControls || session.authoritativeControlStopped)
     session.cleanupFinalized = session.closeRequested
-      && session.authoritativeControlStopped
+      && session.openSettled
+      && controlsCleanupComplete
       && !stillOwnsAttachedStream
     if (session.cleanupFinalized && videoSessionOwners.get(session.video) === session) {
       videoSessionOwners.delete(session.video)
+      session.leaseReleased = true
     }
   }
 
@@ -161,22 +133,18 @@ export function createWarehouseQrScannerController({
       return
     }
     session.closeRequested = true
-    captureCurrentOwnedStream(session)
     if (session.cleanupFinalized) return
     if (session.cleanupInProgress) return
     session.cleanupInProgress = true
-    let protection = null
     let controlSettlement = null
     if (!session.authoritativeControlStopped) {
       const authoritativeControls = session.returnedControls ?? callbackControls
       if (authoritativeControls) {
         session.authoritativeControlStopped = true
-        protection = protectForeignStream(session)
         controlSettlement = stopControl(authoritativeControls)
       }
     }
     const finishCleanup = () => {
-      restoreProtectedStream(protection)
       finalizeSessionCleanup(session)
       session.cleanupInProgress = false
     }
@@ -219,22 +187,29 @@ export function createWarehouseQrScannerController({
       if (disposed) return null
       const token = ++generation
       stopSession(activeSession)
+      const canLeaseVideo = video && (typeof video === 'object' || typeof video === 'function')
+      const currentLease = canLeaseVideo ? videoSessionOwners.get(video) : null
+      if (currentLease && !currentLease.leaseReleased) {
+        if (isCurrent(token)) {
+          try { onError(CAMERA_BUSY_MESSAGE) } catch { /* UI callback cannot bypass the lease */ }
+        }
+        return null
+      }
       const session = {
         video,
         returnedControls: null,
         ownedStreams: new Set(),
-        latestOwnedStream: null,
         closeRequested: false,
         authoritativeControlStopped: false,
         cleanupFinalized: false,
         cleanupInProgress: false,
+        controlsResolved: false,
+        openSettled: false,
+        leaseReleased: false,
       }
-      const previousOwner = video && (typeof video === 'object' || typeof video === 'function')
-        ? videoSessionOwners.get(video)
-        : null
-      if (video && (typeof video === 'object' || typeof video === 'function')) {
+      if (canLeaseVideo) {
         videoSessionOwners.set(video, session)
-        if (!previousOwner) captureCurrentOwnedStream(session)
+        captureCurrentOwnedStream(session)
       }
       activeSession = session
       try {
@@ -275,18 +250,24 @@ export function createWarehouseQrScannerController({
         const nextControls = await decoding
         captureCurrentOwnedStream(session)
         session.returnedControls = nextControls
+        session.controlsResolved = true
         if (!isCurrent(token)) {
           stopSession(session, nextControls)
           return null
         }
         return nextControls
       } catch (error) {
+        session.controlsResolved = true
         stopSession(session)
         if (!isCurrent(token)) return null
         generation += 1
         activeSession = null
         onError(scannerMessage(error))
         return null
+      } finally {
+        session.openSettled = true
+        session.controlsResolved = true
+        if (session.closeRequested) stopSession(session)
       }
     },
     submitManual(code) {
@@ -328,8 +309,13 @@ export default function WarehouseQrScanner({
       onError: setMessage,
     })
     controllerRef.current = controller
-    void controller.open(videoRef.current)
+    let cancelled = false
+    void Promise.resolve().then(() => {
+      if (cancelled) return null
+      return controller.open(videoRef.current)
+    }).catch(() => {})
     return () => {
+      cancelled = true
       controller.close()
       if (controllerRef.current === controller) controllerRef.current = null
     }
