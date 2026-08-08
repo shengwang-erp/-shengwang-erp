@@ -8,6 +8,10 @@ const REQUIRED_DEPENDENCIES = Object.freeze({
   exceljs: '^4.4.0',
   qrcode: '^1.5.4',
 })
+const REQUIRED_OWNED_QR_CALLSITES = Object.freeze({
+  '@zxing/browser': 'src/features/warehouse/WarehouseQrScanner.jsx',
+  qrcode: 'src/features/warehouse/WarehouseLabelSheet.jsx',
+})
 const SOURCE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',
   '.ts', '.tsx', '.mts', '.cts',
@@ -262,6 +266,7 @@ async function main() {
   const root = path.resolve(process.argv[2] ?? process.cwd())
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
   const violations = []
+  const ownedQrCallsites = new Set()
 
   for (const [dependency, expectedRange] of Object.entries(REQUIRED_DEPENDENCIES)) {
     const actualRange = manifest.dependencies?.[dependency]
@@ -279,6 +284,13 @@ async function main() {
       plugins: parserPluginsFor(filename),
     })
     visit(ast, null, (node, scope) => {
+      if (node.type === 'CallExpression' && node.callee?.type === 'Import') {
+        const dependency = dependencyForSpecifier(node.arguments?.[0]?.value)
+        const relativeFilename = path.relative(root, filename).split(path.sep).join('/')
+        if (REQUIRED_OWNED_QR_CALLSITES[dependency] === relativeFilename) {
+          ownedQrCallsites.add(dependency)
+        }
+      }
       if (
         node.type === 'ImportDeclaration'
         || node.type === 'ExportNamedDeclaration'
@@ -365,6 +377,14 @@ async function main() {
         )
       }
     })
+  }
+
+  for (const [dependency, filename] of Object.entries(REQUIRED_OWNED_QR_CALLSITES)) {
+    if (!ownedQrCallsites.has(dependency)) {
+      violations.push(
+        `${filename}: missing literal dynamic import() of ${dependency} in the real warehouse-owned module`,
+      )
+    }
   }
 
   if (violations.length > 0) {

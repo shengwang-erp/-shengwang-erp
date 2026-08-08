@@ -12,6 +12,7 @@ import {
   buildWarehouseSiteMutation,
   buildWarehouseVariantMutation,
 } from '../features/warehouse/warehouseCatalogPersistence.js'
+import { normalizeWarehouseQrInput } from '../features/warehouse/warehouseQr.js'
 
 const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_NOT_CONFIGURED: Object.freeze({
@@ -78,6 +79,14 @@ const SAFE_ERRORS = Object.freeze({
     message: '仓库单据服务尚未完整配置，请联系管理员',
     status: 503,
   }),
+  WAREHOUSE_QR_INPUT_INVALID: Object.freeze({
+    message: '二维码内容无效，请重新扫描或手动输入',
+    status: 400,
+  }),
+  WAREHOUSE_QR_AMBIGUOUS: Object.freeze({
+    message: '二维码对应多个型号，请联系管理员检查资料',
+    status: 409,
+  }),
 })
 const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_CATALOG_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
@@ -90,6 +99,7 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_VARIANT_HAS_STOCK', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_PENDING_SCHEMA_INCOMPLETE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_QR_AMBIGUOUS', Object.freeze({ sqlState: '23505', status: 409 })],
 ])
 const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
 
@@ -115,6 +125,10 @@ const SITE_FIELDS = Object.freeze([
 ])
 const LOCATION_FIELDS = Object.freeze([
   'id', 'warehouseId', 'shelfCode', 'shelfName', 'active', 'createdAt', 'updatedAt',
+])
+const QR_RESOLUTION_FIELDS = Object.freeze([
+  'id', 'itemId', 'itemName', 'category', 'brand', 'sku', 'model', 'size',
+  'material', 'unit', 'systemQr', 'manufacturerQr',
 ])
 const BALANCE_FIELDS = Object.freeze(['variantId', 'warehouseId', 'locationId', 'quantity'])
 const MOVEMENT_FIELDS = Object.freeze([
@@ -421,6 +435,27 @@ function validateLocations(value) {
   })
 }
 
+function validateQrResolution(candidate) {
+  const row = exactObject(candidate, QR_RESOLUTION_FIELDS)
+  const id = uuidValue(row.id)
+  const result = {
+    id,
+    itemId: uuidValue(row.itemId),
+    itemName: nonemptyString(row.itemName),
+    category: stringValue(row.category),
+    brand: stringValue(row.brand),
+    sku: nonemptyString(row.sku),
+    model: stringValue(row.model),
+    size: stringValue(row.size),
+    material: stringValue(row.material),
+    unit: nonemptyString(row.unit),
+    systemQr: nonemptyString(row.systemQr),
+    manufacturerQr: nullableString(row.manufacturerQr),
+  }
+  if (result.systemQr !== `SWERP:VARIANT:${id}`) throw invalidResponse()
+  return deepFreeze(result)
+}
+
 function validateBalance(candidate, viewCost) {
   const row = exactObject(
     candidate,
@@ -674,6 +709,16 @@ export function createWarehouseService(client, options = {}) {
         await call('list_warehouse_movements_secure', { p_filters: normalized }),
         viewCost,
       )
+    },
+    async resolveQr(input) {
+      let code
+      try {
+        code = normalizeWarehouseQrInput(input)
+      } catch {
+        throw fail('WAREHOUSE_QR_INPUT_INVALID')
+      }
+      const response = await call('resolve_warehouse_qr_secure', { p_code: code })
+      return response === null ? null : validateQrResolution(response)
     },
     async saveSite(input) {
       return mutation(

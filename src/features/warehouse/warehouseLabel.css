@@ -1,0 +1,80 @@
+.warehouse-label-print-sheet {
+  page: warehouse-label;
+  color: #111;
+  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.warehouse-label-print-sheet__actions {
+  margin-bottom: 12px;
+}
+
+.warehouse-label-print-sheet__label {
+  box-sizing: border-box;
+  width: 62mm;
+  min-height: 40mm;
+  padding: 3mm;
+  border: 0.3mm solid #111;
+}
+
+.warehouse-label-print-sheet__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 2mm;
+  padding-bottom: 1.5mm;
+  border-bottom: 0.2mm solid #777;
+  font-size: 10pt;
+}
+
+.warehouse-label-print-sheet__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22mm;
+  gap: 2mm;
+  align-items: center;
+  margin-top: 2mm;
+}
+
+.warehouse-label-print-sheet__details {
+  display: grid;
+  gap: 0.6mm;
+  font-size: 7.5pt;
+  line-height: 1.25;
+}
+
+.warehouse-label-print-sheet__location {
+  font-weight: 700;
+}
+
+.warehouse-label-print-sheet__qr {
+  display: block;
+  width: 22mm;
+  height: 22mm;
+}
+
+.warehouse-label-print-sheet__code {
+  display: block;
+  margin-top: 1.5mm;
+  overflow-wrap: anywhere;
+  font-size: 5.5pt;
+}
+
+.warehouse-label-print-sheet__message {
+  margin: 1mm 0 0;
+  color: #a00;
+  font-size: 7pt;
+}
+
+@media print {
+  .warehouse-label-print-sheet__actions {
+    display: none;
+  }
+
+  .warehouse-label-print-sheet__label {
+    break-inside: avoid;
+  }
+}
+
+@page warehouse-label {
+  size: 62mm 40mm;
+  margin: 0;
+}

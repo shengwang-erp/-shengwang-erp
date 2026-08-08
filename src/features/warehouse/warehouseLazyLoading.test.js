@@ -21,7 +21,7 @@ function runChecker(root) {
   })
 }
 
-async function createFixture(source, filename = 'entry.js') {
+async function createUnownedFixture(source, filename = 'entry.js') {
   const root = await mkdtemp(path.join(tmpdir(), 'warehouse-lazy-contract-'))
   await mkdir(path.join(root, 'src'), { recursive: true })
   await writeFile(
@@ -29,6 +29,35 @@ async function createFixture(source, filename = 'entry.js') {
     `${JSON.stringify({ dependencies: REQUIRED_DEPENDENCIES }, null, 2)}\n`,
   )
   await writeFile(path.join(root, 'src', filename), source)
+  return root
+}
+
+async function createFixture(source, filename = 'entry.js') {
+  const root = await createUnownedFixture(source, filename)
+  const ownedDirectory = path.join(root, 'src', 'features', 'warehouse')
+  await mkdir(ownedDirectory, { recursive: true })
+  await writeFile(
+    path.join(ownedDirectory, 'WarehouseQrScanner.jsx'),
+    "export const loadScanner = () => import('@zxing/browser')\n",
+  )
+  await writeFile(
+    path.join(ownedDirectory, 'WarehouseLabelSheet.jsx'),
+    "export const loadLabelQr = () => import('qrcode')\n",
+  )
+  return root
+}
+
+async function createOwnedFixture(files) {
+  const root = await mkdtemp(path.join(tmpdir(), 'warehouse-lazy-owned-contract-'))
+  await writeFile(
+    path.join(root, 'package.json'),
+    `${JSON.stringify({ dependencies: REQUIRED_DEPENDENCIES }, null, 2)}\n`,
+  )
+  for (const [filename, source] of Object.entries(files)) {
+    const target = path.join(root, 'src', 'features', 'warehouse', filename)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, source)
+  }
   return root
 }
 
@@ -446,6 +475,39 @@ export async function loadWarehouseMedia() {
   t.after(() => rm(root, { recursive: true, force: true }))
 
   const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('fixture-only dynamic imports cannot satisfy real warehouse-owned QR callsites', async (t) => {
+  const root = await createUnownedFixture(`
+export async function fakeWarehouseMedia() {
+  return Promise.all([import('@zxing/browser'), import('qrcode')])
+}
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /WarehouseQrScanner\.jsx.*@zxing\/browser/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /WarehouseLabelSheet\.jsx.*qrcode/iu)
+})
+
+test('literal dynamic imports in exact warehouse-owned scanner and label modules satisfy the QR boundary', async (t) => {
+  const root = await createOwnedFixture({
+    'WarehouseQrScanner.jsx': `export const loadScanner = () => import('@zxing/browser')\n`,
+    'WarehouseLabelSheet.jsx': `export const loadLabelQr = () => import('qrcode')\n`,
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('repository has executable literal dynamic QR callsites in the real owned modules', () => {
+  const result = runChecker(REPOSITORY_ROOT)
 
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
 })

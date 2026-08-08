@@ -2227,4 +2227,77 @@ on storage.objects as restrictive for update to authenticated
 using (false)
 with check (false);
 
+-- Active, permission-checked QR resolution for scanner and manual entry.
+create or replace function public.resolve_warehouse_qr_secure(p_code text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  code_value text;
+  matched_ids uuid[];
+  matched_id uuid;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('module.inventory.view');
+
+  code_value := private.normalize_warehouse_catalog_text(p_code);
+  if code_value is null
+    or code_value = ''
+    or char_length(code_value) > 500
+    or private.warehouse_catalog_has_invisible(code_value)
+  then
+    raise exception using
+      errcode = '22023',
+      message = 'warehouse QR input invalid',
+      hint = 'WAREHOUSE_QR_INPUT_INVALID';
+  end if;
+
+  select array_agg(variant.id order by variant.id) into matched_ids
+  from public.warehouse_variants variant
+  where variant.active
+    and (
+      lower(variant.system_qr) = lower(code_value)
+      or lower(variant.manufacturer_qr) = lower(code_value)
+    );
+
+  if coalesce(cardinality(matched_ids), 0) = 0 then return null; end if;
+  if cardinality(matched_ids) <> 1 then
+    raise exception using
+      errcode = '23505',
+      message = 'warehouse QR is ambiguous',
+      hint = 'WAREHOUSE_QR_AMBIGUOUS';
+  end if;
+  matched_id := matched_ids[1];
+
+  return (
+    select jsonb_build_object(
+      'id', variant.id,
+      'itemId', item.id,
+      'itemName', item.name,
+      'category', item.category,
+      'brand', item.brand,
+      'sku', variant.sku,
+      'model', variant.model,
+      'size', variant.size,
+      'material', variant.material,
+      'unit', variant.unit,
+      'systemQr', variant.system_qr,
+      'manufacturerQr', variant.manufacturer_qr
+    )
+    from public.warehouse_variants variant
+    join public.warehouse_items item on item.id = variant.item_id
+    where variant.id = matched_id and variant.active
+  );
+end;
+$$;
+
+revoke all on function public.resolve_warehouse_qr_secure(text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.resolve_warehouse_qr_secure(text)
+  to authenticated;
+
 commit;

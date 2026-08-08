@@ -63,6 +63,21 @@ const LOCATION = Object.freeze({
   updatedAt: '2026-08-08T00:00:00Z',
 })
 
+const QR_RESOLUTION = Object.freeze({
+  id: IDS.variant,
+  itemId: IDS.item,
+  itemName: '铜管',
+  category: '空调材料',
+  brand: '厂家A',
+  sku: 'CU-6MM',
+  model: 'R410A',
+  size: '6mm',
+  material: '铜',
+  unit: '米',
+  systemQr: `SWERP:VARIANT:${IDS.variant}`,
+  manufacturerQr: 'Maker-CU-6MM',
+})
+
 const BALANCE = Object.freeze({
   variantId: IDS.variant,
   warehouseId: IDS.site,
@@ -875,4 +890,58 @@ test('catalog transport envelopes reject forged keys and malformed optional fiel
       safeError('WAREHOUSE_INVALID_RESPONSE', 502),
     )
   }
+})
+
+test('QR lookup calls only the bound secure RPC and returns an exact immutable cost-free result', async () => {
+  const { client, calls } = rpcClient({
+    resolve_warehouse_qr_secure: { data: QR_RESOLUTION, error: null, status: 200 },
+  })
+  const service = createWarehouseService(client, { configured: true, viewCost: true })
+
+  const result = await service.resolveQr(' \ufeffMaker-CU-6MM　 ')
+
+  assert.deepEqual(calls, [{
+    name: 'resolve_warehouse_qr_secure',
+    args: { p_code: 'Maker-CU-6MM' },
+  }])
+  assert.deepEqual(result, QR_RESOLUTION)
+  assert.notEqual(result, QR_RESOLUTION)
+  assert.equal(Object.isFrozen(result), true)
+  assert.equal('defaultPurchasePrice' in result, false)
+})
+
+test('QR lookup treats unknown codes as null and rejects invalid, ambiguous, extra or cost-bearing data fail closed', async () => {
+  const { client, calls } = rpcClient({
+    resolve_warehouse_qr_secure: ({ args }) => {
+      if (args.p_code === 'UNKNOWN') return { data: null, error: null, status: 200 }
+      if (args.p_code === 'AMBIGUOUS') return {
+        data: null,
+        error: { code: '23505', message: 'private duplicate detail', hint: 'WAREHOUSE_QR_AMBIGUOUS' },
+        status: 409,
+      }
+      if (args.p_code === 'COST') return {
+        data: { ...QR_RESOLUTION, defaultPurchasePrice: 999 },
+        error: null,
+        status: 200,
+      }
+      return { data: { ...QR_RESOLUTION, active: true }, error: null, status: 200 }
+    },
+  })
+  const service = createWarehouseService(client, { configured: true })
+
+  assert.equal(await service.resolveQr('UNKNOWN'), null)
+  await assert.rejects(
+    () => service.resolveQr('AMBIGUOUS'),
+    safeError('WAREHOUSE_QR_AMBIGUOUS', 409),
+  )
+  await assert.rejects(() => service.resolveQr('COST'), safeError('WAREHOUSE_INVALID_RESPONSE', 502))
+  await assert.rejects(() => service.resolveQr('EXTRA'), safeError('WAREHOUSE_INVALID_RESPONSE', 502))
+  const beforeInvalid = calls.length
+  for (const input of ['', ' \t\n ', `Q${'X'.repeat(500)}`, null, { toString() { throw new Error('unsafe') } }]) {
+    await assert.rejects(
+      () => service.resolveQr(input),
+      safeError('WAREHOUSE_QR_INPUT_INVALID', 400),
+    )
+  }
+  assert.equal(calls.length, beforeInvalid)
 })
