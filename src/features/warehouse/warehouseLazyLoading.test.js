@@ -273,6 +273,166 @@ export { objectLoader, ClassLoader }
   assert.match(`${result.stdout}${result.stderr}`, /module\.require.*qrcode/iu)
 })
 
+test('body var bindings do not hide global heavy requires in function and method defaults', async (t) => {
+  const root = await createFixture(`
+function functionDefault(value = require('exceljs')) { var require; return value }
+const objectLoader = {
+  load(value = require('qrcode')) { var require; return value },
+}
+class ClassLoader {
+  load(value = require('@zxing/browser')) { var require; return value }
+}
+export { functionDefault, objectLoader, ClassLoader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*exceljs/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*qrcode/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /static require.*@zxing\/browser/iu)
+})
+
+test('global require and module.require aliases in parameter defaults fail closed', async (t) => {
+  const root = await createFixture(`
+function loadWarehouse(load = require) { return load('exceljs') }
+const loader = {
+  load(loadModule = module.require) { return loadModule('qrcode') },
+}
+export { loadWarehouse, loader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /parameter require alias.*load/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /parameter module\.require alias.*loadModule/iu)
+})
+
+test('outer local CommonJS names and parameter TDZ shadows keep defaults local', async (t) => {
+  const root = await createFixture(`
+function outer(require, module) {
+  function inner(value = require('exceljs'), other = module.require('qrcode')) {
+    return [value, other]
+  }
+  return inner
+}
+function parameterTdz(require = require('@zxing/browser')) { return require }
+export { outer, parameterTdz }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('static blocks retain nested var bindings without leaking them outside the class', async (t) => {
+  const localRoot = await createFixture(`
+class Loader {
+  static {
+    { var require = (value) => value }
+    require('exceljs')
+  }
+}
+export { Loader }
+`)
+  const globalRoot = await createFixture(`
+class Loader { static { var require = (value) => value } }
+require('qrcode')
+export { Loader }
+`)
+  t.after(() => Promise.all([
+    rm(localRoot, { recursive: true, force: true }),
+    rm(globalRoot, { recursive: true, force: true }),
+  ]))
+
+  const localResult = runChecker(localRoot)
+  const globalResult = runChecker(globalRoot)
+
+  assert.equal(localResult.status, 0, `${localResult.stdout}${localResult.stderr}`)
+  assert.notEqual(globalResult.status, 0)
+  assert.match(`${globalResult.stdout}${globalResult.stderr}`, /static require.*qrcode/iu)
+})
+
+test('class declaration and expression names are local in their correct inner and outer scopes', async (t) => {
+  const root = await createFixture(`
+class require {
+  method(value = require('exceljs')) { return value }
+}
+require('qrcode')
+const Loader = class module {
+  method(value = module.require('@zxing/browser')) { return value }
+}
+export { require, Loader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('TypeScript parameter properties bind locally and global aliases still fail closed', async (t) => {
+  const localRoot = await createFixture(`
+class Loader {
+  constructor(public require: (value: string) => string) {
+    require('exceljs')
+  }
+}
+export { Loader }
+`, 'entry.ts')
+  const aliasRoot = await createFixture(`
+class Loader {
+  constructor(public load = require) {
+    this.load('qrcode')
+  }
+}
+export { Loader }
+`, 'entry.ts')
+  t.after(() => Promise.all([
+    rm(localRoot, { recursive: true, force: true }),
+    rm(aliasRoot, { recursive: true, force: true }),
+  ]))
+
+  const localResult = runChecker(localRoot)
+  const aliasResult = runChecker(aliasRoot)
+
+  assert.equal(localResult.status, 0, `${localResult.stdout}${localResult.stderr}`)
+  assert.notEqual(aliasResult.status, 0)
+  assert.match(`${aliasResult.stdout}${aliasResult.stderr}`, /parameter require alias.*load/iu)
+})
+
+test('TypeScript namespaces keep var bindings inside their own module scope', async (t) => {
+  const localRoot = await createFixture(`
+namespace LocalWarehouse {
+  export var require = (value: string) => value
+  require('exceljs')
+}
+export { LocalWarehouse }
+`, 'entry.ts')
+  const globalRoot = await createFixture(`
+namespace LocalWarehouse {
+  export var require = (value: string) => value
+}
+require('qrcode')
+export { LocalWarehouse }
+`, 'entry.ts')
+  t.after(() => Promise.all([
+    rm(localRoot, { recursive: true, force: true }),
+    rm(globalRoot, { recursive: true, force: true }),
+  ]))
+
+  const localResult = runChecker(localRoot)
+  const globalResult = runChecker(globalRoot)
+
+  assert.equal(localResult.status, 0, `${localResult.stdout}${localResult.stderr}`)
+  assert.notEqual(globalResult.status, 0)
+  assert.match(`${globalResult.stdout}${globalResult.stderr}`, /static require.*qrcode/iu)
+})
+
 test('literal dynamic imports of all warehouse media dependencies pass the executable boundary', async (t) => {
   const root = await createFixture(`
 export async function loadWarehouseMedia() {

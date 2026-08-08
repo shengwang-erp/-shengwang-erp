@@ -28,6 +28,8 @@ const FUNCTION_SCOPE_TYPES = new Set([
   'TSConstructorType',
 ])
 const LOOP_SCOPE_TYPES = new Set(['ForStatement', 'ForInStatement', 'ForOfStatement'])
+const CLASS_SCOPE_TYPES = new Set(['ClassDeclaration', 'ClassExpression'])
+const TS_MODULE_SCOPE_TYPES = new Set(['TSModuleDeclaration', 'TSModuleBlock'])
 
 function dependencyForSpecifier(value) {
   if (typeof value !== 'string') return null
@@ -38,6 +40,10 @@ function dependencyForSpecifier(value) {
 
 function addPatternBindings(pattern, bindings) {
   if (!pattern || typeof pattern !== 'object') return
+  if (pattern.type === 'TSParameterProperty') {
+    addPatternBindings(pattern.parameter, bindings)
+    return
+  }
   if (pattern.type === 'Identifier') {
     bindings.add(pattern.name)
     return
@@ -81,6 +87,7 @@ function collectDirectBindings(statements, bindings) {
       declarationNode.type === 'FunctionDeclaration'
       || declarationNode.type === 'ClassDeclaration'
       || declarationNode.type === 'TSDeclareFunction'
+      || declarationNode.type === 'TSModuleDeclaration'
     ) {
       addPatternBindings(declarationNode.id, bindings)
     } else if (declarationNode.type === 'ImportDeclaration') {
@@ -97,9 +104,9 @@ function collectFunctionVarBindings(node, bindings) {
   if (!node || typeof node !== 'object') return
   if (
     FUNCTION_SCOPE_TYPES.has(node.type)
-    || node.type === 'ClassDeclaration'
-    || node.type === 'ClassExpression'
+    || CLASS_SCOPE_TYPES.has(node.type)
     || node.type === 'StaticBlock'
+    || TS_MODULE_SCOPE_TYPES.has(node.type)
   ) return
   if (node.type === 'VariableDeclaration' && node.kind === 'var') {
     for (const declaration of node.declarations) addPatternBindings(declaration.id, bindings)
@@ -119,14 +126,13 @@ function createScope(node, parent) {
   if (node.type === 'Program') {
     collectDirectBindings(node.body, bindings)
     collectFunctionVarBindings(node, bindings)
-  } else if (node.type === 'BlockStatement' || node.type === 'StaticBlock') {
+  } else if (node.type === 'BlockStatement') {
     collectDirectBindings(node.body, bindings)
-  } else if (FUNCTION_SCOPE_TYPES.has(node.type)) {
+  } else if (node.type === 'StaticBlock' || node.type === 'TSModuleBlock') {
+    collectDirectBindings(node.body, bindings)
+    for (const child of node.body) collectFunctionVarBindings(child, bindings)
+  } else if (CLASS_SCOPE_TYPES.has(node.type) || node.type === 'TSModuleDeclaration') {
     addPatternBindings(node.id, bindings)
-    for (const parameter of node.params ?? node.parameters ?? []) {
-      addPatternBindings(parameter, bindings)
-    }
-    collectFunctionVarBindings(node.body, bindings)
   } else if (node.type === 'CatchClause') {
     addPatternBindings(node.param, bindings)
   } else if (LOOP_SCOPE_TYPES.has(node.type)) {
@@ -147,26 +153,57 @@ function createsScope(node) {
   return node.type === 'Program'
     || node.type === 'BlockStatement'
     || node.type === 'StaticBlock'
-    || FUNCTION_SCOPE_TYPES.has(node.type)
+    || CLASS_SCOPE_TYPES.has(node.type)
+    || TS_MODULE_SCOPE_TYPES.has(node.type)
     || LOOP_SCOPE_TYPES.has(node.type)
     || node.type === 'SwitchStatement'
     || node.type === 'CatchClause'
 }
 
+function createFunctionParameterScope(node, parent) {
+  const bindings = new Set()
+  addPatternBindings(node.id, bindings)
+  for (const parameter of node.params ?? node.parameters ?? []) {
+    addPatternBindings(parameter, bindings)
+  }
+  return { bindings, parent }
+}
+
+function createFunctionBodyScope(node, parameterScope) {
+  const bindings = new Set()
+  collectFunctionVarBindings(node.body, bindings)
+  return { bindings, parent: parameterScope }
+}
+
 function visit(node, parentScope, onNode) {
   if (!node || typeof node !== 'object') return
+  if (FUNCTION_SCOPE_TYPES.has(node.type)) {
+    const parameterScope = createFunctionParameterScope(node, parentScope)
+    const bodyScope = createFunctionBodyScope(node, parameterScope)
+    onNode(node, parameterScope)
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end') continue
+      const childScope = key === 'key' || key === 'decorators'
+        ? parentScope
+        : key === 'body'
+          ? bodyScope
+          : parameterScope
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child, childScope, onNode)
+      } else if (value && typeof value === 'object') {
+        visit(value, childScope, onNode)
+      }
+    }
+    return
+  }
   const scope = createsScope(node) ? createScope(node, parentScope) : parentScope
   onNode(node, scope)
   for (const [key, value] of Object.entries(node)) {
     if (key === 'loc' || key === 'start' || key === 'end') continue
-    const childScope = FUNCTION_SCOPE_TYPES.has(node.type)
-      && (key === 'key' || key === 'decorators')
-      ? parentScope
-      : scope
     if (Array.isArray(value)) {
-      for (const child of value) visit(child, childScope, onNode)
+      for (const child of value) visit(child, scope, onNode)
     } else if (value && typeof value === 'object') {
-      visit(value, childScope, onNode)
+      visit(value, scope, onNode)
     }
   }
 }
@@ -302,6 +339,29 @@ async function main() {
         const alias = node.id?.type === 'Identifier' ? node.id.name : '<pattern>'
         violations.push(
           `${path.relative(root, filename)}: require alias ${alias} is forbidden because reassignment cannot prove lazy loading`,
+        )
+      }
+      if (
+        node.type === 'AssignmentPattern'
+        && node.right?.type === 'Identifier'
+        && node.right.name === 'require'
+        && isUnbound('require', scope)
+      ) {
+        const aliases = new Set()
+        addPatternBindings(node.left, aliases)
+        violations.push(
+          `${path.relative(root, filename)}: parameter require alias ${[...aliases].join(', ') || '<pattern>'} is forbidden because parameter initialization cannot prove lazy loading`,
+        )
+      }
+      if (
+        node.type === 'AssignmentPattern'
+        && isModuleRequire(node.right)
+        && isUnbound('module', scope)
+      ) {
+        const aliases = new Set()
+        addPatternBindings(node.left, aliases)
+        violations.push(
+          `${path.relative(root, filename)}: parameter module.require alias ${[...aliases].join(', ') || '<pattern>'} is forbidden because parameter initialization cannot prove lazy loading`,
         )
       }
     })
