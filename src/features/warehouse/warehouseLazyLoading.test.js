@@ -21,14 +21,14 @@ function runChecker(root) {
   })
 }
 
-async function createFixture(source) {
+async function createFixture(source, filename = 'entry.js') {
   const root = await mkdtemp(path.join(tmpdir(), 'warehouse-lazy-contract-'))
   await mkdir(path.join(root, 'src'), { recursive: true })
   await writeFile(
     path.join(root, 'package.json'),
     `${JSON.stringify({ dependencies: REQUIRED_DEPENDENCIES }, null, 2)}\n`,
   )
-  await writeFile(path.join(root, 'src', 'entry.js'), source)
+  await writeFile(path.join(root, 'src', filename), source)
   return root
 }
 
@@ -48,6 +48,20 @@ test('static ESM imports of warehouse media dependencies fail the executable bou
   assert.match(`${result.stdout}${result.stderr}`, /static import.*qrcode/iu)
 })
 
+test('static ESM re-exports of warehouse media dependencies fail the executable boundary', async (t) => {
+  const root = await createFixture(`
+export { default as QRCode } from 'qrcode'
+export * from 'exceljs'
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /static import.*qrcode/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /static import.*exceljs/iu)
+})
+
 test('CommonJS require of warehouse media dependencies fails the executable boundary', async (t) => {
   const root = await createFixture("const ExcelJS = require('exceljs')\nexport default ExcelJS\n")
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -56,6 +70,82 @@ test('CommonJS require of warehouse media dependencies fails the executable boun
 
   assert.notEqual(result.status, 0)
   assert.match(`${result.stdout}${result.stderr}`, /static require.*exceljs/iu)
+})
+
+test('TypeScript import-equals of a warehouse media dependency fails the executable boundary', async (t) => {
+  const root = await createFixture(
+    "import ExcelJS = require('exceljs')\nexport default ExcelJS\n",
+    'entry.ts',
+  )
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /TypeScript import-equals.*exceljs/iu)
+})
+
+test('optional require and module.require of warehouse media dependencies fail the boundary', async (t) => {
+  const root = await createFixture(`
+require?.('qrcode')
+module.require('@zxing/browser')
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /optional static require.*qrcode/iu)
+  assert.match(`${result.stdout}${result.stderr}`, /module\.require.*@zxing\/browser/iu)
+})
+
+test('a simple alias of the CommonJS require function fails closed', async (t) => {
+  const root = await createFixture("const load = require\nload('exceljs')\n")
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /require alias.*load/iu)
+})
+
+test('MTS and CTS production sources are parsed and audited', async (t) => {
+  const mtsRoot = await createFixture(
+    "import QRCode from 'qrcode'\nconst code: string = 'x'\nexport default QRCode\n",
+    'entry.mts',
+  )
+  const ctsRoot = await createFixture(
+    "import ZXing = require('@zxing/browser')\nexport = ZXing\n",
+    'entry.cts',
+  )
+  t.after(() => Promise.all([
+    rm(mtsRoot, { recursive: true, force: true }),
+    rm(ctsRoot, { recursive: true, force: true }),
+  ]))
+
+  const mtsResult = runChecker(mtsRoot)
+  const ctsResult = runChecker(ctsRoot)
+
+  assert.notEqual(mtsResult.status, 0)
+  assert.match(`${mtsResult.stdout}${mtsResult.stderr}`, /static import.*qrcode/iu)
+  assert.notEqual(ctsResult.status, 0)
+  assert.match(`${ctsResult.stdout}${ctsResult.stderr}`, /TypeScript import-equals.*@zxing\/browser/iu)
+})
+
+test('ordinary strings, functions, and object methods named require are not CommonJS imports', async (t) => {
+  const root = await createFixture(`
+const text = "require('exceljs')"
+function require(value) { return value }
+require('qrcode')
+const loader = { require(value) { return value } }
+loader.require('@zxing/browser')
+export { text, loader }
+`)
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
 })
 
 test('literal dynamic imports of all warehouse media dependencies pass the executable boundary', async (t) => {

@@ -38,15 +38,18 @@
 - Create/adapt: `src/features/warehouse/warehouseExport.test.js`
 - Create/adapt: `src/features/warehouse/WarehouseReports.jsx`
 - Create: `src/features/warehouse/WarehouseReports.test.js`
+- Modify: `src/features/warehouse/warehouseLazyLoading.test.js`
+- Modify if the executable boundary needs a new reachability mode: `scripts/verify-warehouse-lazy-dependencies.mjs`
 - Extend: `src/services/warehouseService.js`
 - Extend: `src/features/warehouse/warehouse.css`
 
 - [ ] Add server-filtered report RPCs for items, current stock, receipts, issues, returns, transfers, stocktakes, low stock, and movement ledger. Validate date/month, warehouse, location, category, variant, project/destination, status, and page-size filters.
 - [ ] Redact unit/total cost unless `warehouse.cost.view`; require `warehouse.report.export` for export-sized responses. Ordinary page reads remain bounded to 500 rows; exports cap at 20,000 rows.
 - [ ] Adapt export builders to pure row mapping. Dynamically import ExcelJS only when exporting; create frozen header rows, explicit columns, correct numeric cells, filter summary, report title, generated timestamp, and company name.
+- [ ] Upgrade the executable lazy-loading contract from dependency-only evidence: prove the real production `src/features/warehouse/warehouseExport.js` contains a literal `import('exceljs')`, and prove that export module is reachable through the production `WarehouseReports.jsx` import graph. Fixture-only evidence is insufficient after this task.
 - [ ] Print only the currently filtered report. Use `.warehouse-print-sheet` and named `@page warehouse-report`; browser print provides paper/PDF output.
 - [ ] Test every report filter, redaction, maximum rows, hostile formula-leading text escaped in Excel, disabled export button without permission, print isolation, and export failure not changing inventory.
-- [ ] Run report/export tests, pgTAP, and `npm run build`.
+- [ ] Run report/export tests, `node --test src/features/warehouse/warehouseLazyLoading.test.js`, pgTAP, and `npm run build`.
 - [ ] Commit with message `feat: add secure printable warehouse reports`.
 
 ### Task 3: Integrate the warehouse page into the second-version shell
@@ -56,6 +59,8 @@
 - Create/adapt: `src/features/warehouse/WarehouseOperations.jsx`
 - Create/adapt: `src/features/warehouse/WarehouseManagementPage.jsx`
 - Create: `src/features/warehouse/WarehouseManagementPage.test.js`
+- Modify: `src/features/warehouse/warehouseLazyLoading.test.js`
+- Modify if the executable boundary needs a page-root reachability mode: `scripts/verify-warehouse-lazy-dependencies.mjs`
 - Modify: `src/navigation/adminRoutes.js`
 - Modify: `src/navigation/adminRoutes.test.js`
 - Modify: `src/auth/businessAccess.js`
@@ -68,10 +73,11 @@
 - [ ] Add desktop route `{ view: 'warehouse', label: '仓库管理', iconText: '仓', moduleName: '仓库库存' }` immediately before `我要出库`; adjust later menu orders without changing route ids or meanings.
 - [ ] Add a home business card using the existing black/gold card model and low-stock/total-SKU summary; hide route and card without `module.inventory.view`.
 - [ ] Lazy-load `WarehouseManagementPage`, scanner, catalog editor, reports, and request pages. Preserve the existing login bundle and `DesktopAdminShell`.
+- [ ] Upgrade the executable lazy-loading contract again: prove the production `WarehouseReports.jsx` → `warehouseExport.js` → literal `import('exceljs')` chain is reachable from the real `WarehouseManagementPage`/warehouse page root wired by this task. Keep the existing real ZXing and QRCode callsite/reachability assertions green.
 - [ ] Compose tabs: overview, catalog, operations, monthly stocktake, and reports. Show only actions allowed by `getWarehouseAccess`; refresh server snapshots after each successful mutation.
 - [ ] Mark shared-tool locations clearly but keep existing `借工具` route/service untouched. Add a regression test proving no tool-borrow record is created by warehouse location edits.
 - [ ] Add a visible local-only banner when `VITE_WAREHOUSE_MIGRATION_PREVIEW=true`: `第二版 + 仓库移植测试`. The flag must not alter permissions or data behavior.
-- [ ] Run route, shell, workbench, access, page, visual, tool, and lazy-loading tests.
+- [ ] Run route, shell, workbench, access, page, visual, tool, and `node --test src/features/warehouse/warehouseLazyLoading.test.js` tests.
 - [ ] Commit with message `feat: integrate warehouse into second-version shell`.
 
 ### Task 4: Run the complete isolated local business scenario
@@ -112,4 +118,3 @@
 - [ ] Existing employee and project data contracts are unchanged; warehouse starts empty outside disposable local fixtures.
 - [ ] User has approved the local preview.
 - [ ] No online deployment, migration, or data write occurred.
-
