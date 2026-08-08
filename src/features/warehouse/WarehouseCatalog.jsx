@@ -108,6 +108,7 @@ export default function WarehouseCatalog({
     initialLocations?.locations?.[0],
     initialLocations?.sites?.[0]?.id,
   ))
+  const [photoMutationBusyByVariant, setPhotoMutationBusyByVariant] = useState({})
   const canManageCatalog = manageCatalog === true
   const effectiveViewCost = canManageCatalog || viewCost === true
   const mountedRef = useRef(false)
@@ -124,7 +125,11 @@ export default function WarehouseCatalog({
     mountedRef.current && photoGenerationRef.current.get(variantId) === token
   ), [])
   const enqueuePhotoMutation = useCallback((variantId, operation) => {
+    const wasIdle = !photoMutationQueuesRef.current.has(variantId)
     const previous = photoMutationQueuesRef.current.get(variantId) ?? Promise.resolve()
+    if (wasIdle && mountedRef.current) {
+      setPhotoMutationBusyByVariant((current) => ({ ...current, [variantId]: true }))
+    }
     const queued = previous.catch(() => {}).then(() => {
       if (!mountedRef.current) return false
       return operation()
@@ -133,6 +138,13 @@ export default function WarehouseCatalog({
     return queued.finally(() => {
       if (photoMutationQueuesRef.current.get(variantId) === queued) {
         photoMutationQueuesRef.current.delete(variantId)
+        if (mountedRef.current) {
+          setPhotoMutationBusyByVariant((current) => {
+            const next = { ...current }
+            delete next[variantId]
+            return next
+          })
+        }
       }
     })
   }, [])
@@ -187,6 +199,9 @@ export default function WarehouseCatalog({
     ?? null
   const photos = [...(photosByVariant[selectedVariant?.id] ?? [])]
     .sort((left, right) => left.sortOrder - right.sortOrder)
+  const photoMutationBusy = selectedVariant?.id
+    ? photoMutationBusyByVariant[selectedVariant.id] === true
+    : false
 
   useEffect(() => {
     if (
@@ -436,10 +451,10 @@ export default function WarehouseCatalog({
               <div className="warehouse-catalog-variant-codes"><span>系统二维码：<code>{selectedVariant.systemQr}</code></span><span>厂家二维码：<code>{selectedVariant.manufacturerQr || '未设置'}</code></span></div>
               <button type="button" onClick={() => setLabelVariant(selectedVariant)}>生成标签</button>
               <div className="warehouse-catalog-photo-carousel" aria-label="型号照片">
-                {photos.map((photo, index) => <figure key={photo.id} className="warehouse-catalog-photo"><img src={photo.signedUrl} alt={`${selectedItem.name} 照片 ${index + 1}`} /><figcaption>{index + 1} / {photos.length}</figcaption>{canManageCatalog && <div className="warehouse-catalog-photo-actions"><button type="button" onClick={() => movePhoto(index, -1)} disabled={index === 0}>上移</button><button type="button" onClick={() => movePhoto(index, 1)} disabled={index === photos.length - 1}>下移</button><button type="button" onClick={() => deletePhoto(photo)}>删除照片</button></div>}</figure>)}
+                {photos.map((photo, index) => <figure key={photo.id} className="warehouse-catalog-photo"><img src={photo.signedUrl} alt={`${selectedItem.name} 照片 ${index + 1}`} /><figcaption>{index + 1} / {photos.length}</figcaption>{canManageCatalog && <div className="warehouse-catalog-photo-actions"><button type="button" onClick={() => movePhoto(index, -1)} disabled={photoMutationBusy || index === 0}>上移</button><button type="button" onClick={() => movePhoto(index, 1)} disabled={photoMutationBusy || index === photos.length - 1}>下移</button><button type="button" onClick={() => deletePhoto(photo)} disabled={photoMutationBusy}>删除照片</button></div>}</figure>)}
                 {photos.length === 0 && <p>暂无照片</p>}
               </div>
-              {canManageCatalog && <label className="warehouse-catalog-upload">上传照片<input type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadPhoto} /></label>}
+              {canManageCatalog && <label className="warehouse-catalog-upload">上传照片<input type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadPhoto} disabled={photoMutationBusy} /></label>}
             </section>}
           </> : <p>请选择物品</p>}
         </div>

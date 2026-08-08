@@ -564,6 +564,55 @@ test('photo mutation queues continue after failure and remain independent across
   }
 })
 
+test('a pending same-variant mutation disables mixed photo actions through signed refresh', async () => {
+  const photos = [
+    {
+      id: 'photo-busy-a', variantId: 'variant-a1', objectPath: 'variant-a1/photo-busy-a.jpg',
+      sortOrder: 0, mimeType: 'image/jpeg', byteSize: 301, createdAt: '2026-01-01T00:00:00Z',
+      signedUrl: 'https://signed.invalid/busy-a',
+    },
+    {
+      id: 'photo-busy-b', variantId: 'variant-a1', objectPath: 'variant-a1/photo-busy-b.jpg',
+      sortOrder: 1, mimeType: 'image/jpeg', byteSize: 302, createdAt: '2026-01-01T00:00:00Z',
+      signedUrl: 'https://signed.invalid/busy-b',
+    },
+  ]
+  const deletion = deferred()
+  const signedRefresh = deferred()
+  let reorderCalls = 0
+  const warehouseMediaService = {
+    deleteVariantPhoto: () => deletion.promise,
+    reorderVariantPhotos: async () => { reorderCalls += 1 },
+    listVariantPhotos: () => signedRefresh.promise,
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const fileInput = () => elements(container, (element) => element.nodeName === 'INPUT' && element.type === 'file')[0]
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService, initialPhotosByVariant: { 'variant-a1': photos } }))) })
+    await click(byText(container, 'BUTTON', '删除照片'))
+
+    assert.equal(fileInput().disabled, true)
+    assert.equal(elements(container, (element) => element.nodeName === 'BUTTON' && ['上移', '下移', '删除照片'].includes(element.textContent)).every((button) => button.disabled), true)
+    assert.equal(reorderCalls, 0)
+
+    deletion.resolve(true)
+    await act(async () => {})
+    assert.equal(fileInput().disabled, true)
+    assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
+
+    signedRefresh.resolve([photos[1]])
+    await act(async () => {})
+    assert.equal(fileInput().disabled, false)
+    assert.equal(byText(container, 'BUTTON', '删除照片').disabled, false)
+    assert.equal(reorderCalls, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('real viewer host has no mutation controls or warehouse cost DOM', async () => {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
