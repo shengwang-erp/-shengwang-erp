@@ -1,0 +1,12 @@
+{
+  "pureCopy": [],
+  "adapt": [],
+  "rewrite": [{
+    "id": "confirmation-service",
+    "reference": "src/services/warehouseConfirmationService.js",
+    "destination": "src/services/warehouseConfirmationService.js",
+    "destinationKind": "adapter",
+    "destinationStage": "later"
+  }],
+  "forbidden": []
+}

@@ -1,0 +1,29 @@
+{
+  "pureCopy": [
+    {
+      "id": "main",
+      "source": "src/features/warehouse/main.js",
+      "destination": "src/features/warehouse/main.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    }
+  ],
+  "adapt": [],
+  "rewrite": [
+    {
+      "id": "confirmation-service",
+      "reference": "src/services/warehouseConfirmationService.js",
+      "destination": "src/services/warehouseConfirmationService.js",
+      "destinationKind": "adapter",
+      "destinationStage": "later"
+    }
+  ],
+  "forbidden": [
+    {
+      "dependency": "src/services/warehouseConfirmationService.js",
+      "dependencyKind": "module",
+      "scope": "source",
+      "destinationStage": "never"
+    }
+  ]
+}

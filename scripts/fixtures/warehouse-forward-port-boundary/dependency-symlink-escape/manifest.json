@@ -1,0 +1,21 @@
+{
+  "pureCopy": [
+    {
+      "id": "main",
+      "source": "src/features/warehouse/main.js",
+      "destination": "src/features/warehouse/main.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    },
+    {
+      "id": "helper",
+      "source": "src/features/warehouse/helper.js",
+      "destination": "src/features/warehouse/helper.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "supporting"
+    }
+  ],
+  "adapt": [],
+  "rewrite": [],
+  "forbidden": []
+}

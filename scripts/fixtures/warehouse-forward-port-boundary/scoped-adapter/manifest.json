@@ -1,0 +1,34 @@
+{
+  "pureCopy": [],
+  "adapt": [],
+  "rewrite": [
+    {
+      "id": "confirmation-service",
+      "reference": "src/services/warehouseConfirmationService.js",
+      "destination": "src/services/warehouseConfirmationService.js",
+      "destinationKind": "adapter",
+      "destinationStage": "fixture"
+    },
+    {
+      "id": "supabase-client",
+      "reference": "src/lib/supabaseClient.js",
+      "destination": "src/lib/supabaseClient.js",
+      "destinationKind": "adapter",
+      "destinationStage": "supporting"
+    }
+  ],
+  "forbidden": [
+    {
+      "dependency": "src/services/warehouseConfirmationService.js",
+      "dependencyKind": "module",
+      "scope": "source",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/lib/supabaseClient.js",
+      "dependencyKind": "module",
+      "scope": "source",
+      "destinationStage": "never"
+    }
+  ]
+}

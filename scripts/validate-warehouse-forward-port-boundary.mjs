@@ -1,5 +1,5 @@
 import { parse } from '@babel/parser'
-import { access, readFile, stat } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -27,6 +27,29 @@ function resolveInside(root, relativePath, escapeMessage) {
   const absolutePath = path.resolve(root, relativePath)
   if (!isInside(root, absolutePath)) fail(escapeMessage)
   return absolutePath
+}
+
+async function realDirectory(directory, label) {
+  let resolved
+  try {
+    resolved = await realpath(path.resolve(directory))
+  } catch {
+    fail(`Missing ${label} root: ${directory}`)
+  }
+  if (!(await stat(resolved)).isDirectory()) fail(`Missing ${label} root: ${directory}`)
+  return resolved
+}
+
+async function realFile(lexicalPath, root, missingMessage, escapeMessage) {
+  let resolved
+  try {
+    resolved = await realpath(lexicalPath)
+  } catch {
+    fail(missingMessage)
+  }
+  if (!isInside(root, resolved)) fail(escapeMessage)
+  if (!(await stat(resolved)).isFile()) fail(missingMessage)
+  return resolved
 }
 
 function parseArguments(argv) {
@@ -103,6 +126,9 @@ async function loadManifest(manifestPath) {
     if (!['module', 'runtime'].includes(entry.dependencyKind)) {
       fail(`Invalid forbidden dependency kind: ${entry.dependency}`)
     }
+    if (entry.scope && !['source', 'destination', 'all'].includes(entry.scope)) {
+      fail(`Invalid forbidden dependency scope: ${entry.dependency}`)
+    }
     if (typeof entry.destinationStage !== 'string' || entry.destinationStage.length === 0) {
       fail(`Missing destination stage: ${entry.dependency}`)
     }
@@ -122,12 +148,43 @@ function stringLiteralValue(node) {
   return null
 }
 
-function isLocalStorageReference(node, parent, parentKey) {
+function isBrowserGlobal(node) {
+  return node?.type === 'Identifier' && ['globalThis', 'window', 'self'].includes(node.name)
+}
+
+function propertyNamesLocalStorage(property, stringConstants) {
+  if (!property) return false
+  if (!property.computed && property.key?.type === 'Identifier') {
+    return property.key.name === 'localStorage'
+  }
+  const literal = stringLiteralValue(property.key)
+  if (literal !== null) return literal === 'localStorage'
+  return (
+    property.computed
+    && property.key?.type === 'Identifier'
+    && stringConstants.get(property.key.name) === 'localStorage'
+  )
+}
+
+function isLocalStorageReference(node, parent, parentKey, stringConstants) {
+  if (
+    node.type === 'VariableDeclarator'
+    && node.id?.type === 'ObjectPattern'
+    && isBrowserGlobal(node.init)
+  ) {
+    return node.id.properties.some((property) => propertyNamesLocalStorage(property, stringConstants))
+  }
   if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
     const property = node.property
     return (
       (!node.computed && property?.type === 'Identifier' && property.name === 'localStorage')
       || (node.computed && stringLiteralValue(property) === 'localStorage')
+      || (
+        node.computed
+        && isBrowserGlobal(node.object)
+        && property?.type === 'Identifier'
+        && stringConstants.get(property.name) === 'localStorage'
+      )
     )
   }
   if (node.type !== 'Identifier' || node.name !== 'localStorage') return false
@@ -157,9 +214,20 @@ function analyzeModule(source, file) {
   }
 
   const dependencies = []
+  const unresolvedDependencies = []
+  const stringConstants = new Map()
   let usesLocalStorage = false
   const visit = (node, parent = null, parentKey = '') => {
     if (!node || typeof node !== 'object') return
+    if (
+      node.type === 'VariableDeclarator'
+      && parent?.type === 'VariableDeclaration'
+      && parent.kind === 'const'
+      && node.id?.type === 'Identifier'
+    ) {
+      const value = stringLiteralValue(node.init)
+      if (value !== null) stringConstants.set(node.id.name, value)
+    }
     if (
       node.type === 'ImportDeclaration'
       || node.type === 'ExportNamedDeclaration'
@@ -169,7 +237,13 @@ function analyzeModule(source, file) {
       if (value !== null) dependencies.push(value)
     } else if (node.type === 'ImportExpression') {
       const value = stringLiteralValue(node.source)
-      if (value !== null) dependencies.push(value)
+      if (value !== null) {
+        dependencies.push(value)
+      } else {
+        unresolvedDependencies.push(
+          node.source?.type === 'TemplateLiteral' ? 'import(<template>)' : 'import(<non-literal>)',
+        )
+      }
     } else if (
       node.type === 'CallExpression'
       && (
@@ -178,9 +252,17 @@ function analyzeModule(source, file) {
       )
     ) {
       const value = stringLiteralValue(node.arguments?.[0])
-      if (value !== null) dependencies.push(value)
+      if (value !== null) {
+        dependencies.push(value)
+      } else {
+        const name = node.callee?.type === 'Import' ? 'import' : 'require'
+        const argument = node.arguments?.[0]
+        unresolvedDependencies.push(
+          argument?.type === 'TemplateLiteral' ? `${name}(<template>)` : `${name}(<non-literal>)`,
+        )
+      }
     }
-    if (isLocalStorageReference(node, parent, parentKey)) usesLocalStorage = true
+    if (isLocalStorageReference(node, parent, parentKey, stringConstants)) usesLocalStorage = true
 
     for (const [key, value] of Object.entries(node)) {
       if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
@@ -192,33 +274,46 @@ function analyzeModule(source, file) {
     }
   }
   visit(ast)
-  return { dependencies: [...new Set(dependencies)], usesLocalStorage }
+  return {
+    dependencies: [...new Set(dependencies)],
+    unresolvedDependencies: [...new Set(unresolvedDependencies)],
+    usesLocalStorage,
+  }
 }
 
 async function readModule(absolutePath, relativePath) {
   const extension = path.extname(absolutePath)
-  if (!MODULE_EXTENSIONS.has(extension)) return { dependencies: [], usesLocalStorage: false }
+  if (!MODULE_EXTENSIONS.has(extension)) {
+    return { dependencies: [], unresolvedDependencies: [], usesLocalStorage: false }
+  }
   const source = await readFile(absolutePath, 'utf8')
   return analyzeModule(source, relativePath)
 }
 
-function moduleForbiddenSet(manifest) {
+function appliesToAudit(entry, auditScope) {
+  return !entry.scope || entry.scope === 'all' || entry.scope === auditScope
+}
+
+function moduleForbiddenSet(manifest, auditScope) {
   return new Set(
     manifest.forbidden
-      .filter((entry) => entry.dependencyKind === 'module')
+      .filter((entry) => entry.dependencyKind === 'module' && appliesToAudit(entry, auditScope))
       .map((entry) => entry.dependency),
   )
 }
 
-function localStorageIsForbidden(manifest) {
+function localStorageIsForbidden(manifest, auditScope) {
   return manifest.forbidden.some((entry) => (
-    entry.dependencyKind === 'runtime' && entry.dependency === 'localStorage'
+    entry.dependencyKind === 'runtime'
+    && entry.dependency === 'localStorage'
+    && appliesToAudit(entry, auditScope)
   ))
 }
 
 async function auditSource(manifest, sourceRootValue) {
-  const sourceRoot = path.resolve(sourceRootValue)
-  const warehouseRoot = path.resolve(sourceRoot, 'src/features/warehouse')
+  const sourceRoot = await realDirectory(sourceRootValue, 'source')
+  const warehouseRootPath = path.resolve(sourceRoot, 'src/features/warehouse')
+  let warehouseRoot
   const entries = classificationEntries(manifest)
   const sourceEntries = entries.filter((entry) => entry.source)
   const sourceClassifications = new Map()
@@ -230,17 +325,28 @@ async function auditSource(manifest, sourceRootValue) {
       entry.source,
       `Source path must stay under src/features/warehouse/: ${entry.source}`,
     )
-    if (!isInside(warehouseRoot, sourcePath)) {
+    if (!isInside(warehouseRootPath, sourcePath)) {
       fail(`Source path must stay under src/features/warehouse/: ${entry.source}`)
     }
     if (sourceClassifications.has(entry.source)) fail(`Duplicate source: ${entry.source}`)
     sourceClassifications.set(entry.source, entry.classification)
-    try {
-      await access(sourcePath)
-    } catch {
-      fail(`Missing source: ${entry.source}`)
+    const realSourcePath = await realFile(
+      sourcePath,
+      sourceRoot,
+      `Missing source: ${entry.source}`,
+      `Source path escapes source root: ${entry.source}`,
+    )
+    if (!warehouseRoot) {
+      try {
+        warehouseRoot = await realpath(warehouseRootPath)
+      } catch {
+        fail(`Missing source: ${entry.source}`)
+      }
     }
-    analyses.set(entry.source, await readModule(sourcePath, entry.source))
+    if (!isInside(warehouseRoot, realSourcePath)) {
+      fail(`Source path must stay under src/features/warehouse/: ${entry.source}`)
+    }
+    analyses.set(entry.source, await readModule(realSourcePath, entry.source))
   }
 
   for (const entry of entries.filter((candidate) => candidate.reference)) {
@@ -249,36 +355,54 @@ async function auditSource(manifest, sourceRootValue) {
       entry.reference,
       `Reference path escapes source root: ${entry.reference}`,
     )
-    try {
-      await access(referencePath)
-    } catch {
-      fail(`Missing reference: ${entry.reference}`)
-    }
+    await realFile(
+      referencePath,
+      sourceRoot,
+      `Missing reference: ${entry.reference}`,
+      `Reference path escapes source root: ${entry.reference}`,
+    )
   }
 
-  const forbiddenModules = moduleForbiddenSet(manifest)
+  const forbiddenModules = moduleForbiddenSet(manifest, 'source')
   const rewriteEdges = []
   for (const entry of manifest.pureCopy) {
     const analysis = analyses.get(entry.source)
-    if (analysis.usesLocalStorage && localStorageIsForbidden(manifest)) {
+    if (analysis.unresolvedDependencies.length > 0) {
+      fail(
+        `Unresolved dynamic dependency: ${entry.source} -> ${analysis.unresolvedDependencies[0]}`,
+      )
+    }
+    if (analysis.usesLocalStorage && localStorageIsForbidden(manifest, 'source')) {
       fail(`Forbidden runtime dependency: ${entry.source} -> localStorage`)
     }
     const sourcePath = path.resolve(sourceRoot, entry.source)
     for (const specifier of analysis.dependencies) {
-      if (!specifier.startsWith('.')) {
+      if (!specifier.startsWith('.') && !specifier.startsWith('/src/')) {
         fail(`Pure-copy dependency must be warehouse-local: ${entry.source} -> ${specifier}`)
       }
-      const dependencyPath = path.resolve(path.dirname(sourcePath), specifier)
-      if (!isInside(warehouseRoot, dependencyPath)) {
-        const dependency = isInside(sourceRoot, dependencyPath)
-          ? toRepoPath(sourceRoot, dependencyPath)
+      const unresolvedDependencyPath = specifier.startsWith('/src/')
+        ? path.resolve(sourceRoot, specifier.slice(1))
+        : path.resolve(path.dirname(sourcePath), specifier)
+      if (!isInside(warehouseRootPath, unresolvedDependencyPath)) {
+        const dependency = isInside(sourceRoot, unresolvedDependencyPath)
+          ? toRepoPath(sourceRoot, unresolvedDependencyPath)
           : specifier
         if (forbiddenModules.has(dependency)) {
           fail(`Forbidden dependency: ${entry.source} -> ${dependency}`)
         }
         fail(`Pure-copy dependency must be warehouse-local: ${entry.source} -> ${specifier}`)
       }
+      const dependencyPath = await resolveDependencyFile(unresolvedDependencyPath)
       const dependency = toRepoPath(sourceRoot, dependencyPath)
+      const realDependencyPath = await realFile(
+        dependencyPath,
+        sourceRoot,
+        `Missing pure-copy dependency: ${entry.source} -> ${dependency}`,
+        `Dependency path escapes source root: ${entry.source} -> ${dependency}`,
+      )
+      if (!isInside(warehouseRoot, realDependencyPath)) {
+        fail(`Pure-copy dependency must be warehouse-local: ${entry.source} -> ${dependency}`)
+      }
       const classification = sourceClassifications.get(dependency)
       if (!classification) fail(`Unclassified pure-copy dependency: ${entry.source} -> ${dependency}`)
       if (classification === 'rewrite') rewriteEdges.push(`${entry.source} -> ${dependency}`)
@@ -309,7 +433,7 @@ async function resolveDependencyFile(basePath) {
 }
 
 async function auditDestination(manifest, destinationRootValue, destinationStage) {
-  const destinationRoot = path.resolve(destinationRootValue)
+  const destinationRoot = await realDirectory(destinationRootValue, 'destination')
   const warehouseRoot = path.resolve(destinationRoot, 'src/features/warehouse')
   const entries = classificationEntries(manifest)
   const destinations = new Map()
@@ -334,29 +458,50 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
     fail(`No destinations selected${destinationStage ? ` for stage ${destinationStage}` : ''}`)
   }
   for (const entry of selected) {
-    try {
-      if (!(await stat(destinations.get(entry.destination).destinationPath)).isFile()) throw new Error()
-    } catch {
-      fail(`Missing destination: ${entry.destination}`)
-    }
+    const destination = destinations.get(entry.destination)
+    destination.realDestinationPath = await realFile(
+      destination.destinationPath,
+      destinationRoot,
+      `Missing destination: ${entry.destination}`,
+      `Destination path escapes destination root: ${entry.destination}`,
+    )
   }
 
-  const forbiddenModules = moduleForbiddenSet(manifest)
-  const rejectLocalStorage = localStorageIsForbidden(manifest)
+  const forbiddenModules = moduleForbiddenSet(manifest, 'destination')
+  const rejectLocalStorage = localStorageIsForbidden(manifest, 'destination')
   const queue = selected.map((entry) => entry.destination)
   const visited = new Set()
   while (queue.length > 0) {
     const current = queue.shift()
     if (visited.has(current)) continue
     visited.add(current)
-    const { destinationPath } = destinations.get(current)
-    const analysis = await readModule(destinationPath, current)
+    const destination = destinations.get(current)
+    const { destinationPath } = destination
+    if (!destination.realDestinationPath) {
+      destination.realDestinationPath = await realFile(
+        destinationPath,
+        destinationRoot,
+        `Missing destination: ${current}`,
+        `Destination path escapes destination root: ${current}`,
+      )
+    }
+    const analysis = await readModule(destination.realDestinationPath, current)
+    if (analysis.unresolvedDependencies.length > 0) {
+      fail(
+        `Unresolved dynamic dependency: ${current} -> ${analysis.unresolvedDependencies[0]}`,
+      )
+    }
     if (analysis.usesLocalStorage && rejectLocalStorage) {
       fail(`Forbidden runtime dependency: ${current} -> localStorage`)
     }
     for (const specifier of analysis.dependencies) {
-      if (!specifier.startsWith('.')) continue
-      const unresolvedPath = path.resolve(path.dirname(destinationPath), specifier)
+      if (!specifier.startsWith('.') && !specifier.startsWith('/')) continue
+      if (specifier.startsWith('/') && !specifier.startsWith('/src/')) {
+        fail(`Path escape: ${current} -> ${specifier}`)
+      }
+      const unresolvedPath = specifier.startsWith('/src/')
+        ? path.resolve(destinationRoot, specifier.slice(1))
+        : path.resolve(path.dirname(destinationPath), specifier)
       if (!isInside(destinationRoot, unresolvedPath)) fail(`Path escape: ${current} -> ${specifier}`)
       const dependencyPath = await resolveDependencyFile(unresolvedPath)
       const dependency = toRepoPath(destinationRoot, dependencyPath)
@@ -364,11 +509,13 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
         fail(`Forbidden dependency: ${current} -> ${dependency}`)
       }
       if (!destinations.has(dependency)) fail(`Undeclared dependency: ${current} -> ${dependency}`)
-      try {
-        if (!(await stat(dependencyPath)).isFile()) throw new Error()
-      } catch {
-        fail(`Missing dependency: ${current} -> ${dependency}`)
-      }
+      const realDependencyPath = await realFile(
+        dependencyPath,
+        destinationRoot,
+        `Missing dependency: ${current} -> ${dependency}`,
+        `Dependency path escapes destination root: ${current} -> ${dependency}`,
+      )
+      destinations.get(dependency).realDestinationPath = realDependencyPath
       queue.push(dependency)
     }
   }

@@ -166,56 +166,73 @@
     {
       "dependency": "src/App.jsx",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/authSessionService.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/sessionOperationFence.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/cloudPersistenceCoordinator.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/baseRecordService.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/recordTableConfig.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/recordPersistenceOperation.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/utils/permissions.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/warehouseConfirmationService.js",
       "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "src/services/warehouseLocalRequestStore.js",
       "dependencyKind": "module",
+      "scope": "source",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/lib/supabaseClient.js",
+      "dependencyKind": "module",
+      "scope": "source",
       "destinationStage": "never"
     },
     {
       "dependency": "localStorage",
       "dependencyKind": "runtime",
+      "scope": "all",
       "destinationStage": "never"
     }
   ]
