@@ -1,0 +1,451 @@
+.warehouse-management-page .warehouse-catalog {
+  display: grid;
+  gap: 20px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.warehouse-management-page .warehouse-catalog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-catalog-header h2 {
+  margin: 4px 0 0;
+}
+
+.warehouse-management-page .warehouse-catalog-eyebrow {
+  margin: 0;
+  color: var(--erp-accent-gold);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.warehouse-management-page .warehouse-catalog-search {
+  display: grid;
+  gap: 8px;
+}
+
+.warehouse-management-page .warehouse-catalog-search label {
+  color: var(--erp-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.warehouse-management-page .warehouse-catalog input,
+.warehouse-management-page .warehouse-catalog textarea,
+.warehouse-management-page .warehouse-catalog select {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.warehouse-management-page .warehouse-catalog button {
+  min-height: 44px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 10px;
+  padding: 9px 14px;
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-soft);
+  cursor: pointer;
+}
+
+.warehouse-management-page .warehouse-catalog button:hover {
+  background: var(--erp-bg-hover);
+}
+
+.warehouse-management-page .warehouse-catalog button:disabled {
+  color: var(--erp-text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.warehouse-management-page .warehouse-catalog :focus-visible {
+  outline: 2px solid var(--erp-focus-ring);
+  outline-offset: 2px;
+}
+
+.warehouse-management-page .warehouse-catalog-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--erp-accent-gold);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 2.2fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.warehouse-management-page .warehouse-catalog-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.warehouse-management-page .warehouse-catalog-cards > button {
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-catalog-cards > button.is-selected {
+  border-color: var(--erp-accent-gold);
+  background: var(--erp-bg-hover);
+}
+
+.warehouse-management-page .warehouse-catalog-cards span {
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-cards small {
+  color: var(--erp-text-muted);
+}
+
+.warehouse-management-page .warehouse-catalog-detail {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-catalog-detail-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.warehouse-management-page .warehouse-catalog-detail-header h3 {
+  margin: 0;
+}
+
+.warehouse-management-page .warehouse-catalog-detail-header p {
+  margin: 6px 0 0;
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-detail-header .is-active {
+  color: var(--erp-accent-gold);
+}
+
+.warehouse-management-page .warehouse-catalog-detail-header .is-inactive {
+  color: var(--erp-text-muted);
+}
+
+.warehouse-management-page .warehouse-catalog-description {
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+}
+
+.warehouse-management-page .warehouse-catalog-table-wrap table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.warehouse-management-page .warehouse-catalog-table-wrap th {
+  padding: 10px;
+  color: var(--erp-text-secondary);
+  text-align: left;
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog-table-wrap td {
+  padding: 10px;
+  border-top: 1px solid var(--erp-border-subtle);
+}
+
+.warehouse-management-page .warehouse-catalog-table-wrap tr.is-selected td {
+  background: var(--erp-bg-hover);
+}
+
+.warehouse-management-page .warehouse-catalog-variant-select {
+  min-height: 44px;
+  padding-inline: 10px;
+  font: inherit;
+  font-weight: 700;
+}
+
+.warehouse-management-page .warehouse-catalog-variant-detail {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.warehouse-management-page .warehouse-catalog-variant-codes {
+  display: grid;
+  gap: 6px;
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-variant-codes code {
+  color: var(--erp-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.warehouse-management-page .warehouse-catalog-photo-carousel {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding: 4px 2px 10px;
+}
+
+.warehouse-management-page .warehouse-catalog-photo {
+  flex: 0 0 min(260px, 82vw);
+  margin: 0;
+  padding: 10px;
+  scroll-snap-align: start;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog-photo img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.warehouse-management-page .warehouse-catalog-photo figcaption {
+  margin-top: 6px;
+  color: var(--erp-text-muted);
+}
+
+.warehouse-management-page .warehouse-catalog-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.warehouse-management-page .warehouse-catalog-upload {
+  display: grid;
+  gap: 8px;
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-manager,
+.warehouse-management-page .warehouse-catalog-sites {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-catalog-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.warehouse-management-page .warehouse-catalog-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog-form h3 {
+  margin: 0;
+}
+
+.warehouse-management-page .warehouse-catalog-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.warehouse-management-page .warehouse-catalog-field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  color: var(--erp-text-secondary);
+  font-size: 0.85rem;
+}
+
+.warehouse-management-page .warehouse-catalog-field input[type='checkbox'] {
+  width: 44px;
+}
+
+.warehouse-management-page .warehouse-catalog-sites > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.warehouse-management-page .warehouse-catalog-site-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.warehouse-management-page .warehouse-catalog-site-card {
+  padding: 14px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+
+.warehouse-management-page .warehouse-catalog-site-card h4 {
+  margin: 0;
+}
+
+.warehouse-management-page .warehouse-catalog-site-actions,
+.warehouse-management-page .warehouse-catalog-shelf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.warehouse-management-page .warehouse-catalog-site-actions button,
+.warehouse-management-page .warehouse-catalog-shelf-row button {
+  flex: 0 0 auto;
+}
+
+.warehouse-management-page .warehouse-catalog-site-card p {
+  color: var(--erp-text-secondary);
+}
+
+.warehouse-management-page .warehouse-catalog-site-card li {
+  color: var(--erp-text-primary);
+}
+
+.warehouse-management-page .warehouse-catalog-site-forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.warehouse-management-page .warehouse-qr-scanner {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--erp-bg-canvas) 88%, transparent);
+}
+
+.warehouse-management-page .warehouse-qr-scanner__panel {
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-qr-scanner__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.warehouse-management-page .warehouse-qr-scanner video {
+  width: 100%;
+  min-height: 220px;
+  background: var(--erp-bg-canvas);
+}
+
+.warehouse-management-page .warehouse-qr-scanner form {
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .warehouse-management-page .warehouse-catalog-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .warehouse-management-page .warehouse-catalog-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .warehouse-management-page .warehouse-catalog-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .warehouse-management-page .warehouse-catalog-detail {
+    padding: 14px;
+  }
+
+  .warehouse-management-page .warehouse-catalog-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .warehouse-management-page .warehouse-catalog-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .warehouse-management-page .warehouse-catalog-site-forms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .warehouse-management-page .warehouse-catalog-sites > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .warehouse-management-page .warehouse-catalog-photo-carousel {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .warehouse-management-page .warehouse-catalog-table-wrap {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .warehouse-management-page .warehouse-catalog button {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .warehouse-management-page .warehouse-catalog-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

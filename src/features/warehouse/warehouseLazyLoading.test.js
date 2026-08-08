@@ -44,6 +44,10 @@ async function createFixture(source, filename = 'entry.js') {
     path.join(ownedDirectory, 'WarehouseLabelSheet.jsx'),
     "export const loadLabelQr = () => import('qrcode')\n",
   )
+  await writeFile(
+    path.join(ownedDirectory, 'WarehouseCatalog.jsx'),
+    "import './WarehouseQrScanner.jsx'\nimport './WarehouseLabelSheet.jsx'\nexport default function WarehouseCatalog() { return null }\n",
+  )
   return root
 }
 
@@ -53,12 +57,28 @@ async function createOwnedFixture(files) {
     path.join(root, 'package.json'),
     `${JSON.stringify({ dependencies: REQUIRED_DEPENDENCIES }, null, 2)}\n`,
   )
-  for (const [filename, source] of Object.entries(files)) {
+  const ownedFiles = {
+    'WarehouseCatalog.jsx': "import './WarehouseQrScanner.jsx'\nimport './WarehouseLabelSheet.jsx'\nexport default function WarehouseCatalog() { return null }\n",
+    ...files,
+  }
+  for (const [filename, source] of Object.entries(ownedFiles)) {
     const target = path.join(root, 'src', 'features', 'warehouse', filename)
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, source)
   }
   return root
+}
+
+async function createCatalogGraphFixture({ connectScanner = true, connectLabel = true } = {}) {
+  const imports = [
+    connectScanner ? "import WarehouseQrScanner from './WarehouseQrScanner.jsx'" : '',
+    connectLabel ? "import WarehouseLabelSheet from './WarehouseLabelSheet.jsx'" : '',
+  ].filter(Boolean).join('\n')
+  return createOwnedFixture({
+    'WarehouseCatalog.jsx': `${imports}\nexport default function WarehouseCatalog() { return null }\n`,
+    'WarehouseQrScanner.jsx': `export const loadScanner = () => import('@zxing/browser')\n`,
+    'WarehouseLabelSheet.jsx': `export const loadLabelQr = () => import('qrcode')\n`,
+  })
 }
 
 test('warehouse media dependencies are direct dependencies and production source has no eager imports', () => {
@@ -507,6 +527,29 @@ test('literal dynamic imports in exact warehouse-owned scanner and label modules
 })
 
 test('repository has executable literal dynamic QR callsites in the real owned modules', () => {
+  const result = runChecker(REPOSITORY_ROOT)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('disconnected owned QR callsites fail catalog-root reachability', async (t) => {
+  const scannerDisconnected = await createCatalogGraphFixture({ connectScanner: false })
+  const labelDisconnected = await createCatalogGraphFixture({ connectLabel: false })
+  t.after(() => Promise.all([
+    rm(scannerDisconnected, { recursive: true, force: true }),
+    rm(labelDisconnected, { recursive: true, force: true }),
+  ]))
+
+  const scannerResult = runChecker(scannerDisconnected)
+  const labelResult = runChecker(labelDisconnected)
+
+  assert.notEqual(scannerResult.status, 0)
+  assert.match(`${scannerResult.stdout}${scannerResult.stderr}`, /WarehouseCatalog\.jsx.*WarehouseQrScanner\.jsx.*reachable/iu)
+  assert.notEqual(labelResult.status, 0)
+  assert.match(`${labelResult.stdout}${labelResult.stderr}`, /WarehouseCatalog\.jsx.*WarehouseLabelSheet\.jsx.*reachable/iu)
+})
+
+test('real scanner and label dynamic callsites are reachable from WarehouseCatalog import graph', () => {
   const result = runChecker(REPOSITORY_ROOT)
 
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)

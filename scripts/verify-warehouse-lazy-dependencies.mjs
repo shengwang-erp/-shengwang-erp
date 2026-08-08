@@ -12,6 +12,7 @@ const REQUIRED_OWNED_QR_CALLSITES = Object.freeze({
   '@zxing/browser': 'src/features/warehouse/WarehouseQrScanner.jsx',
   qrcode: 'src/features/warehouse/WarehouseLabelSheet.jsx',
 })
+const WAREHOUSE_CATALOG_ROOT = 'src/features/warehouse/WarehouseCatalog.jsx'
 const SOURCE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',
   '.ts', '.tsx', '.mts', '.cts',
@@ -262,11 +263,41 @@ async function listProductionSources(directory) {
   return files
 }
 
+function resolveLocalSource(importer, specifier, sources) {
+  if (typeof specifier !== 'string' || !specifier.startsWith('.')) return null
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier))
+  const candidates = [base]
+  if (!path.posix.extname(base)) {
+    for (const extension of SOURCE_EXTENSIONS) candidates.push(`${base}${extension}`)
+    for (const extension of SOURCE_EXTENSIONS) candidates.push(`${base}/index${extension}`)
+  }
+  return candidates.find((candidate) => sources.has(candidate)) ?? null
+}
+
+function reachableSources(graph, root) {
+  const reachable = new Set()
+  const pending = [root]
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (reachable.has(current)) continue
+    reachable.add(current)
+    for (const target of graph.get(current) ?? []) pending.push(target)
+  }
+  return reachable
+}
+
 async function main() {
   const root = path.resolve(process.argv[2] ?? process.cwd())
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
   const violations = []
   const ownedQrCallsites = new Set()
+  const productionSources = await listProductionSources(path.join(root, 'src'))
+  const relativeSources = new Set(productionSources.map(
+    (filename) => path.relative(root, filename).split(path.sep).join('/'),
+  ))
+  const localImportGraph = new Map(
+    [...relativeSources].map((filename) => [filename, new Set()]),
+  )
 
   for (const [dependency, expectedRange] of Object.entries(REQUIRED_DEPENDENCIES)) {
     const actualRange = manifest.dependencies?.[dependency]
@@ -277,16 +308,24 @@ async function main() {
     }
   }
 
-  for (const filename of await listProductionSources(path.join(root, 'src'))) {
+  for (const filename of productionSources) {
     const source = await readFile(filename, 'utf8')
+    const relativeFilename = path.relative(root, filename).split(path.sep).join('/')
     const ast = parse(source, {
       sourceType: 'unambiguous',
       plugins: parserPluginsFor(filename),
     })
     visit(ast, null, (node, scope) => {
+      if (
+        node.type === 'ImportDeclaration'
+        || node.type === 'ExportNamedDeclaration'
+        || node.type === 'ExportAllDeclaration'
+      ) {
+        const target = resolveLocalSource(relativeFilename, node.source?.value, relativeSources)
+        if (target) localImportGraph.get(relativeFilename).add(target)
+      }
       if (node.type === 'CallExpression' && node.callee?.type === 'Import') {
         const dependency = dependencyForSpecifier(node.arguments?.[0]?.value)
-        const relativeFilename = path.relative(root, filename).split(path.sep).join('/')
         if (REQUIRED_OWNED_QR_CALLSITES[dependency] === relativeFilename) {
           ownedQrCallsites.add(dependency)
         }
@@ -383,6 +422,15 @@ async function main() {
     if (!ownedQrCallsites.has(dependency)) {
       violations.push(
         `${filename}: missing literal dynamic import() of ${dependency} in the real warehouse-owned module`,
+      )
+    }
+  }
+
+  const catalogReachable = reachableSources(localImportGraph, WAREHOUSE_CATALOG_ROOT)
+  for (const filename of Object.values(REQUIRED_OWNED_QR_CALLSITES)) {
+    if (!catalogReachable.has(filename)) {
+      violations.push(
+        `${WAREHOUSE_CATALOG_ROOT}: ${filename} must be reachable through the static local import graph`,
       )
     }
   }

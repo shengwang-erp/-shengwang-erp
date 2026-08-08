@@ -109,12 +109,15 @@ class TestElement extends TestNode {
     this.value = ''
     this.checked = false
     this.disabled = false
+    this.selected = false
+    this.type = tagName.toUpperCase() === 'INPUT' ? 'text' : ''
     this.srcObject = null
   }
 
   setAttribute(name, value) {
     this.attributes.set(name, String(value))
     if (name === 'disabled') this.disabled = true
+    if (name === 'type') this.type = String(value)
   }
   removeAttribute(name) {
     this.attributes.delete(name)
@@ -128,6 +131,18 @@ class TestElement extends TestNode {
 
   get className() { return this.getAttribute('class') ?? '' }
   set className(value) { this.setAttribute('class', value) }
+  get options() {
+    if (this.nodeName !== 'SELECT') return undefined
+    const result = []
+    const collect = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeName === 'OPTION') result.push(child)
+        else collect(child)
+      }
+    }
+    collect(this)
+    return result
+  }
   get innerHTML() { return this.textContent }
   set innerHTML(value) { this.textContent = value }
 }
@@ -150,6 +165,7 @@ class TestDocument extends TestNode {
   constructor() {
     super(9, '#document', null)
     this.ownerDocument = this
+    this.oninput = null
     this.documentElement = new TestElement('html', this)
     this.body = new TestElement('body', this)
     this.documentElement.appendChild(this.body)
