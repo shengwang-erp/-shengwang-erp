@@ -377,6 +377,9 @@ for (const [fixture, behavior] of [
   ['var-block-safe-overwrite', 'an unconditional overwrite of a block-declared function-scoped var alias'],
   ['parameter-default-outer-ordinary-alias', 'a parameter default resolves an outer ordinary alias'],
   ['safe-overwrite-after-function-declaration', 'a nested function return never blocks an outer straight-line overwrite'],
+  ['nested-mutator-does-not-pollute-outer', 'a never-called nested mutator never pollutes an outer safe overwrite'],
+  ['call-before-safe-overwrite', 'a possible call before a later direct safe overwrite'],
+  ['nested-function-own-safe-overwrite', 'a nested function resolves its own straight-line safe overwrite'],
 ]) {
   test(`destination audit permits ${behavior}`, () => {
     const result = runLexicalLocalStorageFixture(fixture)
@@ -403,6 +406,7 @@ for (const [fixture, behavior] of [
   ['let-use-before-safe-overwrite', 'a let browser alias used before its safe overwrite'],
   ['let-assigned-browser', 'a let binding assigned a browser global before use'],
   ['var-block-browser-alias', 'a block-declared var alias hoisted to its function scope'],
+  ['nested-function-own-browser-alias', 'a nested function resolves its own browser alias'],
 ]) {
   test(`destination audit rejects ${behavior}`, () => {
     const result = runLexicalLocalStorageFixture(fixture)
@@ -430,6 +434,11 @@ for (const [fixture, alias] of [
   ['loop-overwrite', 'browser'],
   ['switch-overwrite', 'browser'],
   ['short-circuit-overwrite', 'browser'],
+  ['call-direct-after-overwrite', 'browser'],
+  ['call-alias-after-overwrite', 'browser'],
+  ['call-member-callback-after-overwrite', 'browser'],
+  ['call-unknown-after-overwrite', 'browser'],
+  ['call-same-statement-after-overwrite', 'browser'],
   ['browser-alias-cycle', 'a'],
 ]) {
   test(`destination audit fails closed with an exact unresolved alias for ${fixture}`, () => {

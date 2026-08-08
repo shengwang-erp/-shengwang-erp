@@ -189,7 +189,11 @@ function addPatternBindings(pattern, scope, binding, bindingIdentifiers) {
     bindingIdentifiers.add(pattern)
     const existing = scope.bindings.get(pattern.name)
     if (binding.kind === 'var' && existing && ['parameter', 'var'].includes(existing.kind)) return
-    const storedBinding = { assignments: [], ...binding }
+    const storedBinding = {
+      assignments: [],
+      ...binding,
+      owningExecutionScope: nearestExecutionScope(scope),
+    }
     scope.bindings.set(pattern.name, storedBinding)
     return
   }
@@ -349,15 +353,21 @@ function collectMutableAssignments(ast, scopes) {
       && node.init
     ) {
       const binding = findBinding(scope, node.id.name)
-      binding?.assignments.push({
-        node,
-        value: node.init,
-        scope,
-      })
+      if (binding?.owningExecutionScope === nearestExecutionScope(scope)) {
+        binding.assignments.push({
+          node,
+          value: node.init,
+          scope,
+        })
+      }
     }
     if (node.type === 'AssignmentExpression' && node.left?.type === 'Identifier') {
       const binding = findBinding(scope, node.left.name)
-      if (binding && ['let', 'var'].includes(binding.kind)) {
+      if (
+        binding
+        && ['let', 'var'].includes(binding.kind)
+        && binding.owningExecutionScope === nearestExecutionScope(scope)
+      ) {
         binding.assignments.push({
           node,
           value: node.operator === '=' ? node.right : null,
@@ -367,7 +377,11 @@ function collectMutableAssignments(ast, scopes) {
     }
     if (node.type === 'UpdateExpression' && node.argument?.type === 'Identifier') {
       const binding = findBinding(scope, node.argument.name)
-      if (binding && ['let', 'var'].includes(binding.kind)) {
+      if (
+        binding
+        && ['let', 'var'].includes(binding.kind)
+        && binding.owningExecutionScope === nearestExecutionScope(scope)
+      ) {
         binding.assignments.push({
           node,
           value: null,
@@ -450,6 +464,13 @@ const FLOW_BARRIER_NODE_TYPES = new Set([
   'YieldExpression',
 ])
 
+const POSSIBLE_CALL_NODE_TYPES = new Set([
+  'CallExpression',
+  'NewExpression',
+  'OptionalCallExpression',
+  'TaggedTemplateExpression',
+])
+
 function containsFlowBarrier(node) {
   if (!node || typeof node !== 'object') return false
   if (FUNCTION_NODE_TYPES.has(node.type)) return false
@@ -459,6 +480,22 @@ function containsFlowBarrier(node) {
     if (Array.isArray(value)) {
       if (value.some((child) => containsFlowBarrier(child))) return true
     } else if (value && typeof value === 'object' && containsFlowBarrier(value)) {
+      return true
+    }
+  }
+  return false
+}
+
+function containsPossibleCallBefore(node, position = Number.POSITIVE_INFINITY) {
+  if (!node || typeof node !== 'object') return false
+  if ((node.start ?? Number.POSITIVE_INFINITY) >= position) return false
+  if (FUNCTION_NODE_TYPES.has(node.type)) return false
+  if (POSSIBLE_CALL_NODE_TYPES.has(node.type)) return true
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
+    if (Array.isArray(value)) {
+      if (value.some((child) => containsPossibleCallBefore(child, position))) return true
+    } else if (value && typeof value === 'object' && containsPossibleCallBefore(value, position)) {
       return true
     }
   }
@@ -540,9 +577,11 @@ function eventProvenBeforeUsage(event, usageNode, parents, requireSameStatementL
   if (eventContext.container !== usageContext.container || eventContext.index >= usageContext.index) {
     return false
   }
-  return !eventContext.statements
+  const interveningStatementsAreSafe = !eventContext.statements
     .slice(eventContext.index + 1, usageContext.index)
-    .some((statement) => containsFlowBarrier(statement))
+    .some((statement) => containsFlowBarrier(statement) || containsPossibleCallBefore(statement))
+  return interveningStatementsAreSafe
+    && !containsPossibleCallBefore(usageContext.statement, usageNode.start)
 }
 
 function resolveMutableAlias(binding, name, scope, usageNode, resolvingBindings, parents) {
