@@ -275,6 +275,42 @@ create table public.warehouse_return_lines (
   constraint warehouse_return_lines_original_unique unique (return_id, original_stock_out_line_id)
 );
 
+create or replace function private.reject_warehouse_workflow_delete()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  raise exception using
+    errcode = '55000',
+    message = 'warehouse workflow delete forbidden',
+    hint = 'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN';
+  return null;
+end;
+$$;
+
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_minor_work_orders
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_receipts
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_receipt_lines
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_stock_out_requests
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_stock_out_lines
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_return_requests
+for each statement execute function private.reject_warehouse_workflow_delete();
+create trigger reject_warehouse_workflow_delete
+before delete on public.warehouse_return_lines
+for each statement execute function private.reject_warehouse_workflow_delete();
+
 create or replace function private.assert_warehouse_receipt_document_state(p_receipt_id uuid)
 returns void
 language plpgsql
@@ -1116,6 +1152,7 @@ revoke all on function private.warehouse_workflow_quantity(jsonb) from public, a
 revoke all on function private.warehouse_workflow_date(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_idempotency(text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_lines(jsonb) from public, anon, authenticated, service_role;
+revoke all on function private.reject_warehouse_workflow_delete() from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_receipt_document_state(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_stock_out_document_state(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_return_document_state(uuid) from public, anon, authenticated, service_role;

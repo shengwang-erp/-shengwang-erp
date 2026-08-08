@@ -8,13 +8,24 @@ create or replace function pg_temp.task1_error_hint(p_statement text)
 returns text
 language plpgsql
 as $$
-declare captured text;
+declare
+  captured_hint text;
+  captured_message text;
+  captured_state text;
 begin
-  execute p_statement;
-  return null;
-exception when others then
-  get stacked diagnostics captured = PG_EXCEPTION_HINT;
-  return captured;
+  begin
+    execute p_statement;
+    raise exception using errcode = 'P0001', message = 'task1 expected-error sentinel';
+  exception when others then
+    get stacked diagnostics
+      captured_hint = PG_EXCEPTION_HINT,
+      captured_message = MESSAGE_TEXT,
+      captured_state = RETURNED_SQLSTATE;
+    if captured_state = 'P0001' and captured_message = 'task1 expected-error sentinel' then
+      return null;
+    end if;
+    return captured_hint;
+  end;
 end;
 $$;
 
@@ -100,6 +111,60 @@ select is(
   'pending workflow tables expose no direct browser or service-role privileges'
 );
 
+select has_function(
+  'private', 'reject_warehouse_workflow_delete', array[]::text[],
+  'workflow deletion guard function exists'
+);
+select is(
+  (
+    select count(*)
+    from pg_trigger trigger
+    join pg_class relation on relation.oid = trigger.tgrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public'
+      and relation.relname in (
+        'warehouse_minor_work_orders',
+        'warehouse_receipts', 'warehouse_receipt_lines',
+        'warehouse_stock_out_requests', 'warehouse_stock_out_lines',
+        'warehouse_return_requests', 'warehouse_return_lines'
+      )
+      and not trigger.tgisinternal
+      and trigger.tgfoid = to_regprocedure('private.reject_warehouse_workflow_delete()')
+      and (trigger.tgtype & 2) = 2
+      and (trigger.tgtype & 8) = 8
+  ),
+  7::bigint,
+  'all seven workflow relations reject DELETE before it can remove data'
+);
+select is(
+  (
+    select count(*)
+    from pg_proc procedure
+    where procedure.oid = to_regprocedure('private.reject_warehouse_workflow_delete()')
+      and procedure.proconfig @> array['search_path=pg_catalog']
+  ),
+  1::bigint,
+  'workflow deletion guard has a fixed pg_catalog-only search path'
+);
+select is(
+  (
+    select count(*)
+    from pg_proc procedure
+    where procedure.oid = to_regprocedure('private.reject_warehouse_workflow_delete()')
+      and not exists (
+        select 1
+        from aclexplode(coalesce(procedure.proacl, acldefault('f', procedure.proowner))) privilege
+        where privilege.grantee in (
+          0, 'anon'::regrole::oid, 'authenticated'::regrole::oid,
+          'service_role'::regrole::oid
+        )
+          and privilege.privilege_type = 'EXECUTE'
+      )
+  ),
+  1::bigint,
+  'workflow deletion guard exposes no direct execute privilege'
+);
+
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
   raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -132,7 +197,8 @@ insert into public.warehouse_variants(
   default_purchase_price, system_qr, active
 ) values
   ('d0300000-0000-4000-8000-000000000001', 'd0200000-0000-4000-8000-000000000001', 'WF-CU-01', 'R410A', '6mm', '铜', '米', 0, 100, 'SWERP:VARIANT:d0300000-0000-4000-8000-000000000001', true),
-  ('d0300000-0000-4000-8000-000000000002', 'd0200000-0000-4000-8000-000000000001', 'WF-CU-02', 'R410A', '9mm', '铜', '米', 0, 120, 'SWERP:VARIANT:d0300000-0000-4000-8000-000000000002', false);
+  ('d0300000-0000-4000-8000-000000000002', 'd0200000-0000-4000-8000-000000000001', 'WF-CU-02', 'R410A', '9mm', '铜', '米', 0, 120, 'SWERP:VARIANT:d0300000-0000-4000-8000-000000000002', false),
+  ('d0300000-0000-4000-8000-000000000003', 'd0200000-0000-4000-8000-000000000001', 'WF-CU-03', 'R410A', '12mm', '铜', '米', 0, 130, 'SWERP:VARIANT:d0300000-0000-4000-8000-000000000003', true);
 
 insert into public.purchase_records(record_key, payload, status) values
   ('PO-WF-001', '{"purchaseId":"PO-WF-001","itemName":"空调铜管","totalCost":1000}'::jsonb, 'active');
@@ -188,7 +254,7 @@ select is((select payload->>'assignedProjectId' from saved_minor), null, 'minor 
 create temporary table saved_receipt as
 select public.submit_warehouse_receipt_secure(
   'PO-WF-001',
-  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":2.125,"warehouseId":"d0000000-0000-4000-8000-000000000001","locationId":"d0100000-0000-4000-8000-000000000001"}]',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":2.125,"warehouseId":"d0000000-0000-4000-8000-000000000001","locationId":"d0100000-0000-4000-8000-000000000001"},{"variantId":"d0300000-0000-4000-8000-000000000003","requestedQuantity":1,"warehouseId":"d0000000-0000-4000-8000-000000000001","locationId":"d0100000-0000-4000-8000-000000000001"}]',
   'receipt-wf-001'
 ) as payload;
 select is((select payload->>'status' from saved_receipt), 'pending', 'receipt submission stays pending');
@@ -203,13 +269,45 @@ select public.submit_warehouse_stock_out_secure(
     'destinationNameSnapshot', '未来社・安装一台空调',
     'purpose', '安装使用', 'receiver', '王师傅', 'requestDate', '2026-08-09'
   ),
-  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1}]',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1},{"variantId":"d0300000-0000-4000-8000-000000000003","requestedQuantity":1}]',
   'out-wf-001'
 ) as payload;
 select is((select payload->>'status' from saved_out), 'pending', 'minor-work outbound submission stays pending');
 select is((select payload->>'projectId' from saved_out), null, 'minor-work outbound does not create or reference a fake project');
 
 reset role;
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_receipt_lines where id=%L',
+    (select payload#>>'{lines,0,id}' from saved_receipt)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'a pending multi-line receipt cannot lose one physical line'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_receipt_lines where receipt_id=%L',
+    (select payload->>'id' from saved_receipt)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'a delete-all-lines then header transaction is rejected at its first DELETE'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_receipts where id=%L',
+    (select payload->>'id' from saved_receipt)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'receipt headers cannot be physically deleted'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_minor_work_orders where id=%L',
+    (select payload->>'id' from saved_minor)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'minor work orders preserve their audit record instead of deleting'
+);
 select is(
   (select count(*) from public.projects),
   (select projects from workflow_baseline),
@@ -312,6 +410,22 @@ update public.warehouse_stock_out_requests
       confirmed_at = statement_timestamp()
   where id = (select (payload->>'id')::uuid from saved_out);
 select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_stock_out_lines where id=%L',
+    (select payload#>>'{lines,0,id}' from saved_out)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'a confirmed multi-line stock-out cannot lose one physical line'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_stock_out_requests where id=%L',
+    (select payload->>'id' from saved_out)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'stock-out headers cannot be physically deleted'
+);
+select is(
   pg_temp.task1_deferred_error(format(
     'update public.warehouse_receipt_lines set unit_cost=null where receipt_id=%L',
     (select payload->>'id' from saved_receipt)
@@ -336,14 +450,32 @@ create temporary table saved_return as
 select public.submit_warehouse_return_secure(
   (select (payload->>'id')::uuid from saved_out),
   '{"reason":"未使用","receiver":"仓库负责人","requestDate":"2026-08-10"}',
-  jsonb_build_array(jsonb_build_object(
-    'originalStockOutLineId', (select payload#>>'{lines,0,id}' from saved_out),
-    'requestedQuantity', 1
-  )),
+  (
+    select jsonb_agg(jsonb_build_object(
+      'originalStockOutLineId', line->>'id', 'requestedQuantity', 1
+    ) order by line->>'id')
+    from jsonb_array_elements((select payload->'lines' from saved_out)) line
+  ),
   'return-wf-001'
 ) as payload;
 select is((select payload->>'status' from saved_return), 'pending', 'return submission stays pending');
 reset role;
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_return_lines where id=%L',
+    (select payload#>>'{lines,0,id}' from saved_return)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'return lines cannot be physically deleted'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.warehouse_return_requests where id=%L',
+    (select payload->>'id' from saved_return)
+  )),
+  'WAREHOUSE_WORKFLOW_DELETE_FORBIDDEN',
+  'return headers cannot be physically deleted'
+);
 select has_column(
   'public', 'warehouse_return_lines', 'original_stock_out_id',
   'return line stores the original stock-out header identity for composite integrity'
