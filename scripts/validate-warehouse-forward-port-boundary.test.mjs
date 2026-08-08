@@ -14,14 +14,14 @@ const fixturesRoot = fileURLToPath(
 )
 const projectRoot = fileURLToPath(new URL('../', import.meta.url))
 
-function runFixtureRoot(fixtureRoot, mode) {
+function runFixtureRoot(fixtureRoot, mode, manifestPath = path.join(fixtureRoot, 'manifest.json')) {
   const rootFlag = mode === 'source' ? '--source-root' : '--destination-root'
   const rootDirectory = path.join(fixtureRoot, mode)
   const result = spawnSync(process.execPath, [
     validatorPath,
     `--audit-${mode}`,
     '--manifest',
-    path.join(fixtureRoot, 'manifest.json'),
+    manifestPath,
     rootFlag,
     rootDirectory,
     ...(mode === 'destination' ? ['--destination-stage', 'fixture'] : []),
@@ -40,6 +40,19 @@ function runFixture(name, mode) {
   return runFixtureRoot(path.join(fixturesRoot, name), mode)
 }
 
+function runLexicalLocalStorageFixture(name) {
+  const groupRoot = path.join(fixturesRoot, 'lexical-local-storage')
+  return runFixtureRoot(
+    path.join(groupRoot, 'cases', name),
+    'destination',
+    path.join(groupRoot, 'manifest.json'),
+  )
+}
+
+function symlinkIsUnsupported(error) {
+  return ['EACCES', 'EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN'].includes(error?.code)
+}
+
 async function runFixtureWithSymlink(t, name, mode, link) {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'warehouse-boundary-'))
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }))
@@ -50,7 +63,7 @@ async function runFixtureWithSymlink(t, name, mode, link) {
   try {
     await symlink(link.target, linkPath, 'file')
   } catch (error) {
-    if (['EACCES', 'EPERM', 'ENOSYS', 'UNKNOWN'].includes(error?.code)) {
+    if (symlinkIsUnsupported(error)) {
       t.skip(`runtime symlink is unsupported on this platform: ${error.code}`)
       return null
     }
@@ -58,6 +71,14 @@ async function runFixtureWithSymlink(t, name, mode, link) {
   }
   return runFixtureRoot(fixtureRoot, mode)
 }
+
+test('runtime symlink skip recognizes every unsupported-platform error code', () => {
+  for (const code of ['EACCES', 'EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN']) {
+    assert.equal(symlinkIsUnsupported({ code }), true, code)
+  }
+  assert.equal(symlinkIsUnsupported({ code: 'EEXIST' }), false)
+  assert.equal(symlinkIsUnsupported(null), false)
+})
 
 test('npm resolves the validator parser as an exact direct development dependency', () => {
   const declared = spawnSync('npm', [
@@ -330,6 +351,44 @@ for (const [fixture, browserGlobal] of [
 ]) {
   test(`destination audit rejects localStorage destructuring from ${browserGlobal}`, () => {
     const result = runFixture(fixture, 'destination')
+
+    assert.notEqual(result.status, 0)
+    assert.equal(
+      result.stderr,
+      'Forbidden runtime dependency: src/features/warehouse/main.js -> localStorage',
+    )
+  })
+}
+
+for (const [fixture, behavior] of [
+  ['inner-window-alias-does-not-leak', 'an inner window alias never contaminates an outer ordinary object'],
+  ['ordinary-member', 'an ordinary object may expose a localStorage-named property'],
+  ['function-parameter-shadow', 'a function parameter shadows an outer browser-global alias'],
+  ['block-shadow', 'a block binding shadows an outer browser-global alias'],
+  ['local-storage-const', 'a const binding named localStorage shadows the true global'],
+  ['local-storage-let', 'a let binding named localStorage shadows the true global'],
+  ['local-storage-var', 'a var binding named localStorage shadows the true global'],
+  ['local-storage-parameter', 'a localStorage function parameter shadows the true global'],
+  ['catch-shadow', 'a catch parameter named localStorage shadows the true global'],
+]) {
+  test(`destination audit permits ${behavior}`, () => {
+    const result = runLexicalLocalStorageFixture(fixture)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout, 'Destination audit passed: 1 modules for stage fixture')
+  })
+}
+
+for (const [fixture, behavior] of [
+  ['outer-key-survives-inner-shadow', 'an outer browser-global access after an inner same-name key'],
+  ['function-browser-alias', 'a function-local browser-global alias'],
+  ['block-browser-alias', 'a block-local browser-global alias'],
+  ['bare-global', 'an unbound bare localStorage identifier'],
+  ['local-storage-from-browser', 'a localStorage binding initialized from a browser global'],
+  ['catch-browser-access', 'a browser-global access inside a catch scope'],
+]) {
+  test(`destination audit rejects ${behavior}`, () => {
+    const result = runLexicalLocalStorageFixture(fixture)
 
     assert.notEqual(result.status, 0)
     assert.equal(

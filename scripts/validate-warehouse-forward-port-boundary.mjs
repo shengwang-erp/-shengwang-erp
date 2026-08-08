@@ -148,9 +148,23 @@ function stringLiteralValue(node) {
   return null
 }
 
-function isBrowserGlobal(node) {
-  return node?.type === 'Identifier' && ['globalThis', 'window', 'self'].includes(node.name)
-}
+const BROWSER_GLOBAL_NAMES = new Set(['globalThis', 'window', 'self'])
+const FUNCTION_NODE_TYPES = new Set([
+  'ArrowFunctionExpression',
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ObjectMethod',
+  'ClassMethod',
+  'ClassPrivateMethod',
+])
+const BLOCK_SCOPE_NODE_TYPES = new Set([
+  'BlockStatement',
+  'ForStatement',
+  'ForInStatement',
+  'ForOfStatement',
+  'SwitchStatement',
+  'StaticBlock',
+])
 
 function walkAst(node, visitor, parent = null, parentKey = '') {
   if (!node || typeof node !== 'object') return
@@ -165,100 +179,227 @@ function walkAst(node, visitor, parent = null, parentKey = '') {
   }
 }
 
-function resolveStaticString(node, stringConstants) {
+function createScope(parent, type) {
+  return { parent, type, bindings: new Map() }
+}
+
+function addPatternBindings(pattern, scope, binding, bindingIdentifiers) {
+  if (!pattern || !scope) return
+  if (pattern.type === 'Identifier') {
+    bindingIdentifiers.add(pattern)
+    scope.bindings.set(pattern.name, binding)
+    return
+  }
+  if (pattern.type === 'RestElement') {
+    addPatternBindings(pattern.argument, scope, { ...binding, initializer: null }, bindingIdentifiers)
+    return
+  }
+  if (pattern.type === 'AssignmentPattern') {
+    addPatternBindings(pattern.left, scope, { ...binding, initializer: null }, bindingIdentifiers)
+    return
+  }
+  if (pattern.type === 'ArrayPattern') {
+    for (const element of pattern.elements) {
+      addPatternBindings(element, scope, { ...binding, initializer: null }, bindingIdentifiers)
+    }
+    return
+  }
+  if (pattern.type === 'ObjectPattern') {
+    for (const property of pattern.properties) {
+      const value = property.type === 'RestElement' ? property.argument : property.value
+      addPatternBindings(value, scope, { ...binding, initializer: null }, bindingIdentifiers)
+    }
+  }
+}
+
+function nearestVarScope(scope) {
+  let current = scope
+  while (current && !['function', 'program'].includes(current.type)) current = current.parent
+  return current
+}
+
+function buildLexicalScopes(ast) {
+  const scopes = new WeakMap()
+  const bindingIdentifiers = new WeakSet()
+  const visit = (node, parent = null, currentScope = null) => {
+    if (!node || typeof node !== 'object') return
+
+    if (node.type === 'FunctionDeclaration' && node.id && currentScope) {
+      addPatternBindings(
+        node.id,
+        currentScope,
+        { kind: 'function', initializer: null, initializerScope: currentScope },
+        bindingIdentifiers,
+      )
+    }
+    if (node.type === 'ClassDeclaration' && node.id && currentScope) {
+      addPatternBindings(
+        node.id,
+        currentScope,
+        { kind: 'class', initializer: null, initializerScope: currentScope },
+        bindingIdentifiers,
+      )
+    }
+
+    let scope = currentScope
+    if (node.type === 'Program') {
+      scope = createScope(currentScope, 'program')
+    } else if (FUNCTION_NODE_TYPES.has(node.type)) {
+      scope = createScope(currentScope, 'function')
+    } else if (node.type === 'CatchClause') {
+      scope = createScope(currentScope, 'catch')
+    } else if (BLOCK_SCOPE_NODE_TYPES.has(node.type)) {
+      scope = createScope(currentScope, 'block')
+    }
+    scopes.set(node, scope)
+
+    if (FUNCTION_NODE_TYPES.has(node.type)) {
+      if (node.id) {
+        addPatternBindings(
+          node.id,
+          scope,
+          { kind: 'function', initializer: null, initializerScope: scope },
+          bindingIdentifiers,
+        )
+      }
+      for (const parameter of node.params ?? []) {
+        addPatternBindings(
+          parameter,
+          scope,
+          { kind: 'parameter', initializer: null, initializerScope: scope },
+          bindingIdentifiers,
+        )
+      }
+    }
+    if (node.type === 'CatchClause') {
+      addPatternBindings(
+        node.param,
+        scope,
+        { kind: 'catch', initializer: null, initializerScope: scope },
+        bindingIdentifiers,
+      )
+    }
+    if (node.type === 'ImportDeclaration') {
+      for (const specifier of node.specifiers) {
+        addPatternBindings(
+          specifier.local,
+          scope,
+          { kind: 'import', initializer: null, initializerScope: scope },
+          bindingIdentifiers,
+        )
+      }
+    }
+    if (node.type === 'VariableDeclarator' && parent?.type === 'VariableDeclaration') {
+      const bindingScope = parent.kind === 'var' ? nearestVarScope(scope) : scope
+      addPatternBindings(
+        node.id,
+        bindingScope,
+        {
+          kind: parent.kind,
+          initializer: node.id.type === 'Identifier' ? node.init : null,
+          initializerScope: scope,
+        },
+        bindingIdentifiers,
+      )
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child, node, scope)
+      } else if (value && typeof value === 'object') {
+        visit(value, node, scope)
+      }
+    }
+  }
+  visit(ast)
+  return { scopes, bindingIdentifiers }
+}
+
+function findBinding(scope, name) {
+  let current = scope
+  while (current) {
+    if (current.bindings.has(name)) return current.bindings.get(name)
+    current = current.parent
+  }
+  return null
+}
+
+function resolveStaticString(node, scope, resolvingBindings = new Set()) {
   const literal = stringLiteralValue(node)
   if (literal !== null) return literal
-  if (node?.type === 'Identifier') return stringConstants.get(node.name) ?? null
+  if (node?.type === 'Identifier') {
+    const binding = findBinding(scope, node.name)
+    if (!binding || binding.kind !== 'const' || !binding.initializer) return null
+    if (resolvingBindings.has(binding)) return null
+    resolvingBindings.add(binding)
+    const value = resolveStaticString(
+      binding.initializer,
+      binding.initializerScope,
+      resolvingBindings,
+    )
+    resolvingBindings.delete(binding)
+    return value
+  }
   if (node?.type === 'BinaryExpression' && node.operator === '+') {
-    const left = resolveStaticString(node.left, stringConstants)
-    const right = resolveStaticString(node.right, stringConstants)
+    const left = resolveStaticString(node.left, scope, resolvingBindings)
+    const right = resolveStaticString(node.right, scope, resolvingBindings)
     if (left !== null && right !== null) return left + right
   }
   return null
 }
 
-function resolvesToBrowserGlobal(node, browserGlobalConstants) {
-  return isBrowserGlobal(node) || (
-    node?.type === 'Identifier' && browserGlobalConstants.has(node.name)
+function resolvesToBrowserGlobal(node, scope, resolvingBindings = new Set()) {
+  if (node?.type !== 'Identifier') return false
+  const binding = findBinding(scope, node.name)
+  if (!binding) return BROWSER_GLOBAL_NAMES.has(node.name)
+  if (binding.kind !== 'const' || !binding.initializer) return false
+  if (resolvingBindings.has(binding)) return false
+  resolvingBindings.add(binding)
+  const result = resolvesToBrowserGlobal(
+    binding.initializer,
+    binding.initializerScope,
+    resolvingBindings,
   )
+  resolvingBindings.delete(binding)
+  return result
 }
 
-function resolveConstBindings(ast) {
-  const bindings = new Map()
-  walkAst(ast, (node, parent) => {
-    if (
-      node.type === 'VariableDeclarator'
-      && parent?.type === 'VariableDeclaration'
-      && parent.kind === 'const'
-      && node.id?.type === 'Identifier'
-    ) {
-      bindings.set(node.id.name, node.init)
-    }
-  })
-
-  const stringConstants = new Map()
-  const browserGlobalConstants = new Set()
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const [name, initializer] of bindings) {
-      if (!stringConstants.has(name)) {
-        const value = resolveStaticString(initializer, stringConstants)
-        if (value !== null) {
-          stringConstants.set(name, value)
-          changed = true
-        }
-      }
-      if (
-        !browserGlobalConstants.has(name)
-        && resolvesToBrowserGlobal(initializer, browserGlobalConstants)
-      ) {
-        browserGlobalConstants.add(name)
-        changed = true
-      }
-    }
-  }
-  return { stringConstants, browserGlobalConstants }
-}
-
-function propertyNamesLocalStorage(property, stringConstants) {
+function propertyNamesLocalStorage(property, scope) {
   if (!property) return false
   if (!property.computed && property.key?.type === 'Identifier') {
     return property.key.name === 'localStorage'
   }
-  const literal = stringLiteralValue(property.key)
-  if (literal !== null) return literal === 'localStorage'
-  return (
-    property.computed
-    && property.key?.type === 'Identifier'
-    && stringConstants.get(property.key.name) === 'localStorage'
-  )
+  if (!property.computed) return false
+  const propertyName = resolveStaticString(property.key, scope)
+  return propertyName === null || propertyName === 'localStorage'
 }
 
 function isLocalStorageReference(
   node,
   parent,
   parentKey,
-  stringConstants,
-  browserGlobalConstants,
+  scope,
+  bindingIdentifiers,
 ) {
   if (
     node.type === 'VariableDeclarator'
     && node.id?.type === 'ObjectPattern'
-    && resolvesToBrowserGlobal(node.init, browserGlobalConstants)
+    && resolvesToBrowserGlobal(node.init, scope)
   ) {
-    return node.id.properties.some((property) => propertyNamesLocalStorage(property, stringConstants))
+    return node.id.properties.some((property) => propertyNamesLocalStorage(property, scope))
   }
   if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
     const property = node.property
+    if (!resolvesToBrowserGlobal(node.object, scope)) return false
     if (!node.computed) {
       return property?.type === 'Identifier' && property.name === 'localStorage'
     }
-    if (!resolvesToBrowserGlobal(node.object, browserGlobalConstants)) return false
-    const propertyName = resolveStaticString(property, stringConstants)
+    const propertyName = resolveStaticString(property, scope)
     return propertyName === null || propertyName === 'localStorage'
   }
   if (node.type !== 'Identifier' || node.name !== 'localStorage') return false
+  if (bindingIdentifiers.has(node) || findBinding(scope, node.name)) return false
   if (
     (parent?.type === 'MemberExpression' || parent?.type === 'OptionalMemberExpression')
     && parentKey === 'property'
@@ -268,6 +409,15 @@ function isLocalStorageReference(
     (parent?.type === 'ObjectProperty' || parent?.type === 'ObjectMethod')
     && parentKey === 'key'
     && !parent.computed
+  ) return false
+  if (
+    ['ClassMethod', 'ClassPrivateMethod', 'ClassProperty', 'ObjectProperty'].includes(parent?.type)
+    && parentKey === 'key'
+    && !parent.computed
+  ) return false
+  if (
+    ['BreakStatement', 'ContinueStatement', 'LabeledStatement'].includes(parent?.type)
+    && parentKey === 'label'
   ) return false
   return true
 }
@@ -286,9 +436,10 @@ function analyzeModule(source, file) {
 
   const dependencies = []
   const unresolvedDependencies = []
-  const { stringConstants, browserGlobalConstants } = resolveConstBindings(ast)
+  const { scopes, bindingIdentifiers } = buildLexicalScopes(ast)
   let usesLocalStorage = false
   walkAst(ast, (node, parent, parentKey) => {
+    const scope = scopes.get(node)
     if (
       node.type === 'ImportDeclaration'
       || node.type === 'ExportNamedDeclaration'
@@ -328,8 +479,8 @@ function analyzeModule(source, file) {
         node,
         parent,
         parentKey,
-        stringConstants,
-        browserGlobalConstants,
+        scope,
+        bindingIdentifiers,
       )
     ) usesLocalStorage = true
 
