@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 
-select plan(25);
+select plan(28);
 
 create temporary table task3_old_permission_keys (
   permission_key text primary key
@@ -182,7 +182,7 @@ insert into public.employee_profiles (
 ) values
   ('84000000-0000-4000-8000-000000000001', 'SW-8301', '83000000-0000-4000-8000-000000000001', '仓库权限社长', '总务部', '社长', '在职', 'active', false, false),
   ('84000000-0000-4000-8000-000000000002', 'SW-8302', '83000000-0000-4000-8000-000000000002', '仓库请求员工', '工程部', '主任', '在职', 'active', false, false),
-  ('84000000-0000-4000-8000-000000000003', 'SW-8303', '83000000-0000-4000-8000-000000000003', '停用仓库员工', '工程部', '主任', '在职', 'disabled', false, false),
+  ('84000000-0000-4000-8000-000000000003', 'SW-8303', '83000000-0000-4000-8000-000000000003', '停用仓库社长', '总务部', '社长', '在职', 'disabled', false, false),
   ('84000000-0000-4000-8000-000000000004', 'SW-8304', '83000000-0000-4000-8000-000000000004', '离职仓库员工', '工程部', '主任', '离职', 'active', false, false),
   ('84000000-0000-4000-8000-000000000005', 'SW-8305', '83000000-0000-4000-8000-000000000005', '待改密仓库员工', '工程部', '主任', '在职', 'active', true, false),
   ('84000000-0000-4000-8000-000000000006', 'SW-000', '83000000-0000-4000-8000-000000000006', '超级管理员', '总务部', '社长', '在职', 'active', false, true);
@@ -305,6 +305,18 @@ select is(
   'active requester effective permissions use the department-position union'
 );
 
+select ok(
+  private.employee_effective_permission_keys(
+    '84000000-0000-4000-8000-000000000001'::uuid
+  ) @> array['warehouse.catalog.manage']::text[],
+  'active president receives exact warehouse catalog management from the central resolver'
+);
+select set_config('request.jwt.claim.sub', '83000000-0000-4000-8000-000000000001', true);
+select ok(
+  public.has_current_permission('warehouse.catalog.manage'),
+  'active president passes the exact current warehouse management permission check'
+);
+
 select set_config(
   'request.jwt.claim.sub',
   '83000000-0000-4000-8000-000000000002',
@@ -331,6 +343,10 @@ select set_config('request.jwt.claim.sub', '83000000-0000-4000-8000-000000000003
 select ok(
   not public.has_current_permission('warehouse.stock_flow.request'),
   'a disabled employee fails closed at the current permission check'
+);
+select ok(
+  not public.has_current_permission('warehouse.catalog.manage'),
+  'a disabled president receives no default warehouse management permission'
 );
 
 select is(

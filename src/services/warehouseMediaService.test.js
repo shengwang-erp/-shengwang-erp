@@ -23,6 +23,7 @@ const photoRow = Object.freeze({
   createdAt,
 })
 const deletionId = '73000000-0000-4000-8000-000000000006'
+const claimedDeletionId = '73000000-0000-4000-8000-000000000007'
 const deleteTicket = Object.freeze({
   deletionId,
   kind: 'registered',
@@ -30,6 +31,12 @@ const deleteTicket = Object.freeze({
   variantId,
   objectPath,
   storageDeleted: false,
+})
+const pendingCandidate = Object.freeze({
+  deletionId,
+  kind: 'registered',
+  createdAt,
+  originalRequesterLabel: '仓库管理员',
 })
 const source = await readFile(new URL('./warehouseMediaService.js', import.meta.url), 'utf8').catch(() => '')
 
@@ -607,4 +614,85 @@ test('ambiguous Storage removal never cancels the recoverable pending ticket', a
     )
     assert.equal(calls.includes('cancel_warehouse_photo_delete_secure'), false)
   }
+})
+
+test('pending deletion candidates expose only the exact sanitized recovery fields', async () => {
+  const { client, calls } = createClient({
+    rpcHandler(name, args) {
+      assert.equal(name, 'list_warehouse_photo_delete_candidates_secure')
+      assert.equal(args, undefined)
+      return rpcResult([pendingCandidate])
+    },
+  })
+  const service = createWarehouseMediaService(client, { configured: true })
+
+  assert.deepEqual(await service.listPendingPhotoDeletes(), [pendingCandidate])
+  assert.deepEqual(calls[0], ['rpc', 'list_warehouse_photo_delete_candidates_secure', undefined])
+})
+
+test('pending deletion candidates reject metadata and identity predicate leaks', async () => {
+  for (const leakedField of [
+    ['objectPath', objectPath],
+    ['photoId', photoId],
+    ['variantId', variantId],
+    ['employeeNumber', 'SW-042'],
+    ['employeeProfileId', '73000000-0000-4000-8000-000000000099'],
+    ['authUserId', '73000000-0000-4000-8000-000000000098'],
+    ['requesterActive', true],
+    ['requesterCanManage', false],
+    ['eligibleReason', 'requester_unavailable'],
+  ]) {
+    const { client } = createClient({
+      rpcHandler() { return rpcResult([{ ...pendingCandidate, [leakedField[0]]: leakedField[1] }]) },
+    })
+    await assertServiceError(
+      () => createWarehouseMediaService(client, { configured: true })
+        .listPendingPhotoDeletes(),
+      'WAREHOUSE_PHOTO_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('recovery claims by deletion id only and resumes registered finalization after refresh', async () => {
+  const calls = []
+  const { client } = createClient({
+    rpcHandler(name, args) {
+      calls.push(['handled', name, args])
+      if (name === 'claim_warehouse_photo_delete_secure') {
+        assert.deepEqual(args, { p_deletion_id: deletionId })
+        return rpcResult({ ...deleteTicket, deletionId: claimedDeletionId, storageDeleted: true })
+      }
+      if (name === 'finalize_warehouse_photo_delete_secure') return rpcResult(true)
+      throw new Error(`unexpected RPC ${name}`)
+    },
+  })
+  const service = createWarehouseMediaService(client, { configured: true })
+
+  assert.equal(await service.recoverPendingPhotoDelete(deletionId), true)
+  assert.equal(calls.some((call) => call[1] === 'claim_warehouse_photo_delete_secure'), true)
+})
+
+test('orphan recovery needs no list or sign call and deletes the claimed server path', async () => {
+  const orphanTicket = {
+    ...deleteTicket,
+    deletionId: claimedDeletionId,
+    kind: 'orphan',
+    photoId: null,
+  }
+  const { client, calls } = createClient({
+    rpcHandler(name, args) {
+      if (name === 'claim_warehouse_photo_delete_secure') {
+        assert.deepEqual(args, { p_deletion_id: deletionId })
+        return rpcResult(orphanTicket)
+      }
+      if (name === 'finalize_warehouse_photo_delete_secure') return rpcResult(true)
+      throw new Error(`unexpected RPC ${name}`)
+    },
+  })
+  const service = createWarehouseMediaService(client, { configured: true })
+
+  assert.equal(await service.recoverPendingPhotoDelete(deletionId), true)
+  assert.deepEqual(calls.find((call) => call[0] === 'remove'), ['remove', [objectPath]])
+  assert.equal(calls.some((call) => call[0] === 'signed'), false)
+  assert.equal(calls.some((call) => call[1] === 'list_warehouse_photo_delete_candidates_secure'), false)
 })

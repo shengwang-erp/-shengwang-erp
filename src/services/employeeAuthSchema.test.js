@@ -178,6 +178,7 @@ test('permission grants use stable keys and union department plus position templ
     'module.employees.delete',
     'module.permission_templates.view',
     'module.permission_templates.update',
+    'warehouse.catalog.manage',
   ]) {
     assert.match(sql, new RegExp(`'${escapeRegExp(fixedPermission)}'`))
   }

@@ -463,6 +463,145 @@ assert.deepEqual(afterDelete, [])
 const deletedSigned = await viewer.storage.from(bucket).createSignedUrl(objectPath, 300)
 assert.ok(deletedSigned.error, 'deleted photo retained signed access')
 
+// A fresh pending registered delete becomes immediately claimable when its
+// requester is disabled. Candidate discovery remains exact and path-free.
+const takeoverPath = `${variantId}/${randomUUID()}.jpg`
+data(await manager.storage.from(bucket).upload(
+  takeoverPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
+), 'takeover fixture upload failed')
+const takeoverPhoto = data(await manager.rpc('register_warehouse_variant_photo_secure', {
+  p_variant_id: variantId,
+  p_object_path: takeoverPath,
+  p_mime_type: 'image/jpeg',
+  p_byte_size: jpegBytes.length,
+}), 'takeover fixture registration failed')
+const takeoverOldTicket = data(await manager.rpc(
+  'begin_warehouse_variant_photo_delete_secure', {
+    p_variant_id: variantId,
+    p_photo_id: takeoverPhoto.id,
+  },
+), 'takeover fixture ticket failed')
+data(await admin.from('employee_profiles').update({ account_status: 'disabled' })
+  .eq('id', managerProfileId), 'failed to disable original requester')
+const takeoverCandidates = data(await otherManager.rpc(
+  'list_warehouse_photo_delete_candidates_secure',
+), 'eligible manager could not list sanitized takeover candidates')
+const takeoverCandidate = takeoverCandidates.find(
+  (candidate) => candidate.deletionId === takeoverOldTicket.deletionId,
+)
+assert.deepEqual(Object.keys(takeoverCandidate ?? {}).sort(), [
+  'createdAt', 'deletionId', 'kind', 'originalRequesterLabel',
+])
+assert.equal(takeoverCandidate.originalRequesterLabel, 'Task 3 Photo Manager')
+assert.equal(JSON.stringify(takeoverCandidate).includes(takeoverPath), false,
+  'sanitized candidate leaked the Storage object path')
+const takeoverNewTicket = data(await otherManager.rpc(
+  'claim_warehouse_photo_delete_secure', {
+    p_deletion_id: takeoverOldTicket.deletionId,
+  },
+), 'eligible manager could not claim disabled-requester ticket')
+assert.notEqual(takeoverNewTicket.deletionId, takeoverOldTicket.deletionId,
+  'HTTP takeover did not rotate the deletion ID')
+const oldRequesterDelete = await manager.storage.from(bucket).remove([takeoverPath])
+assert.equal(removed(oldRequesterDelete, takeoverPath), false,
+  'old requester retained Storage delete access after takeover')
+assert.equal(removed(
+  await otherManager.storage.from(bucket).remove([takeoverPath]), takeoverPath,
+), true, 'new requester could not remove the exact claimed object')
+assert.equal(data(await otherManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: takeoverNewTicket.deletionId,
+  p_variant_id: takeoverNewTicket.variantId,
+  p_photo_id: takeoverNewTicket.photoId,
+}), 'new requester could not finalize claimed registered deletion'), true)
+const oldClaim = await otherManager.rpc('claim_warehouse_photo_delete_secure', {
+  p_deletion_id: takeoverOldTicket.deletionId,
+})
+assert.equal(oldClaim.error?.hint, 'WAREHOUSE_PHOTO_DELETE_STATE_INVALID',
+  'rotated old deletion ID remained usable over HTTP')
+data(await admin.from('employee_profiles').update({ account_status: 'active' })
+  .eq('id', managerProfileId), 'failed to restore original requester')
+
+// Simulate an orphan finalize response being discarded, then recover from a
+// new browser session using only the deletion ID and immutable receipt.
+const lostFinalizeOrphanPath = `${variantId}/${randomUUID()}.jpg`
+data(await manager.storage.from(bucket).upload(
+  lostFinalizeOrphanPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
+), 'lost-finalize orphan upload failed')
+const lostFinalizeOrphanTicket = data(await manager.rpc(
+  'begin_warehouse_photo_orphan_delete_secure', {
+    p_variant_id: variantId,
+    p_object_path: lostFinalizeOrphanPath,
+  },
+), 'lost-finalize orphan ticket failed')
+assert.equal(removed(
+  await manager.storage.from(bucket).remove([lostFinalizeOrphanPath]),
+  lostFinalizeOrphanPath,
+), true, 'lost-finalize orphan Storage remove failed')
+// The caller deliberately discards this successful response.
+data(await manager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: lostFinalizeOrphanTicket.deletionId,
+  p_variant_id: lostFinalizeOrphanTicket.variantId,
+  p_photo_id: null,
+}), 'orphan finalize fixture failed')
+const refreshedManager = client(configuration.anonKey)
+data(await refreshedManager.auth.signInWithPassword({
+  email: managerEmail, password: managerPassword,
+}), 'refreshed manager login failed')
+const recoveredCompletedOrphan = data(await refreshedManager.rpc(
+  'claim_warehouse_photo_delete_secure', {
+    p_deletion_id: lostFinalizeOrphanTicket.deletionId,
+  },
+), 'refreshed manager could not recover discarded orphan finalize response')
+assert.equal(recoveredCompletedOrphan.deletionId, lostFinalizeOrphanTicket.deletionId)
+assert.equal(recoveredCompletedOrphan.storageDeleted, true)
+assert.equal(data(await refreshedManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: recoveredCompletedOrphan.deletionId,
+  p_variant_id: recoveredCompletedOrphan.variantId,
+  p_photo_id: null,
+}), 'orphan finalize retry was not idempotent'), true)
+
+// A registered object can be recovered after refresh even though this manager
+// cannot list inventory metadata or sign the now-absent object.
+const refreshRegisteredPath = `${variantId}/${randomUUID()}.jpg`
+data(await manager.storage.from(bucket).upload(
+  refreshRegisteredPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
+), 'registered refresh fixture upload failed')
+const refreshRegisteredPhoto = data(await manager.rpc(
+  'register_warehouse_variant_photo_secure', {
+    p_variant_id: variantId,
+    p_object_path: refreshRegisteredPath,
+    p_mime_type: 'image/jpeg',
+    p_byte_size: jpegBytes.length,
+  },
+), 'registered refresh fixture registration failed')
+const refreshRegisteredTicket = data(await manager.rpc(
+  'begin_warehouse_variant_photo_delete_secure', {
+    p_variant_id: variantId,
+    p_photo_id: refreshRegisteredPhoto.id,
+  },
+), 'registered refresh ticket failed')
+assert.equal(removed(
+  await manager.storage.from(bucket).remove([refreshRegisteredPath]),
+  refreshRegisteredPath,
+), true, 'registered refresh Storage remove failed')
+assert.ok((await refreshedManager.rpc('list_warehouse_variant_photos_secure', {
+  p_variant_id: variantId,
+})).error, 'refresh recovery unexpectedly depended on inventory list access')
+assert.ok((await refreshedManager.storage.from(bucket).createSignedUrl(
+  refreshRegisteredPath, 300,
+)).error, 'refresh recovery unexpectedly depended on signing the deleted object')
+const refreshRecoveredTicket = data(await refreshedManager.rpc(
+  'claim_warehouse_photo_delete_secure', {
+    p_deletion_id: refreshRegisteredTicket.deletionId,
+  },
+), 'registered pending delete was not recoverable by deletion ID only')
+assert.equal(refreshRecoveredTicket.storageDeleted, true)
+assert.equal(data(await refreshedManager.rpc('finalize_warehouse_photo_delete_secure', {
+  p_deletion_id: refreshRecoveredTicket.deletionId,
+  p_variant_id: refreshRecoveredTicket.variantId,
+  p_photo_id: refreshRecoveredTicket.photoId,
+}), 'registered refresh recovery could not finalize metadata'), true)
+
 process.stdout.write(`${JSON.stringify({
   projectId: configuration.projectId,
   workdir: configuration.workdir,
@@ -474,4 +613,8 @@ process.stdout.write(`${JSON.stringify({
   anonymousSignedUrlDenied: true,
   viewerSignedUrlSeconds: 300,
   deleteCompleted: true,
+  sanitizedCandidates: true,
+  disabledRequesterTakeover: true,
+  orphanLostFinalizeRecovered: true,
+  registeredRefreshRecoveredWithoutListOrSign: true,
 })}\n`)

@@ -89,7 +89,7 @@ end;
 $$;
 
 set search_path = public, auth, extensions;
-select plan(7);
+select plan(11);
 
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -99,6 +99,16 @@ insert into auth.users(
   'bc500000-0000-4000-8000-000000000001',
   'authenticated', 'authenticated', 'catalog-race@auth.invalid', '', now(),
   '{}'::jsonb, '{}'::jsonb, now(), now()
+), (
+  '00000000-0000-0000-0000-000000000000',
+  'bc500000-0000-4000-8000-000000000002',
+  'authenticated', 'authenticated', 'catalog-race-b@auth.invalid', '', now(),
+  '{}'::jsonb, '{}'::jsonb, now(), now()
+), (
+  '00000000-0000-0000-0000-000000000000',
+  'bc500000-0000-4000-8000-000000000003',
+  'authenticated', 'authenticated', 'catalog-race-c@auth.invalid', '', now(),
+  '{}'::jsonb, '{}'::jsonb, now(), now()
 );
 insert into public.employee_profiles(
   id, employee_number, auth_user_id, name, department, position,
@@ -107,9 +117,19 @@ insert into public.employee_profiles(
   'bc600000-0000-4000-8000-000000000001', 'SW-9891',
   'bc500000-0000-4000-8000-000000000001', '仓库并发测试员',
   '仓库管理部', '大工', '在职', 'active', false
+), (
+  'bc600000-0000-4000-8000-000000000002', 'SW-9892',
+  'bc500000-0000-4000-8000-000000000002', '仓库并发测试员B',
+  '仓库管理部', '大工', '在职', 'active', false
+), (
+  'bc600000-0000-4000-8000-000000000003', 'SW-9893',
+  'bc500000-0000-4000-8000-000000000003', '仓库并发测试员C',
+  '仓库管理部', '大工', '在职', 'active', false
 );
 insert into public.permission_grants(subject_type, subject_code, permission_key)
-values ('department', '仓库管理部', 'warehouse.catalog.manage');
+values
+  ('department', '仓库管理部', 'warehouse.catalog.manage'),
+  ('department', '仓库管理部', 'module.inventory.view');
 
 insert into public.warehouse_sites(id, code, name, kind, active)
 values (
@@ -210,6 +230,74 @@ begin
 end;
 $$;
 
+create or replace function public.task3_pause_photo_claim(
+  p_deletion_id uuid,
+  p_marker bigint
+)
+returns jsonb
+language plpgsql
+volatile
+set search_path = pg_catalog, public
+as $$
+declare
+  result jsonb;
+begin
+  result := public.claim_warehouse_photo_delete_secure(p_deletion_id);
+  perform pg_advisory_lock(p_marker);
+  perform pg_sleep(0.5);
+  perform pg_advisory_unlock(p_marker);
+  return result;
+end;
+$$;
+
+create or replace function public.task3_pause_photo_cancel(
+  p_deletion_id uuid,
+  p_variant_id uuid,
+  p_photo_id uuid,
+  p_marker bigint
+)
+returns jsonb
+language plpgsql
+volatile
+set search_path = pg_catalog, public
+as $$
+declare
+  result boolean;
+begin
+  result := public.cancel_warehouse_photo_delete_secure(
+    p_deletion_id, p_variant_id, p_photo_id
+  );
+  perform pg_advisory_lock(p_marker);
+  perform pg_sleep(0.5);
+  perform pg_advisory_unlock(p_marker);
+  return to_jsonb(result);
+end;
+$$;
+
+create or replace function public.task3_pause_photo_finalize(
+  p_deletion_id uuid,
+  p_variant_id uuid,
+  p_photo_id uuid,
+  p_marker bigint
+)
+returns jsonb
+language plpgsql
+volatile
+set search_path = pg_catalog, public
+as $$
+declare
+  result boolean;
+begin
+  result := public.finalize_warehouse_photo_delete_secure(
+    p_deletion_id, p_variant_id, p_photo_id
+  );
+  perform pg_advisory_lock(p_marker);
+  perform pg_sleep(0.5);
+  perform pg_advisory_unlock(p_marker);
+  return to_jsonb(result);
+end;
+$$;
+
 revoke all on function public.task2_pause_site_deactivation(uuid, jsonb, bigint)
   from public, anon, service_role;
 revoke all on function public.task2_pause_item_deactivation(uuid, jsonb, bigint)
@@ -225,6 +313,18 @@ grant execute on function public.task3_pause_photo_registration(uuid, text, bigi
 revoke all on function public.task3_pause_photo_delete_begin(uuid, uuid, bigint)
   from public, anon, service_role;
 grant execute on function public.task3_pause_photo_delete_begin(uuid, uuid, bigint)
+  to authenticated;
+revoke all on function public.task3_pause_photo_claim(uuid, bigint)
+  from public, anon, service_role;
+grant execute on function public.task3_pause_photo_claim(uuid, bigint)
+  to authenticated;
+revoke all on function public.task3_pause_photo_cancel(uuid, uuid, uuid, bigint)
+  from public, anon, service_role;
+grant execute on function public.task3_pause_photo_cancel(uuid, uuid, uuid, bigint)
+  to authenticated;
+revoke all on function public.task3_pause_photo_finalize(uuid, uuid, uuid, bigint)
+  from public, anon, service_role;
+grant execute on function public.task3_pause_photo_finalize(uuid, uuid, uuid, bigint)
   to authenticated;
 
 create or replace function pg_temp.task2_wait_for_marker(p_marker bigint)
@@ -257,6 +357,27 @@ begin
   perform extensions.dblink_exec(
     p_connection,
     'set local request.jwt.claim.sub = ''bc500000-0000-4000-8000-000000000001'''
+  );
+  perform extensions.dblink_exec(p_connection, 'set local role authenticated');
+end;
+$$;
+
+create or replace function pg_temp.task3_begin_remote(
+  p_connection text,
+  p_auth_user_id uuid
+)
+returns void
+language plpgsql
+as $$
+begin
+  perform extensions.dblink_exec(p_connection, 'begin');
+  perform extensions.dblink_exec(
+    p_connection,
+    'set local request.jwt.claim.role = ''authenticated'''
+  );
+  perform extensions.dblink_exec(
+    p_connection,
+    format('set local request.jwt.claim.sub = %L', p_auth_user_id::text)
   );
   perform extensions.dblink_exec(p_connection, 'set local role authenticated');
 end;
@@ -721,6 +842,364 @@ select ok(
   'delete begin commits before a concurrent registration can consume a slot'
 );
 
+-- Clear the prior pending ticket before takeover-specific races.
+select set_config(
+  'warehouse.takeover_cleanup_ticket',
+  jsonb_build_object(
+    'deletionId', deletion_id, 'variantId', variant_id, 'photoId', photo_id
+  )::text,
+  false
+)
+from public.warehouse_photo_delete_outbox
+where variant_id = 'bc300000-0000-4000-8000-000000000002';
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000001';
+set role authenticated;
+select public.cancel_warehouse_photo_delete_secure(
+  (current_setting('warehouse.takeover_cleanup_ticket')::jsonb->>'deletionId')::uuid,
+  (current_setting('warehouse.takeover_cleanup_ticket')::jsonb->>'variantId')::uuid,
+  (current_setting('warehouse.takeover_cleanup_ticket')::jsonb->>'photoId')::uuid
+);
+reset role;
+
+-- Takeover racing with old-requester cancel: takeover commits, old credential fails.
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000001';
+set role authenticated;
+select set_config(
+  'warehouse.claim_cancel_old_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    (select id from public.warehouse_variant_photos where object_path like '%000000000002.jpg')
+  )::text,
+  false
+);
+reset role;
+update public.warehouse_photo_delete_outbox
+set assigned_at = statement_timestamp() - interval '31 minutes'
+where deletion_id = (
+  current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'deletionId'
+)::uuid;
+select pg_temp.task3_begin_remote(
+  'task2_parent', 'bc500000-0000-4000-8000-000000000002'
+);
+select pg_temp.task3_begin_remote(
+  'task2_child', 'bc500000-0000-4000-8000-000000000001'
+);
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    'select public.task3_pause_photo_claim(%L::uuid,%s)',
+    current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'deletionId',
+    hashtextextended('task3-claim-cancel-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(hashtextextended('task3-claim-cancel-marker', 0))
+  then raise exception 'claim/cancel race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    'select to_jsonb(public.cancel_warehouse_photo_delete_secure(%L::uuid,%L::uuid,%L::uuid))',
+    current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'deletionId',
+    current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'variantId',
+    current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'photoId'
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.claim_cancel_child_error',
+  pg_temp.task3_finish_limit_child('task2_child'), false
+);
+select ok(
+  current_setting('warehouse.claim_cancel_child_error') like '%warehouse photo delete state invalid%'
+  and (
+    select count(*) = 1
+      and bool_and(requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000002')
+    from public.warehouse_photo_delete_outbox
+    where original_requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000001'
+      and photo_id = (
+        current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'photoId'
+      )::uuid
+  )
+  and (
+    select count(*) = 1 from private.warehouse_photo_delete_takeover_receipts
+    where old_deletion_id = (
+      current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'deletionId'
+    )::uuid
+  ),
+  'takeover versus old cancel commits one rotation and invalidates the old credential'
+);
+select set_config(
+  'warehouse.claim_cancel_new_id',
+  (select deletion_id::text from public.warehouse_photo_delete_outbox
+   where photo_id = (
+     current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'photoId'
+   )::uuid),
+  false
+);
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000002';
+set role authenticated;
+select public.cancel_warehouse_photo_delete_secure(
+  current_setting('warehouse.claim_cancel_new_id')::uuid,
+  (current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'variantId')::uuid,
+  (current_setting('warehouse.claim_cancel_old_ticket')::jsonb->>'photoId')::uuid
+);
+reset role;
+
+-- Two managers racing to take over one old ID produce exactly one winner.
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000001';
+set role authenticated;
+select set_config(
+  'warehouse.two_claims_old_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    (select id from public.warehouse_variant_photos where object_path like '%000000000003.jpg')
+  )::text,
+  false
+);
+reset role;
+update public.warehouse_photo_delete_outbox
+set assigned_at = statement_timestamp() - interval '31 minutes'
+where deletion_id = (
+  current_setting('warehouse.two_claims_old_ticket')::jsonb->>'deletionId'
+)::uuid;
+select pg_temp.task3_begin_remote(
+  'task2_parent', 'bc500000-0000-4000-8000-000000000002'
+);
+select pg_temp.task3_begin_remote(
+  'task2_child', 'bc500000-0000-4000-8000-000000000003'
+);
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    'select public.task3_pause_photo_claim(%L::uuid,%s)',
+    current_setting('warehouse.two_claims_old_ticket')::jsonb->>'deletionId',
+    hashtextextended('task3-two-claims-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(hashtextextended('task3-two-claims-marker', 0))
+  then raise exception 'two-claim race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    'select public.claim_warehouse_photo_delete_secure(%L::uuid)',
+    current_setting('warehouse.two_claims_old_ticket')::jsonb->>'deletionId'
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.two_claims_child_error',
+  pg_temp.task3_finish_limit_child('task2_child'), false
+);
+select ok(
+  current_setting('warehouse.two_claims_child_error') like '%warehouse photo delete state invalid%'
+  and (
+    select count(*) = 1 from private.warehouse_photo_delete_takeover_receipts
+    where old_deletion_id = (
+      current_setting('warehouse.two_claims_old_ticket')::jsonb->>'deletionId'
+    )::uuid
+  )
+  and (
+    select count(*) = 1
+      and bool_and(requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000002')
+    from public.warehouse_photo_delete_outbox
+    where photo_id = (
+      current_setting('warehouse.two_claims_old_ticket')::jsonb->>'photoId'
+    )::uuid
+  ),
+  'two simultaneous takeovers yield one rotated ticket and one immutable receipt'
+);
+select set_config(
+  'warehouse.two_claims_new_id',
+  (select deletion_id::text from public.warehouse_photo_delete_outbox
+   where photo_id = (
+     current_setting('warehouse.two_claims_old_ticket')::jsonb->>'photoId'
+   )::uuid),
+  false
+);
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000002';
+set role authenticated;
+select public.cancel_warehouse_photo_delete_secure(
+  current_setting('warehouse.two_claims_new_id')::uuid,
+  (current_setting('warehouse.two_claims_old_ticket')::jsonb->>'variantId')::uuid,
+  (current_setting('warehouse.two_claims_old_ticket')::jsonb->>'photoId')::uuid
+);
+reset role;
+
+-- Takeover racing with old finalize: new requester owns the only legal completion.
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000001';
+set role authenticated;
+select set_config(
+  'warehouse.claim_finalize_old_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    (select id from public.warehouse_variant_photos where object_path like '%000000000004.jpg')
+  )::text,
+  false
+);
+reset role;
+update public.warehouse_photo_delete_outbox
+set assigned_at = statement_timestamp() - interval '31 minutes'
+where deletion_id = (
+  current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'deletionId'
+)::uuid;
+set session_replication_role = replica;
+delete from storage.objects
+where bucket_id = 'warehouse-item-photos'
+  and name = current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'objectPath';
+set session_replication_role = origin;
+select pg_temp.task3_begin_remote(
+  'task2_parent', 'bc500000-0000-4000-8000-000000000002'
+);
+select pg_temp.task3_begin_remote(
+  'task2_child', 'bc500000-0000-4000-8000-000000000001'
+);
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    'select public.task3_pause_photo_claim(%L::uuid,%s)',
+    current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'deletionId',
+    hashtextextended('task3-claim-finalize-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(hashtextextended('task3-claim-finalize-marker', 0))
+  then raise exception 'claim/finalize race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    'select to_jsonb(public.finalize_warehouse_photo_delete_secure(%L::uuid,%L::uuid,%L::uuid))',
+    current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'deletionId',
+    current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'variantId',
+    current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'photoId'
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select set_config(
+  'warehouse.claim_finalize_child_error',
+  pg_temp.task3_finish_limit_child('task2_child'), false
+);
+select set_config(
+  'warehouse.claim_finalize_new_id',
+  (select deletion_id::text from public.warehouse_photo_delete_outbox
+   where photo_id = (
+     current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'photoId'
+   )::uuid),
+  false
+);
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000002';
+set role authenticated;
+select public.finalize_warehouse_photo_delete_secure(
+  current_setting('warehouse.claim_finalize_new_id')::uuid,
+  (current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'variantId')::uuid,
+  (current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'photoId')::uuid
+);
+reset role;
+select ok(
+  current_setting('warehouse.claim_finalize_child_error') like '%warehouse photo delete state invalid%'
+  and not exists (
+    select 1 from public.warehouse_photo_delete_outbox
+    where photo_id = (
+      current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'photoId'
+    )::uuid
+  )
+  and not exists (
+    select 1 from public.warehouse_variant_photos
+    where id = (
+      current_setting('warehouse.claim_finalize_old_ticket')::jsonb->>'photoId'
+    )::uuid
+  )
+  and (
+    select count(*) = 1 from private.warehouse_photo_delete_receipts
+    where deletion_id = current_setting('warehouse.claim_finalize_new_id')::uuid
+      and outcome = 'finalized'
+  ),
+  'takeover versus old finalize leaves one new-credential completion and no divergence'
+);
+
+-- Two finalizes of the same current credential serialize to one state transition.
+set request.jwt.claim.sub = 'bc500000-0000-4000-8000-000000000002';
+set role authenticated;
+select set_config(
+  'warehouse.two_finalizes_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'bc300000-0000-4000-8000-000000000002',
+    (select id from public.warehouse_variant_photos where object_path like '%000000000005.jpg')
+  )::text,
+  false
+);
+reset role;
+set session_replication_role = replica;
+delete from storage.objects
+where bucket_id = 'warehouse-item-photos'
+  and name = current_setting('warehouse.two_finalizes_ticket')::jsonb->>'objectPath';
+set session_replication_role = origin;
+select pg_temp.task3_begin_remote(
+  'task2_parent', 'bc500000-0000-4000-8000-000000000002'
+);
+select pg_temp.task3_begin_remote(
+  'task2_child', 'bc500000-0000-4000-8000-000000000002'
+);
+select extensions.dblink_send_query(
+  'task2_parent',
+  format(
+    'select public.task3_pause_photo_finalize(%L::uuid,%L::uuid,%L::uuid,%s)',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'deletionId',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'variantId',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'photoId',
+    hashtextextended('task3-two-finalizes-marker', 0)
+  )
+);
+do $$
+begin
+  if not pg_temp.task2_wait_for_marker(hashtextextended('task3-two-finalizes-marker', 0))
+  then raise exception 'two-finalize race did not synchronize'; end if;
+end;
+$$;
+select extensions.dblink_send_query(
+  'task2_child',
+  format(
+    'select to_jsonb(public.finalize_warehouse_photo_delete_secure(%L::uuid,%L::uuid,%L::uuid))',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'deletionId',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'variantId',
+    current_setting('warehouse.two_finalizes_ticket')::jsonb->>'photoId'
+  )
+);
+select pg_temp.task2_finish_parent('task2_parent');
+select pg_temp.task2_finish_child('task2_child');
+select ok(
+  not exists (
+    select 1 from public.warehouse_photo_delete_outbox
+    where deletion_id = (
+      current_setting('warehouse.two_finalizes_ticket')::jsonb->>'deletionId'
+    )::uuid
+  )
+  and (
+    select count(*) = 1 from private.warehouse_photo_delete_receipts
+    where deletion_id = (
+      current_setting('warehouse.two_finalizes_ticket')::jsonb->>'deletionId'
+    )::uuid
+      and outcome = 'finalized'
+  )
+  and (
+    select count(*) = 1 from public.warehouse_photo_audit
+    where action = 'deleted'
+      and photo_id = (
+        current_setting('warehouse.two_finalizes_ticket')::jsonb->>'photoId'
+      )::uuid
+  ),
+  'two simultaneous finalizes return idempotently with one receipt and one delete audit'
+);
+
 select * from finish();
 
 select extensions.dblink_disconnect('task2_parent');
@@ -736,17 +1215,39 @@ alter table public.warehouse_catalog_audit
 alter table public.warehouse_photo_audit
   disable trigger reject_warehouse_photo_audit_mutation;
 delete from public.warehouse_photo_audit
-where actor_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
+where actor_employee_profile_id in (
+  'bc600000-0000-4000-8000-000000000001',
+  'bc600000-0000-4000-8000-000000000002',
+  'bc600000-0000-4000-8000-000000000003'
+);
 alter table public.warehouse_photo_audit
   enable trigger reject_warehouse_photo_audit_mutation;
 alter table private.warehouse_photo_delete_receipts
   disable trigger reject_warehouse_photo_delete_receipt_mutation;
 delete from private.warehouse_photo_delete_receipts
-where requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
+where requested_by_employee_profile_id in (
+  'bc600000-0000-4000-8000-000000000001',
+  'bc600000-0000-4000-8000-000000000002',
+  'bc600000-0000-4000-8000-000000000003'
+);
 alter table private.warehouse_photo_delete_receipts
   enable trigger reject_warehouse_photo_delete_receipt_mutation;
+alter table private.warehouse_photo_delete_takeover_receipts
+  disable trigger reject_warehouse_photo_delete_takeover_receipt_mutation;
+delete from private.warehouse_photo_delete_takeover_receipts
+where original_requested_by_employee_profile_id in (
+  'bc600000-0000-4000-8000-000000000001',
+  'bc600000-0000-4000-8000-000000000002',
+  'bc600000-0000-4000-8000-000000000003'
+);
+alter table private.warehouse_photo_delete_takeover_receipts
+  enable trigger reject_warehouse_photo_delete_takeover_receipt_mutation;
 delete from public.warehouse_photo_delete_outbox
-where requested_by_employee_profile_id = 'bc600000-0000-4000-8000-000000000001';
+where original_requested_by_employee_profile_id in (
+  'bc600000-0000-4000-8000-000000000001',
+  'bc600000-0000-4000-8000-000000000002',
+  'bc600000-0000-4000-8000-000000000003'
+);
 delete from public.warehouse_variant_photos
 where variant_id = 'bc300000-0000-4000-8000-000000000002';
 set session_replication_role = replica;
@@ -768,11 +1269,22 @@ drop function public.task2_pause_site_deactivation(uuid, jsonb, bigint);
 drop function public.task2_pause_item_deactivation(uuid, jsonb, bigint);
 drop function public.task3_pause_photo_registration(uuid, text, bigint);
 drop function public.task3_pause_photo_delete_begin(uuid, uuid, bigint);
+drop function public.task3_pause_photo_claim(uuid, bigint);
+drop function public.task3_pause_photo_cancel(uuid, uuid, uuid, bigint);
+drop function public.task3_pause_photo_finalize(uuid, uuid, uuid, bigint);
 delete from public.permission_grants
 where subject_type = 'department'
   and subject_code = '仓库管理部'
-  and permission_key = 'warehouse.catalog.manage';
+  and permission_key in ('warehouse.catalog.manage', 'module.inventory.view');
 delete from public.employee_profiles
-where id = 'bc600000-0000-4000-8000-000000000001';
+where id in (
+  'bc600000-0000-4000-8000-000000000001',
+  'bc600000-0000-4000-8000-000000000002',
+  'bc600000-0000-4000-8000-000000000003'
+);
 delete from auth.users
-where id = 'bc500000-0000-4000-8000-000000000001';
+where id in (
+  'bc500000-0000-4000-8000-000000000001',
+  'bc500000-0000-4000-8000-000000000002',
+  'bc500000-0000-4000-8000-000000000003'
+);

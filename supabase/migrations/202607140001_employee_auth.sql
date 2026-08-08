@@ -486,7 +486,8 @@ begin
         'module.employees.update',
         'module.employees.delete',
         'module.permission_templates.view',
-        'module.permission_templates.update'
+        'module.permission_templates.update',
+        'warehouse.catalog.manage'
       ]::text[]) as fixed_permission(permission_key)
       where employee.position = '社长'
     ) as granted;

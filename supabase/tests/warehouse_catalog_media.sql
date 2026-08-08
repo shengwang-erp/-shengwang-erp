@@ -798,6 +798,7 @@ select has_table('public', 'warehouse_variant_photos', 'variant photo metadata t
 select has_table('public', 'warehouse_photo_audit', 'identifier-only photo audit table exists');
 select has_table('public', 'warehouse_photo_delete_outbox', 'photo delete outbox exists');
 select has_table('private', 'warehouse_photo_delete_receipts', 'private photo delete receipts exist');
+select has_table('private', 'warehouse_photo_delete_takeover_receipts', 'private immutable takeover receipts exist');
 select has_function('public', 'register_warehouse_variant_photo_secure', array['uuid', 'text', 'text', 'bigint']);
 select has_function('public', 'list_warehouse_variant_photos_secure', array['uuid']);
 select has_function('public', 'reorder_warehouse_variant_photos_secure', array['uuid', 'uuid[]']);
@@ -805,6 +806,8 @@ select has_function('public', 'begin_warehouse_variant_photo_delete_secure', arr
 select has_function('public', 'begin_warehouse_photo_orphan_delete_secure', array['uuid', 'text']);
 select has_function('public', 'cancel_warehouse_photo_delete_secure', array['uuid', 'uuid', 'uuid']);
 select has_function('public', 'finalize_warehouse_photo_delete_secure', array['uuid', 'uuid', 'uuid']);
+select has_function('public', 'list_warehouse_photo_delete_candidates_secure', array[]::text[]);
+select has_function('public', 'claim_warehouse_photo_delete_secure', array['uuid']);
 select hasnt_function('public', 'delete_warehouse_variant_photo_secure', array['uuid', 'uuid', 'text']);
 
 select is(
@@ -839,9 +842,10 @@ select is(
   ),
   array[
     'deletion_id', 'kind', 'photo_id', 'variant_id', 'object_path',
-    'requested_by_employee_profile_id', 'created_at'
+    'original_requested_by_employee_profile_id', 'requested_by_employee_profile_id',
+    'assigned_at', 'created_at'
   ]::text[],
-  'delete outbox stores only bound identifiers, server path, requester and creation time'
+  'delete outbox stores original/current requester and database assignment time'
 );
 select is(
   (
@@ -855,10 +859,29 @@ select is(
   ]::text[],
   'private receipts store only exact binding identifiers, outcome and time'
 );
+select is(
+  (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'private' and table_name = 'warehouse_photo_delete_takeover_receipts'
+  ),
+  array[
+    'old_deletion_id', 'new_deletion_id',
+    'original_requested_by_employee_profile_id',
+    'previous_requested_by_employee_profile_id',
+    'new_requested_by_employee_profile_id', 'reason', 'created_at'
+  ]::text[],
+  'takeover receipts store only immutable ticket and requester identifiers, reason and time'
+);
 select has_trigger(
   'private', 'warehouse_photo_delete_receipts',
   'reject_warehouse_photo_delete_receipt_mutation',
   'private delete receipts reject update and delete'
+);
+select has_trigger(
+  'private', 'warehouse_photo_delete_takeover_receipts',
+  'reject_warehouse_photo_delete_takeover_receipt_mutation',
+  'private takeover receipts reject update and delete'
 );
 select is(
   (select public from storage.buckets where id = 'warehouse-item-photos'),
@@ -887,6 +910,8 @@ select is(
         (to_regprocedure('public.begin_warehouse_photo_orphan_delete_secure(uuid,text)'), 'v'::"char"),
         (to_regprocedure('public.cancel_warehouse_photo_delete_secure(uuid,uuid,uuid)'), 'v'::"char"),
         (to_regprocedure('public.finalize_warehouse_photo_delete_secure(uuid,uuid,uuid)'), 'v'::"char"),
+        (to_regprocedure('public.list_warehouse_photo_delete_candidates_secure()'), 's'::"char"),
+        (to_regprocedure('public.claim_warehouse_photo_delete_secure(uuid)'), 'v'::"char"),
         (to_regprocedure('public.can_current_employee_delete_warehouse_photo_object(text)'), 's'::"char"),
         (to_regprocedure('public.is_warehouse_photo_object_delete_pending(text)'), 's'::"char"),
         (to_regprocedure('public.is_active_warehouse_photo_variant_prefix(text)'), 's'::"char")
@@ -945,6 +970,31 @@ select is(
   ),
   0::bigint,
   'private receipts have no browser, public, or service-role table privileges'
+);
+select is(
+  (
+    select count(*)
+    from pg_class object
+    cross join lateral aclexplode(coalesce(object.relacl, acldefault('r', object.relowner))) privilege
+    where object.oid = to_regclass('private.warehouse_photo_delete_takeover_receipts')
+      and privilege.grantee in (
+        0, 'anon'::regrole::oid, 'authenticated'::regrole::oid, 'service_role'::regrole::oid
+      )
+  ),
+  0::bigint,
+  'private takeover receipts have no browser, public, or service-role table privileges'
+);
+select ok(
+  coalesce((
+    select position('object_path' in lower(pg_get_functiondef(procedure.oid))) = 0
+      and position('photo_id' in lower(pg_get_functiondef(procedure.oid))) = 0
+      and position('variant_id' in lower(pg_get_functiondef(procedure.oid))) = 0
+      and position('employee_number' in lower(pg_get_functiondef(procedure.oid))) = 0
+      and position('auth_user_id' in lower(pg_get_functiondef(procedure.oid))) = 0
+    from pg_proc procedure
+    where procedure.oid = to_regprocedure('public.list_warehouse_photo_delete_candidates_secure()')
+  ), false),
+  'candidate-list SQL cannot project path, photo, variant, employee-number or Auth identifiers'
 );
 
 select is(
@@ -1284,6 +1334,92 @@ select is(
   1::bigint,
   'idempotent begin records one observable pending audit event'
 );
+select set_config(
+  'warehouse.task3_orphan_ticket',
+  public.begin_warehouse_photo_orphan_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000009.webp'
+  )::text,
+  false
+);
+select is(
+  jsonb_array_length(public.list_warehouse_photo_delete_candidates_secure()),
+  2,
+  'current requester sees both own registered and orphan pending deletions immediately'
+);
+select is(
+  (
+    select count(*)
+    from jsonb_array_elements(public.list_warehouse_photo_delete_candidates_secure()) candidate
+    where (
+      select array_agg(key order by key) from jsonb_object_keys(candidate) key
+    ) = array['createdAt', 'deletionId', 'kind', 'originalRequesterLabel']::text[]
+      and candidate->>'originalRequesterLabel' = '仓库资料管理员'
+  ),
+  2::bigint,
+  'candidate list exposes exactly four sanitized fields and original employee name only'
+);
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_photo_delete_candidates_secure()$$,
+  '42501', 'warehouse permission required',
+  'unauthorized employee cannot list pending deletion candidates'
+);
+select throws_ok(
+  format(
+    'select public.claim_warehouse_photo_delete_secure(%L::uuid)',
+    current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+  ),
+  '42501', 'warehouse permission required',
+  'unauthorized employee cannot claim by deletion ID'
+);
+select is(
+  public.is_warehouse_photo_object_delete_pending(
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'objectPath'
+  ),
+  false,
+  'unauthorized employee cannot probe the pending-path predicate'
+);
+select is(
+  public.can_current_employee_delete_warehouse_photo_object(
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'objectPath'
+  ),
+  false,
+  'unauthorized employee cannot pass the current-requester delete predicate'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_photo_delete_candidates_secure()$$,
+  '42501', 'active employee required',
+  'inactive employee cannot list pending deletion candidates'
+);
+select throws_ok(
+  format(
+    'select public.claim_warehouse_photo_delete_secure(%L::uuid)',
+    current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+  ),
+  '42501', 'active employee required',
+  'inactive employee cannot claim by deletion ID'
+);
+select is(
+  public.is_warehouse_photo_object_delete_pending(
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'objectPath'
+  ),
+  false,
+  'inactive employee cannot probe the pending-path predicate'
+);
+select is(
+  public.can_current_employee_delete_warehouse_photo_object(
+    current_setting('warehouse.task3_delete_ticket')::jsonb->>'objectPath'
+  ),
+  false,
+  'inactive employee cannot pass the current-requester delete predicate'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
 set local role authenticated;
 select is(
   pg_temp.task2_error_hint($statement$
@@ -1310,8 +1446,127 @@ reset role;
 
 insert into public.permission_grants(subject_type, subject_code, permission_key)
 values ('position', '大工', 'warehouse.catalog.manage');
+update public.warehouse_photo_delete_outbox
+set assigned_at = statement_timestamp() - interval '29 minutes 59 seconds'
+where deletion_id = (
+  current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+)::uuid;
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
 set local role authenticated;
+select is(
+  public.list_warehouse_photo_delete_candidates_secure(),
+  '[]'::jsonb,
+  'another active manager cannot discover another requester ticket before 30 minutes'
+);
+select is(
+  pg_temp.task2_error_hint(format(
+    'select public.claim_warehouse_photo_delete_secure(%L::uuid)',
+    current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+  )),
+  'WAREHOUSE_PHOTO_DELETE_OWNED',
+  'another active manager cannot claim before 30 minutes'
+);
+reset role;
+update public.warehouse_photo_delete_outbox
+set assigned_at = statement_timestamp() - interval '30 minutes'
+where deletion_id = (
+  current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+)::uuid;
+set local role authenticated;
+select is(
+  jsonb_array_length(public.list_warehouse_photo_delete_candidates_secure()),
+  1,
+  'another manager sees the ticket at the exact database 30-minute boundary'
+);
+select set_config(
+  'warehouse.task3_claimed_orphan_ticket',
+  public.claim_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId')::uuid
+  )::text,
+  false
+);
+select isnt(
+  current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'deletionId',
+  current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId',
+  'takeover rotates to a new deletion ID'
+);
+reset role;
+select is(
+  (
+    select row(
+      pending.original_requested_by_employee_profile_id,
+      pending.requested_by_employee_profile_id,
+      pending.assigned_at = receipt.created_at
+    )::text
+    from public.warehouse_photo_delete_outbox pending
+    join private.warehouse_photo_delete_takeover_receipts receipt
+      on receipt.new_deletion_id = pending.deletion_id
+    where pending.deletion_id = (
+      current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'deletionId'
+    )::uuid
+  ),
+  row(
+    'b6000000-0000-4000-8000-000000000001'::uuid,
+    'b6000000-0000-4000-8000-000000000002'::uuid,
+    true
+  )::text,
+  'takeover preserves original requester, changes current requester and resets DB assignment time'
+);
+select is(
+  (
+    select reason from private.warehouse_photo_delete_takeover_receipts
+    where old_deletion_id = (
+      current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+    )::uuid
+  ),
+  'lease_expired',
+  '30-minute takeover records the immutable lease-expired reason'
+);
+set local role authenticated;
+select is(
+  pg_temp.task2_error_hint(format(
+    'select public.claim_warehouse_photo_delete_secure(%L::uuid)',
+    current_setting('warehouse.task3_orphan_ticket')::jsonb->>'deletionId'
+  )),
+  'WAREHOUSE_PHOTO_DELETE_STATE_INVALID',
+  'old deletion ID is permanently invalid immediately after takeover'
+);
+select is(
+  public.claim_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'deletionId')::uuid
+  )->>'deletionId',
+  current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'deletionId',
+  'current requester reclaim returns the same exact ticket without another rotation'
+);
+select is(
+  public.can_current_employee_delete_warehouse_photo_object(
+    current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'objectPath'
+  ),
+  true,
+  'Storage delete predicate recognizes only the newly assigned requester'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.can_current_employee_delete_warehouse_photo_object(
+    current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'objectPath'
+  ),
+  false,
+  'old requester loses Storage delete visibility after takeover commits'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select is(
+  public.cancel_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_claimed_orphan_ticket')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001',
+    null
+  ),
+  true,
+  'new requester can cancel the claimed orphan ticket while Storage remains present'
+);
 select is(
   pg_temp.task2_error_hint(format(
     'select public.begin_warehouse_variant_photo_delete_secure(%L::uuid,%L::uuid)',
@@ -1364,6 +1619,16 @@ select throws_ok(
   $$delete from private.warehouse_photo_delete_receipts$$,
   '42501', 'warehouse photo delete receipt is immutable',
   'private delete receipts cannot be deleted even by table owner workflows'
+);
+select throws_ok(
+  $$update private.warehouse_photo_delete_takeover_receipts set reason = 'requester_unavailable'$$,
+  '42501', 'warehouse photo delete takeover receipt is immutable',
+  'private takeover receipts cannot be updated even by table owner workflows'
+);
+select throws_ok(
+  $$delete from private.warehouse_photo_delete_takeover_receipts$$,
+  '42501', 'warehouse photo delete takeover receipt is immutable',
+  'private takeover receipts cannot be deleted even by table owner workflows'
 );
 
 select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
@@ -1433,6 +1698,15 @@ select is(
   true,
   'finalize retry is idempotent for the exact completed deletion binding'
 );
+select is(
+  public.claim_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_delete_ticket_b')::jsonb->>'deletionId')::uuid
+  ),
+  current_setting('warehouse.task3_delete_ticket_b')::jsonb || jsonb_build_object(
+    'storageDeleted', true
+  ),
+  'completed requester can recover a lost finalize response by deletion ID only'
+);
 reset role;
 
 select is((select count(*) from public.warehouse_photo_delete_outbox), 0::bigint,
@@ -1449,6 +1723,144 @@ select is(
   array[0,1,2,3,4,5,6]::smallint[],
   'successful finalize compacts photo order without gaps'
 );
+
+insert into storage.objects(id, bucket_id, name, owner_id, metadata)
+values (
+  'b7000000-0000-4000-8000-000000000010', 'warehouse-item-photos',
+  'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000010.webp',
+  'b5000000-0000-4000-8000-000000000001',
+  '{"mimetype":"image/webp","size":103}'::jsonb
+);
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select set_config(
+  'warehouse.task3_unrelated_orphan_ticket',
+  public.begin_warehouse_photo_orphan_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000009.webp'
+  )::text,
+  false
+);
+select lives_ok(
+  $$select public.reorder_warehouse_variant_photos_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    array(select id from public.warehouse_variant_photos order by sort_order)
+  )$$,
+  'unrelated orphan pending does not block variant reorder'
+);
+select set_config(
+  'warehouse.task3_unrelated_registered_photo',
+  public.register_warehouse_variant_photo_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000010.webp',
+    'image/webp', 103
+  )::text,
+  false
+);
+select is(
+  current_setting('warehouse.task3_unrelated_registered_photo')::jsonb->>'objectPath',
+  'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000010.webp',
+  'unrelated orphan pending does not block registration of another exact path'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.register_warehouse_variant_photo_secure(
+      'b3000000-0000-4000-8000-000000000001',
+      'b3000000-0000-4000-8000-000000000001/b8000000-0000-4000-8000-000000000009.webp',
+      'image/webp', 102
+    )
+  $statement$),
+  'WAREHOUSE_PHOTO_DELETE_PENDING',
+  'exact orphan path conflict still blocks registration'
+);
+select is(
+  public.cancel_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_unrelated_orphan_ticket')::jsonb->>'deletionId')::uuid,
+    'b3000000-0000-4000-8000-000000000001', null
+  ),
+  true,
+  'requester cancels isolated orphan after unrelated operations'
+);
+reset role;
+set local session_replication_role = replica;
+delete from public.warehouse_variant_photos
+where id = (current_setting('warehouse.task3_unrelated_registered_photo')::jsonb->>'id')::uuid;
+delete from storage.objects where id = 'b7000000-0000-4000-8000-000000000010';
+set local session_replication_role = origin;
+
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select set_config(
+  'warehouse.task3_unavailable_registered_ticket',
+  public.begin_warehouse_variant_photo_delete_secure(
+    'b3000000-0000-4000-8000-000000000001',
+    (
+      select id from public.warehouse_variant_photos
+      where variant_id = 'b3000000-0000-4000-8000-000000000001'
+      order by sort_order limit 1
+    )
+  )::text,
+  false
+);
+reset role;
+update public.employee_profiles
+set account_status = 'disabled'
+where id = 'b6000000-0000-4000-8000-000000000001';
+select set_config('request.jwt.claim.sub', 'b5000000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select is(
+  jsonb_array_length(public.list_warehouse_photo_delete_candidates_secure()),
+  1,
+  'another manager immediately sees a fresh ticket when its requester becomes unavailable'
+);
+select set_config(
+  'warehouse.task3_unavailable_registered_claim',
+  public.claim_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_unavailable_registered_ticket')::jsonb->>'deletionId')::uuid
+  )::text,
+  false
+);
+select isnt(
+  current_setting('warehouse.task3_unavailable_registered_claim')::jsonb->>'deletionId',
+  current_setting('warehouse.task3_unavailable_registered_ticket')::jsonb->>'deletionId',
+  'unavailable-requester takeover also rotates the deletion ID immediately'
+);
+reset role;
+select is(
+  (
+    select reason from private.warehouse_photo_delete_takeover_receipts
+    where old_deletion_id = (
+      current_setting('warehouse.task3_unavailable_registered_ticket')::jsonb->>'deletionId'
+    )::uuid
+  ),
+  'requester_unavailable',
+  'immediate takeover records requester-unavailable reason'
+);
+select is(
+  (
+    select count(*) from public.warehouse_photo_audit
+    where action = 'delete_taken_over'
+      and photo_id = (
+        current_setting('warehouse.task3_unavailable_registered_claim')::jsonb->>'photoId'
+      )::uuid
+  ),
+  1::bigint,
+  'registered takeover writes one identifier-only audit event'
+);
+set local role authenticated;
+select is(
+  public.cancel_warehouse_photo_delete_secure(
+    (current_setting('warehouse.task3_unavailable_registered_claim')::jsonb->>'deletionId')::uuid,
+    (current_setting('warehouse.task3_unavailable_registered_claim')::jsonb->>'variantId')::uuid,
+    (current_setting('warehouse.task3_unavailable_registered_claim')::jsonb->>'photoId')::uuid
+  ),
+  true,
+  'new requester can cancel an immediately claimed registered ticket'
+);
+reset role;
+update public.employee_profiles
+set account_status = 'active'
+where id = 'b6000000-0000-4000-8000-000000000001';
 
 select set_config('request.jwt.claim.sub', '', true);
 set local role anon;
@@ -1475,7 +1887,10 @@ reset role;
 
 select is(
   (select count(*) from public.warehouse_photo_audit
-   where action not in ('registered', 'reordered', 'delete_pending', 'delete_cancelled', 'deleted')),
+   where action not in (
+     'registered', 'reordered', 'delete_pending', 'delete_taken_over',
+     'delete_cancelled', 'deleted'
+   )),
   0::bigint,
   'photo audit contains only fixed action identifiers'
 );

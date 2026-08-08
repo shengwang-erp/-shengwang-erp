@@ -20,6 +20,9 @@ const PHOTO_FIELDS = Object.freeze([
 const DELETE_TICKET_FIELDS = Object.freeze([
   'deletionId', 'kind', 'photoId', 'variantId', 'objectPath', 'storageDeleted',
 ])
+const DELETE_CANDIDATE_FIELDS = Object.freeze([
+  'deletionId', 'kind', 'createdAt', 'originalRequesterLabel',
+])
 const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_PHOTO_NOT_CONFIGURED: '云端图片服务未配置，请联系管理员',
   WAREHOUSE_PHOTO_INPUT_INVALID: '图片请求无效，请刷新后重试',
@@ -194,19 +197,44 @@ function removalOutcome(result, expectedPath) {
 
 function deleteTicket(value, expectedVariantId, expectedPhotoId) {
   const ticket = exactObject(value, DELETE_TICKET_FIELDS)
+  const deletionId = uuid(ticket.deletionId)
+  const variantId = uuid(ticket.variantId)
+  const photoId = ticket.photoId === null ? null : uuid(ticket.photoId)
   if (
     !['registered', 'orphan'].includes(ticket.kind) ||
-    uuid(ticket.deletionId) !== ticket.deletionId ||
-    uuid(ticket.variantId) !== expectedVariantId ||
-    ticket.photoId !== expectedPhotoId ||
-    (ticket.photoId !== null && uuid(ticket.photoId) !== ticket.photoId) ||
+    (ticket.kind === 'registered') !== (photoId !== null) ||
+    (expectedVariantId !== undefined && variantId !== expectedVariantId) ||
+    (expectedPhotoId !== undefined && photoId !== expectedPhotoId) ||
     typeof ticket.storageDeleted !== 'boolean'
   ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
   const pathMatch = typeof ticket.objectPath === 'string' ? PATH.exec(ticket.objectPath) : null
-  if (!pathMatch || pathMatch[1] !== expectedVariantId) {
+  if (!pathMatch || pathMatch[1] !== variantId) {
     throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
   }
-  return Object.freeze(ticket)
+  return Object.freeze({ ...ticket, deletionId, variantId, photoId })
+}
+
+function deleteCandidate(value) {
+  const candidate = exactObject(value, DELETE_CANDIDATE_FIELDS)
+  if (
+    !['registered', 'orphan'].includes(candidate.kind) ||
+    typeof candidate.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(candidate.createdAt)) ||
+    typeof candidate.originalRequesterLabel !== 'string' ||
+    candidate.originalRequesterLabel.length < 1 ||
+    candidate.originalRequesterLabel.length > 100 ||
+    candidate.originalRequesterLabel !== candidate.originalRequesterLabel.trim()
+  ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+  return Object.freeze({ ...candidate, deletionId: uuid(candidate.deletionId) })
+}
+
+function deleteCandidateList(value) {
+  const descriptors = denseArrayDescriptors(value)
+  if (!descriptors) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+  return Object.freeze(Array.from(
+    { length: value.length },
+    (_, index) => deleteCandidate(descriptors[index].value),
+  ))
 }
 
 export function createWarehouseMediaService(client, options = {}) {
@@ -399,6 +427,22 @@ export function createWarehouseMediaService(client, options = {}) {
       }), row.variantId, row.id)
       if (ticket.kind !== 'registered') throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
       return finishDelete(ticket, 'WAREHOUSE_PHOTO_DELETE_FAILED')
+    },
+    async listPendingPhotoDeletes() {
+      return deleteCandidateList(
+        await call('list_warehouse_photo_delete_candidates_secure'),
+      )
+    },
+    async recoverPendingPhotoDelete(deletionId) {
+      const ticket = deleteTicket(await call('claim_warehouse_photo_delete_secure', {
+        p_deletion_id: uuid(deletionId, true),
+      }))
+      return finishDelete(
+        ticket,
+        ticket.kind === 'orphan'
+          ? 'WAREHOUSE_PHOTO_ORPHAN_CLEANUP_FAILED'
+          : 'WAREHOUSE_PHOTO_DELETE_FAILED',
+      )
     },
   })
 }
