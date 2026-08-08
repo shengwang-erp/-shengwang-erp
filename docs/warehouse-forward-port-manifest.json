@@ -1,0 +1,222 @@
+{
+  "pureCopy": [
+    {
+      "id": "warehouse-date",
+      "source": "src/features/warehouse/warehouseDate.js",
+      "destination": "src/features/warehouse/warehouseDate.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    },
+    {
+      "id": "warehouse-qr",
+      "source": "src/features/warehouse/warehouseQr.js",
+      "destination": "src/features/warehouse/warehouseQr.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    },
+    {
+      "id": "warehouse-catalog",
+      "source": "src/features/warehouse/warehouseCatalog.js",
+      "destination": "src/features/warehouse/warehouseCatalog.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    },
+    {
+      "id": "warehouse-domain",
+      "source": "src/features/warehouse/warehouseDomain.js",
+      "destination": "src/features/warehouse/warehouseDomain.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    },
+    {
+      "id": "warehouse-page",
+      "source": "src/features/warehouse/warehousePage.js",
+      "destination": "src/features/warehouse/warehousePage.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    },
+    {
+      "id": "warehouse-accounting",
+      "source": "src/features/warehouse/warehouseAccounting.js",
+      "destination": "src/features/warehouse/warehouseAccounting.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure"
+    }
+  ],
+  "adapt": [
+    {
+      "id": "warehouse-catalog-component",
+      "source": "src/features/warehouse/WarehouseCatalog.jsx",
+      "destination": "src/features/warehouse/WarehouseCatalog.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-2-catalog"
+    },
+    {
+      "id": "warehouse-management-page",
+      "source": "src/features/warehouse/WarehouseManagementPage.jsx",
+      "destination": "src/features/warehouse/WarehouseManagementPage.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-4-ui"
+    },
+    {
+      "id": "warehouse-operations-component",
+      "source": "src/features/warehouse/WarehouseOperations.jsx",
+      "destination": "src/features/warehouse/WarehouseOperations.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-3-confirmation"
+    },
+    {
+      "id": "warehouse-overview-component",
+      "source": "src/features/warehouse/WarehouseOverview.jsx",
+      "destination": "src/features/warehouse/WarehouseOverview.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-4-ui"
+    },
+    {
+      "id": "warehouse-qr-scanner-component",
+      "source": "src/features/warehouse/WarehouseQrScanner.jsx",
+      "destination": "src/features/warehouse/WarehouseQrScanner.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-2-catalog"
+    },
+    {
+      "id": "warehouse-reports-component",
+      "source": "src/features/warehouse/WarehouseReports.jsx",
+      "destination": "src/features/warehouse/WarehouseReports.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-4-ui"
+    },
+    {
+      "id": "warehouse-request-page",
+      "source": "src/features/warehouse/WarehouseRequestPage.jsx",
+      "destination": "src/features/warehouse/WarehouseRequestPage.jsx",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-3-confirmation"
+    },
+    {
+      "id": "warehouse-styles",
+      "source": "src/features/warehouse/warehouse.css",
+      "destination": "src/features/warehouse/warehouse.css",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-4-ui"
+    },
+    {
+      "id": "warehouse-catalog-persistence",
+      "source": "src/features/warehouse/warehouseCatalogPersistence.js",
+      "destination": "src/features/warehouse/warehouseCatalogPersistence.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-2-catalog"
+    },
+    {
+      "id": "warehouse-export",
+      "source": "src/features/warehouse/warehouseExport.js",
+      "destination": "src/features/warehouse/warehouseExport.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-4-ui"
+    },
+    {
+      "id": "warehouse-media",
+      "source": "src/features/warehouse/warehouseMedia.js",
+      "destination": "src/features/warehouse/warehouseMedia.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-2-catalog"
+    },
+    {
+      "id": "warehouse-operations",
+      "source": "src/features/warehouse/warehouseOperations.js",
+      "destination": "src/features/warehouse/warehouseOperations.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-3-confirmation"
+    },
+    {
+      "id": "warehouse-qr-scanner",
+      "source": "src/features/warehouse/warehouseQrScanner.js",
+      "destination": "src/features/warehouse/warehouseQrScanner.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-2-catalog"
+    }
+  ],
+  "rewrite": [
+    {
+      "id": "warehouse-constants",
+      "source": "src/features/warehouse/warehouseConstants.js",
+      "destination": "src/features/warehouse/warehouseConstants.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "phase-1-pure",
+      "reason": "The source imports src/utils/permissions.js, so constants must be second-version-owned before pure modules are copied."
+    },
+    {
+      "id": "warehouse-permissions",
+      "source": "src/features/warehouse/warehousePermissions.js",
+      "destination": "src/auth/businessAccess.js",
+      "destinationKind": "adapter",
+      "destinationStage": "phase-1-permissions",
+      "reason": "Permission decisions must use the second-version permission catalog and active-account boundary."
+    },
+    {
+      "id": "warehouse-confirmation-service",
+      "reference": "src/services/warehouseConfirmationService.js",
+      "destination": "src/services/warehouseConfirmationService.js",
+      "destinationKind": "adapter",
+      "destinationStage": "phase-3-confirmation",
+      "reason": "This shared source file is provenance only; confirmation is rebuilt against second-version RPC and session contracts."
+    }
+  ],
+  "forbidden": [
+    {
+      "dependency": "src/App.jsx",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/authSessionService.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/sessionOperationFence.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/cloudPersistenceCoordinator.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/baseRecordService.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/recordTableConfig.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/recordPersistenceOperation.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/utils/permissions.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/warehouseConfirmationService.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/warehouseLocalRequestStore.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "localStorage",
+      "dependencyKind": "runtime",
+      "destinationStage": "never"
+    }
+  ]
+}

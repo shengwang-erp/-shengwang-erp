@@ -1,0 +1,28 @@
+{
+  "pureCopy": [
+    {
+      "id": "main",
+      "source": "src/features/warehouse/main.js",
+      "destination": "src/features/warehouse/main.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    }
+  ],
+  "adapt": [
+    {
+      "id": "helper",
+      "source": "src/features/warehouse/helper.js",
+      "destination": "src/features/warehouse/helper.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "supporting"
+    }
+  ],
+  "rewrite": [],
+  "forbidden": [
+    {
+      "dependency": "src/services/sessionOperationFence.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    }
+  ]
+}

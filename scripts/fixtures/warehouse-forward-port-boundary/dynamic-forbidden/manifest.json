@@ -1,0 +1,20 @@
+{
+  "pureCopy": [
+    {
+      "id": "main",
+      "source": "src/features/warehouse/main.js",
+      "destination": "src/features/warehouse/main.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    }
+  ],
+  "adapt": [],
+  "rewrite": [],
+  "forbidden": [
+    {
+      "dependency": "src/services/baseRecordService.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    }
+  ]
+}

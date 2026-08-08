@@ -1,0 +1,14 @@
+{
+  "pureCopy": [
+    {
+      "id": "missing",
+      "source": "src/features/warehouse/missing.js",
+      "destination": "src/features/warehouse/missing.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    }
+  ],
+  "adapt": [],
+  "rewrite": [],
+  "forbidden": []
+}

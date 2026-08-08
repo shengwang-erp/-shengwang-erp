@@ -1,0 +1,394 @@
+import { parse } from '@babel/parser'
+import { access, readFile, stat } from 'node:fs/promises'
+import path from 'node:path'
+import process from 'node:process'
+
+const CLASSIFICATION_NAMES = Object.freeze(['pureCopy', 'adapt', 'rewrite'])
+const MANIFEST_ARRAY_NAMES = Object.freeze([...CLASSIFICATION_NAMES, 'forbidden'])
+const MODULE_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs'])
+
+function fail(message) {
+  throw new Error(message)
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+}
+
+function toRepoPath(root, absolutePath) {
+  return path.relative(root, absolutePath).split(path.sep).join('/')
+}
+
+function resolveInside(root, relativePath, escapeMessage) {
+  if (typeof relativePath !== 'string' || relativePath.length === 0 || path.isAbsolute(relativePath)) {
+    fail(escapeMessage)
+  }
+  const absolutePath = path.resolve(root, relativePath)
+  if (!isInside(root, absolutePath)) fail(escapeMessage)
+  return absolutePath
+}
+
+function parseArguments(argv) {
+  const options = {}
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '--audit-source') {
+      if (options.mode) fail('Choose exactly one audit mode')
+      options.mode = 'source'
+      continue
+    }
+    if (argument === '--audit-destination') {
+      if (options.mode) fail('Choose exactly one audit mode')
+      options.mode = 'destination'
+      continue
+    }
+    if (['--manifest', '--source-root', '--destination-root', '--destination-stage'].includes(argument)) {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('--')) fail(`Missing value for ${argument}`)
+      options[argument.slice(2).replaceAll('-', '_')] = value
+      index += 1
+      continue
+    }
+    fail(`Unknown argument: ${argument}`)
+  }
+
+  if (!options.mode) fail('Choose exactly one audit mode')
+  if (!options.manifest) fail('Missing value for --manifest')
+  if (options.mode === 'source' && !options.source_root) fail('Missing value for --source-root')
+  if (options.mode === 'destination' && !options.destination_root) {
+    fail('Missing value for --destination-root')
+  }
+  return options
+}
+
+async function loadManifest(manifestPath) {
+  const source = await readFile(manifestPath, 'utf8')
+  const manifest = JSON.parse(source)
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    fail('Manifest must be an object')
+  }
+  const keys = Object.keys(manifest)
+  for (const name of MANIFEST_ARRAY_NAMES) {
+    if (!Array.isArray(manifest[name])) fail(`Manifest field must be an array: ${name}`)
+  }
+  const unexpected = keys.filter((key) => !MANIFEST_ARRAY_NAMES.includes(key))
+  if (unexpected.length > 0) fail(`Unexpected manifest field: ${unexpected[0]}`)
+
+  for (const name of CLASSIFICATION_NAMES) {
+    for (const entry of manifest[name]) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        fail(`Invalid ${name} entry`)
+      }
+      if (typeof entry.id !== 'string' || entry.id.length === 0) fail(`Missing ${name} id`)
+      if (Boolean(entry.source) === Boolean(entry.reference)) {
+        fail(`Entry must declare exactly one source or reference: ${entry.id}`)
+      }
+      if (typeof entry.destination !== 'string' || entry.destination.length === 0) {
+        fail(`Missing destination: ${entry.id}`)
+      }
+      if (!['warehouse', 'adapter'].includes(entry.destinationKind)) {
+        fail(`Invalid destination kind: ${entry.id}`)
+      }
+      if (typeof entry.destinationStage !== 'string' || entry.destinationStage.length === 0) {
+        fail(`Missing destination stage: ${entry.id}`)
+      }
+    }
+  }
+  for (const entry of manifest.forbidden) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail('Invalid forbidden entry')
+    if (typeof entry.dependency !== 'string' || entry.dependency.length === 0) {
+      fail('Missing forbidden dependency')
+    }
+    if (!['module', 'runtime'].includes(entry.dependencyKind)) {
+      fail(`Invalid forbidden dependency kind: ${entry.dependency}`)
+    }
+    if (typeof entry.destinationStage !== 'string' || entry.destinationStage.length === 0) {
+      fail(`Missing destination stage: ${entry.dependency}`)
+    }
+  }
+  return manifest
+}
+
+function classificationEntries(manifest) {
+  return CLASSIFICATION_NAMES.flatMap((classification) => (
+    manifest[classification].map((entry) => ({ ...entry, classification }))
+  ))
+}
+
+function stringLiteralValue(node) {
+  if (node?.type === 'StringLiteral') return node.value
+  if (node?.type === 'Literal' && typeof node.value === 'string') return node.value
+  return null
+}
+
+function isLocalStorageReference(node, parent, parentKey) {
+  if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
+    const property = node.property
+    return (
+      (!node.computed && property?.type === 'Identifier' && property.name === 'localStorage')
+      || (node.computed && stringLiteralValue(property) === 'localStorage')
+    )
+  }
+  if (node.type !== 'Identifier' || node.name !== 'localStorage') return false
+  if (
+    (parent?.type === 'MemberExpression' || parent?.type === 'OptionalMemberExpression')
+    && parentKey === 'property'
+    && !parent.computed
+  ) return false
+  if (
+    (parent?.type === 'ObjectProperty' || parent?.type === 'ObjectMethod')
+    && parentKey === 'key'
+    && !parent.computed
+  ) return false
+  return true
+}
+
+function analyzeModule(source, file) {
+  let ast
+  try {
+    ast = parse(source, {
+      sourceType: 'module',
+      plugins: ['jsx', 'dynamicImport'],
+      createImportExpressions: true,
+    })
+  } catch (error) {
+    fail(`Parse failure: ${file}: ${error.message}`)
+  }
+
+  const dependencies = []
+  let usesLocalStorage = false
+  const visit = (node, parent = null, parentKey = '') => {
+    if (!node || typeof node !== 'object') return
+    if (
+      node.type === 'ImportDeclaration'
+      || node.type === 'ExportNamedDeclaration'
+      || node.type === 'ExportAllDeclaration'
+    ) {
+      const value = stringLiteralValue(node.source)
+      if (value !== null) dependencies.push(value)
+    } else if (node.type === 'ImportExpression') {
+      const value = stringLiteralValue(node.source)
+      if (value !== null) dependencies.push(value)
+    } else if (
+      node.type === 'CallExpression'
+      && (
+        node.callee?.type === 'Import'
+        || (node.callee?.type === 'Identifier' && node.callee.name === 'require')
+      )
+    ) {
+      const value = stringLiteralValue(node.arguments?.[0])
+      if (value !== null) dependencies.push(value)
+    }
+    if (isLocalStorageReference(node, parent, parentKey)) usesLocalStorage = true
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end' || key === 'extra') continue
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child, node, key)
+      } else if (value && typeof value === 'object') {
+        visit(value, node, key)
+      }
+    }
+  }
+  visit(ast)
+  return { dependencies: [...new Set(dependencies)], usesLocalStorage }
+}
+
+async function readModule(absolutePath, relativePath) {
+  const extension = path.extname(absolutePath)
+  if (!MODULE_EXTENSIONS.has(extension)) return { dependencies: [], usesLocalStorage: false }
+  const source = await readFile(absolutePath, 'utf8')
+  return analyzeModule(source, relativePath)
+}
+
+function moduleForbiddenSet(manifest) {
+  return new Set(
+    manifest.forbidden
+      .filter((entry) => entry.dependencyKind === 'module')
+      .map((entry) => entry.dependency),
+  )
+}
+
+function localStorageIsForbidden(manifest) {
+  return manifest.forbidden.some((entry) => (
+    entry.dependencyKind === 'runtime' && entry.dependency === 'localStorage'
+  ))
+}
+
+async function auditSource(manifest, sourceRootValue) {
+  const sourceRoot = path.resolve(sourceRootValue)
+  const warehouseRoot = path.resolve(sourceRoot, 'src/features/warehouse')
+  const entries = classificationEntries(manifest)
+  const sourceEntries = entries.filter((entry) => entry.source)
+  const sourceClassifications = new Map()
+  const analyses = new Map()
+
+  for (const entry of sourceEntries) {
+    const sourcePath = resolveInside(
+      sourceRoot,
+      entry.source,
+      `Source path must stay under src/features/warehouse/: ${entry.source}`,
+    )
+    if (!isInside(warehouseRoot, sourcePath)) {
+      fail(`Source path must stay under src/features/warehouse/: ${entry.source}`)
+    }
+    if (sourceClassifications.has(entry.source)) fail(`Duplicate source: ${entry.source}`)
+    sourceClassifications.set(entry.source, entry.classification)
+    try {
+      await access(sourcePath)
+    } catch {
+      fail(`Missing source: ${entry.source}`)
+    }
+    analyses.set(entry.source, await readModule(sourcePath, entry.source))
+  }
+
+  for (const entry of entries.filter((candidate) => candidate.reference)) {
+    const referencePath = resolveInside(
+      sourceRoot,
+      entry.reference,
+      `Reference path escapes source root: ${entry.reference}`,
+    )
+    try {
+      await access(referencePath)
+    } catch {
+      fail(`Missing reference: ${entry.reference}`)
+    }
+  }
+
+  const forbiddenModules = moduleForbiddenSet(manifest)
+  const rewriteEdges = []
+  for (const entry of manifest.pureCopy) {
+    const analysis = analyses.get(entry.source)
+    if (analysis.usesLocalStorage && localStorageIsForbidden(manifest)) {
+      fail(`Forbidden runtime dependency: ${entry.source} -> localStorage`)
+    }
+    const sourcePath = path.resolve(sourceRoot, entry.source)
+    for (const specifier of analysis.dependencies) {
+      if (!specifier.startsWith('.')) {
+        fail(`Pure-copy dependency must be warehouse-local: ${entry.source} -> ${specifier}`)
+      }
+      const dependencyPath = path.resolve(path.dirname(sourcePath), specifier)
+      if (!isInside(warehouseRoot, dependencyPath)) {
+        const dependency = isInside(sourceRoot, dependencyPath)
+          ? toRepoPath(sourceRoot, dependencyPath)
+          : specifier
+        if (forbiddenModules.has(dependency)) {
+          fail(`Forbidden dependency: ${entry.source} -> ${dependency}`)
+        }
+        fail(`Pure-copy dependency must be warehouse-local: ${entry.source} -> ${specifier}`)
+      }
+      const dependency = toRepoPath(sourceRoot, dependencyPath)
+      const classification = sourceClassifications.get(dependency)
+      if (!classification) fail(`Unclassified pure-copy dependency: ${entry.source} -> ${dependency}`)
+      if (classification === 'rewrite') rewriteEdges.push(`${entry.source} -> ${dependency}`)
+    }
+  }
+
+  rewriteEdges.sort()
+  const edgeSummary = rewriteEdges.length > 0 ? rewriteEdges.join(', ') : 'none'
+  console.log(
+    `Source audit passed: ${sourceEntries.length} source modules; rewrite edges: ${edgeSummary}`,
+  )
+}
+
+async function resolveDependencyFile(basePath) {
+  const candidates = [
+    basePath,
+    ...[...MODULE_EXTENSIONS].map((extension) => `${basePath}${extension}`),
+    ...[...MODULE_EXTENSIONS].map((extension) => path.join(basePath, `index${extension}`)),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate
+    } catch {
+      // Continue through the deterministic resolution candidates.
+    }
+  }
+  return basePath
+}
+
+async function auditDestination(manifest, destinationRootValue, destinationStage) {
+  const destinationRoot = path.resolve(destinationRootValue)
+  const warehouseRoot = path.resolve(destinationRoot, 'src/features/warehouse')
+  const entries = classificationEntries(manifest)
+  const destinations = new Map()
+
+  for (const entry of entries) {
+    const destinationPath = resolveInside(
+      destinationRoot,
+      entry.destination,
+      `Destination path escapes destination root: ${entry.destination}`,
+    )
+    if (entry.destinationKind === 'warehouse' && !isInside(warehouseRoot, destinationPath)) {
+      fail(`Warehouse destination must stay under src/features/warehouse/: ${entry.destination}`)
+    }
+    if (destinations.has(entry.destination)) fail(`Duplicate destination: ${entry.destination}`)
+    destinations.set(entry.destination, { entry, destinationPath })
+  }
+
+  const selected = entries.filter((entry) => (
+    destinationStage ? entry.destinationStage === destinationStage : true
+  ))
+  if (selected.length === 0) {
+    fail(`No destinations selected${destinationStage ? ` for stage ${destinationStage}` : ''}`)
+  }
+  for (const entry of selected) {
+    try {
+      if (!(await stat(destinations.get(entry.destination).destinationPath)).isFile()) throw new Error()
+    } catch {
+      fail(`Missing destination: ${entry.destination}`)
+    }
+  }
+
+  const forbiddenModules = moduleForbiddenSet(manifest)
+  const rejectLocalStorage = localStorageIsForbidden(manifest)
+  const queue = selected.map((entry) => entry.destination)
+  const visited = new Set()
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (visited.has(current)) continue
+    visited.add(current)
+    const { destinationPath } = destinations.get(current)
+    const analysis = await readModule(destinationPath, current)
+    if (analysis.usesLocalStorage && rejectLocalStorage) {
+      fail(`Forbidden runtime dependency: ${current} -> localStorage`)
+    }
+    for (const specifier of analysis.dependencies) {
+      if (!specifier.startsWith('.')) continue
+      const unresolvedPath = path.resolve(path.dirname(destinationPath), specifier)
+      if (!isInside(destinationRoot, unresolvedPath)) fail(`Path escape: ${current} -> ${specifier}`)
+      const dependencyPath = await resolveDependencyFile(unresolvedPath)
+      const dependency = toRepoPath(destinationRoot, dependencyPath)
+      if (forbiddenModules.has(dependency)) {
+        fail(`Forbidden dependency: ${current} -> ${dependency}`)
+      }
+      if (!destinations.has(dependency)) fail(`Undeclared dependency: ${current} -> ${dependency}`)
+      try {
+        if (!(await stat(dependencyPath)).isFile()) throw new Error()
+      } catch {
+        fail(`Missing dependency: ${current} -> ${dependency}`)
+      }
+      queue.push(dependency)
+    }
+  }
+
+  console.log(
+    `Destination audit passed: ${visited.size} modules${destinationStage ? ` for stage ${destinationStage}` : ''}`,
+  )
+}
+
+async function main() {
+  const options = parseArguments(process.argv.slice(2))
+  const manifest = await loadManifest(path.resolve(options.manifest))
+  if (options.mode === 'source') {
+    await auditSource(manifest, options.source_root)
+  } else {
+    await auditDestination(manifest, options.destination_root, options.destination_stage)
+  }
+}
+
+main().catch((error) => {
+  console.error(error.message)
+  process.exitCode = 1
+})

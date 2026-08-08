@@ -1,0 +1,45 @@
+{
+  "pureCopy": [
+    {
+      "id": "pure",
+      "source": "src/features/warehouse/pure.js",
+      "destination": "src/features/warehouse/pure.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    }
+  ],
+  "adapt": [],
+  "rewrite": [
+    {
+      "id": "constants",
+      "source": "src/features/warehouse/warehouseConstants.js",
+      "destination": "src/features/warehouse/warehouseConstants.js",
+      "destinationKind": "warehouse",
+      "destinationStage": "fixture"
+    },
+    {
+      "id": "confirmation-service",
+      "reference": "src/services/warehouseConfirmationService.js",
+      "destination": "src/services/warehouseConfirmationService.js",
+      "destinationKind": "adapter",
+      "destinationStage": "later"
+    }
+  ],
+  "forbidden": [
+    {
+      "dependency": "src/utils/permissions.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "src/services/warehouseConfirmationService.js",
+      "dependencyKind": "module",
+      "destinationStage": "never"
+    },
+    {
+      "dependency": "localStorage",
+      "dependencyKind": "runtime",
+      "destinationStage": "never"
+    }
+  ]
+}
