@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const HTTP_SCRIPT = fileURLToPath(new URL('./warehouse_photo_storage_http.mjs', import.meta.url))
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const TARGET_KEYS = Object.freeze([
   'WAREHOUSE_TASK3_PROJECT_ID',
   'WAREHOUSE_TASK3_WORKDIR',
@@ -55,7 +56,7 @@ async function defaultRun(environment) {
   return { code: result.code, stdout, stderr }
 }
 
-function proof(result, expectedCode) {
+function proof(result, expectedCode, environment) {
   if (!result || typeof result !== 'object' || result.code !== expectedCode) {
     fail('HTTP harness child exit contract failed')
   }
@@ -71,8 +72,14 @@ function proof(result, expectedCode) {
     typeof parsed.runId !== 'string' || !parsed.runId ||
     parsed.cleanupVerified !== true ||
     parsed.runScopedRemaining !== 0 ||
+    parsed.attemptedStoragePathsRemaining !== 0 ||
     parsed.triggersEnabled !== true ||
     parsed.fixedPermissionGrants !== 0 ||
+    !UUID.test(parsed.markerNonce ?? '') ||
+    parsed.projectId !== environment.WAREHOUSE_TASK3_PROJECT_ID ||
+    parsed.workdir !== environment.WAREHOUSE_TASK3_WORKDIR ||
+    parsed.dbPort !== Number(environment.WAREHOUSE_TASK3_DB_PORT) ||
+    parsed.apiPort !== Number(environment.WAREHOUSE_TASK3_API_PORT) ||
     (expectedCode === 1 && (
       parsed.failurePoint !== 'after_profiles' || parsed.failureInjected !== true
     ))
@@ -81,9 +88,33 @@ function proof(result, expectedCode) {
     runId: parsed.runId,
     cleanupVerified: true,
     runScopedRemaining: 0,
+    attemptedStoragePathsRemaining: 0,
     triggersEnabled: true,
     fixedPermissionGrants: 0,
+    markerNonce: parsed.markerNonce,
+    projectId: parsed.projectId,
+    workdir: parsed.workdir,
+    dbPort: parsed.dbPort,
+    apiPort: parsed.apiPort,
   })
+}
+
+function targetIdentity(runProof) {
+  return Object.freeze({
+    markerNonce: runProof.markerNonce,
+    projectId: runProof.projectId,
+    workdir: runProof.workdir,
+    dbPort: runProof.dbPort,
+    apiPort: runProof.apiPort,
+  })
+}
+
+function sameTargetIdentity(actual, expected) {
+  return actual.markerNonce === expected.markerNonce &&
+    actual.projectId === expected.projectId &&
+    actual.workdir === expected.workdir &&
+    actual.dbPort === expected.dbPort &&
+    actual.apiPort === expected.apiPort
 }
 
 export async function runWarehousePhotoStorageHttpHarness(environment, supplied = {}) {
@@ -91,6 +122,7 @@ export async function runWarehousePhotoStorageHttpHarness(environment, supplied 
   const run = supplied.run ?? defaultRun
   if (typeof run !== 'function') fail('HTTP harness runner invalid')
   const runs = []
+  let expectedIdentity = null
   for (const scenario of RUNS) {
     const childEnvironment = { ...environment }
     delete childEnvironment.WAREHOUSE_TASK3_HTTP_FAILURE_POINT
@@ -98,7 +130,13 @@ export async function runWarehousePhotoStorageHttpHarness(environment, supplied 
       childEnvironment.WAREHOUSE_TASK3_HTTP_FAILURE_POINT = scenario.failurePoint
     }
     const result = await run(childEnvironment)
-    runs.push(Object.freeze({ name: scenario.name, ...proof(result, scenario.expectedCode) }))
+    const runProof = proof(result, scenario.expectedCode, environment)
+    const identity = targetIdentity(runProof)
+    if (expectedIdentity === null) expectedIdentity = identity
+    else if (!sameTargetIdentity(identity, expectedIdentity)) {
+      fail('HTTP harness target identity changed between runs')
+    }
+    runs.push(Object.freeze({ name: scenario.name, ...runProof }))
   }
   return Object.freeze({ runs: Object.freeze(runs) })
 }

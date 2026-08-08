@@ -15,15 +15,22 @@ const baseEnvironment = Object.freeze({
   WAREHOUSE_TASK3_API_PORT: '62421',
 })
 
-function proof(ok, runId) {
+function proof(ok, runId, overrides = {}) {
   return JSON.stringify({
     ok,
     runId,
     cleanupVerified: true,
     runScopedRemaining: 0,
+    attemptedStoragePathsRemaining: 0,
     triggersEnabled: true,
     fixedPermissionGrants: 0,
+    markerNonce: '10000000-0000-4000-8000-000000000001',
+    projectId: baseEnvironment.WAREHOUSE_TASK3_PROJECT_ID,
+    workdir: baseEnvironment.WAREHOUSE_TASK3_WORKDIR,
+    dbPort: 62422,
+    apiPort: 62421,
     ...(!ok ? { failurePoint: 'after_profiles', failureInjected: true } : {}),
+    ...overrides,
   })
 }
 
@@ -59,6 +66,46 @@ test('HTTP harness rejects a success or injected failure without exact cleanup p
     }),
     /cleanup proof invalid/u,
   )
+})
+
+test('HTTP harness rejects an unknown attempted Storage path left behind by cleanup', async () => {
+  await assert.rejects(
+    () => runWarehousePhotoStorageHttpHarness(baseEnvironment, {
+      async run(environment) {
+        const injected = environment.WAREHOUSE_TASK3_HTTP_FAILURE_POINT === 'after_profiles'
+        const output = `${proof(!injected, '20000000-0000-4000-8000-000000000001', {
+            attemptedStoragePathsRemaining: 1,
+          })}\n`
+        return injected
+          ? { code: 1, stdout: '', stderr: output }
+          : { code: 0, stdout: output, stderr: '' }
+      },
+    }),
+    /cleanup proof invalid/u,
+  )
+})
+
+test('HTTP harness rejects a marker nonce change between same-target runs', async () => {
+  let callCount = 0
+  await assert.rejects(
+    () => runWarehousePhotoStorageHttpHarness(baseEnvironment, {
+      async run(environment) {
+        callCount += 1
+        const injected = environment.WAREHOUSE_TASK3_HTTP_FAILURE_POINT === 'after_profiles'
+        const output = `${proof(!injected,
+          `30000000-0000-4000-8000-00000000000${callCount}`, {
+            markerNonce: callCount === 1
+              ? '40000000-0000-4000-8000-000000000001'
+              : '40000000-0000-4000-8000-000000000002',
+          })}\n`
+        return injected
+          ? { code: 1, stdout: '', stderr: output }
+          : { code: 0, stdout: output, stderr: '' }
+      },
+    }),
+    /target identity changed/u,
+  )
+  assert.equal(callCount, 2)
 })
 
 test('failure injection cannot activate before complete isolated-target validation', async () => {

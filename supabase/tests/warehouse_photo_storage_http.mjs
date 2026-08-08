@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, realpath } from 'node:fs/promises'
 
+import {
+  exactAttemptedStoragePaths,
+  registerAttemptedStoragePath,
+} from './warehouse_photo_storage_scope.mjs'
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 
 function fail(message) {
@@ -202,6 +207,14 @@ function idList(values) {
   return values.map((value) => `${quoted(value)}::uuid`).join(',')
 }
 
+function attemptedStoragePredicate(scope) {
+  const pairs = exactAttemptedStoragePaths(scope)
+  if (pairs.length === 0) return 'false'
+  return pairs.map((pair) =>
+    `(bucket_id = ${quoted(pair.bucket)} and name = ${quoted(pair.path)})`
+  ).join(' or ')
+}
+
 function cleanupDiagnosticsSql(configuration, scope) {
   const profileIds = idList(scope.profileIds)
   const authUserIds = scope.authUserIds.length > 0
@@ -209,13 +222,16 @@ function cleanupDiagnosticsSql(configuration, scope) {
     : "'00000000-0000-4000-8000-000000000000'::uuid"
   const variantIds = idList(scope.variantIds)
   const itemIds = idList(scope.itemIds)
+  const attemptedStorageCount =
+    `(select count(*) from storage.objects where ${attemptedStoragePredicate(scope)})`
+  const markerPredicate = targetMarkerPredicate(configuration)
   return [
     'select json_build_object(',
     "'runScopedRemaining', (",
     ` (select count(*) from auth.users where id in (${authUserIds}) or email like ${quoted(`%${scope.runId}%`)}) +`,
     ` (select count(*) from auth.identities where user_id in (${authUserIds})) +`,
     ` (select count(*) from public.employee_profiles where id in (${profileIds})) +`,
-    ` (select count(*) from storage.objects where bucket_id='warehouse-item-photos' and split_part(name,'/',1)::text in (${scope.variantIds.map(quoted).join(',')})) +`,
+    ` ${attemptedStorageCount} +`,
     ` (select count(*) from public.warehouse_variant_photos where variant_id in (${variantIds})) +`,
     ` (select count(*) from public.warehouse_photo_delete_outbox where variant_id in (${variantIds}) or original_requested_by_employee_profile_id in (${profileIds}) or requested_by_employee_profile_id in (${profileIds})) +`,
     ` (select count(*) from public.warehouse_photo_audit where variant_id in (${variantIds}) or actor_employee_profile_id in (${profileIds})) +`,
@@ -226,6 +242,7 @@ function cleanupDiagnosticsSql(configuration, scope) {
     ` (select count(*) from public.warehouse_items where id in (${itemIds})) +`,
     " (select count(*) from public.permission_grants where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view')))",
     '),',
+    `'attemptedStoragePathsRemaining', ${attemptedStorageCount},`,
     "'triggersEnabled', (select count(*) = 4 and bool_and(trigger.tgenabled = 'O')",
     ' from pg_trigger trigger where (trigger.tgrelid, trigger.tgname) in (',
     "  ('public.warehouse_catalog_audit'::regclass,'reject_warehouse_catalog_audit_mutation'),",
@@ -234,7 +251,12 @@ function cleanupDiagnosticsSql(configuration, scope) {
     "  ('private.warehouse_photo_delete_takeover_receipts'::regclass,'reject_warehouse_photo_delete_takeover_receipt_mutation')",
     ' )),',
     "'fixedPermissionGrants', (select count(*) from public.permission_grants",
-    " where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view')))",
+    " where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view'))),",
+    `'markerNonce', (select marker_nonce::text from private.warehouse_task3_test_target where ${markerPredicate}),`,
+    `'projectId', (select project_id from private.warehouse_task3_test_target where ${markerPredicate}),`,
+    `'workdir', (select test_workdir from private.warehouse_task3_test_target where ${markerPredicate}),`,
+    `'dbPort', (select db_port from private.warehouse_task3_test_target where ${markerPredicate}),`,
+    `'apiPort', (select api_port from private.warehouse_task3_test_target where ${markerPredicate})`,
     ');',
   ].join(' ')
 }
@@ -246,24 +268,39 @@ function parseCleanupProof(output) {
   if (
     proof === null || typeof proof !== 'object' || Array.isArray(proof) ||
     !Number.isSafeInteger(proof.runScopedRemaining) || proof.runScopedRemaining < 0 ||
+    !Number.isSafeInteger(proof.attemptedStoragePathsRemaining) ||
+      proof.attemptedStoragePathsRemaining < 0 ||
     typeof proof.triggersEnabled !== 'boolean' ||
-    !Number.isSafeInteger(proof.fixedPermissionGrants) || proof.fixedPermissionGrants < 0
+    !Number.isSafeInteger(proof.fixedPermissionGrants) || proof.fixedPermissionGrants < 0 ||
+    !UUID.test(proof.markerNonce ?? '') ||
+    typeof proof.projectId !== 'string' || !proof.projectId ||
+    typeof proof.workdir !== 'string' || !proof.workdir ||
+    !Number.isSafeInteger(proof.dbPort) || !Number.isSafeInteger(proof.apiPort)
   ) fail('cleanup proof invalid')
   return proof
 }
 
 async function cleanupDiagnostics(configuration, scope) {
   await verifyTargetMarker(configuration)
-  return parseCleanupProof(await ownerSql(
+  const proof = parseCleanupProof(await ownerSql(
     configuration,
     cleanupDiagnosticsSql(configuration, scope),
   ))
+  if (
+    proof.markerNonce !== configuration.markerNonce ||
+    proof.projectId !== configuration.projectId ||
+    proof.workdir !== configuration.workdir ||
+    proof.dbPort !== configuration.dbPort ||
+    proof.apiPort !== configuration.apiPort
+  ) fail('cleanup proof target identity mismatch')
+  return proof
 }
 
 async function assertCleanStart(configuration, scope) {
   const proof = await cleanupDiagnostics(configuration, scope)
   if (
     proof.runScopedRemaining !== 0 ||
+    proof.attemptedStoragePathsRemaining !== 0 ||
     proof.triggersEnabled !== true ||
     proof.fixedPermissionGrants !== 0
   ) fail('isolated HTTP fixture target is polluted before mutation')
@@ -277,6 +314,7 @@ async function cleanupRun(configuration, scope) {
     : "'00000000-0000-4000-8000-000000000000'::uuid"
   const variantIds = idList(scope.variantIds)
   const itemIds = idList(scope.itemIds)
+  const attemptedStorage = attemptedStoragePredicate(scope)
   const sql = [
     'begin;',
     'do $target$ begin if not exists (select 1 from private.warehouse_task3_test_target where',
@@ -296,7 +334,7 @@ async function cleanupRun(configuration, scope) {
     `delete from public.warehouse_photo_delete_outbox where variant_id in (${variantIds}) or original_requested_by_employee_profile_id in (${profileIds}) or requested_by_employee_profile_id in (${profileIds});`,
     `delete from public.warehouse_variant_photos where variant_id in (${variantIds});`,
     'set local session_replication_role = replica;',
-    `delete from storage.objects where bucket_id='warehouse-item-photos' and split_part(name,'/',1)::text in (${scope.variantIds.map(quoted).join(',')});`,
+    `delete from storage.objects where ${attemptedStorage};`,
     'set local session_replication_role = origin;',
     `delete from public.warehouse_variants where id in (${variantIds});`,
     `delete from public.warehouse_items where id in (${itemIds});`,
@@ -309,6 +347,7 @@ async function cleanupRun(configuration, scope) {
   const proof = await cleanupDiagnostics(configuration, scope)
   if (
     proof.runScopedRemaining !== 0 ||
+    proof.attemptedStoragePathsRemaining !== 0 ||
     proof.triggersEnabled !== true ||
     proof.fixedPermissionGrants !== 0
   ) fail('HTTP fixture cleanup incomplete')
@@ -363,12 +402,34 @@ const viewerProfileId = randomUUID()
 const itemId = randomUUID()
 const variantId = randomUUID()
 const otherVariantId = randomUUID()
+const bucket = 'warehouse-item-photos'
+const deniedPath = `${variantId}/${randomUUID()}.jpg`
+const unknownVariantPath = `${randomUUID()}/${randomUUID()}.jpg`
+const invalidMimePath = `${variantId}/${randomUUID()}.jpg`
+const oversizePath = `${variantId}/${randomUUID()}.jpg`
+const orphanPath = `${variantId}/${randomUUID()}.jpg`
+const objectPath = `${variantId}/${randomUUID()}.jpg`
+const takeoverPath = `${variantId}/${randomUUID()}.jpg`
+const lostFinalizeOrphanPath = `${variantId}/${randomUUID()}.jpg`
+const refreshRegisteredPath = `${variantId}/${randomUUID()}.jpg`
 const scope = {
   runId,
   authUserIds: [],
   profileIds: [managerProfileId, otherManagerProfileId, viewerProfileId],
   itemIds: [itemId],
   variantIds: [variantId, otherVariantId],
+  allowedStoragePaths: [
+    deniedPath,
+    unknownVariantPath,
+    invalidMimePath,
+    oversizePath,
+    orphanPath,
+    objectPath,
+    takeoverPath,
+    lostFinalizeOrphanPath,
+    refreshRegisteredPath,
+  ].map((path) => Object.freeze({ bucket, path })),
+  attemptedStoragePaths: [],
 }
 let operationFailed = false
 let injectedFailureReached = false
@@ -465,22 +526,21 @@ data(await otherManager.auth.signInWithPassword({
 data(await viewer.auth.signInWithPassword({ email: viewerEmail, password: viewerPassword }),
   'viewer login failed')
 
-const bucket = 'warehouse-item-photos'
 const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
 const uploadOptions = { contentType: 'image/jpeg', cacheControl: '3600', upsert: false }
-const deniedPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, deniedPath)
 const viewerUpload = await viewer.storage.from(bucket).upload(
   deniedPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 )
 assert.ok(viewerUpload.error, 'inventory viewer uploaded without catalog permission')
 
-const unknownVariantPath = `${randomUUID()}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, unknownVariantPath)
 const unknownVariantUpload = await manager.storage.from(bucket).upload(
   unknownVariantPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 )
 assert.ok(unknownVariantUpload.error, 'manager uploaded under an unknown variant prefix')
 
-const invalidMimePath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, invalidMimePath)
 const invalidMimeUpload = await manager.storage.from(bucket).upload(
   invalidMimePath,
   new Blob([jpegBytes], { type: 'application/pdf' }),
@@ -488,7 +548,7 @@ const invalidMimeUpload = await manager.storage.from(bucket).upload(
 )
 assert.ok(invalidMimeUpload.error, 'Storage accepted a disallowed MIME type')
 
-const oversizePath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, oversizePath)
 const oversizeUpload = await manager.storage.from(bucket).upload(
   oversizePath,
   new Blob([new Uint8Array(2 * 1024 * 1024)], { type: 'image/jpeg' }),
@@ -496,7 +556,7 @@ const oversizeUpload = await manager.storage.from(bucket).upload(
 )
 assert.ok(oversizeUpload.error, 'Storage accepted an output that was not below 2 MiB')
 
-const orphanPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, orphanPath)
 const orphanUpload = await manager.storage.from(bucket).upload(
   orphanPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 )
@@ -540,7 +600,7 @@ assert.equal(data(await manager.rpc('finalize_warehouse_photo_delete_secure', {
   p_photo_id: null,
 }), 'owner could not finalize orphan cleanup'), true)
 
-const objectPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, objectPath)
 const uploaded = await manager.storage.from(bucket).upload(
   objectPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 )
@@ -664,7 +724,7 @@ assert.ok(deletedSigned.error, 'deleted photo retained signed access')
 
 // A fresh pending registered delete becomes immediately claimable when its
 // requester is disabled. Candidate discovery remains exact and path-free.
-const takeoverPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, takeoverPath)
 data(await manager.storage.from(bucket).upload(
   takeoverPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 ), 'takeover fixture upload failed')
@@ -722,7 +782,7 @@ data(await admin.from('employee_profiles').update({ account_status: 'active' })
 
 // Simulate an orphan finalize response being discarded, then recover from a
 // new browser session using only the deletion ID and immutable receipt.
-const lostFinalizeOrphanPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, lostFinalizeOrphanPath)
 data(await manager.storage.from(bucket).upload(
   lostFinalizeOrphanPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 ), 'lost-finalize orphan upload failed')
@@ -761,7 +821,7 @@ assert.equal(data(await refreshedManager.rpc('finalize_warehouse_photo_delete_se
 
 // A registered object can be recovered after refresh even though this manager
 // cannot list inventory metadata or sign the now-absent object.
-const refreshRegisteredPath = `${variantId}/${randomUUID()}.jpg`
+registerAttemptedStoragePath(scope, bucket, refreshRegisteredPath)
 data(await manager.storage.from(bucket).upload(
   refreshRegisteredPath, new Blob([jpegBytes], { type: 'image/jpeg' }), uploadOptions,
 ), 'registered refresh fixture upload failed')
@@ -813,23 +873,41 @@ assert.equal(data(await refreshedManager.rpc('finalize_warehouse_photo_delete_se
     } catch {
       cleanupProof = {
         runScopedRemaining: -1,
+        attemptedStoragePathsRemaining: -1,
         triggersEnabled: false,
         fixedPermissionGrants: -1,
+        markerNonce: null,
+        projectId: null,
+        workdir: null,
+        dbPort: null,
+        apiPort: null,
       }
     }
   }
 
   const cleanupVerified = !cleanupFailed &&
     cleanupProof.runScopedRemaining === 0 &&
+    cleanupProof.attemptedStoragePathsRemaining === 0 &&
     cleanupProof.triggersEnabled === true &&
-    cleanupProof.fixedPermissionGrants === 0
+    cleanupProof.fixedPermissionGrants === 0 &&
+    cleanupProof.markerNonce === configuration.markerNonce &&
+    cleanupProof.projectId === configuration.projectId &&
+    cleanupProof.workdir === configuration.workdir &&
+    cleanupProof.dbPort === configuration.dbPort &&
+    cleanupProof.apiPort === configuration.apiPort
   const result = {
     ok: !operationFailed && cleanupVerified,
     runId,
     cleanupVerified,
     runScopedRemaining: cleanupProof.runScopedRemaining,
+    attemptedStoragePathsRemaining: cleanupProof.attemptedStoragePathsRemaining,
     triggersEnabled: cleanupProof.triggersEnabled,
     fixedPermissionGrants: cleanupProof.fixedPermissionGrants,
+    markerNonce: cleanupProof.markerNonce,
+    projectId: cleanupProof.projectId,
+    workdir: cleanupProof.workdir,
+    dbPort: cleanupProof.dbPort,
+    apiPort: cleanupProof.apiPort,
   }
   if (operationFailed || !cleanupVerified) {
     if (failurePoint) {
