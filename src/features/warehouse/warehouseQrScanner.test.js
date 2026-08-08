@@ -284,8 +284,167 @@ test('close during a late import or late controls resolution never starts or lea
   releaseControls()
   await controlsOpening
 
-  assert.equal(controls.stops, 0)
+  assert.equal(controls.stops, 1)
   assert.deepEqual(controlsMedia.tracks.map((track) => track.stops), [1, 1, 1])
+})
+
+test('close before media attachment stops late returned controls and detaches the late stream', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let releaseControls
+  let markDecodeStarted
+  const decodeStarted = new Promise((resolve) => { markDecodeStarted = resolve })
+  const controls = { stops: 0, stop() { this.stops += 1 } }
+  const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const lateStream = { getTracks: () => [track] }
+  const video = { srcObject: null }
+  class BrowserQRCodeReader {
+    decodeFromConstraints() {
+      markDecodeStarted()
+      return new Promise((resolve) => { releaseControls = () => resolve(controls) })
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => ({ BrowserQRCodeReader }),
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {}, onError() {},
+  })
+
+  const opening = controller.open(video)
+  await decodeStarted
+  controller.close()
+  video.srcObject = lateStream
+  releaseControls()
+  await opening
+
+  assert.equal(controls.stops, 1)
+  assert.equal(track.stops, 1)
+  assert.equal(video.srcObject, null)
+})
+
+test('late callback controls become cleanup authority and a later returned wrapper is discarded', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let callback
+  let releaseWrapper
+  let markDecodeStarted
+  const decodeStarted = new Promise((resolve) => { markDecodeStarted = resolve })
+  const originalControls = { stops: 0, stop() { this.stops += 1 } }
+  const returnedWrapper = { stops: 0, stop() { this.stops += 1; originalControls.stop() } }
+  const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const lateStream = { getTracks: () => [track] }
+  const video = { srcObject: null }
+  class BrowserQRCodeReader {
+    decodeFromConstraints(_constraints, _video, next) {
+      callback = next
+      markDecodeStarted()
+      return new Promise((resolve) => { releaseWrapper = () => resolve(returnedWrapper) })
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => ({ BrowserQRCodeReader }),
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {}, onError() {},
+  })
+
+  const opening = controller.open(video)
+  await decodeStarted
+  controller.close()
+  video.srcObject = lateStream
+  callback(null, Object.assign(new Error('reader stopped'), { name: 'NotFoundException' }), originalControls)
+  releaseWrapper()
+  await opening
+
+  assert.equal(originalControls.stops, 1)
+  assert.equal(returnedWrapper.stops, 0)
+  assert.equal(track.stops, 1)
+  assert.equal(video.srcObject, null)
+})
+
+test('late returned controls observe a rejecting stop thenable without losing stream fallback', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let releaseControls
+  let markDecodeStarted
+  let thenCalls = 0
+  const decodeStarted = new Promise((resolve) => { markDecodeStarted = resolve })
+  const controls = {
+    stop() {
+      return {
+        then(_resolve, reject) {
+          thenCalls += 1
+          reject(new Error('private late shutdown failure'))
+        },
+      }
+    },
+  }
+  const track = { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } }
+  const lateStream = { getTracks: () => [track] }
+  const video = { srcObject: null }
+  class BrowserQRCodeReader {
+    decodeFromConstraints() {
+      markDecodeStarted()
+      return new Promise((resolve) => { releaseControls = () => resolve(controls) })
+    }
+  }
+  const unhandled = []
+  const captureUnhandled = (error) => unhandled.push(error)
+  process.on('unhandledRejection', captureUnhandled)
+  try {
+    const controller = scannerModule.createWarehouseQrScannerController({
+      loadZxing: async () => ({ BrowserQRCodeReader }),
+      resolveQr: async () => null,
+      onResolved() {}, onUnknown() {}, onError() {},
+    })
+    const opening = controller.open(video)
+    await decodeStarted
+    controller.close()
+    video.srcObject = lateStream
+    releaseControls()
+    await opening
+    await new Promise((resolve) => setImmediate(resolve))
+  } finally {
+    process.off('unhandledRejection', captureUnhandled)
+  }
+
+  assert.equal(thenCalls, 1)
+  assert.deepEqual(unhandled, [])
+  assert.equal(track.stops, 1)
+  assert.equal(video.srcObject, null)
+})
+
+test('late cleanup skips ended tracks and stops every live track exactly once', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let releaseControls
+  let markDecodeStarted
+  const decodeStarted = new Promise((resolve) => { markDecodeStarted = resolve })
+  const controls = { stops: 0, stop() { this.stops += 1 } }
+  const tracks = [
+    { readyState: 'ended', stops: 0, stop() { this.stops += 1 } },
+    { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } },
+    { readyState: 'live', stops: 0, stop() { this.stops += 1; this.readyState = 'ended' } },
+  ]
+  const lateStream = { getTracks: () => tracks }
+  const video = { srcObject: null }
+  class BrowserQRCodeReader {
+    decodeFromConstraints() {
+      markDecodeStarted()
+      return new Promise((resolve) => { releaseControls = () => resolve(controls) })
+    }
+  }
+  const controller = scannerModule.createWarehouseQrScannerController({
+    loadZxing: async () => ({ BrowserQRCodeReader }),
+    resolveQr: async () => null,
+    onResolved() {}, onUnknown() {}, onError() {},
+  })
+
+  const opening = controller.open(video)
+  await decodeStarted
+  controller.close()
+  video.srcObject = lateStream
+  releaseControls()
+  await opening
+
+  assert.equal(controls.stops, 1)
+  assert.deepEqual(tracks.map((track) => track.stops), [0, 1, 1])
+  assert.equal(video.srcObject, null)
 })
 
 test('close disposes pending manual lookup and rejects every later manual submission', async () => {

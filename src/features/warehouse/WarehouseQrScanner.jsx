@@ -52,24 +52,43 @@ export function createWarehouseQrScannerController({
       stopControl(callbackControls)
       return
     }
-    if (session.stopped) return
-    session.stopped = true
-    const stream = session.video?.srcObject
-    let tracks = []
-    try { tracks = typeof stream?.getTracks === 'function' ? stream.getTracks() : [] } catch {}
-    stopControl(session.returnedControls ?? callbackControls)
-    for (const track of tracks) {
-      if (!track || (typeof track !== 'object' && typeof track !== 'function')) continue
-      let ended = false
-      try { ended = track.readyState === 'ended' } catch {}
-      if (ended) continue
-      if (stoppedTracks.has(track)) continue
-      stoppedTracks.add(track)
-      invokeStop(track)
-    }
+    session.closeRequested = true
+    let stream = null
+    try { stream = session.video?.srcObject ?? null } catch {}
+    if (session.cleanupFinalized && !stream) return
+    if (session.cleanupInProgress) return
+    session.cleanupInProgress = true
     try {
-      if (session.video?.srcObject === stream) session.video.srcObject = null
-    } catch {}
+      if (!session.authoritativeControlStopped) {
+        const authoritativeControls = session.returnedControls ?? callbackControls
+        if (authoritativeControls) {
+          session.authoritativeControlStopped = true
+          stopControl(authoritativeControls)
+        }
+      }
+      try { stream = session.video?.srcObject ?? null } catch { stream = null }
+      let tracks = []
+      try { tracks = typeof stream?.getTracks === 'function' ? stream.getTracks() : [] } catch {}
+      for (const track of tracks) {
+        if (!track || (typeof track !== 'object' && typeof track !== 'function')) continue
+        let ended = false
+        try { ended = track.readyState === 'ended' } catch {}
+        if (ended) continue
+        if (stoppedTracks.has(track)) continue
+        stoppedTracks.add(track)
+        invokeStop(track)
+      }
+      try {
+        if (session.video?.srcObject === stream) session.video.srcObject = null
+      } catch {}
+      let hasAttachedStream = false
+      try { hasAttachedStream = Boolean(session.video?.srcObject) } catch { hasAttachedStream = true }
+      session.cleanupFinalized = session.closeRequested
+        && session.authoritativeControlStopped
+        && !hasAttachedStream
+    } finally {
+      session.cleanupInProgress = false
+    }
   }
 
   const isCurrent = (token) => !disposed && generation === token
@@ -104,7 +123,14 @@ export function createWarehouseQrScannerController({
       if (disposed) return null
       const token = ++generation
       stopSession(activeSession)
-      const session = { video, returnedControls: null, stopped: false }
+      const session = {
+        video,
+        returnedControls: null,
+        closeRequested: false,
+        authoritativeControlStopped: false,
+        cleanupFinalized: false,
+        cleanupInProgress: false,
+      }
       activeSession = session
       try {
         const zxing = await loadZxing()
