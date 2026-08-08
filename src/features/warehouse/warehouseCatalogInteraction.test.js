@@ -170,6 +170,36 @@ test('search, item and variant selection, scan resolution, and current-variant l
   }
 })
 
+test('an in-flight manual scan survives an unrelated signed-photo completion rerender', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const lookup = deferred()
+  const photoLoad = deferred()
+  const warehouseService = { resolveQr: () => lookup.promise }
+  const warehouseMediaService = { listVariantPhotos: () => photoLoad.promise }
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ warehouseService, warehouseMediaService, initialPhotosByVariant: null }))) })
+    await click(byText(container, 'BUTTON', '扫描二维码'))
+    await act(async () => {})
+    const manual = elements(container, (element) => element.getAttribute('id') === 'warehouse-qr-manual-input')[0]
+    await change(manual, 'DEFERRED-CODE')
+    await submit(elements(container, (element) => element.nodeName === 'FORM' && element.textContent.includes('手动输入二维码'))[0])
+    await act(async () => {})
+
+    photoLoad.resolve([])
+    await act(async () => {})
+    lookup.resolve({ id: 'variant-b', itemId: 'item-b' })
+    await act(async () => {})
+
+    assert.match(byClass(container, 'warehouse-catalog-detail-header').textContent, /保温棉/u)
+    assert.equal(byClass(container, 'warehouse-qr-scanner'), undefined)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('manager mutations send exact service payloads, reject empty numbers, update state, and retain failed drafts', async () => {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
@@ -225,6 +255,37 @@ test('manager mutations send exact service payloads, reject empty numbers, updat
     await submit(form(container, '物品资料'))
     assert.equal(field(form(container, '物品资料'), '物品名称').value, '保留的草稿')
     assert.match(container.textContent, /物品保存失败，请重试/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('saving a new item resets the variant editor and binds its next variant to the new item', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const calls = []
+  const ids = ['new-item', 'new-variant']
+  const warehouseService = {
+    async saveItem(payload) { calls.push(['item', payload]); return { ...CATALOG.items[0], ...payload } },
+    async saveVariant(payload) { calls.push(['variant', payload]); return { ...CATALOG.variants[0], ...payload, systemQr: `SWERP:VARIANT:${payload.id}` } },
+  }
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ warehouseService, manageCatalog: true, createId: () => ids.shift() }))) })
+    await click(byText(container, 'BUTTON', '新增物品'))
+    await change(field(form(container, '物品资料'), '物品名称'), '新物品')
+    await submit(form(container, '物品资料'))
+    assert.equal(field(form(container, '型号资料'), 'SKU').value, '')
+
+    await change(field(form(container, '型号资料'), 'SKU'), 'NEW-SKU')
+    await change(field(form(container, '型号资料'), '单位'), '个')
+    await change(field(form(container, '型号资料'), '最低库存'), '1')
+    await change(field(form(container, '型号资料'), '默认采购价'), '2.5')
+    await submit(form(container, '型号资料'))
+    assert.equal(calls.at(-1)[0], 'variant')
+    assert.equal(calls.at(-1)[1].id, 'new-variant')
+    assert.equal(calls.at(-1)[1].itemId, 'new-item')
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -305,6 +366,106 @@ test('a failed signed-photo refresh clears an earlier URL for the same selected 
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
+  }
+})
+
+test('photo delete projects exact metadata and clears the deleted image when signed refresh fails', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const photo = {
+    id: 'photo-delete', variantId: 'variant-a1', objectPath: 'variant-a1/photo-delete.jpg',
+    sortOrder: 0, mimeType: 'image/jpeg', byteSize: 123, createdAt: '2026-01-01T00:00:00Z',
+    signedUrl: 'https://signed.invalid/delete-me',
+  }
+  let deletedPayload
+  const warehouseMediaService = {
+    async deleteVariantPhoto(payload) {
+      deletedPayload = payload
+      const expected = ['byteSize', 'createdAt', 'id', 'mimeType', 'objectPath', 'sortOrder', 'variantId']
+      assert.deepEqual(Object.keys(payload).sort(), expected)
+      return true
+    },
+    async listVariantPhotos() { throw new Error('照片签名刷新失败') },
+  }
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService, initialPhotosByVariant: { 'variant-a1': [photo] } }))) })
+    await click(byText(container, 'BUTTON', '删除照片'))
+    assert.equal(deletedPayload.id, 'photo-delete')
+    assert.equal(Object.hasOwn(deletedPayload, 'signedUrl'), false)
+    assert.equal(elements(container, (element) => element.getAttribute('src') === photo.signedUrl).length, 0)
+    assert.match(container.textContent, /照片签名刷新失败/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('overlapping photo mutations publish only the latest refresh and ignore completion after unmount', async () => {
+  const photos = [
+    {
+      id: 'photo-first', variantId: 'variant-a1', objectPath: 'variant-a1/photo-first.jpg',
+      sortOrder: 0, mimeType: 'image/jpeg', byteSize: 101, createdAt: '2026-01-01T00:00:00Z',
+      signedUrl: 'https://signed.invalid/first',
+    },
+    {
+      id: 'photo-second', variantId: 'variant-a1', objectPath: 'variant-a1/photo-second.jpg',
+      sortOrder: 1, mimeType: 'image/jpeg', byteSize: 102, createdAt: '2026-01-01T00:00:00Z',
+      signedUrl: 'https://signed.invalid/second',
+    },
+  ]
+  const firstDelete = deferred()
+  const secondDelete = deferred()
+  let listCalls = 0
+  const warehouseMediaService = {
+    deleteVariantPhoto: ({ id }) => id === 'photo-first' ? firstDelete.promise : secondDelete.promise,
+    async listVariantPhotos() { listCalls += 1; return [] },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService, initialPhotosByVariant: { 'variant-a1': photos } }))) })
+    const deleteButtons = elements(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '删除照片')
+    await act(async () => {
+      deleteButtons[0].click()
+      deleteButtons[1].click()
+    })
+
+    secondDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(listCalls, 1)
+    assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
+
+    firstDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(listCalls, 1)
+    assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+
+  const lateDelete = deferred()
+  let lateListCalls = 0
+  const lateMediaService = {
+    deleteVariantPhoto: () => lateDelete.promise,
+    async listVariantPhotos() { lateListCalls += 1; return [] },
+  }
+  const lateDom = installWarehouseReactDom()
+  const lateContainer = lateDom.createContainer()
+  const lateRoot = createRoot(lateContainer)
+  try {
+    await act(async () => { lateRoot.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService: lateMediaService, initialPhotosByVariant: { 'variant-a1': [photos[0]] } }))) })
+    await act(async () => { byText(lateContainer, 'BUTTON', '删除照片').click() })
+    await act(async () => { lateRoot.unmount() })
+    lateDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(lateListCalls, 0)
+    assert.equal(lateContainer.textContent, '')
+  } finally {
+    if (lateContainer.firstChild) await act(async () => { lateRoot.unmount() })
+    lateDom.cleanup()
   }
 })
 

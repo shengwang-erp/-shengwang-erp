@@ -11,6 +11,8 @@ const EXTERNAL_CAMERA_BUSY_MESSAGE = '相机正在被其他操作使用，请稍
 const videoSessionOwners = new WeakMap()
 const streamSessionOwners = new WeakMap()
 const componentIdentityKeys = new WeakMap()
+const modalIsolationStack = []
+let releaseTopIsolation = () => {}
 let nextComponentIdentityKey = 0
 
 const loadZxingBrowser = () => import('@zxing/browser')
@@ -37,6 +39,49 @@ function scannedText(result) {
   const value = result.getText()
   return typeof value === 'string' ? value : null
 }
+
+function isolateBackground(element) {
+  const isolated = []
+  let current = element
+  while (current?.parentElement) {
+    const parent = current.parentElement
+    for (const sibling of parent.children) {
+      if (sibling === current) continue
+      isolated.push({
+        sibling,
+        inert: sibling.inert === true,
+        ariaHidden: sibling.getAttribute('aria-hidden'),
+      })
+      sibling.inert = true
+      sibling.setAttribute('aria-hidden', 'true')
+    }
+    current = parent
+  }
+  return () => {
+    for (const state of isolated.reverse()) {
+      state.sibling.inert = state.inert
+      if (state.ariaHidden === null) state.sibling.removeAttribute('aria-hidden')
+      else state.sibling.setAttribute('aria-hidden', state.ariaHidden)
+    }
+  }
+}
+
+function registerModalIsolation(element) {
+  releaseTopIsolation()
+  modalIsolationStack.push(element)
+  releaseTopIsolation = isolateBackground(element)
+  return () => {
+    releaseTopIsolation()
+    const index = modalIsolationStack.lastIndexOf(element)
+    if (index >= 0) modalIsolationStack.splice(index, 1)
+    const nextTop = modalIsolationStack.at(-1)
+    releaseTopIsolation = nextTop ? isolateBackground(nextTop) : () => {}
+  }
+}
+
+const focusableElements = (dialog) => Array.from(dialog?.querySelectorAll?.(
+  'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+) ?? []).filter((element) => !element.closest?.('[inert]'))
 
 export function createWarehouseQrScannerController({
   loadZxing = loadZxingBrowser,
@@ -306,6 +351,8 @@ export default function WarehouseQrScanner({
   onClose,
 }) {
   const videoRef = useRef(null)
+  const dialogRef = useRef(null)
+  const closeButtonRef = useRef(null)
   const controllerRef = useRef(null)
   const [manualCode, setManualCode] = useState('')
   const [message, setMessage] = useState('')
@@ -336,6 +383,19 @@ export default function WarehouseQrScanner({
     }
   }, [open, loadZxing, warehouseService, onResolved])
 
+  useEffect(() => {
+    if (!open || !dialogRef.current) return undefined
+    const previousFocus = globalThis.document?.activeElement
+    const releaseBackground = registerModalIsolation(dialogRef.current)
+    closeButtonRef.current?.focus?.()
+    return () => {
+      releaseBackground()
+      if (previousFocus && globalThis.document?.contains?.(previousFocus)) {
+        previousFocus.focus?.()
+      }
+    }
+  }, [open])
+
   if (!open) return null
 
   const close = () => {
@@ -347,13 +407,37 @@ export default function WarehouseQrScanner({
     setMessage('')
     await controllerRef.current?.submitManual(manualCode)
   }
+  const handleDialogKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const focusable = focusableElements(dialogRef.current)
+    if (focusable.length === 0) {
+      event.preventDefault()
+      return
+    }
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    const active = globalThis.document?.activeElement
+    if (event.shiftKey && (active === first || !dialogRef.current?.contains(active))) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && (active === last || !dialogRef.current?.contains(active))) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 
   return (
-    <div className="warehouse-qr-scanner" role="dialog" aria-modal="true" aria-label="扫描物品二维码">
+    <div ref={dialogRef} className="warehouse-qr-scanner" role="dialog" aria-modal="true" aria-label="扫描物品二维码" onKeyDown={handleDialogKeyDown}>
       <div className="warehouse-qr-scanner__panel">
         <div className="warehouse-qr-scanner__heading">
           <h2>扫描物品二维码</h2>
-          <button type="button" onClick={close} aria-label="关闭二维码扫描">关闭</button>
+          <button ref={closeButtonRef} type="button" onClick={close} aria-label="关闭二维码扫描">关闭</button>
         </div>
         <video
           key={`warehouse-qr-video-${videoSessionKey}`}

@@ -186,7 +186,7 @@ test('inventory viewer receives searchable cards, scan and read-only complete de
     'R410A 冷媒用铜管', 'CU-6MM', 'R410A', '6mm', '铜', '米',
     '20', `SWERP:VARIANT:${IDS.variant}`, 'MAKER-CU-6', '扫描二维码',
     '本社仓', '普通仓库', 'A区一号架', 'A项目现场仓', '项目现场仓',
-    '现场材料区', '共享工具仓',
+    '现场材料区（ZONE-1） · 启用', '共享工具仓',
   ]) assert.match(html, new RegExp(text, 'u'), text)
 
   assert.match(html, /class="[^"]*warehouse-catalog-photo-carousel/u)

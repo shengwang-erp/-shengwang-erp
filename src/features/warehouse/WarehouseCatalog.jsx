@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import './warehouse.css'
 import WarehouseLabelSheet from './WarehouseLabelSheet.jsx'
@@ -54,6 +54,15 @@ const locationDraft = (location = {}, warehouseId = '') => ({
 
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? ''
 const errorMessage = (error) => error?.message || '操作失败，请重试'
+const photoMutationPayload = (photo) => ({
+  id: photo.id,
+  variantId: photo.variantId,
+  objectPath: photo.objectPath,
+  sortOrder: photo.sortOrder,
+  mimeType: photo.mimeType,
+  byteSize: photo.byteSize,
+  createdAt: photo.createdAt,
+})
 
 export function filterWarehouseCatalogItems(catalog = EMPTY_CATALOG, query = '') {
   const items = Array.isArray(catalog?.items) ? catalog.items : []
@@ -101,6 +110,26 @@ export default function WarehouseCatalog({
   ))
   const canManageCatalog = manageCatalog === true
   const effectiveViewCost = canManageCatalog || viewCost === true
+  const mountedRef = useRef(false)
+  const photoGenerationRef = useRef(new Map())
+  const catalogRef = useRef(catalog)
+  catalogRef.current = catalog
+  const issuePhotoGeneration = useCallback((variantId) => {
+    const token = (photoGenerationRef.current.get(variantId) ?? 0) + 1
+    photoGenerationRef.current.set(variantId, token)
+    return token
+  }, [])
+  const isCurrentPhotoGeneration = useCallback((variantId, token) => (
+    mountedRef.current && photoGenerationRef.current.get(variantId) === token
+  ), [])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      photoGenerationRef.current.clear()
+    }
+  }, [])
 
   useEffect(() => {
     if (initialCatalog || typeof warehouseService?.listCatalog !== 'function') return undefined
@@ -150,13 +179,21 @@ export default function WarehouseCatalog({
       || initialPhotosByVariant?.[selectedVariant.id]
       || typeof warehouseMediaService?.listVariantPhotos !== 'function'
     ) return undefined
+    const variantId = selectedVariant.id
+    const token = issuePhotoGeneration(variantId)
     let active = true
-    setPhotosByVariant((current) => ({ ...current, [selectedVariant.id]: [] }))
-    warehouseMediaService.listVariantPhotos(selectedVariant.id).then((next) => {
-      if (active) setPhotosByVariant((current) => ({ ...current, [selectedVariant.id]: next }))
-    }).catch((error) => active && setMessage(errorMessage(error)))
+    setPhotosByVariant((current) => ({ ...current, [variantId]: [] }))
+    warehouseMediaService.listVariantPhotos(variantId).then((next) => {
+      if (active && isCurrentPhotoGeneration(variantId, token)) {
+        setPhotosByVariant((current) => ({ ...current, [variantId]: next }))
+      }
+    }).catch((error) => {
+      if (active && isCurrentPhotoGeneration(variantId, token)) {
+        setMessage(errorMessage(error))
+      }
+    })
     return () => { active = false }
-  }, [initialPhotosByVariant, selectedVariant?.id, warehouseMediaService])
+  }, [initialPhotosByVariant, isCurrentPhotoGeneration, issuePhotoGeneration, selectedVariant?.id, warehouseMediaService])
 
   const chooseItem = (item) => {
     const firstVariant = catalog.variants.find((variant) => variant.itemId === item.id)
@@ -185,11 +222,17 @@ export default function WarehouseCatalog({
   }))
   const submitItem = async (event) => {
     event.preventDefault()
+    const creating = !itemForm.id
     try {
       const saved = await warehouseService.saveItem({ ...itemForm, id: itemForm.id || createId() })
       replaceItem(saved)
       setSelectedItemId(saved.id)
       setItemForm(itemDraft(saved))
+      if (creating) {
+        setSelectedVariantId('')
+        setVariantForm(variantDraft({}, saved.id))
+        setLabelVariant(null)
+      }
       setMessage('物品已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
@@ -259,18 +302,25 @@ export default function WarehouseCatalog({
       setMessage('货架区已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
-  const refreshPhotos = async (variantId) => {
+  const refreshPhotos = async (variantId, token) => {
+    if (!isCurrentPhotoGeneration(variantId, token)) return false
+    setPhotosByVariant((current) => ({ ...current, [variantId]: [] }))
     const next = await warehouseMediaService.listVariantPhotos(variantId)
+    if (!isCurrentPhotoGeneration(variantId, token)) return false
     setPhotosByVariant((current) => ({ ...current, [variantId]: next }))
+    return true
   }
   const uploadPhoto = async (event) => {
     const file = event.target.files?.[0]
     if (!file || !selectedVariant) return
+    const variantId = selectedVariant.id
+    const token = issuePhotoGeneration(variantId)
     try {
-      await warehouseMediaService.uploadVariantPhoto({ variantId: selectedVariant.id, file })
-      await refreshPhotos(selectedVariant.id)
-      setMessage('照片已上传')
-    } catch (error) { setMessage(errorMessage(error)) }
+      await warehouseMediaService.uploadVariantPhoto({ variantId, file })
+      if (await refreshPhotos(variantId, token)) setMessage('照片已上传')
+    } catch (error) {
+      if (isCurrentPhotoGeneration(variantId, token)) setMessage(errorMessage(error))
+    }
     event.target.value = ''
   }
   const movePhoto = async (index, offset) => {
@@ -278,28 +328,42 @@ export default function WarehouseCatalog({
     if (!selectedVariant || target < 0 || target >= photos.length) return
     const next = [...photos]
     ;[next[index], next[target]] = [next[target], next[index]]
+    const variantId = selectedVariant.id
+    const token = issuePhotoGeneration(variantId)
     try {
       await warehouseMediaService.reorderVariantPhotos(
-        selectedVariant.id,
+        variantId,
         next.map((photo) => photo.id),
       )
-      await refreshPhotos(selectedVariant.id)
-    } catch (error) { setMessage(errorMessage(error)) }
+      await refreshPhotos(variantId, token)
+    } catch (error) {
+      if (isCurrentPhotoGeneration(variantId, token)) setMessage(errorMessage(error))
+    }
   }
   const deletePhoto = async (photo) => {
+    const token = issuePhotoGeneration(photo.variantId)
     try {
-      await warehouseMediaService.deleteVariantPhoto(photo)
-      await refreshPhotos(photo.variantId)
-      setMessage('照片已删除')
-    } catch (error) { setMessage(errorMessage(error)) }
+      await warehouseMediaService.deleteVariantPhoto(photoMutationPayload(photo))
+      if (await refreshPhotos(photo.variantId, token)) setMessage('照片已删除')
+    } catch (error) {
+      if (isCurrentPhotoGeneration(photo.variantId, token)) setMessage(errorMessage(error))
+    }
   }
-  const scannerResolved = (resolution) => {
-    const item = catalog.items.find((candidate) => candidate.id === resolution.itemId)
-    const variant = catalog.variants.find((candidate) => candidate.id === resolution.id)
-    if (item) chooseItem(item)
-    if (variant) chooseVariant(variant)
+  const scannerResolved = useCallback((resolution) => {
+    const currentCatalog = catalogRef.current
+    const item = currentCatalog.items.find((candidate) => candidate.id === resolution.itemId)
+    const variant = currentCatalog.variants.find((candidate) => candidate.id === resolution.id)
+    if (item) {
+      setSelectedItemId(item.id)
+      setItemForm(itemDraft(item))
+    }
+    if (variant && variant.itemId === item?.id) {
+      setSelectedVariantId(variant.id)
+      setVariantForm(variantDraft(variant, variant.itemId))
+    }
+    setLabelVariant(null)
     setScannerOpen(false)
-  }
+  }, [])
   const label = labelVariant && selectedItem ? {
     companyName,
     itemName: selectedItem.name,
@@ -368,7 +432,7 @@ export default function WarehouseCatalog({
         <div className="warehouse-catalog-site-grid">{locationData.sites.map((site) => <article key={site.id} className="warehouse-catalog-site-card">
           <div className="warehouse-catalog-site-actions"><h4>{site.name}</h4>{canManageCatalog && <button type="button" aria-label={`编辑仓库 ${site.name}`} onClick={() => setSiteForm(siteDraft(site))}>编辑仓库</button>}</div>
           <p>{SITE_KIND_LABELS[site.kind]} · {site.code} · {site.active ? '启用' : '停用'}</p>
-          <ul>{locationData.locations.filter((location) => location.warehouseId === site.id).map((location) => <li key={location.id} className="warehouse-catalog-shelf-row"><span>{location.shelfName}（{location.shelfCode}）</span>{canManageCatalog && <button type="button" aria-label={`编辑货架区 ${location.shelfName}`} onClick={() => setShelfForm(locationDraft(location))}>编辑货架区</button>}</li>)}</ul>
+          <ul>{locationData.locations.filter((location) => location.warehouseId === site.id).map((location) => <li key={location.id} className="warehouse-catalog-shelf-row"><span>{location.shelfName}（{location.shelfCode}） · {location.active ? '启用' : '停用'}</span>{canManageCatalog && <button type="button" aria-label={`编辑货架区 ${location.shelfName}`} onClick={() => setShelfForm(locationDraft(location))}>编辑货架区</button>}</li>)}</ul>
         </article>)}</div>
         {canManageCatalog && <div className="warehouse-catalog-site-forms"><form className="warehouse-catalog-form" onSubmit={submitSite}><h3>仓库资料</h3><div className="warehouse-catalog-form-grid"><Field label="仓库编码"><input required value={siteForm.code} onChange={(event) => setSiteForm({ ...siteForm, code: event.target.value })} /></Field><Field label="仓库名称"><input required value={siteForm.name} onChange={(event) => setSiteForm({ ...siteForm, name: event.target.value })} /></Field><Field label="仓库类型"><select value={siteForm.kind} onChange={(event) => setSiteForm({ ...siteForm, kind: event.target.value })}><option value="normal">普通仓库</option><option value="project_site">项目现场仓</option><option value="shared_tool">共享工具仓</option></select></Field><Field label="启用状态"><input type="checkbox" checked={siteForm.active} onChange={(event) => setSiteForm({ ...siteForm, active: event.target.checked })} /></Field></div><button type="submit">保存仓库</button></form>
           <form className="warehouse-catalog-form" onSubmit={submitShelf}><h3>货架区资料</h3><div className="warehouse-catalog-form-grid"><Field label="所属仓库"><select required value={shelfForm.warehouseId} onChange={(event) => setShelfForm({ ...shelfForm, warehouseId: event.target.value })}>{locationData.sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></Field><Field label="货架编码"><input required value={shelfForm.shelfCode} onChange={(event) => setShelfForm({ ...shelfForm, shelfCode: event.target.value })} /></Field><Field label="货架名称"><input required value={shelfForm.shelfName} onChange={(event) => setShelfForm({ ...shelfForm, shelfName: event.target.value })} /></Field><Field label="启用状态"><input type="checkbox" checked={shelfForm.active} onChange={(event) => setShelfForm({ ...shelfForm, active: event.target.checked })} /></Field></div><button type="submit">保存货架区</button></form></div>}

@@ -11,6 +11,8 @@ export class TestEvent {
     this.defaultPrevented = false
     this.target = null
     this.currentTarget = null
+    this.key = options.key ?? ''
+    this.shiftKey = options.shiftKey === true
   }
 
   preventDefault() { if (this.cancelable) this.defaultPrevented = true }
@@ -81,6 +83,9 @@ class TestNode {
     return this.parentNode.childNodes[index + 1] ?? null
   }
 
+  get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null }
+  get children() { return this.childNodes.filter((child) => child.nodeType === 1) }
+
   get textContent() {
     if (this.nodeType === 3 || this.nodeType === 8) return this.nodeValue
     return this.childNodes.map((child) => child.textContent).join('')
@@ -138,6 +143,25 @@ class TestElement extends TestNode {
       for (const child of node.childNodes) {
         if (child.nodeName === 'OPTION') result.push(child)
         else collect(child)
+      }
+    }
+    collect(this)
+    return result
+  }
+  querySelectorAll() {
+    const result = []
+    const collect = (node) => {
+      for (const child of node.childNodes) {
+        if (
+          child.nodeType === 1
+          && !child.disabled
+          && (
+            child.nodeName === 'BUTTON'
+            || child.nodeName === 'INPUT'
+            || (child.hasAttribute('tabindex') && child.getAttribute('tabindex') !== '-1')
+          )
+        ) result.push(child)
+        collect(child)
       }
     }
     collect(this)

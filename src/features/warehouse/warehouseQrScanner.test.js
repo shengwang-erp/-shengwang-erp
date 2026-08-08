@@ -9,6 +9,7 @@ import { createServer } from 'vite'
 import {
   findWarehouseTestElement,
   installWarehouseReactDom,
+  TestEvent,
 } from './warehouseReactDomTestUtils.js'
 
 const source = await readFile(
@@ -1213,7 +1214,7 @@ test('effect startup microtask cancels an unmounted scanner before loading the c
   }
 
   try {
-    await act(async () => { root.render(createElement(Harness)) })
+    await act(async () => { root.render(createElement(StrictMode, null, createElement(Harness))) })
     assert.equal(loaderCalls, 0)
   } finally {
     await act(async () => { root.unmount() })
@@ -1378,6 +1379,120 @@ test('React gives every restarted or reopened camera session a distinct keyed vi
 
     assert.ok(secondVideo)
     assert.notEqual(secondVideo, restartedVideo)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('scanner dialog traps boundary focus, closes on Escape, and restores its surviving trigger', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const loadZxing = async () => ({})
+  const warehouseService = { resolveQr: async () => null }
+  const onResolved = () => {}
+  let mounted = true
+  function Harness() {
+    const [open, setOpen] = useState(false)
+    return createElement('div', null,
+      createElement('button', { type: 'button', onClick: () => setOpen(true) }, '打开扫码'),
+      createElement(scannerModule.default, {
+        open,
+        loadZxing,
+        warehouseService,
+        onResolved,
+        onClose: () => setOpen(false),
+      }),
+    )
+  }
+  try {
+    await act(async () => { root.render(createElement(Harness)) })
+    const trigger = findWarehouseTestElement(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '打开扫码')
+    trigger.focus()
+    await act(async () => { trigger.click() })
+    const dialog = findWarehouseTestElement(container, (element) => element.className === 'warehouse-qr-scanner')
+    const closeButton = findWarehouseTestElement(dialog, (element) => element.nodeName === 'BUTTON' && element.textContent === '关闭')
+    const queryButton = findWarehouseTestElement(dialog, (element) => element.nodeName === 'BUTTON' && element.textContent === '查询')
+    const initialFocus = dom.document.activeElement
+    const backgroundWasIsolated = trigger.inert === true && trigger.getAttribute('aria-hidden') === 'true'
+
+    queryButton.focus()
+    await act(async () => { dialog.dispatchEvent(new TestEvent('keydown', { key: 'Tab' })) })
+    const forwardWrap = dom.document.activeElement
+    closeButton.focus()
+    await act(async () => { dialog.dispatchEvent(new TestEvent('keydown', { key: 'Tab', shiftKey: true })) })
+    const backwardWrap = dom.document.activeElement
+
+    await act(async () => { dialog.dispatchEvent(new TestEvent('keydown', { key: 'Escape' })) })
+    const escaped = findWarehouseTestElement(container, (element) => element.className === 'warehouse-qr-scanner') === null
+    if (!escaped) {
+      await act(async () => { closeButton.click() })
+    }
+    const restoredFocus = dom.document.activeElement
+    const backgroundWasRestored = trigger.inert !== true && trigger.getAttribute('aria-hidden') === null
+    await act(async () => { root.unmount() })
+    mounted = false
+
+    assert.equal(initialFocus, closeButton)
+    assert.equal(backgroundWasIsolated, true)
+    assert.equal(forwardWrap, closeButton)
+    assert.equal(backwardWrap, queryButton)
+    assert.equal(escaped, true)
+    assert.equal(restoredFocus, trigger)
+    assert.equal(backgroundWasRestored, true)
+  } finally {
+    if (mounted) root.unmount()
+    dom.cleanup()
+  }
+})
+
+test('modal isolation stack restores the underlying scanner before the page in nested order', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const loadZxing = async () => ({})
+  const warehouseService = { resolveQr: async () => null }
+  const onResolved = () => {}
+  const collectDialogs = (node, result = []) => {
+    if (node?.nodeType === 1 && node.className === 'warehouse-qr-scanner') result.push(node)
+    for (const child of node?.childNodes ?? []) collectDialogs(child, result)
+    return result
+  }
+  function Harness() {
+    const [firstOpen, setFirstOpen] = useState(false)
+    const [secondOpen, setSecondOpen] = useState(false)
+    return createElement('div', null,
+      createElement('button', { type: 'button', onClick: () => setFirstOpen(true) }, '打开第一层'),
+      createElement('button', { type: 'button', onClick: () => setSecondOpen(true) }, '打开第二层'),
+      createElement(scannerModule.default, { open: firstOpen, loadZxing, warehouseService, onResolved, onClose: () => setFirstOpen(false) }),
+      createElement(scannerModule.default, { open: secondOpen, loadZxing, warehouseService, onResolved, onClose: () => setSecondOpen(false) }),
+    )
+  }
+  try {
+    await act(async () => { root.render(createElement(Harness)) })
+    const firstTrigger = findWarehouseTestElement(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '打开第一层')
+    const secondTrigger = findWarehouseTestElement(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '打开第二层')
+    firstTrigger.focus()
+    await act(async () => { firstTrigger.click() })
+    const firstDialog = collectDialogs(container)[0]
+    const firstClose = findWarehouseTestElement(firstDialog, (element) => element.nodeName === 'BUTTON' && element.textContent === '关闭')
+    firstClose.focus()
+
+    await act(async () => { secondTrigger.click() })
+    const dialogs = collectDialogs(container)
+    const secondDialog = dialogs[1]
+    assert.equal(firstDialog.inert, true)
+    assert.equal(dom.document.activeElement, findWarehouseTestElement(secondDialog, (element) => element.nodeName === 'BUTTON' && element.textContent === '关闭'))
+
+    await act(async () => { secondDialog.dispatchEvent(new TestEvent('keydown', { key: 'Escape' })) })
+    assert.deepEqual(collectDialogs(container), [firstDialog])
+    assert.equal(firstDialog.inert, false)
+    assert.equal(dom.document.activeElement, firstClose)
+
+    await act(async () => { firstDialog.dispatchEvent(new TestEvent('keydown', { key: 'Escape' })) })
+    assert.deepEqual(collectDialogs(container), [])
+    assert.equal(dom.document.activeElement, firstTrigger)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
