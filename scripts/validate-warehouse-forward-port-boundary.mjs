@@ -187,7 +187,10 @@ function addPatternBindings(pattern, scope, binding, bindingIdentifiers) {
   if (!pattern || !scope) return
   if (pattern.type === 'Identifier') {
     bindingIdentifiers.add(pattern)
-    scope.bindings.set(pattern.name, binding)
+    const existing = scope.bindings.get(pattern.name)
+    if (binding.kind === 'var' && existing && ['parameter', 'var'].includes(existing.kind)) return
+    const storedBinding = { assignments: [], ...binding }
+    scope.bindings.set(pattern.name, storedBinding)
     return
   }
   if (pattern.type === 'RestElement') {
@@ -195,7 +198,12 @@ function addPatternBindings(pattern, scope, binding, bindingIdentifiers) {
     return
   }
   if (pattern.type === 'AssignmentPattern') {
-    addPatternBindings(pattern.left, scope, { ...binding, initializer: null }, bindingIdentifiers)
+    addPatternBindings(
+      pattern.left,
+      scope,
+      { ...binding, initializer: pattern.right, initializerScope: scope },
+      bindingIdentifiers,
+    )
     return
   }
   if (pattern.type === 'ArrayPattern') {
@@ -221,8 +229,10 @@ function nearestVarScope(scope) {
 function buildLexicalScopes(ast) {
   const scopes = new WeakMap()
   const bindingIdentifiers = new WeakSet()
+  const parents = new WeakMap()
   const visit = (node, parent = null, currentScope = null) => {
     if (!node || typeof node !== 'object') return
+    if (parent) parents.set(node, parent)
 
     if (node.type === 'FunctionDeclaration' && node.id && currentScope) {
       addPatternBindings(
@@ -313,7 +323,84 @@ function buildLexicalScopes(ast) {
     }
   }
   visit(ast)
-  return { scopes, bindingIdentifiers }
+  collectMutableAssignments(ast, scopes, parents)
+  return { scopes, bindingIdentifiers, parents }
+}
+
+function nearestExecutionScope(scope) {
+  let current = scope
+  while (current && !['function', 'program'].includes(current.type)) current = current.parent
+  return current
+}
+
+function scopeIsAncestor(ancestor, scope) {
+  let current = scope
+  while (current) {
+    if (current === ancestor) return true
+    current = current.parent
+  }
+  return false
+}
+
+function eventIsConditional(node, parents) {
+  let child = node
+  let parent = parents.get(child)
+  while (parent && !FUNCTION_NODE_TYPES.has(parent.type) && parent.type !== 'Program') {
+    if (parent.type === 'IfStatement' && child !== parent.test) return true
+    if (parent.type === 'ConditionalExpression' && child !== parent.test) return true
+    if (parent.type === 'LogicalExpression' && child === parent.right) return true
+    if (
+      ['DoWhileStatement', 'ForInStatement', 'ForOfStatement', 'SwitchCase', 'WhileStatement'].includes(parent.type)
+    ) return true
+    if (parent.type === 'ForStatement' && child !== parent.init) return true
+    if (['CatchClause', 'TryStatement'].includes(parent.type)) return true
+    child = parent
+    parent = parents.get(parent)
+  }
+  return false
+}
+
+function collectMutableAssignments(ast, scopes, parents) {
+  walkAst(ast, (node, parent) => {
+    const scope = scopes.get(node)
+    if (
+      node.type === 'VariableDeclarator'
+      && parent?.type === 'VariableDeclaration'
+      && node.id?.type === 'Identifier'
+      && ['let', 'var'].includes(parent.kind)
+      && node.init
+    ) {
+      const binding = findBinding(scope, node.id.name)
+      binding?.assignments.push({
+        node,
+        value: node.init,
+        scope,
+        conditional: eventIsConditional(node, parents),
+      })
+    }
+    if (node.type === 'AssignmentExpression' && node.left?.type === 'Identifier') {
+      const binding = findBinding(scope, node.left.name)
+      if (binding && ['let', 'var'].includes(binding.kind)) {
+        binding.assignments.push({
+          node,
+          value: node.operator === '=' ? node.right : null,
+          scope,
+          conditional: eventIsConditional(node, parents),
+        })
+      }
+    }
+    if (node.type === 'UpdateExpression' && node.argument?.type === 'Identifier') {
+      const binding = findBinding(scope, node.argument.name)
+      if (binding && ['let', 'var'].includes(binding.kind)) {
+        binding.assignments.push({
+          node,
+          value: null,
+          scope,
+          conditional: eventIsConditional(node, parents),
+        })
+      }
+    }
+  })
 }
 
 function findBinding(scope, name) {
@@ -349,20 +436,91 @@ function resolveStaticString(node, scope, resolvingBindings = new Set()) {
   return null
 }
 
-function resolvesToBrowserGlobal(node, scope, resolvingBindings = new Set()) {
-  if (node?.type !== 'Identifier') return false
-  const binding = findBinding(scope, node.name)
-  if (!binding) return BROWSER_GLOBAL_NAMES.has(node.name)
-  if (binding.kind !== 'const' || !binding.initializer) return false
-  if (resolvingBindings.has(binding)) return false
-  resolvingBindings.add(binding)
-  const result = resolvesToBrowserGlobal(
-    binding.initializer,
-    binding.initializerScope,
-    resolvingBindings,
-  )
-  resolvingBindings.delete(binding)
-  return result
+function aliasState(kind, alias = null) {
+  return { kind, alias }
+}
+
+function mergeConditionalAliasState(current, next, alias) {
+  if (current.kind === next.kind) {
+    if (current.kind === 'unresolved') return aliasState('unresolved', alias)
+    return current
+  }
+  if (
+    ['browser', 'unresolved'].includes(current.kind)
+    || ['browser', 'unresolved'].includes(next.kind)
+  ) {
+    return aliasState('unresolved', alias)
+  }
+  return aliasState('unknown', alias)
+}
+
+function applyUnconditionalAliasState(current, next, alias) {
+  if (next.kind === 'unknown' && ['browser', 'unresolved'].includes(current.kind)) {
+    return aliasState('unresolved', alias)
+  }
+  return next.kind === 'unresolved'
+    ? aliasState('unresolved', next.alias ?? alias)
+    : next
+}
+
+function resolveMutableAlias(binding, name, scope, usageNode, resolvingBindings) {
+  let state = aliasState('ordinary', name)
+  const usageStart = usageNode?.start ?? Number.POSITIVE_INFINITY
+  const usageExecutionScope = nearestExecutionScope(scope)
+  const events = [...binding.assignments].sort((left, right) => left.node.start - right.node.start)
+  for (const event of events) {
+    if ((event.node.start ?? Number.POSITIVE_INFINITY) >= usageStart) continue
+    const eventExecutionScope = nearestExecutionScope(event.scope)
+    const crossesExecutionBoundary = eventExecutionScope !== usageExecutionScope
+      && !scopeIsAncestor(eventExecutionScope, usageExecutionScope)
+    const next = event.value
+      ? resolveBrowserAlias(event.value, event.scope, event.node, resolvingBindings)
+      : aliasState('unknown', name)
+    state = event.conditional || crossesExecutionBoundary
+      ? mergeConditionalAliasState(state, next, name)
+      : applyUnconditionalAliasState(state, next, name)
+  }
+  return state
+}
+
+function resolveBrowserAlias(node, scope, usageNode = node, resolvingBindings = new Set()) {
+  if (!node) return aliasState('unknown')
+  if (node.type === 'Identifier') {
+    const binding = findBinding(scope, node.name)
+    if (!binding) {
+      return BROWSER_GLOBAL_NAMES.has(node.name)
+        ? aliasState('browser', node.name)
+        : aliasState('unknown', node.name)
+    }
+    if (resolvingBindings.has(binding)) return aliasState('unresolved', node.name)
+    resolvingBindings.add(binding)
+    let result
+    if (['let', 'var'].includes(binding.kind)) {
+      result = resolveMutableAlias(binding, node.name, scope, usageNode, resolvingBindings)
+    } else if (binding.initializer) {
+      result = resolveBrowserAlias(
+        binding.initializer,
+        binding.initializerScope,
+        binding.initializer,
+        resolvingBindings,
+      )
+    } else {
+      result = aliasState('unknown', node.name)
+    }
+    resolvingBindings.delete(binding)
+    return result
+  }
+  if (
+    node.type === 'ObjectExpression'
+    || node.type === 'ArrayExpression'
+    || node.type === 'FunctionExpression'
+    || node.type === 'ArrowFunctionExpression'
+    || node.type === 'ClassExpression'
+    || node.type === 'UnaryExpression'
+    || node.type === 'BinaryExpression'
+    || node.type.endsWith('Literal')
+  ) return aliasState('ordinary')
+  return aliasState('unknown')
 }
 
 function propertyNamesLocalStorage(property, scope) {
@@ -385,41 +543,53 @@ function isLocalStorageReference(
   if (
     node.type === 'VariableDeclarator'
     && node.id?.type === 'ObjectPattern'
-    && resolvesToBrowserGlobal(node.init, scope)
+    && node.id.properties.some((property) => propertyNamesLocalStorage(property, scope))
   ) {
-    return node.id.properties.some((property) => propertyNamesLocalStorage(property, scope))
+    const alias = resolveBrowserAlias(node.init, scope, node)
+    if (alias.kind === 'browser') return { usesLocalStorage: true, unresolvedAlias: null }
+    if (alias.kind === 'unresolved') {
+      return { usesLocalStorage: false, unresolvedAlias: alias.alias ?? 'unknown' }
+    }
+    return null
   }
   if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
     const property = node.property
-    if (!resolvesToBrowserGlobal(node.object, scope)) return false
-    if (!node.computed) {
-      return property?.type === 'Identifier' && property.name === 'localStorage'
+    const propertyNamesStorage = !node.computed
+      ? property?.type === 'Identifier' && property.name === 'localStorage'
+      : (() => {
+          const propertyName = resolveStaticString(property, scope)
+          return propertyName === null || propertyName === 'localStorage'
+        })()
+    if (!propertyNamesStorage) return null
+    const alias = resolveBrowserAlias(node.object, scope, node)
+    if (alias.kind === 'browser') return { usesLocalStorage: true, unresolvedAlias: null }
+    if (alias.kind === 'unresolved') {
+      return { usesLocalStorage: false, unresolvedAlias: alias.alias ?? 'unknown' }
     }
-    const propertyName = resolveStaticString(property, scope)
-    return propertyName === null || propertyName === 'localStorage'
+    return null
   }
-  if (node.type !== 'Identifier' || node.name !== 'localStorage') return false
-  if (bindingIdentifiers.has(node) || findBinding(scope, node.name)) return false
+  if (node.type !== 'Identifier' || node.name !== 'localStorage') return null
+  if (bindingIdentifiers.has(node) || findBinding(scope, node.name)) return null
   if (
     (parent?.type === 'MemberExpression' || parent?.type === 'OptionalMemberExpression')
     && parentKey === 'property'
     && !parent.computed
-  ) return false
+  ) return null
   if (
     (parent?.type === 'ObjectProperty' || parent?.type === 'ObjectMethod')
     && parentKey === 'key'
     && !parent.computed
-  ) return false
+  ) return null
   if (
     ['ClassMethod', 'ClassPrivateMethod', 'ClassProperty', 'ObjectProperty'].includes(parent?.type)
     && parentKey === 'key'
     && !parent.computed
-  ) return false
+  ) return null
   if (
     ['BreakStatement', 'ContinueStatement', 'LabeledStatement'].includes(parent?.type)
     && parentKey === 'label'
-  ) return false
-  return true
+  ) return null
+  return { usesLocalStorage: true, unresolvedAlias: null }
 }
 
 function analyzeModule(source, file) {
@@ -438,6 +608,7 @@ function analyzeModule(source, file) {
   const unresolvedDependencies = []
   const { scopes, bindingIdentifiers } = buildLexicalScopes(ast)
   let usesLocalStorage = false
+  const unresolvedBrowserAliases = []
   walkAst(ast, (node, parent, parentKey) => {
     const scope = scopes.get(node)
     if (
@@ -474,20 +645,23 @@ function analyzeModule(source, file) {
         )
       }
     }
-    if (
-      isLocalStorageReference(
-        node,
-        parent,
-        parentKey,
-        scope,
-        bindingIdentifiers,
-      )
-    ) usesLocalStorage = true
+    const localStorageReference = isLocalStorageReference(
+      node,
+      parent,
+      parentKey,
+      scope,
+      bindingIdentifiers,
+    )
+    if (localStorageReference?.usesLocalStorage) usesLocalStorage = true
+    if (localStorageReference?.unresolvedAlias) {
+      unresolvedBrowserAliases.push(localStorageReference.unresolvedAlias)
+    }
 
   })
   return {
     dependencies: [...new Set(dependencies)],
     unresolvedDependencies: [...new Set(unresolvedDependencies)],
+    unresolvedBrowserAliases: [...new Set(unresolvedBrowserAliases)],
     usesLocalStorage,
   }
 }
@@ -495,7 +669,12 @@ function analyzeModule(source, file) {
 async function readModule(absolutePath, relativePath) {
   const extension = path.extname(absolutePath)
   if (!MODULE_EXTENSIONS.has(extension)) {
-    return { dependencies: [], unresolvedDependencies: [], usesLocalStorage: false }
+    return {
+      dependencies: [],
+      unresolvedDependencies: [],
+      unresolvedBrowserAliases: [],
+      usesLocalStorage: false,
+    }
   }
   const source = await readFile(absolutePath, 'utf8')
   return analyzeModule(source, relativePath)
@@ -581,6 +760,14 @@ async function auditSource(manifest, sourceRootValue) {
     if (analysis.unresolvedDependencies.length > 0) {
       fail(
         `Unresolved dynamic dependency: ${entry.source} -> ${analysis.unresolvedDependencies[0]}`,
+      )
+    }
+    if (
+      analysis.unresolvedBrowserAliases.length > 0
+      && localStorageIsForbidden(manifest, 'source')
+    ) {
+      fail(
+        `Unresolved browser-global alias: ${entry.source} -> ${analysis.unresolvedBrowserAliases[0]}`,
       )
     }
     if (analysis.usesLocalStorage && localStorageIsForbidden(manifest, 'source')) {
@@ -722,6 +909,11 @@ async function auditDestination(manifest, destinationRootValue, destinationStage
     if (analysis.unresolvedDependencies.length > 0) {
       fail(
         `Unresolved dynamic dependency: ${current} -> ${analysis.unresolvedDependencies[0]}`,
+      )
+    }
+    if (analysis.unresolvedBrowserAliases.length > 0 && rejectLocalStorage) {
+      fail(
+        `Unresolved browser-global alias: ${current} -> ${analysis.unresolvedBrowserAliases[0]}`,
       )
     }
     if (analysis.usesLocalStorage && rejectLocalStorage) {

@@ -370,6 +370,12 @@ for (const [fixture, behavior] of [
   ['local-storage-var', 'a var binding named localStorage shadows the true global'],
   ['local-storage-parameter', 'a localStorage function parameter shadows the true global'],
   ['catch-shadow', 'a catch parameter named localStorage shadows the true global'],
+  ['parameter-no-default-global-name', 'a browser-global-named parameter without a default'],
+  ['let-safe-overwrite', 'an unconditional ordinary-object overwrite of a let browser alias'],
+  ['var-safe-overwrite', 'an unconditional ordinary-object overwrite of a var browser alias'],
+  ['block-let-safe-overwrite', 'an unconditional block-local overwrite of a let browser alias'],
+  ['var-block-safe-overwrite', 'an unconditional overwrite of a block-declared function-scoped var alias'],
+  ['var-use-before-block-initializer', 'a hoisted var before its block initializer becomes a browser alias'],
 ]) {
   test(`destination audit permits ${behavior}`, () => {
     const result = runLexicalLocalStorageFixture(fixture)
@@ -386,6 +392,14 @@ for (const [fixture, behavior] of [
   ['bare-global', 'an unbound bare localStorage identifier'],
   ['local-storage-from-browser', 'a localStorage binding initialized from a browser global'],
   ['catch-browser-access', 'a browser-global access inside a catch scope'],
+  ['parameter-default-global', 'a parameter whose default is globalThis'],
+  ['parameter-shadowed-default', 'a globalThis-named parameter whose default is the true window'],
+  ['let-browser-alias', 'a function-local let browser-global alias'],
+  ['var-browser-alias', 'a function-local var browser-global alias'],
+  ['block-let-browser-alias', 'a block-local let browser-global alias'],
+  ['let-use-before-safe-overwrite', 'a let browser alias used before its safe overwrite'],
+  ['let-assigned-browser', 'a let binding assigned a browser global before use'],
+  ['var-block-browser-alias', 'a block-declared var alias hoisted to its function scope'],
 ]) {
   test(`destination audit rejects ${behavior}`, () => {
     const result = runLexicalLocalStorageFixture(fixture)
@@ -394,6 +408,22 @@ for (const [fixture, behavior] of [
     assert.equal(
       result.stderr,
       'Forbidden runtime dependency: src/features/warehouse/main.js -> localStorage',
+    )
+  })
+}
+
+for (const [fixture, alias] of [
+  ['let-conditional-safe-overwrite', 'browser'],
+  ['let-unknown-overwrite', 'browser'],
+  ['browser-alias-cycle', 'a'],
+]) {
+  test(`destination audit fails closed with an exact unresolved alias for ${fixture}`, () => {
+    const result = runLexicalLocalStorageFixture(fixture)
+
+    assert.notEqual(result.status, 0)
+    assert.equal(
+      result.stderr,
+      `Unresolved browser-global alias: src/features/warehouse/main.js -> ${alias}`,
     )
   })
 }
