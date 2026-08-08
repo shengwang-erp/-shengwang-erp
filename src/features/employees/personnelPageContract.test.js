@@ -285,8 +285,11 @@ test('employee and template locks stay independent, aggregate with OR, and block
 
 test('App gives each employee-directory caller single ownership of auth-invalid logout', () => {
   const refreshStart = appSource.indexOf('const refreshPersonnelEmployees = useCallback')
-  const refreshEnd = appSource.indexOf('const personnelExitBlocked', refreshStart)
-  const effectStart = appSource.indexOf('useEffect(() => {', refreshEnd)
+  const refreshEnd = appSource.indexOf('const refreshProjectEmployeeDirectory', refreshStart)
+  const effectStart = appSource.indexOf(
+    'useEffect(() => {',
+    appSource.indexOf('const personnelExitBlocked', refreshEnd),
+  )
   const effectEnd = appSource.indexOf('const refreshStoredProjectsFromLocal', effectStart)
   const refreshSource = appSource.slice(refreshStart, refreshEnd)
   const initialLoadEffectSource = appSource.slice(effectStart, effectEnd)

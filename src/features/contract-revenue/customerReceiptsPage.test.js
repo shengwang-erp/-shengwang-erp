@@ -13,7 +13,7 @@ const [appSource, pageSource, sectionSource, serviceSource] = await Promise.all(
   readSource('../../services/contractRevenueService.js'),
 ])
 
-test('customer receipts use an independent section connected to the contract revenue page', () => {
+test('customer receipts are connected to the revenue page and mutations are update-gated', () => {
   assert.match(sectionSource, /function CustomerReceiptsSection/)
   assert.match(pageSource, /import CustomerReceiptsSection from/)
   assert.match(pageSource, /<CustomerReceiptsSection/)
@@ -22,8 +22,8 @@ test('customer receipts use an independent section connected to the contract rev
   assert.match(pageSource, /paymentPlans=\{paymentPlans\}/)
   assert.match(pageSource, /receipts=\{receipts\}/)
   assert.match(pageSource, /currentUser=\{currentUser\}/)
-  assert.match(pageSource, /onCreateCustomerReceipt=\{onCreateCustomerReceipt\}/)
-  assert.match(pageSource, /onVoidCustomerReceipt=\{onVoidCustomerReceipt\}/)
+  assert.match(pageSource, /onCreateCustomerReceipt=\{canUpdateFinancials \? onCreateCustomerReceipt : undefined\}/)
+  assert.match(pageSource, /onVoidCustomerReceipt=\{canUpdateFinancials \? onVoidCustomerReceipt : undefined\}/)
 })
 
 test('the receipt form exposes every required field and all four supported stages', () => {
@@ -81,7 +81,7 @@ test('receipt rows can only be voided with a reason and expose no edit or hard-d
   assert.doesNotMatch(sectionSource, /attachment|附件上传/)
 })
 
-test('App adds single-record create and void callbacks and refreshes receipts in record mode', () => {
+test('App adds single-record create and void callbacks to service-authoritative receipt state', () => {
   assert.match(
     appSource,
     /createProjectReceipt as persistCreateCustomerReceipt/,
@@ -92,8 +92,9 @@ test('App adds single-record create and void callbacks and refreshes receipts in
   )
   assert.match(
     appSource,
-    /const \[projectReceipts, setProjectReceipts\] = usePersistentState\(\s*STORAGE_KEYS\.projectReceipts,\s*\[\],\s*\{\s*\.\.\.persistenceOptions,\s*cloudPersistence:\s*'record',?\s*\}/,
+    /const \[projectReceipts, setProjectReceipts\] = useState\(\[\]\)/,
   )
+  assert.match(appSource, /Promise\.all\(\[loadContractChanges\(\), loadPaymentPlans\(\), loadProjectReceipts\(\)\]\)/)
   assert.match(appSource, /const handleCreateCustomerReceipt = async \(input\)/)
   assert.match(appSource, /await persistCreateCustomerReceipt\(input\)/)
   assert.match(appSource, /const handleVoidCustomerReceipt = async \(record, details\)/)

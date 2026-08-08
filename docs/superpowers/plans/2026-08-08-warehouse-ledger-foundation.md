@@ -6,20 +6,40 @@
 
 **Architecture:** Production writes go only through new warehouse RPCs backed by current Supabase Auth and `employee_profiles`. Pure source-branch domain functions are copied only after dependency classification and are used as calculation/validation code and test oracles; they do not perform production persistence.
 
+**Application baseline:** The exact uploaded source of production deployment `dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN`, created 2026-08-05 19:01:38 Asia/Tokyo and recovered in Task 0, is layered on the existing Git history. `d5953c546996dc9af73326fbe21c36062dca46d0` remains an auditable underlying commit, but is not by itself the complete application baseline.
+
 **Tech Stack:** JavaScript ES modules, Node test runner, Supabase Postgres 15, pgTAP.
 
 ---
+
+### Task 0: Recover the exact deployed second-version baseline
+
+**Files:**
+- Read-only deployment source: `/private/tmp/shengwang-deployment-source-dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN`
+- Create: `docs/superpowers/handoffs/2026-08-08-deployed-second-version-baseline.md`
+- Create: `.superpowers/sdd/2026-08-08-warehouse-ledger-foundation/task-00-report.md`
+- Modify: this plan, the roadmap, the warehouse design, and the warehouse checkpoint
+
+- [ ] Verify all 283 manifest-listed files against their recovered SHA-1 content identifiers and compare them with the integration worktree by content.
+- [ ] Import only missing or content-different files. Preserve warehouse plans and handoffs already committed after `d5953c5`; do not import `.env*`, `node_modules`, `.vercel`, build output, or `DEPLOYMENT_SOURCE_MANIFEST.json`.
+- [ ] Keep the tracked secret-free `.env.example`, record every imported path/hash, and prove excluded or secret-bearing paths did not enter the repository.
+- [ ] Characterize the pre-recovery test/build failures, correct only demonstrated recovery incompleteness or fixture mismatch, then run focused tests, `npm test`, and `npm run build`.
+- [ ] Commit the recovered baseline and provenance as one intentional Task 0 commit before starting Task 1.
 
 ### Task 1: Enforce the forward-port boundary
 
 **Files:**
 - Create: `docs/warehouse-forward-port-manifest.json`
-- Create: `src/features/warehouse/warehouseForwardPortBoundary.test.js`
+- Create: `scripts/validate-warehouse-forward-port-boundary.mjs`
+- Create: `scripts/validate-warehouse-forward-port-boundary.test.mjs`
+- Create fixtures: `scripts/fixtures/warehouse-forward-port-boundary/{valid,indirect-forbidden,dynamic-forbidden,path-escape,local-storage}/`
 - Read-only reference: `/Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management/src/features/warehouse/`
 
-- [ ] Write a failing test that loads the manifest and asserts every imported source path begins with `src/features/warehouse/`, every destination is warehouse-owned, and forbidden tokens are absent: `authSession`, `sessionOperationFence`, `cloudPersistenceCoordinator`, `baseRecordService`, `localStorage`, and source `App.jsx`.
+- [ ] Write fixture-based behavior tests that execute the validator as a process. The valid fixture must exit 0; fixtures containing a direct import, transitive import, dynamic import, path escape, or runtime `localStorage` dependency must exit nonzero with the exact offending edge and file.
+- [ ] Implement an executable dependency-boundary validator that loads the manifest, resolves every declared source/destination path, parses module imports and global references, traverses the complete destination dependency graph, and rejects undeclared or forbidden edges. Do not implement the boundary as grep or raw source-token assertions.
+- [ ] Keep the forbidden dependency semantics unchanged: source `App.jsx`, `authSession`, `sessionOperationFence`, `cloudPersistenceCoordinator`, `baseRecordService`, and `localStorage` remain forbidden. Every source path must resolve under `src/features/warehouse/`; every destination must resolve to a warehouse-owned path or an explicitly declared second-version adapter.
 - [ ] Add a manifest with four arrays: `pureCopy`, `adapt`, `rewrite`, and `forbidden`. Put `warehouseDate.js`, `warehouseQr.js`, `warehouseCatalog.js`, `warehouseDomain.js`, `warehousePage.js`, and `warehouseAccounting.js` in `pureCopy`; place React components, CSS, media, export, and operations in `adapt`; place permissions and confirmation service in `rewrite`; list all source shared files in `forbidden`.
-- [ ] Run `node --test src/features/warehouse/warehouseForwardPortBoundary.test.js` and confirm green.
+- [ ] Run `node --test scripts/validate-warehouse-forward-port-boundary.test.mjs` and `node scripts/validate-warehouse-forward-port-boundary.mjs --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management --destination-root .`; confirm both green.
 - [ ] Commit with message `test: lock warehouse forward-port boundary`.
 
 ### Task 2: Port pure warehouse rules without old runtime dependencies
@@ -104,10 +124,10 @@
 
 ## Phase 1 completion gate
 
-- [ ] `git diff d5953c5 -- src/auth src/services src/features/warehouse supabase` contains no first-version auth/session/persistence imports.
+- [ ] The Task 0 provenance audit still accounts for the exact recovered deployment baseline; later diffs are reviewed against the Task 0 baseline commit, not `d5953c5` alone.
+- [ ] `node scripts/validate-warehouse-forward-port-boundary.mjs --manifest docs/warehouse-forward-port-manifest.json --source-root /Users/yu/Documents/亚马逊请求书/.worktrees/warehouse-management --destination-root .` proves the destination dependency graph contains no forbidden first-version auth/session/persistence dependency.
 - [ ] `npm test` passes.
 - [ ] `npm run build` passes.
 - [ ] `npx supabase db reset` passes against the isolated local project.
 - [ ] `npx supabase test db supabase/tests/warehouse_permission_catalog.sql supabase/tests/warehouse_foundation.sql` passes.
 - [ ] `git status --short` contains only intentional committed changes.
-

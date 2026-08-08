@@ -4,7 +4,7 @@
 
 **Goal:** Add the complete warehouse-management capability to the exact online second-version ERP base without importing first-version authentication, shell, persistence, or unrelated modules.
 
-**Architecture:** Keep commit `d5953c546996dc9af73326fbe21c36062dca46d0` as the application base. Reuse only warehouse-owned pure domain rules and visual components from `07f478957b51f8393b4ad918de3329563fcdb601`; rebuild every authentication, permission, purchase, accounting, storage, and Supabase connection against the second-version contracts. Inventory is authoritative only through server transactions and an immutable movement ledger.
+**Architecture:** Keep the exact uploaded source of production deployment `dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN` (created 2026-08-05 19:01:38 Asia/Tokyo), recovered and audited in Task 0, as the application base layered on the existing Git history. Commit `d5953c546996dc9af73326fbe21c36062dca46d0` is only the underlying incomplete Git reference, not the complete application baseline. Reuse only warehouse-owned pure domain rules and visual components from `07f478957b51f8393b4ad918de3329563fcdb601`; rebuild every authentication, permission, purchase, accounting, storage, and Supabase connection against the recovered second-version contracts. Inventory is authoritative only through server transactions and an immutable movement ledger.
 
 **Tech Stack:** React 19, Vite 6, Supabase Auth/Postgres/Storage/RPC, Node test runner, pgTAP, ExcelJS, QRCode, ZXing Browser.
 
@@ -23,7 +23,7 @@
 ## Phase order and gates
 
 1. [Warehouse ledger foundation](./2026-08-08-warehouse-ledger-foundation.md)
-   - Pure warehouse rules, stable permissions, normalized warehouse schema, immutable ledger, read service.
+   - Task 0 first recovers and audits the exact deployed second-version source; later tasks add pure warehouse rules, stable permissions, normalized warehouse schema, immutable ledger, and the read service.
    - Gate: foundation pgTAP, unit tests, second-version auth/permission regressions, and production build pass.
 2. [Catalog, media, and QR](./2026-08-08-warehouse-catalog-media.md)
    - Item/variant/location master data, multiple photos, system/manufacturer QR, scan, label print.
@@ -99,4 +99,3 @@ The separate “未来社按月结算大项/小项目” feature stays in `docs/
 - [ ] Verify unauthorized, inactive, first-login-password-change, duplicate QR, insufficient stock, concurrent confirmation, and cross-warehouse requests fail closed.
 - [ ] Run `npm test`, `npm run build`, `npx supabase test db`, and the pollution scan in Phase 4.
 - [ ] Start the local preview on a dedicated port with the visible label `第二版 + 仓库移植测试` and obtain explicit user approval before planning any online release.
-

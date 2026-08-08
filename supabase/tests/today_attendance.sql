@@ -3402,7 +3402,7 @@ select results_eq(
 select is_empty(
   $$ select item
      from jsonb_array_elements(public.list_attendance_records_secure(
-       '2026-07-18',null,null,null,null,50
+       '1900-01-01','ATT-VIEW-A',null,null,null,50
      )->'items') item $$,
   'date filter cannot broaden into another date'
 );

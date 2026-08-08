@@ -10,7 +10,8 @@ import { GeocodingError } from './projectLocationService.js'
 const DEFAULT_MAP_CENTER = Object.freeze([36.2048, 138.2529])
 const DEFAULT_MAP_ZOOM = 5
 const SELECTED_MAP_ZOOM = 16
-const NOT_FOUND_MESSAGE = '地址未找到，请补充都道府县、市区町村和番地'
+const NOT_FOUND_MESSAGE = '未自动识别精确地址，可直接点击地图确认位置后保存'
+const MANUAL_LOCATION_ACCEPTED_MESSAGE = '未自动识别精确地址，已采用地图确认位置，可正常保存'
 const GEOCODING_RETRY_MESSAGE = '地址定位失败，请稍后重试'
 const SERVICE_RETRY_MESSAGE = '地址定位服务暂时不可用，请稍后重试'
 const INVALID_RESULT_MESSAGE = '地址定位服务返回了无效位置，请稍后重试'
@@ -267,7 +268,11 @@ export default function ProjectLocationPicker({
       ) return
 
       if (result === null) {
-        setLocateError(NOT_FOUND_MESSAGE)
+        setLocateError(
+          confirmed && toCoordinatePair(latitude, longitude)
+            ? MANUAL_LOCATION_ACCEPTED_MESSAGE
+            : NOT_FOUND_MESSAGE,
+        )
         return
       }
 
@@ -311,7 +316,7 @@ export default function ProjectLocationPicker({
         >
           {locating ? '定位中…' : '地址定位'}
         </button>
-        <span>可点击地图或拖动标记，微调施工位置。</span>
+        <span>地址仅用于辅助定位；识别不到时，点击地图或拖动标记确认后也可保存。</span>
       </div>
 
       <div

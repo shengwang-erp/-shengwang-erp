@@ -9,6 +9,20 @@ import ChangeTemporaryPasswordPage from './ChangeTemporaryPasswordPage.jsx'
 import LoginPage from './LoginPage.jsx'
 import { runCoalescedSessionValidation } from './authGateSession.js'
 
+const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
+const localDemoCredentials = { employeeNumber: 'SW-000', password: '320086' }
+const localDemoUser = {
+  employeeNumber: 'SW-000',
+  employeeId: 'SW-000',
+  name: 'システム管理者',
+  department: '总务部',
+  position: '社长',
+  employmentStatus: '在职',
+  accountStatus: 'active',
+  mustChangePassword: false,
+  effectivePermissionKeys: ['module.projects.view', 'module.projects.create', 'module.projects.update'],
+}
+
 const TERMINAL_AUTH_ERROR_CODES = new Set([
   'ACCOUNT_DISABLED',
   'ACCOUNT_UNAVAILABLE',
@@ -50,8 +64,8 @@ export default function AuthGate({
   configured = isSupabaseConfigured,
 }) {
   const [gate, setGate] = useState(() => ({
-    status: configured ? 'loading' : 'configuration-error',
-    currentUser: null,
+    status: localDemoMode ? 'authenticated' : configured ? 'loading' : 'configuration-error',
+    currentUser: localDemoMode ? localDemoUser : null,
   }))
   const validationVersion = useRef(0)
   const validationInFlight = useRef(null)
@@ -105,6 +119,7 @@ export default function AuthGate({
   )
 
   useEffect(() => {
+    if (localDemoMode) return undefined
     if (!configured) {
       validationVersion.current += 1
       setGate({ status: 'configuration-error', currentUser: null })
@@ -153,6 +168,14 @@ export default function AuthGate({
 
   const handleLogin = useCallback(
     async (credentials) => {
+      if (localDemoMode) {
+        if (
+          credentials.employeeNumber.trim().toUpperCase() !== localDemoCredentials.employeeNumber ||
+          credentials.password !== localDemoCredentials.password
+        ) throw new EmployeeAuthError('AUTH_INVALID', '员工编号或密码错误')
+        setGate({ status: 'authenticated', currentUser: localDemoUser })
+        return
+      }
       const session = await authService.loginWithEmployeeNumber(credentials)
       const currentUser = await validateSession(session)
       if (!currentUser) throw new EmployeeAuthError('AUTH_SESSION_INVALID')

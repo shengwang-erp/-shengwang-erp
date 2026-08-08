@@ -70,6 +70,28 @@ begin
 end;
 $function$;
 
+create or replace function pg_temp.drain_dblink_results(
+  p_connection_name text
+)
+returns void
+language plpgsql
+volatile
+security invoker
+set search_path = pg_catalog, extensions
+as $function$
+declare
+  drained_value text;
+begin
+  loop
+    select result.value
+      into drained_value
+      from extensions.dblink_get_result(p_connection_name, false)
+        as result(value text);
+    exit when not found;
+  end loop;
+end;
+$function$;
+
 select has_function(
   'private',
   'purchase_payment_payload_keys',
@@ -616,6 +638,7 @@ begin
     into released_lock_key
     from extensions.dblink_get_result('task7_purchase_lock_b')
       as result(lock_key bigint);
+  perform pg_temp.drain_dblink_results('task7_purchase_lock_b');
 
   perform extensions.dblink_disconnect('task7_purchase_lock_a');
   perform extensions.dblink_disconnect('task7_purchase_lock_b');
@@ -759,6 +782,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_parent_first_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_parent_first_b');
   child_error := extensions.dblink_error_message('task7_parent_first_b');
 
   select result.row_count
@@ -822,6 +846,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_parent_first_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_parent_first_b');
       end if;
     exception when others then
       null;
@@ -960,6 +985,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_child_first_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_child_first_b');
   parent_error := extensions.dblink_error_message('task7_child_first_b');
 
   select result.row_count
@@ -1023,6 +1049,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_child_first_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_child_first_b');
       end if;
     exception when others then
       null;
@@ -1168,6 +1195,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_child_disable_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_child_disable_b');
   parent_error := extensions.dblink_error_message('task7_child_disable_b');
 
   select result.parent_count, result.child_count
@@ -1225,6 +1253,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_child_disable_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_child_disable_b');
       end if;
     exception when others then
       null;
@@ -1374,6 +1403,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_rebind_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_rebind_b');
   child_error := extensions.dblink_error_message('task7_rebind_b');
 
   select result.old_count, result.new_count, result.child_count
@@ -1425,6 +1455,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_rebind_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_rebind_b');
       end if;
     exception when others then
       null;
@@ -1594,9 +1625,10 @@ begin
     raise exception 'tuple-holder parent update did not finish';
   end if;
   select result.record_key
-    into a_result_key
+    into strict a_result_key
     from extensions.dblink_get_result('task7_parent_upsert_a', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_parent_upsert_a');
   a_error := extensions.dblink_error_message('task7_parent_upsert_a');
   if a_error = 'OK' then
     perform extensions.dblink_exec('task7_parent_upsert_a', 'commit');
@@ -1613,9 +1645,10 @@ begin
     raise exception 'parent upsert did not finish';
   end if;
   select result.record_key
-    into b_result_key
+    into strict b_result_key
     from extensions.dblink_get_result('task7_parent_upsert_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_parent_upsert_b');
   b_error := extensions.dblink_error_message('task7_parent_upsert_b');
 
   select result.row_count, result.winner
@@ -1665,6 +1698,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_parent_upsert_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_parent_upsert_b');
       end if;
     exception when others then
       null;
@@ -1688,6 +1722,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_parent_upsert_a', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_parent_upsert_a');
       end if;
       perform extensions.dblink_exec('task7_parent_upsert_a', 'rollback', false);
       perform extensions.dblink_exec(
@@ -1876,9 +1911,10 @@ begin
     raise exception 'tuple-holder child update did not finish';
   end if;
   select result.record_key
-    into a_result_key
+    into strict a_result_key
     from extensions.dblink_get_result('task7_child_upsert_a', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_child_upsert_a');
   a_error := extensions.dblink_error_message('task7_child_upsert_a');
   if a_error = 'OK' then
     perform extensions.dblink_exec('task7_child_upsert_a', 'commit');
@@ -1895,9 +1931,10 @@ begin
     raise exception 'child upsert did not finish';
   end if;
   select result.record_key
-    into b_result_key
+    into strict b_result_key
     from extensions.dblink_get_result('task7_child_upsert_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_child_upsert_b');
   b_error := extensions.dblink_error_message('task7_child_upsert_b');
 
   select result.row_count, result.target_link_count
@@ -1963,6 +2000,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_child_upsert_b', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_child_upsert_b');
       end if;
     exception when others then
       null;
@@ -1986,6 +2024,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_child_upsert_a', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_child_upsert_a');
       end if;
       perform extensions.dblink_exec('task7_child_upsert_a', 'rollback', false);
       perform extensions.dblink_exec('task7_child_upsert_a', 'reset role', false);
@@ -2168,6 +2207,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_rebind_conflict_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_rebind_conflict_b');
   b_error := extensions.dblink_error_message('task7_rebind_conflict_b');
   if b_error = 'OK' then
     perform extensions.dblink_exec('task7_rebind_conflict_b', 'commit');
@@ -2186,6 +2226,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_rebind_conflict_a', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_rebind_conflict_a');
   a_error := extensions.dblink_error_message('task7_rebind_conflict_a');
   if a_error = 'OK' then
     perform extensions.dblink_exec('task7_rebind_conflict_a', 'commit');
@@ -2263,6 +2304,7 @@ exception when others then
             'task7_rebind_conflict_b',
             false
           ) as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_rebind_conflict_b');
       end if;
       perform extensions.dblink_exec(
         'task7_rebind_conflict_b',
@@ -2293,6 +2335,7 @@ exception when others then
             'task7_rebind_conflict_a',
             false
           ) as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_rebind_conflict_a');
       end if;
       perform extensions.dblink_exec(
         'task7_rebind_conflict_a',
@@ -2533,9 +2576,10 @@ begin
     raise exception 'direct stock-in upsert did not finish';
   end if;
   select result.record_key
-    into update_result_key
+    into strict update_result_key
     from extensions.dblink_get_result('task7_stock_commit_a', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_stock_commit_a');
   update_error := extensions.dblink_error_message('task7_stock_commit_a');
   if update_error = 'OK' then
     perform extensions.dblink_exec('task7_stock_commit_a', 'commit');
@@ -2552,9 +2596,10 @@ begin
     raise exception 'transactional stock-in commit did not finish';
   end if;
   select result.result
-    into commit_result
+    into strict commit_result
     from extensions.dblink_get_result('task7_stock_commit_b', false)
       as result(result jsonb);
+  perform pg_temp.drain_dblink_results('task7_stock_commit_b');
   commit_error := extensions.dblink_error_message('task7_stock_commit_b');
 
   perform extensions.dblink_exec('task7_stock_commit_a', 'reset role');
@@ -2621,6 +2666,7 @@ exception when others then
         perform result.result
           from extensions.dblink_get_result('task7_stock_commit_b', false)
             as result(result jsonb);
+        perform pg_temp.drain_dblink_results('task7_stock_commit_b');
       end if;
     exception when others then
       null;
@@ -2644,6 +2690,7 @@ exception when others then
         perform result.record_key
           from extensions.dblink_get_result('task7_stock_commit_a', false)
             as result(record_key text);
+        perform pg_temp.drain_dblink_results('task7_stock_commit_a');
       end if;
       perform extensions.dblink_exec('task7_stock_commit_a', 'rollback', false);
       perform extensions.dblink_exec('task7_stock_commit_a', 'reset role', false);
@@ -2786,6 +2833,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_snapshot_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_snapshot_b');
   parent_first_error := extensions.dblink_error_message('task7_snapshot_b');
   if parent_first_error = 'OK' then
     perform extensions.dblink_exec('task7_snapshot_b', 'commit');
@@ -2893,6 +2941,7 @@ begin
   perform result.record_key
     from extensions.dblink_get_result('task7_snapshot_b', false)
       as result(record_key text);
+  perform pg_temp.drain_dblink_results('task7_snapshot_b');
   child_first_error := extensions.dblink_error_message('task7_snapshot_b');
   if child_first_error = 'OK' then
     perform extensions.dblink_exec('task7_snapshot_b', 'commit');
@@ -3027,13 +3076,19 @@ select is(
          or record_key like 'PO-TASK7-%UPSERT-RACE'
          or record_key = 'PO-TASK7-COMMIT-RACE'
          or record_key = 'PO-TASK7-CHILD-DISABLE'
+         or record_key in (
+           'PO-TASK7-CHILD-REBIND-A',
+           'PO-TASK7-CHILD-REBIND-B'
+         )
       union all
       select record_key
       from public.purchase_payment_records
       where record_key in (
         'PP-TASK7-PARENT-FIRST',
         'PP-TASK7-SNAPSHOT-PARENT-FIRST',
-        'PP-TASK7-UPSERT-RACE'
+        'PP-TASK7-UPSERT-RACE',
+        'PP-TASK7-UPSERT-REBIND',
+        'PP-TASK7-UPDATE-REBIND'
       )
       union all
       select record_key
@@ -3491,9 +3546,14 @@ select lives_ok(
   'an active purchase viewer can call the secure list RPC'
 );
 select is(
-  (select count(*) from task7_list_results where scenario = 'accrual-list'),
+  (
+    select count(*)
+    from task7_list_results
+    where scenario = 'accrual-list'
+      and record_key like 'PO-TASK7-%'
+  ),
   8::bigint,
-  'the secure list excludes deleted records'
+  'the secure list excludes deleted Task 7 records without assuming an empty database'
 );
 select ok(
   (

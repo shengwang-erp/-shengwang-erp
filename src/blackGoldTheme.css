@@ -280,6 +280,12 @@
   font-family: var(--erp-font-numeric);
 }
 
+.erp-black-gold .accounting-cost-page .subsection-title h2,
+.erp-black-gold .accounting-cost-page .subsection-title span,
+.erp-black-gold .accounting-cost-page .stat-card span {
+  color: var(--erp-accent-gold-soft);
+}
+
 .erp-black-gold .module-count {
   border: 1px solid var(--erp-border-subtle);
   background: var(--erp-bg-elevated);
@@ -324,6 +330,10 @@
   border: 1px solid var(--erp-border-gold-muted);
   color: var(--erp-accent-gold-soft);
   background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .module-copy strong {
+  color: var(--erp-accent-gold-soft);
 }
 
 .erp-black-gold .module-copy small,

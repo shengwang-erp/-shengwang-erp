@@ -12,14 +12,14 @@ const [appSource, pageSource, sectionSource] = await Promise.all([
   readSource('./PaymentPlanSection.jsx'),
 ])
 
-test('payment plans use an independent section connected to the contract revenue page', () => {
+test('payment plans are connected to the revenue page and mutations are update-gated', () => {
   assert.match(sectionSource, /function PaymentPlanSection/)
   assert.match(pageSource, /import PaymentPlanSection from/)
   assert.match(pageSource, /<PaymentPlanSection/)
   assert.match(pageSource, /paymentPlans=\{paymentPlans\}/)
   assert.match(pageSource, /receipts=\{receipts\}/)
   assert.match(pageSource, /revenueSnapshot=\{revenueSnapshot\}/)
-  assert.match(pageSource, /onSavePaymentPlan=\{onSavePaymentPlan\}/)
+  assert.match(pageSource, /onSavePaymentPlan=\{canUpdateFinancials \? onSavePaymentPlan : undefined\}/)
 })
 
 test('the form exposes fixed initial, middle and final stages with percentage, date, remark and stored amount', () => {
@@ -55,17 +55,14 @@ test('manual allocation is prominent and only unlocked stage amounts become edit
   assert.match(sectionSource, /全部阶段合计必须等于调整后税込合同金额/)
 })
 
-test('App saves each plan with create or update single-record service and refreshes snapshot state', () => {
+test('App saves each plan with create or update service in service-authoritative state', () => {
   assert.match(appSource, /createPaymentPlan as persistCreatePaymentPlan/)
   assert.match(appSource, /updatePaymentPlan as persistUpdatePaymentPlan/)
   assert.match(
     appSource,
-    /const \[projectPaymentPlans, setProjectPaymentPlans\] = usePersistentState/,
+    /const \[projectPaymentPlans, setProjectPaymentPlans\] = useState\(\[\]\)/,
   )
-  assert.match(
-    appSource,
-    /STORAGE_KEYS\.projectPaymentPlans,\s*\[\],\s*\{\s*\.\.\.persistenceOptions,\s*cloudPersistence:\s*'record',?\s*\}/,
-  )
+  assert.match(appSource, /Promise\.all\(\[loadContractChanges\(\), loadPaymentPlans\(\), loadProjectReceipts\(\)\]\)/)
   assert.match(appSource, /const handleSavePaymentPlan = async \(input\)/)
   assert.match(appSource, /input\.planId\s*\? await persistUpdatePaymentPlan\(input\)/)
   assert.match(appSource, /: await persistCreatePaymentPlan\(input\)/)

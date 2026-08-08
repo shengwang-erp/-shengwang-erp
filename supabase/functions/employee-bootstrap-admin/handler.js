@@ -70,6 +70,11 @@ function timingSafeEqual(left, right) {
   return difference === 0
 }
 
+function authEmailsMatch(left, right) {
+  return typeof left === 'string' && typeof right === 'string' &&
+    left.toLowerCase() === right.toLowerCase()
+}
+
 function authorizeRequest(request, getEnv) {
   const providedKey = request.headers.get('apikey')
   const configuredKeys = configuredServerSecretKeys(getEnv)
@@ -119,7 +124,7 @@ export async function findAuthUsersByEmail(adminClient, email) {
       throw bootstrapFailed()
     }
     if (result?.error || !Array.isArray(result?.data?.users)) throw bootstrapFailed()
-    matches.push(...result.data.users.filter((user) => user?.email === email))
+    matches.push(...result.data.users.filter((user) => authEmailsMatch(user?.email, email)))
     const hasPaginationMarker = Object.hasOwn(result.data, 'nextPage') ||
       Object.hasOwn(result.data, 'next_page')
     const nextPage = result.data.nextPage ?? result.data.next_page ?? null
@@ -227,7 +232,7 @@ async function inspectState(adminClient, email, operations) {
   let linkedAuthUser = null
   if (profile?.auth_user_id) {
     linkedAuthUser = await operations.getAuthUserById(adminClient, profile.auth_user_id)
-    if (!linkedAuthUser || linkedAuthUser.email !== email) throw bootstrapConflict()
+    if (!linkedAuthUser || !authEmailsMatch(linkedAuthUser.email, email)) throw bootstrapConflict()
     if (authMatches.length !== 1 || authMatches[0].id !== linkedAuthUser.id) {
       throw bootstrapConflict()
     }

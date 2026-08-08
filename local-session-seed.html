@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>本地验收登录</title>
+  </head>
+  <body>
+    <main>
+      <h1>本地验收登录</h1>
+      <form id="local-session-form">
+        <label>邮箱 <input name="email" type="email" required /></label>
+        <label>密码 <input name="password" type="password" required /></label>
+        <button type="submit">进入完整程序</button>
+        <p id="message" role="status"></p>
+      </form>
+    </main>
+    <script>
+      const apiUrl = '%VITE_SUPABASE_URL%'
+      const publishableKey = '%VITE_SUPABASE_PUBLISHABLE_KEY%'
+      const form = document.querySelector('#local-session-form')
+      const message = document.querySelector('#message')
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault()
+        const data = new FormData(form)
+        const response = await fetch(`${apiUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: {
+            apikey: publishableKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: data.get('email'),
+            password: data.get('password'),
+          }),
+        })
+        const session = await response.json().catch(() => ({}))
+        if (!response.ok || !session.access_token || !session.refresh_token) {
+          message.textContent = session.error_description || '登录失败'
+          return
+        }
+        session.expires_at = Math.floor(Date.now() / 1000) + session.expires_in
+        localStorage.setItem('sw-erp-auth-session-v1', JSON.stringify(session))
+        window.location.replace('/')
+      })
+    </script>
+  </body>
+</html>

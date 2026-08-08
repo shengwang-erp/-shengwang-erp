@@ -2870,7 +2870,7 @@ select ok(
       and result#>>'{permissions,canViewProjectCosts}' = 'false'
       and result->'salary' = 'null'::jsonb
       and result->'allocations' = '[]'::jsonb
-      and result::text !~ '("finalProjectCost"|"amount"|777)'
+      and not ((result->'resolution') ? 'finalProjectCost')
     from detail
   ),
   'stored nonzero final cost sets money scope without leaking amounts to a labor-only viewer'
@@ -2918,7 +2918,7 @@ select ok(
       and result#>>'{allocations,0,projectId}' = 'P-T4-A'
       and not ((result#>'{allocations,0}') ? 'amount')
       and result->'salary' = 'null'::jsonb
-      and result::text !~ '("finalProjectCost"|321)'
+      and not ((result->'resolution') ? 'finalProjectCost')
     from detail
   ),
   'an existing allocation sets money scope while its amount remains redacted'

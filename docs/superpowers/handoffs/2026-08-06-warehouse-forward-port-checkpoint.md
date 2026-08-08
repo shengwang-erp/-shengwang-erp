@@ -14,8 +14,10 @@
 
 ### 唯一开发底板
 
-- 当前线上第二版分支：`codex/employee-auth-security`
-- 准确底板提交：`d5953c546996dc9af73326fbe21c36062dca46d0`
+- 当前生产部署：`dpl_Dq9YrqRqTixNAubjzq4pFWJyp4QN`，创建于 2026-08-05 19:01:38（Asia/Tokyo）
+- 唯一应用底板：上述生产部署的精确上传源快照，已在 Task 0 恢复并按内容哈希审计后叠加到现有 Git 历史
+- 底层不完整 Git 参考：`d5953c546996dc9af73326fbe21c36062dca46d0`（`codex/employee-auth-security`）；它不能单独代表生产应用底板
+- 基线 provenance：`docs/superpowers/handoffs/2026-08-08-deployed-second-version-baseline.md`
 - 原本地工作区：`/Users/yu/Documents/kaobeierp/employee-auth-worktree`
 - 该原工作区存在用户的未提交修改，禁止在其中开发、清理、覆盖或重置。
 
@@ -39,11 +41,11 @@
 
 - 工作区：`/Users/yu/Documents/kaobeierp/warehouse-forward-port`
 - 分支：`codex/warehouse-forward-port`
-- 分支从第二版准确提交 `d5953c5` 创建。
+- 分支最初从底层提交 `d5953c5` 创建；Task 0 随后把生产部署精确上传源快照恢复到该分支，后续不得再把 `d5953c5` 单独当作应用基线。
 - 设计文档提交：`7cb5705`（`docs: define safe warehouse forward-port boundary`）
 - 完整设计：`docs/superpowers/specs/2026-08-06-warehouse-forward-port-design.md`
 
-截至本检查点，只建立了隔离分支并提交设计文档。没有迁移仓库代码，没有部署 Vercel，没有执行线上 Supabase 迁移，没有写入线上数据。
+原检查点只建立了隔离分支并提交设计文档。2026-08-08 的 Task 0 仅恢复当前生产部署源、修复恢复夹具并校正规划文档；仍未迁移任何仓库功能代码，没有部署 Vercel，没有执行线上 Supabase 迁移，没有写入线上数据。
 
 ## 必须实现的仓库功能
 
@@ -121,4 +123,4 @@
 
 ## 恢复时的第一句话
 
-向用户说明：已经从保存的第二版隔离分支恢复，已重新核对禁用清单；接下来先写详细实施计划，不会直接合并旧代码，也不会部署线上。
+向用户说明：已经从保存的第二版隔离分支恢复，并已叠加核验当前生产部署精确上传源快照、重新核对禁用清单；接下来以 Task 0 基线继续实施，不会直接合并旧代码，也不会部署线上。

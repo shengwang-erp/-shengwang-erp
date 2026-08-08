@@ -137,6 +137,9 @@ test('theme covers shell, business surfaces, exact responsive tiers, and reduced
 })
 
 test('black-gold overrides legacy light module, purchase table, and project form surfaces', () => {
+  const moduleTitle = declarationsFor('.erp-black-gold .module-copy strong')
+  assert.equal(moduleTitle.get('color'), 'var(--erp-accent-gold-soft)')
+
   const moduleCount = declarationsFor('.erp-black-gold .module-count')
   assert.equal(moduleCount.get('background'), 'var(--erp-bg-elevated)')
   assert.equal(moduleCount.get('border'), '1px solid var(--erp-border-subtle)')
@@ -191,6 +194,25 @@ test('black-gold overrides legacy light module, purchase table, and project form
   assert.equal(locationSection.get('border'), '1px solid var(--erp-border-subtle)')
   assert.equal(locationTitle.get('color'), 'var(--erp-text-primary)')
   assert.equal(radiusHelp.get('color'), 'var(--erp-text-muted)')
+})
+
+test('accounting labels are gold while monetary values remain white', () => {
+  for (const selector of [
+    '.erp-black-gold .accounting-cost-page .subsection-title h2',
+    '.erp-black-gold .accounting-cost-page .subsection-title span',
+    '.erp-black-gold .accounting-cost-page .stat-card span',
+  ]) {
+    assert.equal(
+      declarationsFor(selector).get('color'),
+      'var(--erp-accent-gold-soft)',
+      selector,
+    )
+  }
+
+  assert.equal(
+    declarationsFor('.erp-black-gold .stat-card strong').get('color'),
+    'var(--erp-text-primary)',
+  )
 })
 
 test('compact desktop resets legacy desktop geometry and wraps the menu at every 768-1023 width', () => {

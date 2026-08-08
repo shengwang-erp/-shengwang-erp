@@ -12,13 +12,13 @@ const [appSource, pageSource, sectionSource] = await Promise.all([
   readSource('./ContractChangesSection.jsx'),
 ])
 
-test('contract changes are implemented in an independent section connected to the revenue page', () => {
+test('contract changes are connected to the revenue page and mutations are update-gated', () => {
   assert.match(sectionSource, /function ContractChangesSection/)
   assert.match(pageSource, /import ContractChangesSection from/)
   assert.match(pageSource, /<ContractChangesSection/)
   assert.match(pageSource, /contractChanges={contractChanges}/)
-  assert.match(pageSource, /onCreateContractChange={onCreateContractChange}/)
-  assert.match(pageSource, /onVoidContractChange={onVoidContractChange}/)
+  assert.match(pageSource, /onCreateContractChange=\{canUpdateFinancials \? onCreateContractChange : undefined\}/)
+  assert.match(pageSource, /onVoidContractChange=\{canUpdateFinancials \? onVoidContractChange : undefined\}/)
 })
 
 test('change form exposes every required field and delegates strict domain validation', () => {
@@ -56,7 +56,7 @@ test('change list uses running balances and exposes voiding without edit or hard
   assert.doesNotMatch(sectionSource, /deleteContractChange/)
 })
 
-test('App persists create and void as single records and refreshes the snapshot collection state', () => {
+test('App persists create and void as single records in service-authoritative state', () => {
   assert.match(
     appSource,
     /createContractChange as persistContractChange/,
@@ -67,9 +67,9 @@ test('App persists create and void as single records and refreshes the snapshot 
   )
   assert.match(
     appSource,
-    /const \[projectContractChanges, setProjectContractChanges\] = usePersistentState/,
+    /const \[projectContractChanges, setProjectContractChanges\] = useState\(\[\]\)/,
   )
-  assert.match(appSource, /cloudPersistence: 'record'/)
+  assert.match(appSource, /Promise\.all\(\[loadContractChanges\(\), loadPaymentPlans\(\), loadProjectReceipts\(\)\]\)/)
   assert.match(appSource, /await persistContractChange\(input\)/)
   assert.match(appSource, /await persistVoidContractChange\(record, details\)/)
   assert.match(appSource, /setProjectContractChanges\(/)
@@ -79,17 +79,17 @@ test('App persists create and void as single records and refreshes the snapshot 
   assert.match(appSource, /onVoidContractChange=\{handleVoidContractChange\}/)
 })
 
-test('record-mode state updates keep local cache but do not invoke whole-table cloud save', () => {
-  assert.match(appSource, /function usePersistentState\(key, fallback, options = \{\}\)/)
-  const recordModeBranch = appSource.match(
-    /if \(cloudPersistence === 'record'\) \{([\s\S]*?)\n\s*\}/,
-  )?.[1]
+test('contract revenue reads fail closed without a local cache fallback', () => {
+  const contractRevenueEffect = appSource.match(
+    /useEffect\(\(\) => \{\s*let active = true\s*if \(!contractRevenueAccess\.view\)[\s\S]*?\n\s*\}, \[contractRevenueAccess\.view\]\)/,
+  )?.[0]
 
-  assert.ok(recordModeBranch)
-  assert.match(
-    recordModeBranch,
-    /window\.localStorage\.setItem\(key, JSON\.stringify\(resolvedValue\)\)/,
-  )
-  assert.doesNotMatch(recordModeBranch, /cloudSaver\(/)
-  assert.match(appSource, /cloudSaver\(key, resolvedValue\)/)
+  assert.ok(contractRevenueEffect)
+  assert.match(contractRevenueEffect, /setProjectContractChanges\(\[\]\)/)
+  assert.match(contractRevenueEffect, /setProjectPaymentPlans\(\[\]\)/)
+  assert.match(contractRevenueEffect, /setProjectReceipts\(\[\]\)/)
+  assert.match(contractRevenueEffect, /code: 'ACCESS_DENIED'/)
+  assert.match(contractRevenueEffect, /source: 'blocked'/)
+  assert.match(contractRevenueEffect, /Promise\.all\(\[loadContractChanges\(\), loadPaymentPlans\(\), loadProjectReceipts\(\)\]\)/)
+  assert.doesNotMatch(contractRevenueEffect, /localStorage|usePersistentState/)
 })

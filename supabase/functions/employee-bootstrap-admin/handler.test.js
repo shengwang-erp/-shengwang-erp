@@ -290,6 +290,40 @@ test('already-correct association is idempotent and never changes or resends its
   assert.equal(calls.deleteAuthUser.length, 0)
 })
 
+test('already-correct association accepts the lowercase Auth email normalization', async () => {
+  const mixedCaseAlias = 'Opaque-Bootstrap-Identity@auth.invalid'
+  const normalizedAuthUser = { id: AUTH_USER_ID, email: mixedCaseAlias.toLowerCase() }
+  const setup = createDependencies({
+    profile: LEGAL_PROFILE,
+    authUsers: [normalizedAuthUser],
+  })
+  const adminClient = {
+    auth: {
+      admin: {
+        listUsers: async () => ({
+          data: { users: [normalizedAuthUser] },
+          error: null,
+        }),
+      },
+    },
+  }
+  setup.dependencies.createAdminClient = async () => adminClient
+  setup.dependencies.deriveAuthEmail = async () => mixedCaseAlias
+  setup.dependencies.findAuthUsersByEmail = findAuthUsersByEmail
+  setup.dependencies.getAuthUserById = async () => normalizedAuthUser
+
+  const response = await createEmployeeBootstrapAdminHandler(setup.dependencies)(
+    bootstrapRequest(),
+  )
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(await responseBody(response), {
+    ok: true,
+    employeeNumber: 'SW-000',
+    created: false,
+  })
+})
+
 test('ambiguous or mismatched Auth/profile states fail closed without mutation', async () => {
   const cases = [
     {

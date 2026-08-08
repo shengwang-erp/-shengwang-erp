@@ -551,3 +551,10 @@ pgTAP session 代替。
 本迁移没有安全的自动 down migration：回退旧策略会重新开放已禁止的直接项目访问，而清理
 审计也无法重建每条已删授权。需要回滚时，应停止浏览器流量，协调回退客户端，并从部署前
 备份恢复完整数据库或经审计恢复所需授权；不要只恢复旧 project policies 或状态触发器。
+# Project documents
+
+Migration `202607150002_project_documents.sql` adds immutable logical/versioned
+document metadata, a private `erp-project-documents` Storage bucket, and
+security-definer RPCs for safe browser projections. Base tables remain closed
+to `anon` and `authenticated`; document rows and event history cannot be
+deleted or have identity metadata rewritten.
