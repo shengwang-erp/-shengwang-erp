@@ -945,3 +945,25 @@ test('QR lookup treats unknown codes as null and rejects invalid, ambiguous, ext
   }
   assert.equal(calls.length, beforeInvalid)
 })
+
+test('QR input database hint requires the exact 22023 and HTTP 400 trust tuple', async () => {
+  const cases = [
+    [{ code: '22023', hint: 'WAREHOUSE_QR_INPUT_INVALID' }, 400, 'WAREHOUSE_QR_INPUT_INVALID', 400],
+    [{ code: '22023', hint: 'WAREHOUSE_QR_INPUT_INVALID' }, 409, 'WAREHOUSE_SERVICE_UNAVAILABLE', 503],
+    [{ code: '23505', hint: 'WAREHOUSE_QR_INPUT_INVALID' }, 400, 'WAREHOUSE_SERVICE_UNAVAILABLE', 503],
+    [{ code: '22023', hint: 'WAREHOUSE_QR_AMBIGUOUS' }, 400, 'WAREHOUSE_SERVICE_UNAVAILABLE', 503],
+  ]
+  for (const [error, status, safeCode, safeStatus] of cases) {
+    const { client } = rpcClient({
+      resolve_warehouse_qr_secure: {
+        data: null,
+        error: { ...error, message: 'private supplier QR details' },
+        status,
+      },
+    })
+    await assert.rejects(
+      () => createWarehouseService(client, { configured: true }).resolveQr('VALID-INPUT'),
+      safeError(safeCode, safeStatus),
+    )
+  }
+})

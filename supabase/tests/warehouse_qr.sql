@@ -127,6 +127,14 @@ select is(
 );
 
 select is(
+  public.resolve_warehouse_qr_secure(
+    E'\u0085\ufeff\u200b\u200c\u200dmaker-cafe\u0301-qr-01\u2060\u0085'
+  )->>'id',
+  'c3000000-0000-4000-8000-000000000001',
+  'QR edge normalization aligns U+0085 and every browser invisible trim character'
+);
+
+select is(
   (
     select array_agg(key order by key)
     from jsonb_object_keys(public.resolve_warehouse_qr_secure('Maker-Café-QR-01')) key
@@ -165,6 +173,44 @@ select is(
   'WAREHOUSE_QR_INPUT_INVALID',
   'blank QR input fails with a stable safe hint'
 );
+
+select is(
+  pg_temp.qr_error_hint($statement$
+    select public.resolve_warehouse_qr_secure(E'\u0085\ufeff\u200b\u200c\u200d\u2060\u0085')
+  $statement$),
+  'WAREHOUSE_QR_INPUT_INVALID',
+  'U+0085 and invisible-only QR input is blank after aligned edge trimming'
+);
+
+select is(
+  public.resolve_warehouse_qr_secure(repeat('😀', 500)),
+  null::jsonb,
+  'QR maximum length is 500 Unicode code points rather than UTF-16 units'
+);
+
+select is(
+  pg_temp.qr_error_hint($statement$
+    select public.resolve_warehouse_qr_secure(repeat('😀', 501))
+  $statement$),
+  'WAREHOUSE_QR_INPUT_INVALID',
+  'QR input rejects 501 Unicode code points'
+);
+
+select is(
+  pg_temp.qr_error_hint(
+    format('select public.resolve_warehouse_qr_secure(%L)', 'Maker' || invisible || 'QR')
+  ),
+  'WAREHOUSE_QR_INPUT_INVALID',
+  'QR input rejects an internal invisible code point ' || unicode_name
+)
+from (
+  values
+    (chr(65279), 'U+FEFF'),
+    (chr(8203), 'U+200B'),
+    (chr(8204), 'U+200C'),
+    (chr(8205), 'U+200D'),
+    (chr(8288), 'U+2060')
+) invisible_cases(invisible, unicode_name);
 reset role;
 
 select set_config('request.jwt.claim.sub', 'c5000000-0000-4000-8000-000000000002', true);

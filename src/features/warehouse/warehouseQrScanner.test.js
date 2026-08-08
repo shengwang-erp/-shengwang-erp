@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createElement } from 'react'
+import { StrictMode, act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
+
+import {
+  installWarehouseReactDom,
+} from './warehouseReactDomTestUtils.js'
 
 const source = await readFile(
   new URL('./WarehouseQrScanner.jsx', import.meta.url),
@@ -168,6 +173,70 @@ test('close during a late import or late controls resolution never starts or lea
   assert.deepEqual(controlsMedia.tracks.map((track) => track.stops), [1, 1, 1])
 })
 
+test('close disposes pending manual lookup and rejects every later manual submission', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  let release
+  let calls = 0
+  const outcomes = []
+  const controller = scannerModule.createWarehouseQrScannerController({
+    resolveQr: () => {
+      calls += 1
+      return new Promise((resolve) => { release = resolve })
+    },
+    onResolved: (value) => outcomes.push(['resolved', value.id]),
+    onUnknown: (code) => outcomes.push(['unknown', code]),
+    onError: (message) => outcomes.push(['error', message]),
+  })
+
+  const pending = controller.submitManual('OLD-SLOW')
+  controller.close()
+  release({ id: 'old-variant' })
+  assert.equal(await pending, null)
+  assert.equal(await controller.submitManual('AFTER-CLOSE'), null)
+
+  assert.equal(calls, 1)
+  assert.deepEqual(outcomes, [])
+})
+
+test('a newer manual lookup wins and stale success null and error outcomes cannot publish', async () => {
+  assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
+  const pending = new Map()
+  const outcomes = []
+  const controller = scannerModule.createWarehouseQrScannerController({
+    resolveQr: (code) => new Promise((resolve, reject) => pending.set(code, { resolve, reject })),
+    onResolved: (value) => outcomes.push(['resolved', value.id]),
+    onUnknown: (code) => outcomes.push(['unknown', code]),
+    onError: (message) => outcomes.push(['error', message]),
+  })
+
+  const oldSuccess = controller.submitManual('OLD-SUCCESS')
+  const current = controller.submitManual('NEW-FAST')
+  pending.get('NEW-FAST').resolve({ id: 'new-variant' })
+  assert.deepEqual(await current, { id: 'new-variant' })
+  pending.get('OLD-SUCCESS').resolve({ id: 'old-variant' })
+  assert.equal(await oldSuccess, null)
+
+  const oldNull = controller.submitManual('OLD-NULL')
+  const newer = controller.submitManual('NEWER-FAST')
+  pending.get('NEWER-FAST').resolve({ id: 'newer-variant' })
+  await newer
+  pending.get('OLD-NULL').resolve(null)
+  assert.equal(await oldNull, null)
+
+  const oldError = controller.submitManual('OLD-ERROR')
+  const newest = controller.submitManual('NEWEST-FAST')
+  pending.get('NEWEST-FAST').resolve({ id: 'newest-variant' })
+  await newest
+  pending.get('OLD-ERROR').reject(new Error('private stale failure'))
+  assert.equal(await oldError, null)
+
+  assert.deepEqual(outcomes, [
+    ['resolved', 'new-variant'],
+    ['resolved', 'newer-variant'],
+    ['resolved', 'newest-variant'],
+  ])
+})
+
 test('permission denial and fatal reader errors stop resources and expose friendly Chinese guidance', async () => {
   assert.equal(typeof scannerModule.createWarehouseQrScannerController, 'function')
   for (const error of [
@@ -208,4 +277,70 @@ test('scanner component renders manual fallback without importing ZXing during S
   assert.match(html, /video/u)
   assert.match(html, /手动输入/u)
   assert.match(source, /import\(['"]@zxing\/browser['"]\)/u)
+})
+
+test('StrictMode cleanup and reopen suppress stale scanner callbacks and clean each camera once', async () => {
+  const dom = installWarehouseReactDom()
+  const root = createRoot(dom.createContainer())
+  const sessions = []
+  const lookups = new Map()
+  const outcomes = []
+  let imports = 0
+  const loadZxing = async () => {
+    imports += 1
+    return {
+      BrowserQRCodeReader: class {
+        decodeFromConstraints(_constraints, video, callback) {
+          const tracks = [{ stops: 0, stop() { this.stops += 1 } }]
+          const controls = { stops: 0, stop() { this.stops += 1 } }
+          video.srcObject = { getTracks: () => tracks }
+          sessions.push({ callback, controls, tracks })
+          return Promise.resolve(controls)
+        }
+      },
+    }
+  }
+  const warehouseService = {
+    resolveQr(code) {
+      return new Promise((resolve, reject) => lookups.set(code, { resolve, reject }))
+    },
+  }
+  const render = (open) => createElement(StrictMode, null, createElement(scannerModule.default, {
+    open,
+    loadZxing,
+    warehouseService,
+    onResolved: (value) => outcomes.push(value.id),
+    onClose() {},
+  }))
+
+  try {
+    await act(async () => { root.render(render(true)) })
+    assert.equal(imports, 2)
+    assert.equal(sessions.length, 1)
+
+    sessions[0].callback({ getText: () => 'OLD-SLOW' }, null, sessions[0].controls)
+    await act(async () => {})
+    assert.equal(lookups.has('OLD-SLOW'), true)
+
+    await act(async () => { root.render(render(false)) })
+    await act(async () => { root.render(render(true)) })
+    assert.equal(sessions.length, 2)
+    sessions[1].callback({ getText: () => 'NEW-FAST' }, null, sessions[1].controls)
+    await act(async () => {})
+    lookups.get('NEW-FAST').resolve({ id: 'new-variant' })
+    await act(async () => {})
+    assert.deepEqual(outcomes, ['new-variant'])
+
+    lookups.get('OLD-SLOW').resolve({ id: 'old-variant' })
+    await act(async () => {})
+    assert.deepEqual(outcomes, ['new-variant'])
+
+    await act(async () => { root.unmount() })
+    for (const session of sessions) {
+      assert.equal(session.controls.stops, 1)
+      assert.deepEqual(session.tracks.map((track) => track.stops), [1])
+    }
+  } finally {
+    dom.cleanup()
+  }
 })

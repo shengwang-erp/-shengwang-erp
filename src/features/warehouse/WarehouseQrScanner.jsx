@@ -28,11 +28,11 @@ export function createWarehouseQrScannerController({
   onUnknown,
   onError,
 }) {
-  let closed = false
-  let resourcesStopped = false
-  let controls = null
-  let videoElement = null
+  let disposed = false
+  let generation = 0
+  let activeSession = null
   const stoppedControls = new WeakSet()
+  const stoppedTracks = new WeakSet()
 
   const stopControl = (value) => {
     if (!value || (typeof value !== 'object' && typeof value !== 'function')) return
@@ -41,59 +41,75 @@ export function createWarehouseQrScannerController({
     try { value.stop?.() } catch { /* cleanup remains best-effort */ }
   }
 
-  const stopResources = (extraControls = null) => {
-    closed = true
-    const stream = videoElement?.srcObject
+  const stopSession = (session, extraControls = null) => {
+    if (!session) {
+      stopControl(extraControls)
+      return
+    }
+    const stream = session.video?.srcObject
     let tracks = []
     try { tracks = typeof stream?.getTracks === 'function' ? stream.getTracks() : [] } catch {}
     stopControl(extraControls)
-    stopControl(controls)
-    if (!resourcesStopped) {
-      resourcesStopped = true
-      for (const track of tracks) {
-        try { track?.stop?.() } catch { /* continue stopping remaining tracks */ }
-      }
-      try {
-        if (videoElement && 'srcObject' in videoElement) videoElement.srcObject = null
-      } catch {}
+    stopControl(session.controls)
+    for (const track of tracks) {
+      if (!track || (typeof track !== 'object' && typeof track !== 'function')) continue
+      if (stoppedTracks.has(track)) continue
+      stoppedTracks.add(track)
+      try { track.stop?.() } catch { /* continue stopping remaining tracks */ }
     }
+    try {
+      if (session.video?.srcObject === stream) session.video.srcObject = null
+    } catch {}
   }
 
+  const isCurrent = (token) => !disposed && generation === token
+
   const reportLookup = async (rawCode, extraControls = null) => {
-    stopResources(extraControls)
+    if (disposed) return null
+    const token = ++generation
+    const session = activeSession
+    activeSession = null
+    stopSession(session, extraControls)
     let code
     try {
       code = normalizeWarehouseQrInput(rawCode)
     } catch {
-      onError('请输入有效的二维码内容')
+      if (isCurrent(token)) onError('请输入有效的二维码内容')
       return null
     }
     try {
       const resolution = await resolveQr(code)
+      if (!isCurrent(token)) return null
       if (resolution === null) onUnknown(code)
       else onResolved(resolution)
       return resolution
     } catch {
-      onError('二维码查询失败，请重试或改用手动输入')
+      if (isCurrent(token)) onError('二维码查询失败，请重试或改用手动输入')
       return null
     }
   }
 
   return Object.freeze({
     async open(video) {
-      if (closed) return
-      videoElement = video
+      if (disposed) return null
+      const token = ++generation
+      stopSession(activeSession)
+      const session = { video, controls: null }
+      activeSession = session
       try {
         const zxing = await loadZxing()
-        if (closed) return
+        if (!isCurrent(token)) {
+          stopSession(session)
+          return null
+        }
         if (typeof zxing?.BrowserQRCodeReader !== 'function') throw new Error('reader unavailable')
         const reader = new zxing.BrowserQRCodeReader()
         const nextControls = await reader.decodeFromConstraints(
           { video: { facingMode: { ideal: 'environment' } } },
-          videoElement,
+          session.video,
           (result, error, callbackControls) => {
-            if (closed) {
-              stopResources(callbackControls)
+            if (!isCurrent(token)) {
+              stopSession(session, callbackControls)
               return
             }
             const text = scannedText(result)
@@ -102,29 +118,44 @@ export function createWarehouseQrScannerController({
               return
             }
             if (error && !RETRYABLE_DECODE_ERROR_NAMES.has(error.name)) {
-              stopResources(callbackControls)
+              generation += 1
+              activeSession = null
+              stopSession(session, callbackControls)
               onError(scannerMessage(error))
             }
           },
         )
-        controls = nextControls
-        if (closed) stopControl(nextControls)
+        session.controls = nextControls
+        if (!isCurrent(token)) {
+          stopSession(session, nextControls)
+          return null
+        }
+        return nextControls
       } catch (error) {
-        stopResources()
+        stopSession(session)
+        if (!isCurrent(token)) return null
+        generation += 1
+        activeSession = null
         onError(scannerMessage(error))
+        return null
       }
     },
     submitManual(code) {
       return reportLookup(code)
     },
     close() {
-      stopResources()
+      if (disposed) return
+      disposed = true
+      generation += 1
+      stopSession(activeSession)
+      activeSession = null
     },
   })
 }
 
 export default function WarehouseQrScanner({
   open,
+  loadZxing = loadZxingBrowser,
   warehouseService,
   onResolved,
   onClose,
@@ -138,6 +169,7 @@ export default function WarehouseQrScanner({
     if (!open) return undefined
     setMessage('')
     const controller = createWarehouseQrScannerController({
+      loadZxing,
       resolveQr: (code) => warehouseService.resolveQr(code),
       onResolved,
       onUnknown: () => setMessage('未找到对应物品，请检查二维码后重试'),
@@ -149,7 +181,7 @@ export default function WarehouseQrScanner({
       controller.close()
       if (controllerRef.current === controller) controllerRef.current = null
     }
-  }, [open, warehouseService, onResolved])
+  }, [open, loadZxing, warehouseService, onResolved])
 
   if (!open) return null
 

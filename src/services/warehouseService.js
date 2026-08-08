@@ -99,6 +99,7 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_VARIANT_HAS_STOCK', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_PENDING_SCHEMA_INCOMPLETE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_QR_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
   ['WAREHOUSE_QR_AMBIGUOUS', Object.freeze({ sqlState: '23505', status: 409 })],
 ])
 const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
