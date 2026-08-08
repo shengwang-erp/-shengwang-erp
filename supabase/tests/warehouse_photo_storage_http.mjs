@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, realpath } from 'node:fs/promises'
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+
 function fail(message) {
   throw new Error(message)
 }
@@ -92,6 +94,8 @@ async function validateConfiguration(environment) {
   const markerSql = [
     'begin read only;',
     "select concat_ws('|', project_id, test_workdir, db_port, api_port,",
+    "  marker_nonce, created_at > clock_timestamp() - interval '5 minutes',",
+    '  created_at <= clock_timestamp(),',
     "  to_regprocedure('public.register_warehouse_variant_photo_secure(uuid,text,text,bigint)') is not null,",
     "  exists (select 1 from storage.buckets where id='warehouse-item-photos' and public=false),",
     "  exists (select 1 from supabase_migrations.schema_migrations where version='202608080003'))",
@@ -103,8 +107,15 @@ async function validateConfiguration(environment) {
     'psql', '-X', '-A', '-t', '-U', 'postgres', '-d', 'postgres',
     '-v', 'ON_ERROR_STOP=1', '-c', markerSql,
   ])
-  const expectedMarker = `${projectId}|${workdir}|${dbPort}|${apiPort}|t|t|t`
-  if (!markerOutput.split('\n').map((line) => line.trim()).includes(expectedMarker)) {
+  const marker = markerOutput.split('\n').map((line) => line.trim())
+    .find((line) => line.startsWith(`${projectId}|${workdir}|${dbPort}|${apiPort}|`))
+  const markerFields = marker?.split('|') ?? []
+  const markerNonce = markerFields[4]
+  if (
+    markerFields.length !== 10 ||
+    !UUID.test(markerNonce ?? '') ||
+    markerFields.slice(5).some((field) => field !== 't')
+  ) {
     fail('Task 3 database marker or migration preflight is missing')
   }
 
@@ -134,12 +145,174 @@ async function validateConfiguration(environment) {
   return Object.freeze({
     projectId,
     workdir,
+    databaseContainer,
+    dockerContext,
     dbPort,
     apiPort,
     apiUrl: apiUrl.origin,
     anonKey: status.ANON_KEY,
     serviceRoleKey: status.SERVICE_ROLE_KEY,
+    markerNonce,
   })
+}
+
+function quoted(value) {
+  if (typeof value !== 'string' || value.includes('\u0000')) fail('unsafe owner SQL value')
+  return `'${value.replaceAll("'", "''")}'`
+}
+
+async function ownerSql(configuration, sql) {
+  return run('docker', [
+    '--context', configuration.dockerContext,
+    'exec', configuration.databaseContainer,
+    'psql', '-X', '-A', '-t', '-U', 'postgres', '-d', 'postgres',
+    '-v', 'ON_ERROR_STOP=1', '-c', sql,
+  ])
+}
+
+function targetMarkerPredicate(configuration) {
+  return [
+    `project_id = ${quoted(configuration.projectId)}`,
+    `and test_workdir = ${quoted(configuration.workdir)}`,
+    `and db_port = ${configuration.dbPort}`,
+    `and api_port = ${configuration.apiPort}`,
+    `and marker_nonce = ${quoted(configuration.markerNonce)}::uuid`,
+  ].join(' ')
+}
+
+async function verifyTargetMarker(configuration) {
+  const output = await ownerSql(configuration, [
+    'begin read only;',
+    "select count(*) = 1 and bool_and(",
+    `${targetMarkerPredicate(configuration)}`,
+    "and exists(select 1 from supabase_migrations.schema_migrations where version='202608080003')",
+    "and exists(select 1 from storage.buckets where id='warehouse-item-photos' and public=false)",
+    ') from private.warehouse_task3_test_target;',
+    'commit;',
+  ].join(' '))
+  if (!output.split('\n').map((line) => line.trim()).includes('t')) {
+    fail('Task 3 target marker changed before cleanup')
+  }
+}
+
+function idList(values) {
+  if (!Array.isArray(values) || values.length < 1 || values.some((value) => !UUID.test(value))) {
+    fail('invalid run-scoped UUID set')
+  }
+  return values.map((value) => `${quoted(value)}::uuid`).join(',')
+}
+
+function cleanupDiagnosticsSql(configuration, scope) {
+  const profileIds = idList(scope.profileIds)
+  const authUserIds = scope.authUserIds.length > 0
+    ? idList(scope.authUserIds)
+    : "'00000000-0000-4000-8000-000000000000'::uuid"
+  const variantIds = idList(scope.variantIds)
+  const itemIds = idList(scope.itemIds)
+  return [
+    'select json_build_object(',
+    "'runScopedRemaining', (",
+    ` (select count(*) from auth.users where id in (${authUserIds}) or email like ${quoted(`%${scope.runId}%`)}) +`,
+    ` (select count(*) from auth.identities where user_id in (${authUserIds})) +`,
+    ` (select count(*) from public.employee_profiles where id in (${profileIds})) +`,
+    ` (select count(*) from storage.objects where bucket_id='warehouse-item-photos' and split_part(name,'/',1)::text in (${scope.variantIds.map(quoted).join(',')})) +`,
+    ` (select count(*) from public.warehouse_variant_photos where variant_id in (${variantIds})) +`,
+    ` (select count(*) from public.warehouse_photo_delete_outbox where variant_id in (${variantIds}) or original_requested_by_employee_profile_id in (${profileIds}) or requested_by_employee_profile_id in (${profileIds})) +`,
+    ` (select count(*) from public.warehouse_photo_audit where variant_id in (${variantIds}) or actor_employee_profile_id in (${profileIds})) +`,
+    ` (select count(*) from private.warehouse_photo_delete_receipts where variant_id in (${variantIds}) or requested_by_employee_profile_id in (${profileIds})) +`,
+    ` (select count(*) from private.warehouse_photo_delete_takeover_receipts where original_requested_by_employee_profile_id in (${profileIds}) or previous_requested_by_employee_profile_id in (${profileIds}) or new_requested_by_employee_profile_id in (${profileIds})) +`,
+    ` (select count(*) from public.warehouse_catalog_audit where entity_id in (${itemIds},${variantIds}) or actor_employee_profile_id in (${profileIds})) +`,
+    ` (select count(*) from public.warehouse_variants where id in (${variantIds})) +`,
+    ` (select count(*) from public.warehouse_items where id in (${itemIds})) +`,
+    " (select count(*) from public.permission_grants where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view')))",
+    '),',
+    "'triggersEnabled', (select count(*) = 4 and bool_and(trigger.tgenabled = 'O')",
+    ' from pg_trigger trigger where (trigger.tgrelid, trigger.tgname) in (',
+    "  ('public.warehouse_catalog_audit'::regclass,'reject_warehouse_catalog_audit_mutation'),",
+    "  ('public.warehouse_photo_audit'::regclass,'reject_warehouse_photo_audit_mutation'),",
+    "  ('private.warehouse_photo_delete_receipts'::regclass,'reject_warehouse_photo_delete_receipt_mutation'),",
+    "  ('private.warehouse_photo_delete_takeover_receipts'::regclass,'reject_warehouse_photo_delete_takeover_receipt_mutation')",
+    ' )),',
+    "'fixedPermissionGrants', (select count(*) from public.permission_grants",
+    " where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view')))",
+    ');',
+  ].join(' ')
+}
+
+function parseCleanupProof(output) {
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean)
+  let proof
+  try { proof = JSON.parse(lines.at(-1) ?? '') } catch { fail('cleanup proof invalid') }
+  if (
+    proof === null || typeof proof !== 'object' || Array.isArray(proof) ||
+    !Number.isSafeInteger(proof.runScopedRemaining) || proof.runScopedRemaining < 0 ||
+    typeof proof.triggersEnabled !== 'boolean' ||
+    !Number.isSafeInteger(proof.fixedPermissionGrants) || proof.fixedPermissionGrants < 0
+  ) fail('cleanup proof invalid')
+  return proof
+}
+
+async function cleanupDiagnostics(configuration, scope) {
+  await verifyTargetMarker(configuration)
+  return parseCleanupProof(await ownerSql(
+    configuration,
+    cleanupDiagnosticsSql(configuration, scope),
+  ))
+}
+
+async function assertCleanStart(configuration, scope) {
+  const proof = await cleanupDiagnostics(configuration, scope)
+  if (
+    proof.runScopedRemaining !== 0 ||
+    proof.triggersEnabled !== true ||
+    proof.fixedPermissionGrants !== 0
+  ) fail('isolated HTTP fixture target is polluted before mutation')
+}
+
+async function cleanupRun(configuration, scope) {
+  await verifyTargetMarker(configuration)
+  const profileIds = idList(scope.profileIds)
+  const authUserIds = scope.authUserIds.length > 0
+    ? idList(scope.authUserIds)
+    : "'00000000-0000-4000-8000-000000000000'::uuid"
+  const variantIds = idList(scope.variantIds)
+  const itemIds = idList(scope.itemIds)
+  const sql = [
+    'begin;',
+    'do $target$ begin if not exists (select 1 from private.warehouse_task3_test_target where',
+    `${targetMarkerPredicate(configuration)}) then raise exception 'isolated Task 3 marker mismatch'; end if; end $target$;`,
+    'alter table public.warehouse_catalog_audit disable trigger reject_warehouse_catalog_audit_mutation;',
+    'alter table public.warehouse_photo_audit disable trigger reject_warehouse_photo_audit_mutation;',
+    'alter table private.warehouse_photo_delete_receipts disable trigger reject_warehouse_photo_delete_receipt_mutation;',
+    'alter table private.warehouse_photo_delete_takeover_receipts disable trigger reject_warehouse_photo_delete_takeover_receipt_mutation;',
+    `delete from private.warehouse_photo_delete_takeover_receipts where original_requested_by_employee_profile_id in (${profileIds}) or previous_requested_by_employee_profile_id in (${profileIds}) or new_requested_by_employee_profile_id in (${profileIds});`,
+    `delete from private.warehouse_photo_delete_receipts where variant_id in (${variantIds}) or requested_by_employee_profile_id in (${profileIds});`,
+    `delete from public.warehouse_photo_audit where variant_id in (${variantIds}) or actor_employee_profile_id in (${profileIds});`,
+    `delete from public.warehouse_catalog_audit where entity_id in (${itemIds},${variantIds}) or actor_employee_profile_id in (${profileIds});`,
+    'alter table public.warehouse_catalog_audit enable trigger reject_warehouse_catalog_audit_mutation;',
+    'alter table public.warehouse_photo_audit enable trigger reject_warehouse_photo_audit_mutation;',
+    'alter table private.warehouse_photo_delete_receipts enable trigger reject_warehouse_photo_delete_receipt_mutation;',
+    'alter table private.warehouse_photo_delete_takeover_receipts enable trigger reject_warehouse_photo_delete_takeover_receipt_mutation;',
+    `delete from public.warehouse_photo_delete_outbox where variant_id in (${variantIds}) or original_requested_by_employee_profile_id in (${profileIds}) or requested_by_employee_profile_id in (${profileIds});`,
+    `delete from public.warehouse_variant_photos where variant_id in (${variantIds});`,
+    'set local session_replication_role = replica;',
+    `delete from storage.objects where bucket_id='warehouse-item-photos' and split_part(name,'/',1)::text in (${scope.variantIds.map(quoted).join(',')});`,
+    'set local session_replication_role = origin;',
+    `delete from public.warehouse_variants where id in (${variantIds});`,
+    `delete from public.warehouse_items where id in (${itemIds});`,
+    "delete from public.permission_grants where (subject_type,subject_code,permission_key) in (('department','仓库管理部','warehouse.catalog.manage'),('position','中工','module.inventory.view'));",
+    `delete from public.employee_profiles where id in (${profileIds});`,
+    `delete from auth.users where id in (${authUserIds}) or email like ${quoted(`%${scope.runId}%`)};`,
+    'commit;',
+  ].join(' ')
+  await ownerSql(configuration, sql)
+  const proof = await cleanupDiagnostics(configuration, scope)
+  if (
+    proof.runScopedRemaining !== 0 ||
+    proof.triggersEnabled !== true ||
+    proof.fixedPermissionGrants !== 0
+  ) fail('HTTP fixture cleanup incomplete')
+  return proof
 }
 
 // This gate completes before importing Supabase, creating a client, authenticating,
@@ -173,6 +346,10 @@ const manager = client(configuration.anonKey)
 const otherManager = client(configuration.anonKey)
 const viewer = client(configuration.anonKey)
 const anonymous = client(configuration.anonKey)
+const failurePoint = process.env.WAREHOUSE_TASK3_HTTP_FAILURE_POINT ?? ''
+if (!['', 'after_profiles'].includes(failurePoint)) {
+  fail('unsupported isolated HTTP failure point')
+}
 const runId = randomUUID()
 const managerEmail = `warehouse-task3-manager-${runId}@invalid.local`
 const otherManagerEmail = `warehouse-task3-other-manager-${runId}@invalid.local`
@@ -180,21 +357,41 @@ const viewerEmail = `warehouse-task3-viewer-${runId}@invalid.local`
 const managerPassword = `Task3!Manager!${randomUUID()}Aa9`
 const otherManagerPassword = `Task3!OtherManager!${randomUUID()}Aa9`
 const viewerPassword = `Task3!Viewer!${randomUUID()}Aa9`
+const managerProfileId = randomUUID()
+const otherManagerProfileId = randomUUID()
+const viewerProfileId = randomUUID()
+const itemId = randomUUID()
+const variantId = randomUUID()
+const otherVariantId = randomUUID()
+const scope = {
+  runId,
+  authUserIds: [],
+  profileIds: [managerProfileId, otherManagerProfileId, viewerProfileId],
+  itemIds: [itemId],
+  variantIds: [variantId, otherVariantId],
+}
+let operationFailed = false
+let injectedFailureReached = false
+let cleanupProof = null
+
+await assertCleanStart(configuration, scope)
+
+try {
 
 const managerUser = data(await admin.auth.admin.createUser({
   email: managerEmail, password: managerPassword, email_confirm: true,
 }), 'failed to create disposable manager')?.user
+if (managerUser?.id) scope.authUserIds.push(managerUser.id)
 const otherManagerUser = data(await admin.auth.admin.createUser({
   email: otherManagerEmail, password: otherManagerPassword, email_confirm: true,
 }), 'failed to create second disposable manager')?.user
+if (otherManagerUser?.id) scope.authUserIds.push(otherManagerUser.id)
 const viewerUser = data(await admin.auth.admin.createUser({
   email: viewerEmail, password: viewerPassword, email_confirm: true,
 }), 'failed to create disposable viewer')?.user
+if (viewerUser?.id) scope.authUserIds.push(viewerUser.id)
 assert.ok(managerUser?.id && otherManagerUser?.id && viewerUser?.id)
 
-const managerProfileId = randomUUID()
-const otherManagerProfileId = randomUUID()
-const viewerProfileId = randomUUID()
 const employeeSeed = String(Date.now()).slice(-9)
 data(await admin.from('employee_profiles').insert([
   {
@@ -239,9 +436,11 @@ data(await admin.from('permission_grants').insert([
   { subject_type: 'position', subject_code: '中工', permission_key: 'module.inventory.view' },
 ]), 'failed to create disposable photo permissions')
 
-const itemId = randomUUID()
-const variantId = randomUUID()
-const otherVariantId = randomUUID()
+if (failurePoint === 'after_profiles') {
+  injectedFailureReached = true
+  throw new Error('isolated HTTP failure injected')
+}
+
 data(await admin.from('warehouse_items').insert({
   id: itemId, name: 'Task 3 HTTP Test Item', category: '', brand: '', description: '', active: true,
 }), 'failed to create disposable warehouse item')
@@ -601,20 +800,61 @@ assert.equal(data(await refreshedManager.rpc('finalize_warehouse_photo_delete_se
   p_variant_id: refreshRecoveredTicket.variantId,
   p_photo_id: refreshRecoveredTicket.photoId,
 }), 'registered refresh recovery could not finalize metadata'), true)
+} catch {
+  operationFailed = true
+} finally {
+  let cleanupFailed = false
+  try {
+    cleanupProof = await cleanupRun(configuration, scope)
+  } catch {
+    cleanupFailed = true
+    try {
+      cleanupProof = await cleanupDiagnostics(configuration, scope)
+    } catch {
+      cleanupProof = {
+        runScopedRemaining: -1,
+        triggersEnabled: false,
+        fixedPermissionGrants: -1,
+      }
+    }
+  }
 
-process.stdout.write(`${JSON.stringify({
-  projectId: configuration.projectId,
-  workdir: configuration.workdir,
-  dbPort: configuration.dbPort,
-  apiPort: configuration.apiPort,
-  privateBucket: true,
-  orphanCleanup: true,
-  crossVariantDenied: true,
-  anonymousSignedUrlDenied: true,
-  viewerSignedUrlSeconds: 300,
-  deleteCompleted: true,
-  sanitizedCandidates: true,
-  disabledRequesterTakeover: true,
-  orphanLostFinalizeRecovered: true,
-  registeredRefreshRecoveredWithoutListOrSign: true,
-})}\n`)
+  const cleanupVerified = !cleanupFailed &&
+    cleanupProof.runScopedRemaining === 0 &&
+    cleanupProof.triggersEnabled === true &&
+    cleanupProof.fixedPermissionGrants === 0
+  const result = {
+    ok: !operationFailed && cleanupVerified,
+    runId,
+    cleanupVerified,
+    runScopedRemaining: cleanupProof.runScopedRemaining,
+    triggersEnabled: cleanupProof.triggersEnabled,
+    fixedPermissionGrants: cleanupProof.fixedPermissionGrants,
+  }
+  if (operationFailed || !cleanupVerified) {
+    if (failurePoint) {
+      result.failurePoint = failurePoint
+      result.failureInjected = injectedFailureReached
+    }
+    process.stderr.write(`${JSON.stringify(result)}\n`)
+    process.exitCode = 1
+  } else {
+    Object.assign(result, {
+      projectId: configuration.projectId,
+      workdir: configuration.workdir,
+      dbPort: configuration.dbPort,
+      apiPort: configuration.apiPort,
+      privateBucket: true,
+      orphanCleanup: true,
+      crossVariantDenied: true,
+      anonymousSignedUrlDenied: true,
+      viewerSignedUrlSeconds: 300,
+      deleteCompleted: true,
+      sanitizedCandidates: true,
+      disabledRequesterTakeover: true,
+      orphanLostFinalizeRecovered: true,
+      registeredRefreshRecoveredWithoutListOrSign: true,
+    })
+    process.stdout.write(`${JSON.stringify(result)}\n`)
+  }
+}
