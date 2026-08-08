@@ -503,4 +503,447 @@ grant all on table public.warehouse_batch_locations to service_role;
 revoke all on table public.warehouse_inventory_movements from service_role;
 grant select, insert on table public.warehouse_inventory_movements to service_role;
 
+create or replace function public.list_warehouse_catalog_secure()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  v_view_cost boolean;
+begin
+  perform 1
+  from private.assert_warehouse_permission('module.inventory.view');
+
+  v_view_cost := public.has_current_permission('warehouse.cost.view');
+
+  return jsonb_build_object(
+    'items', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', item.id,
+          'name', item.name,
+          'category', item.category,
+          'brand', item.brand,
+          'description', item.description,
+          'active', item.active,
+          'createdAt', item.created_at,
+          'updatedAt', item.updated_at
+        )
+        order by lower(item.name), item.name, item.id
+      )
+      from public.warehouse_items as item
+    ), '[]'::jsonb),
+    'variants', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', variant.id,
+          'itemId', variant.item_id,
+          'sku', variant.sku,
+          'model', variant.model,
+          'size', variant.size,
+          'material', variant.material,
+          'unit', variant.unit,
+          'minimumStock', variant.minimum_stock,
+          'systemQr', variant.system_qr,
+          'manufacturerQr', variant.manufacturer_qr,
+          'active', variant.active,
+          'createdAt', variant.created_at,
+          'updatedAt', variant.updated_at
+        ) || case
+          when v_view_cost then jsonb_build_object(
+            'defaultPurchasePrice', variant.default_purchase_price
+          )
+          else '{}'::jsonb
+        end
+        order by variant.sku, variant.id
+      )
+      from public.warehouse_variants as variant
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+create or replace function public.list_warehouse_locations_secure()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+begin
+  perform 1
+  from private.assert_warehouse_permission('module.inventory.view');
+
+  return jsonb_build_object(
+    'sites', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', site.id,
+          'code', site.code,
+          'name', site.name,
+          'kind', site.kind,
+          'active', site.active,
+          'createdAt', site.created_at,
+          'updatedAt', site.updated_at
+        )
+        order by site.code, site.id
+      )
+      from public.warehouse_sites as site
+    ), '[]'::jsonb),
+    'locations', coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', location.id,
+          'warehouseId', location.warehouse_id,
+          'shelfCode', location.shelf_code,
+          'shelfName', location.shelf_name,
+          'active', location.active,
+          'createdAt', location.created_at,
+          'updatedAt', location.updated_at
+        )
+        order by site.code, site.id, location.shelf_code, location.id
+      )
+      from public.warehouse_locations as location
+      join public.warehouse_sites as site on site.id = location.warehouse_id
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+create or replace function public.list_warehouse_balances_secure(
+  p_filters jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  v_variant_id uuid;
+  v_warehouse_id uuid;
+  v_location_id uuid;
+  v_page integer := 1;
+  v_page_size integer := 100;
+  v_offset bigint;
+  v_view_cost boolean;
+begin
+  perform 1
+  from private.assert_warehouse_permission('module.inventory.view');
+
+  begin
+    if p_filters is null
+      or jsonb_typeof(p_filters) <> 'object'
+      or exists (
+        select 1
+        from jsonb_object_keys(p_filters) as filter_key(key)
+        where filter_key.key not in (
+          'variantId', 'warehouseId', 'locationId', 'page', 'pageSize'
+        )
+      )
+    then
+      raise exception using errcode = '22023';
+    end if;
+
+    if p_filters ? 'variantId' then
+      if jsonb_typeof(p_filters->'variantId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_variant_id := (p_filters->>'variantId')::uuid;
+    end if;
+    if p_filters ? 'warehouseId' then
+      if jsonb_typeof(p_filters->'warehouseId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_warehouse_id := (p_filters->>'warehouseId')::uuid;
+    end if;
+    if p_filters ? 'locationId' then
+      if jsonb_typeof(p_filters->'locationId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_location_id := (p_filters->>'locationId')::uuid;
+    end if;
+    if p_filters ? 'page' then
+      if jsonb_typeof(p_filters->'page') <> 'number'
+        or (p_filters->>'page')::numeric <> trunc((p_filters->>'page')::numeric)
+      then
+        raise exception using errcode = '22023';
+      end if;
+      v_page := (p_filters->>'page')::integer;
+    end if;
+    if p_filters ? 'pageSize' then
+      if jsonb_typeof(p_filters->'pageSize') <> 'number'
+        or (p_filters->>'pageSize')::numeric <> trunc((p_filters->>'pageSize')::numeric)
+      then
+        raise exception using errcode = '22023';
+      end if;
+      v_page_size := (p_filters->>'pageSize')::integer;
+    end if;
+    if v_page < 1 or v_page_size < 1 or v_page_size > 500 then
+      raise exception using errcode = '22023';
+    end if;
+  exception when others then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid warehouse balance filters';
+  end;
+
+  v_offset := (v_page::bigint - 1) * v_page_size::bigint;
+  v_view_cost := public.has_current_permission('warehouse.cost.view');
+
+  return coalesce((
+    with balance_rows as (
+      select
+        variant.id as variant_id,
+        variant.sku,
+        site.id as warehouse_id,
+        site.code as warehouse_code,
+        location.id as location_id,
+        location.shelf_code,
+        sum(balance.quantity)::numeric(18,3) as quantity,
+        case when sum(balance.quantity) > 0 then
+          (sum(balance.quantity * batch.unit_cost) / sum(balance.quantity))::numeric(18,4)
+        else 0::numeric(18,4)
+        end as unit_cost,
+        sum(balance.quantity * batch.unit_cost)::numeric(18,4) as stock_value
+      from public.warehouse_batch_locations as balance
+      join public.warehouse_batches as batch on batch.id = balance.batch_id
+      join public.warehouse_variants as variant on variant.id = batch.variant_id
+      join public.warehouse_locations as location on location.id = balance.location_id
+      join public.warehouse_sites as site on site.id = location.warehouse_id
+      where (v_variant_id is null or variant.id = v_variant_id)
+        and (v_warehouse_id is null or site.id = v_warehouse_id)
+        and (v_location_id is null or location.id = v_location_id)
+      group by
+        variant.id, variant.sku, site.id, site.code,
+        location.id, location.shelf_code
+    ), paged as (
+      select *
+      from balance_rows
+      order by
+        sku, variant_id, warehouse_code, warehouse_id, shelf_code, location_id
+      limit v_page_size offset v_offset
+    )
+    select jsonb_agg(
+      jsonb_build_object(
+        'variantId', row.variant_id,
+        'warehouseId', row.warehouse_id,
+        'locationId', row.location_id,
+        'quantity', row.quantity
+      ) || case
+        when v_view_cost then jsonb_build_object(
+          'unitCost', row.unit_cost,
+          'stockValue', row.stock_value
+        )
+        else '{}'::jsonb
+      end
+      order by
+        row.sku, row.variant_id, row.warehouse_code,
+        row.warehouse_id, row.shelf_code, row.location_id
+    )
+    from paged as row
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.list_warehouse_movements_secure(
+  p_filters jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  v_variant_id uuid;
+  v_warehouse_id uuid;
+  v_location_id uuid;
+  v_project_id text;
+  v_movement_type text;
+  v_occurred_from timestamptz;
+  v_occurred_to timestamptz;
+  v_page integer := 1;
+  v_page_size integer := 100;
+  v_offset bigint;
+  v_view_cost boolean;
+begin
+  perform 1
+  from private.assert_warehouse_permission('module.inventory.view');
+
+  begin
+    if p_filters is null
+      or jsonb_typeof(p_filters) <> 'object'
+      or exists (
+        select 1
+        from jsonb_object_keys(p_filters) as filter_key(key)
+        where filter_key.key not in (
+          'variantId', 'warehouseId', 'locationId', 'projectId',
+          'movementType', 'occurredFrom', 'occurredTo', 'page', 'pageSize'
+        )
+      )
+    then
+      raise exception using errcode = '22023';
+    end if;
+
+    if p_filters ? 'variantId' then
+      if jsonb_typeof(p_filters->'variantId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_variant_id := (p_filters->>'variantId')::uuid;
+    end if;
+    if p_filters ? 'warehouseId' then
+      if jsonb_typeof(p_filters->'warehouseId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_warehouse_id := (p_filters->>'warehouseId')::uuid;
+    end if;
+    if p_filters ? 'locationId' then
+      if jsonb_typeof(p_filters->'locationId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_location_id := (p_filters->>'locationId')::uuid;
+    end if;
+    if p_filters ? 'projectId' then
+      if jsonb_typeof(p_filters->'projectId') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_project_id := p_filters->>'projectId';
+      if v_project_id = ''
+        or v_project_id <> btrim(v_project_id)
+        or char_length(v_project_id) > 300
+      then
+        raise exception using errcode = '22023';
+      end if;
+    end if;
+    if p_filters ? 'movementType' then
+      if jsonb_typeof(p_filters->'movementType') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_movement_type := p_filters->>'movementType';
+      if v_movement_type not in (
+        '采购入库', '项目出库', '项目退回', '调拨出库', '调拨入库',
+        '盘盈', '盘亏', '盘点无差异', '损坏', '报废', '冲销'
+      ) then
+        raise exception using errcode = '22023';
+      end if;
+    end if;
+    if p_filters ? 'occurredFrom' then
+      if jsonb_typeof(p_filters->'occurredFrom') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_occurred_from := (p_filters->>'occurredFrom')::timestamptz;
+      if not isfinite(v_occurred_from) then
+        raise exception using errcode = '22023';
+      end if;
+    end if;
+    if p_filters ? 'occurredTo' then
+      if jsonb_typeof(p_filters->'occurredTo') <> 'string' then
+        raise exception using errcode = '22023';
+      end if;
+      v_occurred_to := (p_filters->>'occurredTo')::timestamptz;
+      if not isfinite(v_occurred_to) then
+        raise exception using errcode = '22023';
+      end if;
+    end if;
+    if p_filters ? 'page' then
+      if jsonb_typeof(p_filters->'page') <> 'number'
+        or (p_filters->>'page')::numeric <> trunc((p_filters->>'page')::numeric)
+      then
+        raise exception using errcode = '22023';
+      end if;
+      v_page := (p_filters->>'page')::integer;
+    end if;
+    if p_filters ? 'pageSize' then
+      if jsonb_typeof(p_filters->'pageSize') <> 'number'
+        or (p_filters->>'pageSize')::numeric <> trunc((p_filters->>'pageSize')::numeric)
+      then
+        raise exception using errcode = '22023';
+      end if;
+      v_page_size := (p_filters->>'pageSize')::integer;
+    end if;
+    if v_page < 1
+      or v_page_size < 1
+      or v_page_size > 500
+      or (
+        v_occurred_from is not null
+        and v_occurred_to is not null
+        and v_occurred_from > v_occurred_to
+      )
+    then
+      raise exception using errcode = '22023';
+    end if;
+  exception when others then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid warehouse movement filters';
+  end;
+
+  v_offset := (v_page::bigint - 1) * v_page_size::bigint;
+  v_view_cost := public.has_current_permission('warehouse.cost.view');
+
+  return coalesce((
+    with paged as (
+      select movement.*
+      from public.warehouse_inventory_movements as movement
+      where (v_variant_id is null or movement.variant_id = v_variant_id)
+        and (v_warehouse_id is null or movement.warehouse_id = v_warehouse_id)
+        and (v_location_id is null or movement.location_id = v_location_id)
+        and (v_project_id is null or movement.project_id = v_project_id)
+        and (v_movement_type is null or movement.movement_type = v_movement_type)
+        and (v_occurred_from is null or movement.occurred_at >= v_occurred_from)
+        and (v_occurred_to is null or movement.occurred_at <= v_occurred_to)
+      order by movement.occurred_at desc, movement.id desc
+      limit v_page_size offset v_offset
+    )
+    select jsonb_agg(
+      jsonb_build_object(
+        'id', movement.id,
+        'movementType', movement.movement_type,
+        'variantId', movement.variant_id,
+        'batchId', movement.batch_id,
+        'warehouseId', movement.warehouse_id,
+        'locationId', movement.location_id,
+        'quantityDelta', movement.quantity_delta,
+        'sourceDocumentType', movement.source_document_type,
+        'sourceDocumentId', movement.source_document_id,
+        'projectId', movement.project_id,
+        'destinationType', movement.destination_type,
+        'destinationId', movement.destination_id,
+        'destinationName', movement.destination_name,
+        'operatorEmployeeProfileId', movement.operator_employee_profile_id,
+        'occurredAt', movement.occurred_at,
+        'reversalOfMovementId', movement.reversal_of_movement_id,
+        'metadata', movement.metadata
+      ) || case
+        when v_view_cost then jsonb_build_object('unitCost', movement.unit_cost)
+        else '{}'::jsonb
+      end
+      order by movement.occurred_at desc, movement.id desc
+    )
+    from paged as movement
+  ), '[]'::jsonb);
+end;
+$$;
+
+revoke all on function public.list_warehouse_catalog_secure()
+  from public, anon, service_role;
+revoke all on function public.list_warehouse_locations_secure()
+  from public, anon, service_role;
+revoke all on function public.list_warehouse_balances_secure(jsonb)
+  from public, anon, service_role;
+revoke all on function public.list_warehouse_movements_secure(jsonb)
+  from public, anon, service_role;
+
+grant execute on function public.list_warehouse_catalog_secure()
+  to authenticated;
+grant execute on function public.list_warehouse_locations_secure()
+  to authenticated;
+grant execute on function public.list_warehouse_balances_secure(jsonb)
+  to authenticated;
+grant execute on function public.list_warehouse_movements_secure(jsonb)
+  to authenticated;
+
 commit;
