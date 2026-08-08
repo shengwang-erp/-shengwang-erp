@@ -29,6 +29,7 @@
   - `warehouse_return_lines(id, return_id, original_stock_out_line_id, requested_quantity, confirmed_quantity, frozen_total_cost)`.
   - `warehouse_minor_work_orders(id, title, customer_name, work_date, location_text, description, status, assigned_project_id, created_by_employee_profile_id, created_at, updated_at)`.
 - [ ] Enforce statuses `pending|confirmed|rejected|void`, exactly one destination reference for project/minor/internal, positive quantities, unique idempotency keys, and immutable destination snapshots after submission.
+- [ ] After all six pending-document tables exist, add an integration proof for `private.warehouse_variant_has_pending_documents(uuid)`: pending `warehouse_receipts`/`warehouse_receipt_lines`, `warehouse_stock_out_requests`/`warehouse_stock_out_lines`, and `warehouse_return_requests`/`warehouse_return_lines` (joined through the original stock-out line) each block variant deactivation; confirmed/rejected/void rows do not. This proof must exercise the real tables and preserve the fixed-name `to_regclass` sequencing guard—no user-controlled SQL identifiers.
 - [ ] Add `create_minor_work_order_secure`, `assign_minor_work_order_to_project_secure`, `submit_warehouse_receipt_secure`, `submit_warehouse_stock_out_secure`, and `submit_warehouse_return_secure`.
 - [ ] Submission permission rules: receipt requires `warehouse.receipt.submit`; outbound/return requires `warehouse.stock_flow.request`; creating a minor order requires stock-flow request plus active account. Submission never changes batches, balances, movements, or project cost.
 - [ ] Adapt request builders to accept `destinationType: project|minor_work_order|internal_use`; require a project only for `project`, a minor work order only for `minor_work_order`, and a purpose/name for internal use.
@@ -121,4 +122,3 @@
 - [ ] Formal project, minor work, and internal-use destinations all work without fake projects.
 - [ ] Historical cost is unchanged after catalog or later purchase price changes.
 - [ ] Existing purchase/accounting/dashboard/auth tests plus `npm test` and `npm run build` pass.
-

@@ -600,3 +600,176 @@ test('service options are a closed plain-object contract', () => {
     )
   }
 })
+
+test('four catalog save methods call only bound secure RPCs and validate immutable responses', async () => {
+  const savedVariant = {
+    ...VARIANT,
+    systemQr: `SWERP:VARIANT:${IDS.variant}`,
+    defaultPurchasePrice: 118.2501,
+  }
+  const { client, calls } = rpcClient({
+    upsert_warehouse_site_secure: { data: SITE, error: null, status: 200 },
+    upsert_warehouse_location_secure: { data: LOCATION, error: null, status: 200 },
+    upsert_warehouse_item_secure: { data: ITEM, error: null, status: 200 },
+    upsert_warehouse_variant_secure: { data: savedVariant, error: null, status: 200 },
+  })
+  const service = createWarehouseService(client, { configured: true, viewCost: true })
+
+  const results = [
+    await service.saveSite({
+      id: IDS.site, code: ' MAIN ', name: ' 本社仓 ', kind: 'normal', active: true,
+    }),
+    await service.saveLocation({
+      id: IDS.location,
+      warehouseId: IDS.site,
+      shelfCode: ' A-01 ',
+      shelfName: ' A区一号架 ',
+      active: true,
+    }),
+    await service.saveItem({
+      id: IDS.item,
+      name: ' 铜管 ',
+      category: ' 空调材料 ',
+      brand: ' 厂家A ',
+      description: ' 冷媒铜管 ',
+      active: true,
+    }),
+    await service.saveVariant({
+      id: IDS.variant,
+      itemId: IDS.item,
+      sku: ' CU-6MM ',
+      model: ' R410A ',
+      size: ' 6mm ',
+      material: ' 铜 ',
+      unit: ' 米 ',
+      minimumStock: 20,
+      defaultPurchasePrice: 118.2501,
+      manufacturerQr: null,
+      active: true,
+    }),
+  ]
+
+  assert.deepEqual(calls, [
+    ['upsert_warehouse_site_secure', IDS.site, {
+      id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: true,
+    }],
+    ['upsert_warehouse_location_secure', IDS.location, {
+      id: IDS.location,
+      warehouseId: IDS.site,
+      shelfCode: 'A-01',
+      shelfName: 'A区一号架',
+      active: true,
+    }],
+    ['upsert_warehouse_item_secure', IDS.item, {
+      id: IDS.item,
+      name: '铜管',
+      category: '空调材料',
+      brand: '厂家A',
+      description: '冷媒铜管',
+      active: true,
+    }],
+    ['upsert_warehouse_variant_secure', IDS.variant, {
+      id: IDS.variant,
+      itemId: IDS.item,
+      sku: 'CU-6MM',
+      model: 'R410A',
+      size: '6mm',
+      material: '铜',
+      unit: '米',
+      minimumStock: 20,
+      defaultPurchasePrice: 118.2501,
+      manufacturerQr: null,
+      active: true,
+    }],
+  ].map(([name, id, payload]) => ({
+    name,
+    args: {
+      [`p_${name.match(/upsert_warehouse_(.+)_secure/u)[1]}_id`]: id,
+      p_payload: payload,
+    },
+  })))
+  assert.deepEqual(results, [SITE, LOCATION, ITEM, savedVariant])
+  for (const result of results) assert.equal(Object.isFrozen(result), true)
+})
+
+test('catalog saves fail before RPC on invalid closed inputs and malformed bound responses', async () => {
+  const { client, calls } = rpcClient({
+    upsert_warehouse_site_secure: { data: { ...SITE, id: IDS.location }, error: null },
+    upsert_warehouse_variant_secure: { data: { ...VARIANT, systemQr: 'browser-value' }, error: null },
+  })
+  const service = createWarehouseService(client, { configured: true })
+
+  await assert.rejects(
+    service.saveSite({ id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: true, extra: 1 }),
+    safeError('WAREHOUSE_CATALOG_INPUT_INVALID', 400),
+  )
+  await assert.rejects(
+    service.saveSite({ id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: true }),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+  await assert.rejects(
+    service.saveVariant({
+      id: IDS.variant,
+      itemId: IDS.item,
+      sku: 'CU-6MM',
+      model: '',
+      size: '',
+      material: '',
+      unit: '米',
+      minimumStock: 0,
+      defaultPurchasePrice: 0,
+      manufacturerQr: null,
+      active: true,
+    }),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+  assert.equal(calls.length, 2)
+})
+
+test('catalog mutation database hints normalize to stable Chinese-safe service errors', async () => {
+  const input = { id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: false }
+  const cases = [
+    ['WAREHOUSE_CATALOG_ID_MISMATCH', 400],
+    ['WAREHOUSE_CATALOG_CONFLICT', 409],
+    ['WAREHOUSE_CATALOG_RELATION_INVALID', 409],
+    ['WAREHOUSE_SITE_IN_USE', 409],
+    ['WAREHOUSE_LOCATION_HAS_STOCK', 409],
+    ['WAREHOUSE_ITEM_IN_USE', 409],
+    ['WAREHOUSE_VARIANT_HAS_STOCK', 409],
+    ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', 409],
+  ]
+  for (const [code, status] of cases) {
+    const { client } = rpcClient({
+      upsert_warehouse_site_secure: {
+        data: null,
+        error: { code: 'P0001', hint: code, message: 'private item price and description' },
+        status: 400,
+      },
+    })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).saveSite(input),
+      safeError(code, status),
+    )
+  }
+})
+
+test('authentication status takes precedence over any catalog conflict hint', async () => {
+  const { client } = rpcClient({
+    upsert_warehouse_site_secure: {
+      data: null,
+      error: {
+        status: 401,
+        code: 'PGRST301',
+        hint: 'WAREHOUSE_CATALOG_CONFLICT',
+        message: 'private supplier detail',
+      },
+      status: 401,
+    },
+  })
+  await assert.rejects(
+    createWarehouseService(client, { configured: true }).saveSite({
+      id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: true,
+    }),
+    safeError('AUTH_SESSION_INVALID', 401, true),
+  )
+})

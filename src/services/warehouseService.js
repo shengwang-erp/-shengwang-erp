@@ -6,6 +6,12 @@ import {
   parseQuantityUnits,
   quantityUnitsToNumber,
 } from '../features/warehouse/warehouseDecimal.js'
+import {
+  buildWarehouseItemMutation,
+  buildWarehouseLocationMutation,
+  buildWarehouseSiteMutation,
+  buildWarehouseVariantMutation,
+} from '../features/warehouse/warehouseCatalogPersistence.js'
 
 const SAFE_ERRORS = Object.freeze({
   WAREHOUSE_NOT_CONFIGURED: Object.freeze({
@@ -32,7 +38,54 @@ const SAFE_ERRORS = Object.freeze({
     message: '仓库服务暂不可用，请稍后重试',
     status: 503,
   }),
+  WAREHOUSE_CATALOG_INPUT_INVALID: Object.freeze({
+    message: '仓库资料输入无效，请检查后重试',
+    status: 400,
+  }),
+  WAREHOUSE_CATALOG_ID_MISMATCH: Object.freeze({
+    message: '仓库资料编号不一致，请刷新后重试',
+    status: 400,
+  }),
+  WAREHOUSE_CATALOG_CONFLICT: Object.freeze({
+    message: '仓库资料编号、货号或二维码已被使用',
+    status: 409,
+  }),
+  WAREHOUSE_CATALOG_RELATION_INVALID: Object.freeze({
+    message: '关联的仓库资料无效或已停用',
+    status: 409,
+  }),
+  WAREHOUSE_SITE_IN_USE: Object.freeze({
+    message: '请先停用该仓库下的全部货架区',
+    status: 409,
+  }),
+  WAREHOUSE_LOCATION_HAS_STOCK: Object.freeze({
+    message: '该货架区仍有库存，不能停用',
+    status: 409,
+  }),
+  WAREHOUSE_ITEM_IN_USE: Object.freeze({
+    message: '请先停用该物品下的全部型号',
+    status: 409,
+  }),
+  WAREHOUSE_VARIANT_HAS_STOCK: Object.freeze({
+    message: '该型号仍有库存，不能停用',
+    status: 409,
+  }),
+  WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT: Object.freeze({
+    message: '该型号仍有待确认的出入库单据，不能停用',
+    status: 409,
+  }),
 })
+const CATALOG_ERROR_HINTS = new Set([
+  'WAREHOUSE_CATALOG_INPUT_INVALID',
+  'WAREHOUSE_CATALOG_ID_MISMATCH',
+  'WAREHOUSE_CATALOG_CONFLICT',
+  'WAREHOUSE_CATALOG_RELATION_INVALID',
+  'WAREHOUSE_SITE_IN_USE',
+  'WAREHOUSE_LOCATION_HAS_STOCK',
+  'WAREHOUSE_ITEM_IN_USE',
+  'WAREHOUSE_VARIANT_HAS_STOCK',
+  'WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT',
+])
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOVEMENT_TYPE_SET = new Set(Object.values(MOVEMENT_TYPES))
@@ -449,6 +502,10 @@ function normalizeSupplierError(error, responseStatus) {
     return fail('AUTH_SESSION_INVALID', { authInvalid: true })
   }
   if (status === 403 || code === '42501') return fail('ACCESS_DENIED')
+  const rawHint = ownDataValue(error, 'hint')
+  if (typeof rawHint === 'string' && CATALOG_ERROR_HINTS.has(rawHint)) {
+    return fail(rawHint)
+  }
   return fail('WAREHOUSE_SERVICE_UNAVAILABLE')
 }
 
@@ -557,6 +614,20 @@ export function createWarehouseService(client, options = {}) {
     if (error) throw normalizeSupplierError(error, status)
     return descriptors.data.value
   }
+  const mutation = async (builder, rpcName, idArgument, input, validator) => {
+    let request
+    try {
+      request = builder(input)
+    } catch {
+      throw fail('WAREHOUSE_CATALOG_INPUT_INVALID')
+    }
+    const response = validator(await call(rpcName, {
+      [idArgument]: request.id,
+      p_payload: request.payload,
+    }))
+    if (response.id !== request.id) throw invalidResponse()
+    return deepFreeze(response)
+  }
 
   return Object.freeze({
     async listCatalog() {
@@ -577,6 +648,53 @@ export function createWarehouseService(client, options = {}) {
       return validateMovements(
         await call('list_warehouse_movements_secure', { p_filters: normalized }),
         viewCost,
+      )
+    },
+    async saveSite(input) {
+      return mutation(
+        buildWarehouseSiteMutation,
+        'upsert_warehouse_site_secure',
+        'p_site_id',
+        input,
+        validateSite,
+      )
+    },
+    async saveLocation(input) {
+      return mutation(
+        buildWarehouseLocationMutation,
+        'upsert_warehouse_location_secure',
+        'p_location_id',
+        input,
+        (value) => {
+          const response = validateLocation(value)
+          if (response.warehouseId !== input.warehouseId.toLowerCase()) throw invalidResponse()
+          return response
+        },
+      )
+    },
+    async saveItem(input) {
+      return mutation(
+        buildWarehouseItemMutation,
+        'upsert_warehouse_item_secure',
+        'p_item_id',
+        input,
+        validateItem,
+      )
+    },
+    async saveVariant(input) {
+      return mutation(
+        buildWarehouseVariantMutation,
+        'upsert_warehouse_variant_secure',
+        'p_variant_id',
+        input,
+        (value) => {
+          const response = validateVariant(value, viewCost)
+          if (
+            response.itemId !== input.itemId.toLowerCase() ||
+            response.systemQr !== `SWERP:VARIANT:${response.id}`
+          ) throw invalidResponse()
+          return response
+        },
       )
     },
   })
