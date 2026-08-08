@@ -67,11 +67,26 @@ as $$
       || chr(133) || chr(160) || chr(5760)
       || chr(8192) || chr(8193) || chr(8194) || chr(8195) || chr(8196)
       || chr(8197) || chr(8198) || chr(8199) || chr(8200) || chr(8201)
-      || chr(8202) || chr(8232) || chr(8233) || chr(8239) || chr(8287)
+      || chr(8202) || chr(8203) || chr(8204) || chr(8205)
+      || chr(8232) || chr(8233) || chr(8239) || chr(8287) || chr(8288)
       || chr(12288) || chr(65279)
     ),
     NFC
   )
+$$;
+
+create or replace function private.warehouse_catalog_has_invisible(p_value text)
+returns boolean
+language sql
+immutable
+strict
+set search_path = pg_catalog
+as $$
+  select strpos(p_value, chr(65279)) > 0
+    or strpos(p_value, chr(8203)) > 0
+    or strpos(p_value, chr(8204)) > 0
+    or strpos(p_value, chr(8205)) > 0
+    or strpos(p_value, chr(8288)) > 0
 $$;
 
 create or replace function private.warehouse_catalog_payload_keys_exact(
@@ -138,7 +153,10 @@ begin
       hint = 'WAREHOUSE_CATALOG_INPUT_INVALID';
   end if;
   result := private.normalize_warehouse_catalog_text(p_payload->>p_field);
-  if (p_required and result = '') or char_length(result) > p_maximum then
+  if (p_required and result = '')
+    or char_length(result) > p_maximum
+    or private.warehouse_catalog_has_invisible(result)
+  then
     raise exception using
       errcode = '22023', message = 'warehouse catalog input invalid',
       hint = 'WAREHOUSE_CATALOG_INPUT_INVALID';
@@ -204,6 +222,54 @@ begin
   end if;
   return result;
 end;
+$$;
+
+create or replace function private.lock_warehouse_site_resource(p_site_id uuid)
+returns void
+language sql
+volatile
+strict
+set search_path = pg_catalog
+as $$
+  select pg_advisory_xact_lock(
+    hashtextextended('warehouse-site-resource:' || p_site_id::text, 0)
+  )
+$$;
+
+create or replace function private.lock_warehouse_location_resource(p_location_id uuid)
+returns void
+language sql
+volatile
+strict
+set search_path = pg_catalog
+as $$
+  select pg_advisory_xact_lock(
+    hashtextextended('warehouse-location-resource:' || p_location_id::text, 0)
+  )
+$$;
+
+create or replace function private.lock_warehouse_item_resource(p_item_id uuid)
+returns void
+language sql
+volatile
+strict
+set search_path = pg_catalog
+as $$
+  select pg_advisory_xact_lock(
+    hashtextextended('warehouse-item-resource:' || p_item_id::text, 0)
+  )
+$$;
+
+create or replace function private.lock_warehouse_variant_resource(p_variant_id uuid)
+returns void
+language sql
+volatile
+strict
+set search_path = pg_catalog
+as $$
+  select pg_advisory_xact_lock(
+    hashtextextended('warehouse-variant-resource:' || p_variant_id::text, 0)
+  )
 $$;
 
 create or replace function private.write_warehouse_catalog_audit(
@@ -335,54 +401,62 @@ declare
   return_table regclass := to_regclass('public.warehouse_return_requests');
   return_line_table regclass := to_regclass('public.warehouse_return_lines');
 begin
-  if p_variant_id is null then
+  if num_nonnulls(
+    receipt_table, receipt_line_table,
+    stock_out_table, stock_out_line_table,
+    return_table, return_line_table
+  ) = 0 then
     return false;
   end if;
 
-  if receipt_table is not null and receipt_line_table is not null
-  then
-    execute format(
-      'select exists (
-        select 1 from %s document
-        join %s line on line.receipt_id = document.id
-        where document.status = ''pending'' and line.variant_id = $1
-      )', receipt_table, receipt_line_table
-    ) into found_pending using p_variant_id;
-    if found_pending then return true; end if;
+  if num_nonnulls(
+    receipt_table, receipt_line_table,
+    stock_out_table, stock_out_line_table,
+    return_table, return_line_table
+  ) <> 6 then
+    raise exception using
+      errcode = '55000',
+      message = 'warehouse pending document schema incomplete',
+      hint = 'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE';
   end if;
 
-  if stock_out_table is not null and stock_out_line_table is not null
-  then
-    execute format(
-      'select exists (
-        select 1 from %s document
-        join %s line on line.request_id = document.id
-        where document.status = ''pending'' and line.variant_id = $1
-      )', stock_out_table, stock_out_line_table
-    ) into found_pending using p_variant_id;
-    if found_pending then return true; end if;
-  end if;
+  if p_variant_id is null then return false; end if;
 
-  if return_table is not null
-    and return_line_table is not null
-    and stock_out_line_table is not null
-  then
-    execute format(
-      'select exists (
-        select 1 from %s document
-        join %s return_line on return_line.return_id = document.id
-        join %s stock_line on stock_line.id = return_line.original_stock_out_line_id
-        where document.status = ''pending'' and stock_line.variant_id = $1
-      )', return_table, return_line_table, stock_out_line_table
-    ) into found_pending using p_variant_id;
-    if found_pending then return true; end if;
-  end if;
+  execute format(
+    'select exists (
+      select 1 from %s document
+      join %s line on line.receipt_id = document.id
+      where document.status = ''pending'' and line.variant_id = $1
+    )', receipt_table, receipt_line_table
+  ) into found_pending using p_variant_id;
+  if found_pending then return true; end if;
+
+  execute format(
+    'select exists (
+      select 1 from %s document
+      join %s line on line.request_id = document.id
+      where document.status = ''pending'' and line.variant_id = $1
+    )', stock_out_table, stock_out_line_table
+  ) into found_pending using p_variant_id;
+  if found_pending then return true; end if;
+
+  execute format(
+    'select exists (
+      select 1 from %s document
+      join %s return_line on return_line.return_id = document.id
+      join %s stock_line on stock_line.id = return_line.original_stock_out_line_id
+      where document.status = ''pending'' and stock_line.variant_id = $1
+    )', return_table, return_line_table, stock_out_line_table
+  ) into found_pending using p_variant_id;
+  if found_pending then return true; end if;
 
   return false;
 end;
 $$;
 
 revoke all on function private.normalize_warehouse_catalog_text(text)
+  from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_catalog_has_invisible(text)
   from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_catalog_payload_keys_exact(jsonb, text[])
   from public, anon, authenticated, service_role;
@@ -393,6 +467,14 @@ revoke all on function private.warehouse_catalog_text(jsonb, text, integer, bool
 revoke all on function private.warehouse_catalog_active(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_catalog_numeric(jsonb, text, integer, numeric)
+  from public, anon, authenticated, service_role;
+revoke all on function private.lock_warehouse_site_resource(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.lock_warehouse_location_resource(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.lock_warehouse_item_resource(uuid)
+  from public, anon, authenticated, service_role;
+revoke all on function private.lock_warehouse_variant_resource(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function private.write_warehouse_catalog_audit(text, uuid, uuid, text, uuid, boolean, boolean)
   from public, anon, authenticated, service_role;
@@ -449,7 +531,7 @@ begin
       hint = 'WAREHOUSE_CATALOG_INPUT_INVALID';
   end if;
 
-  perform pg_advisory_xact_lock(hashtextextended('warehouse-site-id:' || p_site_id::text, 0));
+  perform private.lock_warehouse_site_resource(p_site_id);
   perform pg_advisory_xact_lock(hashtextextended('warehouse-site-code:' || lower(code_value), 0));
   if exists (
     select 1 from public.warehouse_sites site
@@ -543,7 +625,8 @@ begin
   shelf_name_value := private.warehouse_catalog_text(p_payload, 'shelfName', 200, true);
   active_value := private.warehouse_catalog_active(p_payload);
 
-  perform pg_advisory_xact_lock(hashtextextended('warehouse-location-id:' || p_location_id::text, 0));
+  perform private.lock_warehouse_site_resource(warehouse_id_value);
+  perform private.lock_warehouse_location_resource(p_location_id);
   perform pg_advisory_xact_lock(hashtextextended(
     'warehouse-location-code:' || warehouse_id_value::text || ':' || lower(shelf_code_value), 0
   ));
@@ -651,7 +734,7 @@ begin
   description_value := private.warehouse_catalog_text(p_payload, 'description', 2000, false);
   active_value := private.warehouse_catalog_active(p_payload);
 
-  perform pg_advisory_xact_lock(hashtextextended('warehouse-item-id:' || p_item_id::text, 0));
+  perform private.lock_warehouse_item_resource(p_item_id);
   select item.* into existing
   from public.warehouse_items item where item.id = p_item_id for update;
   if found then
@@ -765,6 +848,7 @@ begin
     if manufacturer_qr_value = '' then manufacturer_qr_value := null; end if;
     if manufacturer_qr_value is not null and (
       char_length(manufacturer_qr_value) > 500
+      or private.warehouse_catalog_has_invisible(manufacturer_qr_value)
       or lower(manufacturer_qr_value) like 'swerp:variant:%'
     ) then
       raise exception using errcode = '22023', message = 'warehouse catalog input invalid',
@@ -776,7 +860,8 @@ begin
   end if;
   active_value := private.warehouse_catalog_active(p_payload);
 
-  perform pg_advisory_xact_lock(hashtextextended('warehouse-variant-id:' || p_variant_id::text, 0));
+  perform private.lock_warehouse_item_resource(item_id_value);
+  perform private.lock_warehouse_variant_resource(p_variant_id);
   perform pg_advisory_xact_lock(hashtextextended('warehouse-variant-sku:' || lower(sku_value), 0));
   if manufacturer_qr_value is not null then
     perform pg_advisory_xact_lock(hashtextextended(

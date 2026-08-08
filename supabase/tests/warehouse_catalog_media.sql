@@ -58,11 +58,29 @@ select is(
   ]::text[],
   'catalog audit stores only normalized identifiers, status and server time'
 );
-select ok(
-  not has_table_privilege('authenticated', 'public.warehouse_catalog_audit', 'SELECT')
-  and not has_table_privilege('authenticated', 'public.warehouse_catalog_audit', 'INSERT')
-  and not has_table_privilege('anon', 'public.warehouse_catalog_audit', 'SELECT'),
-  'browser roles cannot read or write catalog audit rows'
+select is(
+  (
+    select count(*)
+    from pg_class object
+    cross join lateral aclexplode(
+      coalesce(object.relacl, acldefault(
+        case when object.relkind = 'S' then 'S'::"char" else 'r'::"char" end,
+        object.relowner
+      ))
+    ) privilege
+    where object.oid in (
+      'public.warehouse_catalog_audit'::regclass,
+      'public.warehouse_catalog_audit_id_seq'::regclass
+    )
+      and privilege.grantee in (
+        0,
+        'anon'::regrole::oid,
+        'authenticated'::regrole::oid,
+        'service_role'::regrole::oid
+      )
+  ),
+  0::bigint,
+  'catalog audit table and sequence have no browser, public, or service-role ACL entries'
 );
 
 create or replace function pg_temp.task2_error_hint(p_statement text)
@@ -73,6 +91,23 @@ declare
   captured_hint text;
 begin
   execute p_statement;
+  return null;
+exception when others then
+  get stacked diagnostics captured_hint = PG_EXCEPTION_HINT;
+  return captured_hint;
+end;
+$$;
+
+create or replace function pg_temp.task2_catalog_text_error_hint(p_value text)
+returns text
+language plpgsql
+as $$
+declare
+  captured_hint text;
+begin
+  perform private.warehouse_catalog_text(
+    jsonb_build_object('value', p_value), 'value', 100, true
+  );
   return null;
 exception when others then
   get stacked diagnostics captured_hint = PG_EXCEPTION_HINT;
@@ -260,6 +295,49 @@ select is(
 );
 select is(
   public.upsert_warehouse_site_secure(
+    'b0000000-0000-4000-8000-000000000020',
+    jsonb_build_object(
+      'id', 'b0000000-0000-4000-8000-000000000020',
+      'code', E'\t\n\ufeff\u200b\u200c\u200d\u2060EDGE\t\n\ufeff\u200b\u200c\u200d\u2060',
+      'name', E'\u2060边界仓\u200b',
+      'kind', 'normal',
+      'active', true
+    )
+  )->>'code',
+  'EDGE',
+  'site mutation strips the complete agreed invisible set only at text edges'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.upsert_warehouse_site_secure(
+      'b0000000-0000-4000-8000-000000000021',
+      jsonb_build_object(
+        'id', 'b0000000-0000-4000-8000-000000000021',
+        'code', E'\t\n\ufeff\u200b\u200c\u200d\u2060',
+        'name', '不可创建', 'kind', 'normal', 'active', true
+      )
+    )
+  $statement$),
+  'WAREHOUSE_CATALOG_INPUT_INVALID',
+  'an invisible-only required catalog value is rejected after canonicalization'
+);
+reset role;
+select is(
+  (
+    select array_agg(
+      pg_temp.task2_catalog_text_error_hint(value) order by ordinal
+    )
+    from unnest(array[
+      E'Maker\ufeff-QR', E'Maker\u200b-QR', E'Maker\u200c-QR',
+      E'Maker\u200d-QR', E'Maker\u2060-QR'
+    ]) with ordinality candidate(value, ordinal)
+  ),
+  array_fill('WAREHOUSE_CATALOG_INPUT_INVALID'::text, array[5]),
+  'FEFF, U+200B, U+200C, U+200D and U+2060 are rejected inside catalog text'
+);
+set local role authenticated;
+select is(
+  public.upsert_warehouse_site_secure(
     'b0000000-0000-4000-8000-000000000001',
     '{"id":"b0000000-0000-4000-8000-000000000001","code":"MAIN","name":"本社倉","kind":"normal","active":true}'
   )->>'id',
@@ -397,6 +475,22 @@ select is(
 select is(
   pg_temp.task2_error_hint($statement$
     select public.upsert_warehouse_variant_secure(
+      'b3000000-0000-4000-8000-000000000014',
+      jsonb_build_object(
+        'id', 'b3000000-0000-4000-8000-000000000014',
+        'itemId', 'b2000000-0000-4000-8000-000000000001',
+        'sku', 'CU-14MM', 'model', '', 'size', '', 'material', '', 'unit', '米',
+        'minimumStock', 0, 'defaultPurchasePrice', 0,
+        'manufacturerQr', E'\u200bSWERP:VARIANT:forged\u2060', 'active', true
+      )
+    )
+  $statement$),
+  'WAREHOUSE_CATALOG_INPUT_INVALID',
+  'invisible edge characters cannot bypass the reserved manufacturer QR prefix'
+);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select public.upsert_warehouse_variant_secure(
       'b3000000-0000-4000-8000-000000000005',
       '{"id":"b3000000-0000-4000-8000-000000000005","itemId":"b2000000-0000-4000-8000-000000000001","sku":"CU-12MM","model":"","size":"","material":"","unit":"米","minimumStock":0,"defaultPurchasePrice":0,"manufacturerQr":null,"systemQr":"browser-forbidden","active":true}'
     )
@@ -451,6 +545,115 @@ select is(
   private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
   false,
   'pending-document guard safely passes before Phase 3 tables exist'
+);
+
+create table public.warehouse_receipts(id uuid primary key, status text not null);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select private.warehouse_variant_has_pending_documents(
+      'b3000000-0000-4000-8000-000000000001'
+    )
+  $statement$),
+  'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
+  'a receipt document table without its line table fails closed'
+);
+drop table public.warehouse_receipts;
+
+create table public.warehouse_stock_out_requests(id uuid primary key, status text not null);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select private.warehouse_variant_has_pending_documents(
+      'b3000000-0000-4000-8000-000000000001'
+    )
+  $statement$),
+  'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
+  'a stock-out document table without its line table fails closed'
+);
+drop table public.warehouse_stock_out_requests;
+
+create table public.warehouse_return_requests(id uuid primary key, status text not null);
+select is(
+  pg_temp.task2_error_hint($statement$
+    select private.warehouse_variant_has_pending_documents(
+      'b3000000-0000-4000-8000-000000000001'
+    )
+  $statement$),
+  'WAREHOUSE_PENDING_SCHEMA_INCOMPLETE',
+  'a return document table without its dependent line tables fails closed'
+);
+drop table public.warehouse_return_requests;
+
+create table public.warehouse_receipts(id uuid primary key, status text not null);
+create table public.warehouse_receipt_lines(
+  id uuid primary key, receipt_id uuid not null, variant_id uuid not null
+);
+create table public.warehouse_stock_out_requests(id uuid primary key, status text not null);
+create table public.warehouse_stock_out_lines(
+  id uuid primary key, request_id uuid not null, variant_id uuid not null
+);
+create table public.warehouse_return_requests(id uuid primary key, status text not null);
+create table public.warehouse_return_lines(
+  id uuid primary key, return_id uuid not null, original_stock_out_line_id uuid not null
+);
+
+insert into public.warehouse_receipts(id, status)
+values ('ba000000-0000-4000-8000-000000000001', 'pending');
+insert into public.warehouse_receipt_lines(id, receipt_id, variant_id)
+values (
+  'ba100000-0000-4000-8000-000000000001',
+  'ba000000-0000-4000-8000-000000000001',
+  'b3000000-0000-4000-8000-000000000001'
+);
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  true,
+  'a pending receipt blocks variant deactivation when all six tables exist'
+);
+update public.warehouse_receipts set status = 'confirmed';
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  false,
+  'a confirmed receipt no longer blocks variant deactivation'
+);
+
+insert into public.warehouse_stock_out_requests(id, status)
+values ('ba200000-0000-4000-8000-000000000001', 'pending');
+insert into public.warehouse_stock_out_lines(id, request_id, variant_id)
+values (
+  'ba300000-0000-4000-8000-000000000001',
+  'ba200000-0000-4000-8000-000000000001',
+  'b3000000-0000-4000-8000-000000000001'
+);
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  true,
+  'a pending stock-out request blocks variant deactivation'
+);
+update public.warehouse_stock_out_requests set status = 'rejected';
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  false,
+  'a rejected stock-out request no longer blocks variant deactivation'
+);
+
+insert into public.warehouse_return_requests(id, status)
+values ('ba400000-0000-4000-8000-000000000001', 'pending');
+insert into public.warehouse_return_lines(id, return_id, original_stock_out_line_id)
+values (
+  'ba500000-0000-4000-8000-000000000001',
+  'ba400000-0000-4000-8000-000000000001',
+  'ba300000-0000-4000-8000-000000000001'
+);
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  true,
+  'a pending return blocks the original stock-out variant deactivation'
+);
+update public.warehouse_return_requests set status = 'void';
+select is(
+  private.warehouse_variant_has_pending_documents('b3000000-0000-4000-8000-000000000001'),
+  false,
+  'a void return no longer blocks variant deactivation'
 );
 set local role authenticated;
 
@@ -523,6 +726,57 @@ select ok(
        or action not in ('created', 'updated', 'deactivated', 'reactivated')
   ),
   'audit rows contain only fixed entity and action identifiers'
+);
+
+select throws_ok(
+  $$update public.warehouse_catalog_audit set after_active = not after_active$$,
+  '42501', 'warehouse catalog audit is immutable',
+  'even the table owner cannot update catalog audit rows through DML'
+);
+select throws_ok(
+  $$delete from public.warehouse_catalog_audit$$,
+  '42501', 'warehouse catalog audit is immutable',
+  'even the table owner cannot delete catalog audit rows through DML'
+);
+
+grant select, update, delete on public.warehouse_catalog_audit to service_role;
+set local role service_role;
+select throws_ok(
+  $$update public.warehouse_catalog_audit set after_active = not after_active$$,
+  '42501', 'warehouse catalog audit is immutable',
+  'service role cannot update catalog audit rows even with temporary table privileges'
+);
+select throws_ok(
+  $$delete from public.warehouse_catalog_audit$$,
+  '42501', 'warehouse catalog audit is immutable',
+  'service role cannot delete catalog audit rows even with temporary table privileges'
+);
+reset role;
+revoke select, update, delete on public.warehouse_catalog_audit from service_role;
+
+select is(
+  (
+    select count(*)
+    from pg_class object
+    cross join lateral aclexplode(
+      coalesce(object.relacl, acldefault(
+        case when object.relkind = 'S' then 'S'::"char" else 'r'::"char" end,
+        object.relowner
+      ))
+    ) privilege
+    where object.oid in (
+      'public.warehouse_catalog_audit'::regclass,
+      'public.warehouse_catalog_audit_id_seq'::regclass
+    )
+      and privilege.grantee in (
+        0,
+        'anon'::regrole::oid,
+        'authenticated'::regrole::oid,
+        'service_role'::regrole::oid
+      )
+  ),
+  0::bigint,
+  'catalog audit ACL remains exactly closed after service-role trigger proofs'
 );
 
 select * from finish();

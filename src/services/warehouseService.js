@@ -74,18 +74,24 @@ const SAFE_ERRORS = Object.freeze({
     message: '该型号仍有待确认的出入库单据，不能停用',
     status: 409,
   }),
+  WAREHOUSE_PENDING_SCHEMA_INCOMPLETE: Object.freeze({
+    message: '仓库单据服务尚未完整配置，请联系管理员',
+    status: 503,
+  }),
 })
-const CATALOG_ERROR_HINTS = new Set([
-  'WAREHOUSE_CATALOG_INPUT_INVALID',
-  'WAREHOUSE_CATALOG_ID_MISMATCH',
-  'WAREHOUSE_CATALOG_CONFLICT',
-  'WAREHOUSE_CATALOG_RELATION_INVALID',
-  'WAREHOUSE_SITE_IN_USE',
-  'WAREHOUSE_LOCATION_HAS_STOCK',
-  'WAREHOUSE_ITEM_IN_USE',
-  'WAREHOUSE_VARIANT_HAS_STOCK',
-  'WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT',
+const CATALOG_ERROR_HINTS = new Map([
+  ['WAREHOUSE_CATALOG_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
+  ['WAREHOUSE_CATALOG_ID_MISMATCH', Object.freeze({ sqlState: '22023', status: 400 })],
+  ['WAREHOUSE_CATALOG_CONFLICT', Object.freeze({ sqlState: '23505', status: 409 })],
+  ['WAREHOUSE_CATALOG_RELATION_INVALID', Object.freeze({ sqlState: '23503', status: 409 })],
+  ['WAREHOUSE_SITE_IN_USE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_LOCATION_HAS_STOCK', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_ITEM_IN_USE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_VARIANT_HAS_STOCK', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_PENDING_SCHEMA_INCOMPLETE', Object.freeze({ sqlState: '55000', status: 500 })],
 ])
+const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOVEMENT_TYPE_SET = new Set(Object.values(MOVEMENT_TYPES))
@@ -503,7 +509,8 @@ function normalizeSupplierError(error, responseStatus) {
   }
   if (status === 403 || code === '42501') return fail('ACCESS_DENIED')
   const rawHint = ownDataValue(error, 'hint')
-  if (typeof rawHint === 'string' && CATALOG_ERROR_HINTS.has(rawHint)) {
+  const trustedHint = typeof rawHint === 'string' ? CATALOG_ERROR_HINTS.get(rawHint) : null
+  if (trustedHint?.sqlState === code && trustedHint.status === responsePrimitive) {
     return fail(rawHint)
   }
   return fail('WAREHOUSE_SERVICE_UNAVAILABLE')
@@ -608,9 +615,27 @@ export function createWarehouseService(client, options = {}) {
       throw normalizeSupplierError(error)
     }
     const descriptors = ownDataDescriptors(result)
-    if (!descriptors || !Object.hasOwn(descriptors, 'data')) throw invalidResponse()
+    if (
+      !descriptors ||
+      !Object.hasOwn(descriptors, 'data') ||
+      Object.keys(descriptors).some((key) => !SUPPLIER_RESULT_FIELDS.has(key))
+    ) throw invalidResponse()
     const error = Object.hasOwn(descriptors, 'error') ? descriptors.error.value : null
     const status = Object.hasOwn(descriptors, 'status') ? descriptors.status.value : undefined
+    const statusText = Object.hasOwn(descriptors, 'statusText')
+      ? descriptors.statusText.value
+      : undefined
+    const count = Object.hasOwn(descriptors, 'count') ? descriptors.count.value : undefined
+    if (
+      (Object.hasOwn(descriptors, 'error') && error !== null && !ownDataDescriptors(error)) ||
+      (status !== undefined && (
+        !Number.isSafeInteger(status) || status < 100 || status > 599
+      )) ||
+      (statusText !== undefined && statusText !== null && typeof statusText !== 'string') ||
+      (count !== undefined && count !== null && (
+        !Number.isSafeInteger(count) || count < 0
+      ))
+    ) throw invalidResponse()
     if (error) throw normalizeSupplierError(error, status)
     return descriptors.data.value
   }
@@ -624,7 +649,7 @@ export function createWarehouseService(client, options = {}) {
     const response = validator(await call(rpcName, {
       [idArgument]: request.id,
       p_payload: request.payload,
-    }))
+    }), request.payload)
     if (response.id !== request.id) throw invalidResponse()
     return deepFreeze(response)
   }
@@ -665,9 +690,9 @@ export function createWarehouseService(client, options = {}) {
         'upsert_warehouse_location_secure',
         'p_location_id',
         input,
-        (value) => {
+        (value, requestPayload) => {
           const response = validateLocation(value)
-          if (response.warehouseId !== input.warehouseId.toLowerCase()) throw invalidResponse()
+          if (response.warehouseId !== requestPayload.warehouseId) throw invalidResponse()
           return response
         },
       )
@@ -687,10 +712,10 @@ export function createWarehouseService(client, options = {}) {
         'upsert_warehouse_variant_secure',
         'p_variant_id',
         input,
-        (value) => {
+        (value, requestPayload) => {
           const response = validateVariant(value, viewCost)
           if (
-            response.itemId !== input.itemId.toLowerCase() ||
+            response.itemId !== requestPayload.itemId ||
             response.systemQr !== `SWERP:VARIANT:${response.id}`
           ) throw invalidResponse()
           return response

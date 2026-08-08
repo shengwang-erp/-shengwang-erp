@@ -116,6 +116,57 @@ test('variant builder canonicalizes an edge-whitespace-only manufacturer QR to n
   assert.equal(mutation.payload.manufacturerQr, null)
 })
 
+test('builders share an explicit invisible-edge policy and reject internal visual duplicates', () => {
+  const edge = '\t\n\ufeff\u200b\u200c\u200d\u2060'
+  const site = buildWarehouseSiteMutation({
+    id: IDS.site,
+    code: `${edge}MAIN${edge}`,
+    name: `${edge}本社仓${edge}`,
+    kind: 'normal',
+    active: true,
+  })
+  assert.equal(site.payload.code, 'MAIN')
+  assert.equal(site.payload.name, '本社仓')
+
+  const blankQr = buildWarehouseVariantMutation({
+    id: IDS.variant,
+    itemId: IDS.item,
+    sku: 'CU-6MM',
+    model: '',
+    size: '',
+    material: '',
+    unit: '米',
+    minimumStock: 0,
+    defaultPurchasePrice: 0,
+    manufacturerQr: edge,
+    active: true,
+  })
+  assert.equal(blankQr.payload.manufacturerQr, null)
+
+  for (const manufacturerQr of [
+    `${edge}SWERP:VARIANT:forged${edge}`,
+    'Maker\u200b-QR',
+    'Maker\u200c-QR',
+    'Maker\u200d-QR',
+    'Maker\u2060-QR',
+    'Maker\ufeff-QR',
+  ]) {
+    assert.throws(() => buildWarehouseVariantMutation({
+      id: IDS.variant,
+      itemId: IDS.item,
+      sku: 'CU-6MM',
+      model: '',
+      size: '',
+      material: '',
+      unit: '米',
+      minimumStock: 0,
+      defaultPurchasePrice: 0,
+      manufacturerQr,
+      active: true,
+    }), TypeError)
+  }
+})
+
 test('builders reject extra fields, accessors, inherited records and browser system QR input', () => {
   let getterCalls = 0
   const accessor = {

@@ -340,7 +340,7 @@ test('inherited and accessor supplier signals fail closed without invoking unsaf
     })
     await assert.rejects(
       createWarehouseService(client, { configured: true }).listCatalog(),
-      safeError('WAREHOUSE_SERVICE_UNAVAILABLE', 503),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
     )
   }
 
@@ -729,26 +729,27 @@ test('catalog saves fail before RPC on invalid closed inputs and malformed bound
 test('catalog mutation database hints normalize to stable Chinese-safe service errors', async () => {
   const input = { id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: false }
   const cases = [
-    ['WAREHOUSE_CATALOG_ID_MISMATCH', 400],
-    ['WAREHOUSE_CATALOG_CONFLICT', 409],
-    ['WAREHOUSE_CATALOG_RELATION_INVALID', 409],
-    ['WAREHOUSE_SITE_IN_USE', 409],
-    ['WAREHOUSE_LOCATION_HAS_STOCK', 409],
-    ['WAREHOUSE_ITEM_IN_USE', 409],
-    ['WAREHOUSE_VARIANT_HAS_STOCK', 409],
-    ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', 409],
+    ['WAREHOUSE_CATALOG_ID_MISMATCH', 400, '22023', 400],
+    ['WAREHOUSE_CATALOG_CONFLICT', 409, '23505', 409],
+    ['WAREHOUSE_CATALOG_RELATION_INVALID', 409, '23503', 409],
+    ['WAREHOUSE_SITE_IN_USE', 409, '55000', 500],
+    ['WAREHOUSE_LOCATION_HAS_STOCK', 409, '55000', 500],
+    ['WAREHOUSE_ITEM_IN_USE', 409, '55000', 500],
+    ['WAREHOUSE_VARIANT_HAS_STOCK', 409, '55000', 500],
+    ['WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT', 409, '55000', 500],
+    ['WAREHOUSE_PENDING_SCHEMA_INCOMPLETE', 503, '55000', 500],
   ]
-  for (const [code, status] of cases) {
+  for (const [code, safeStatus, sqlState, transportStatus] of cases) {
     const { client } = rpcClient({
       upsert_warehouse_site_secure: {
         data: null,
-        error: { code: 'P0001', hint: code, message: 'private item price and description' },
-        status: 400,
+        error: { code: sqlState, hint: code, message: 'private item price and description' },
+        status: transportStatus,
       },
     })
     await assert.rejects(
       createWarehouseService(client, { configured: true }).saveSite(input),
-      safeError(code, status),
+      safeError(code, safeStatus),
     )
   }
 })
@@ -772,4 +773,106 @@ test('authentication status takes precedence over any catalog conflict hint', as
     }),
     safeError('AUTH_SESSION_INVALID', 401, true),
   )
+})
+
+test('catalog hints require their exact trusted SQLSTATE and transport status pair', async () => {
+  const input = { id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: false }
+  for (const [code, status, hint] of [
+    ['XX000', 500, 'WAREHOUSE_SITE_IN_USE'],
+    ['55000', 409, 'WAREHOUSE_SITE_IN_USE'],
+    ['23505', 500, 'WAREHOUSE_CATALOG_CONFLICT'],
+    ['22023', 409, 'WAREHOUSE_CATALOG_INPUT_INVALID'],
+  ]) {
+    const { client } = rpcClient({
+      upsert_warehouse_site_secure: {
+        data: null,
+        error: { code, hint, message: 'private supplier detail' },
+        status,
+      },
+    })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).saveSite(input),
+      safeError('WAREHOUSE_SERVICE_UNAVAILABLE', 503),
+    )
+  }
+
+  const { client } = rpcClient({
+    upsert_warehouse_site_secure: {
+      data: null,
+      error: {
+        code: '55000', status: 500, hint: 'WAREHOUSE_SITE_IN_USE',
+        message: 'private supplier detail',
+      },
+    },
+  })
+  await assert.rejects(
+    createWarehouseService(client, { configured: true }).saveSite(input),
+    safeError('WAREHOUSE_SERVICE_UNAVAILABLE', 503),
+  )
+})
+
+test('catalog saves validate after await only against the frozen canonical request', async () => {
+  let releaseLocation
+  let releaseVariant
+  const locationInput = {
+    id: IDS.location,
+    warehouseId: IDS.site,
+    shelfCode: 'A-01',
+    shelfName: 'A区一号架',
+    active: true,
+  }
+  const variantInput = {
+    id: IDS.variant,
+    itemId: IDS.item,
+    sku: 'CU-6MM',
+    model: 'R410A',
+    size: '6mm',
+    material: '铜',
+    unit: '米',
+    minimumStock: 20,
+    defaultPurchasePrice: 118.25,
+    manufacturerQr: null,
+    active: true,
+  }
+  const { client } = rpcClient({
+    upsert_warehouse_location_secure: () => new Promise((resolve) => {
+      releaseLocation = resolve
+    }),
+    upsert_warehouse_variant_secure: () => new Promise((resolve) => {
+      releaseVariant = resolve
+    }),
+  })
+  const service = createWarehouseService(client, { configured: true, viewCost: true })
+
+  const locationPromise = service.saveLocation(locationInput)
+  locationInput.warehouseId = null
+  releaseLocation({ data: LOCATION, error: null, status: 200 })
+  assert.deepEqual(await locationPromise, LOCATION)
+
+  const savedVariant = {
+    ...VARIANT,
+    systemQr: `SWERP:VARIANT:${IDS.variant}`,
+    defaultPurchasePrice: 118.25,
+  }
+  const variantPromise = service.saveVariant(variantInput)
+  variantInput.itemId = null
+  releaseVariant({ data: savedVariant, error: null, status: 200 })
+  assert.deepEqual(await variantPromise, savedVariant)
+})
+
+test('catalog transport envelopes reject forged keys and malformed optional fields', async () => {
+  const input = { id: IDS.site, code: 'MAIN', name: '本社仓', kind: 'normal', active: true }
+  for (const response of [
+    { data: SITE, error: null, status: 200, forged: true },
+    { data: SITE, error: null, status: 200, count: 'one' },
+    { data: SITE, error: null, status: 200, statusText: 200 },
+    { data: SITE, error: 'forged', status: 500 },
+    { data: SITE, error: undefined, status: 200 },
+  ]) {
+    const { client } = rpcClient({ upsert_warehouse_site_secure: response })
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).saveSite(input),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
 })

@@ -6,6 +6,8 @@ import {
 } from './warehouseDecimal.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+const CATALOG_EDGE_TRIM = /^[\s\u200b\u200c\u200d\u2060]+|[\s\u200b\u200c\u200d\u2060]+$/gu
+const CATALOG_INTERNAL_INVISIBLE = /[\ufeff\u200b\u200c\u200d\u2060]/u
 
 function invalid() {
   return new TypeError('仓库目录数据无效')
@@ -37,8 +39,12 @@ function uuid(value) {
 
 function text(value, maximum, { required = false } = {}) {
   if (typeof value !== 'string') throw invalid()
-  const normalized = value.trim().normalize('NFC')
-  if ((required && normalized.length === 0) || normalized.length > maximum) throw invalid()
+  const normalized = value.replace(CATALOG_EDGE_TRIM, '').normalize('NFC')
+  if (
+    (required && normalized.length === 0) ||
+    normalized.length > maximum ||
+    CATALOG_INTERNAL_INVISIBLE.test(normalized)
+  ) throw invalid()
   return normalized
 }
 
