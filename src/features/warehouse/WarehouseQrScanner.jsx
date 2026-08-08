@@ -34,28 +34,38 @@ export function createWarehouseQrScannerController({
   const stoppedControls = new WeakSet()
   const stoppedTracks = new WeakSet()
 
+  const invokeStop = (value) => {
+    let result
+    try { result = value.stop?.() } catch { return }
+    try { void Promise.resolve(result).catch(() => {}) } catch { /* cleanup remains best-effort */ }
+  }
+
   const stopControl = (value) => {
     if (!value || (typeof value !== 'object' && typeof value !== 'function')) return
     if (stoppedControls.has(value)) return
     stoppedControls.add(value)
-    try { value.stop?.() } catch { /* cleanup remains best-effort */ }
+    invokeStop(value)
   }
 
-  const stopSession = (session, extraControls = null) => {
+  const stopSession = (session, callbackControls = null) => {
     if (!session) {
-      stopControl(extraControls)
+      stopControl(callbackControls)
       return
     }
+    if (session.stopped) return
+    session.stopped = true
     const stream = session.video?.srcObject
     let tracks = []
     try { tracks = typeof stream?.getTracks === 'function' ? stream.getTracks() : [] } catch {}
-    stopControl(extraControls)
-    stopControl(session.controls)
+    stopControl(session.returnedControls ?? callbackControls)
     for (const track of tracks) {
       if (!track || (typeof track !== 'object' && typeof track !== 'function')) continue
+      let ended = false
+      try { ended = track.readyState === 'ended' } catch {}
+      if (ended) continue
       if (stoppedTracks.has(track)) continue
       stoppedTracks.add(track)
-      try { track.stop?.() } catch { /* continue stopping remaining tracks */ }
+      invokeStop(track)
     }
     try {
       if (session.video?.srcObject === stream) session.video.srcObject = null
@@ -94,7 +104,7 @@ export function createWarehouseQrScannerController({
       if (disposed) return null
       const token = ++generation
       stopSession(activeSession)
-      const session = { video, controls: null }
+      const session = { video, returnedControls: null, stopped: false }
       activeSession = session
       try {
         const zxing = await loadZxing()
@@ -125,7 +135,7 @@ export function createWarehouseQrScannerController({
             }
           },
         )
-        session.controls = nextControls
+        session.returnedControls = nextControls
         if (!isCurrent(token)) {
           stopSession(session, nextControls)
           return null
