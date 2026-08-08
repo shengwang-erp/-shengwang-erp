@@ -401,7 +401,7 @@ test('photo delete projects exact metadata and clears the deleted image when sig
   }
 })
 
-test('overlapping photo mutations publish only the latest refresh and ignore completion after unmount', async () => {
+test('same-variant photo mutations serialize against real server state and ignore completion after unmount', async () => {
   const photos = [
     {
       id: 'photo-first', variantId: 'variant-a1', objectPath: 'variant-a1/photo-first.jpg',
@@ -416,10 +416,15 @@ test('overlapping photo mutations publish only the latest refresh and ignore com
   ]
   const firstDelete = deferred()
   const secondDelete = deferred()
+  let serverPhotos = [...photos]
+  const deleteCalls = []
   let listCalls = 0
   const warehouseMediaService = {
-    deleteVariantPhoto: ({ id }) => id === 'photo-first' ? firstDelete.promise : secondDelete.promise,
-    async listVariantPhotos() { listCalls += 1; return [] },
+    deleteVariantPhoto: ({ id }) => {
+      deleteCalls.push(id)
+      return id === 'photo-first' ? firstDelete.promise : secondDelete.promise
+    },
+    async listVariantPhotos() { listCalls += 1; return [...serverPhotos] },
   }
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
@@ -431,15 +436,20 @@ test('overlapping photo mutations publish only the latest refresh and ignore com
       deleteButtons[0].click()
       deleteButtons[1].click()
     })
+    assert.deepEqual(deleteCalls, ['photo-first'])
 
-    secondDelete.resolve(true)
-    await act(async () => {})
-    assert.equal(listCalls, 1)
-    assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
-
+    serverPhotos = [photos[1]]
     firstDelete.resolve(true)
     await act(async () => {})
     assert.equal(listCalls, 1)
+    assert.deepEqual(deleteCalls, ['photo-first', 'photo-second'])
+    assert.equal(elements(container, (element) => element.getAttribute('src') === photos[0].signedUrl).length, 0)
+    assert.equal(elements(container, (element) => element.getAttribute('src') === photos[1].signedUrl).length, 1)
+
+    serverPhotos = []
+    secondDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(listCalls, 2)
     assert.equal(elements(container, (element) => element.nodeName === 'IMG').length, 0)
   } finally {
     await act(async () => { root.unmount() })
@@ -466,6 +476,91 @@ test('overlapping photo mutations publish only the latest refresh and ignore com
   } finally {
     if (lateContainer.firstChild) await act(async () => { lateRoot.unmount() })
     lateDom.cleanup()
+  }
+})
+
+test('photo mutation queues continue after failure and remain independent across variants', async () => {
+  const firstPhoto = {
+    id: 'photo-fails', variantId: 'variant-a1', objectPath: 'variant-a1/photo-fails.jpg',
+    sortOrder: 0, mimeType: 'image/jpeg', byteSize: 201, createdAt: '2026-01-01T00:00:00Z',
+    signedUrl: 'https://signed.invalid/fails',
+  }
+  const secondPhoto = {
+    id: 'photo-recovers', variantId: 'variant-a1', objectPath: 'variant-a1/photo-recovers.jpg',
+    sortOrder: 1, mimeType: 'image/jpeg', byteSize: 202, createdAt: '2026-01-01T00:00:00Z',
+    signedUrl: 'https://signed.invalid/recovers',
+  }
+  const failedDelete = deferred()
+  const recoveredDelete = deferred()
+  const calls = []
+  let serverPhotos = [firstPhoto, secondPhoto]
+  const recoveryMediaService = {
+    deleteVariantPhoto: ({ id }) => {
+      calls.push(id)
+      return id === firstPhoto.id ? failedDelete.promise : recoveredDelete.promise
+    },
+    async listVariantPhotos() { return [...serverPhotos] },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService: recoveryMediaService, initialPhotosByVariant: { 'variant-a1': serverPhotos } }))) })
+    const deleteButtons = elements(container, (element) => element.nodeName === 'BUTTON' && element.textContent === '删除照片')
+    await act(async () => { deleteButtons[0].click(); deleteButtons[1].click() })
+    assert.deepEqual(calls, [firstPhoto.id])
+
+    failedDelete.reject(new Error('第一张删除失败'))
+    await act(async () => {})
+    assert.deepEqual(calls, [firstPhoto.id, secondPhoto.id])
+
+    serverPhotos = [firstPhoto]
+    recoveredDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(elements(container, (element) => element.getAttribute('src') === firstPhoto.signedUrl).length, 1)
+    assert.equal(elements(container, (element) => element.getAttribute('src') === secondPhoto.signedUrl).length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+
+  const otherPhoto = {
+    id: 'photo-other-variant', variantId: 'variant-b', objectPath: 'variant-b/photo-other.jpg',
+    sortOrder: 0, mimeType: 'image/jpeg', byteSize: 203, createdAt: '2026-01-01T00:00:00Z',
+    signedUrl: 'https://signed.invalid/other',
+  }
+  const firstVariantDelete = deferred()
+  const otherVariantDelete = deferred()
+  const parallelCalls = []
+  let parallelListCalls = 0
+  const parallelMediaService = {
+    deleteVariantPhoto: ({ id, variantId }) => {
+      parallelCalls.push([variantId, id])
+      return variantId === 'variant-a1' ? firstVariantDelete.promise : otherVariantDelete.promise
+    },
+    async listVariantPhotos() { parallelListCalls += 1; return [] },
+  }
+  const parallelDom = installWarehouseReactDom()
+  const parallelContainer = parallelDom.createContainer()
+  const parallelRoot = createRoot(parallelContainer)
+  try {
+    await act(async () => { parallelRoot.render(createElement(catalogModule.default, renderProps({ manageCatalog: true, warehouseMediaService: parallelMediaService, initialPhotosByVariant: { 'variant-a1': [firstPhoto], 'variant-b': [otherPhoto] } }))) })
+    await click(byText(parallelContainer, 'BUTTON', '删除照片'))
+    await click(byText(byClass(parallelContainer, 'warehouse-catalog-cards'), 'BUTTON', '保温棉保温 · B厂1 个型号 · 启用'))
+    await click(byText(parallelContainer, 'BUTTON', '删除照片'))
+    assert.deepEqual(parallelCalls, [
+      ['variant-a1', firstPhoto.id],
+      ['variant-b', otherPhoto.id],
+    ])
+
+    await act(async () => { parallelRoot.unmount() })
+    firstVariantDelete.resolve(true)
+    otherVariantDelete.resolve(true)
+    await act(async () => {})
+    assert.equal(parallelListCalls, 0)
+  } finally {
+    if (parallelContainer.firstChild) await act(async () => { parallelRoot.unmount() })
+    parallelDom.cleanup()
   }
 })
 

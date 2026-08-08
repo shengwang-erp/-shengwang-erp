@@ -112,6 +112,7 @@ export default function WarehouseCatalog({
   const effectiveViewCost = canManageCatalog || viewCost === true
   const mountedRef = useRef(false)
   const photoGenerationRef = useRef(new Map())
+  const photoMutationQueuesRef = useRef(new Map())
   const catalogRef = useRef(catalog)
   catalogRef.current = catalog
   const issuePhotoGeneration = useCallback((variantId) => {
@@ -122,12 +123,26 @@ export default function WarehouseCatalog({
   const isCurrentPhotoGeneration = useCallback((variantId, token) => (
     mountedRef.current && photoGenerationRef.current.get(variantId) === token
   ), [])
+  const enqueuePhotoMutation = useCallback((variantId, operation) => {
+    const previous = photoMutationQueuesRef.current.get(variantId) ?? Promise.resolve()
+    const queued = previous.catch(() => {}).then(() => {
+      if (!mountedRef.current) return false
+      return operation()
+    })
+    photoMutationQueuesRef.current.set(variantId, queued)
+    return queued.finally(() => {
+      if (photoMutationQueuesRef.current.get(variantId) === queued) {
+        photoMutationQueuesRef.current.delete(variantId)
+      }
+    })
+  }, [])
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
       photoGenerationRef.current.clear()
+      photoMutationQueuesRef.current.clear()
     }
   }, [])
 
@@ -314,14 +329,17 @@ export default function WarehouseCatalog({
     const file = event.target.files?.[0]
     if (!file || !selectedVariant) return
     const variantId = selectedVariant.id
-    const token = issuePhotoGeneration(variantId)
-    try {
-      await warehouseMediaService.uploadVariantPhoto({ variantId, file })
-      if (await refreshPhotos(variantId, token)) setMessage('照片已上传')
-    } catch (error) {
-      if (isCurrentPhotoGeneration(variantId, token)) setMessage(errorMessage(error))
-    }
     event.target.value = ''
+    try {
+      const refreshed = await enqueuePhotoMutation(variantId, async () => {
+        await warehouseMediaService.uploadVariantPhoto({ variantId, file })
+        const token = issuePhotoGeneration(variantId)
+        return refreshPhotos(variantId, token)
+      })
+      if (refreshed) setMessage('照片已上传')
+    } catch (error) {
+      if (mountedRef.current) setMessage(errorMessage(error))
+    }
   }
   const movePhoto = async (index, offset) => {
     const target = index + offset
@@ -329,24 +347,29 @@ export default function WarehouseCatalog({
     const next = [...photos]
     ;[next[index], next[target]] = [next[target], next[index]]
     const variantId = selectedVariant.id
-    const token = issuePhotoGeneration(variantId)
     try {
-      await warehouseMediaService.reorderVariantPhotos(
-        variantId,
-        next.map((photo) => photo.id),
-      )
-      await refreshPhotos(variantId, token)
+      await enqueuePhotoMutation(variantId, async () => {
+        await warehouseMediaService.reorderVariantPhotos(
+          variantId,
+          next.map((photo) => photo.id),
+        )
+        const token = issuePhotoGeneration(variantId)
+        return refreshPhotos(variantId, token)
+      })
     } catch (error) {
-      if (isCurrentPhotoGeneration(variantId, token)) setMessage(errorMessage(error))
+      if (mountedRef.current) setMessage(errorMessage(error))
     }
   }
   const deletePhoto = async (photo) => {
-    const token = issuePhotoGeneration(photo.variantId)
     try {
-      await warehouseMediaService.deleteVariantPhoto(photoMutationPayload(photo))
-      if (await refreshPhotos(photo.variantId, token)) setMessage('照片已删除')
+      const refreshed = await enqueuePhotoMutation(photo.variantId, async () => {
+        await warehouseMediaService.deleteVariantPhoto(photoMutationPayload(photo))
+        const token = issuePhotoGeneration(photo.variantId)
+        return refreshPhotos(photo.variantId, token)
+      })
+      if (refreshed) setMessage('照片已删除')
     } catch (error) {
-      if (isCurrentPhotoGeneration(photo.variantId, token)) setMessage(errorMessage(error))
+      if (mountedRef.current) setMessage(errorMessage(error))
     }
   }
   const scannerResolved = useCallback((resolution) => {
