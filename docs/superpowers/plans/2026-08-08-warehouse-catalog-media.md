@@ -17,10 +17,11 @@
 - Modify: `package-lock.json`
 - Create: `src/features/warehouse/warehouseLazyLoading.test.js`
 
-- [ ] Write a failing source contract proving QR generation, scanning, and spreadsheet code are reachable only through `lazy()` or dynamic `import()` from the warehouse route.
+- [ ] Write a failing executable AST/process contract proving the three packages are direct dependencies and production `src` has no static `import`/`require` of them. Controlled fixtures must prove static import/require fails while literal dynamic `import()` passes; a grep-only contract is forbidden.
+- [ ] This dependency-only gate intentionally permits zero real warehouse callsites because the scanner, label, export, and warehouse route do not exist yet. Do not fabricate reachability or a warehouse chunk in Task 1. Task 4 upgrades the gate to real warehouse-owned ZXing/QRCode dynamic callsites; Task 5 proves those callsites are reachable from the warehouse catalog root. ExcelJS callsite reachability is upgraded in Phase 4 report/export Task 2, where the export feature is actually implemented.
 - [ ] Install `@zxing/browser@^0.2.1`, `exceljs@^4.4.0`, and `qrcode@^1.5.4` with `npm install`.
 - [ ] Confirm no package is added for PDF generation; browser print-to-PDF is the supported PDF path.
-- [ ] Run `node --test src/features/warehouse/warehouseLazyLoading.test.js` and `npm run build`; record main and warehouse chunk sizes in the phase commit message.
+- [ ] Run `node --test src/features/warehouse/warehouseLazyLoading.test.js`, the full Node suite, and `npm run build`; record the main chunk size in the Task 1 report. If no warehouse route/chunk exists, record `warehouse chunk: not yet emitted` rather than inventing one.
 - [ ] Commit with message `build: add lazy warehouse media dependencies`.
 
 ### Task 2: Implement authorized catalog and location mutations
@@ -77,6 +78,7 @@
 - [ ] Add RPC `resolve_warehouse_qr_secure(p_code text)` that returns one active variant without cost fields and requires `module.inventory.view`.
 - [ ] Dynamically import `@zxing/browser` only when the scan dialog opens; always stop controls and media tracks on success, close, error, and unmount.
 - [ ] Dynamically import `qrcode` only when rendering/printing a label. Label includes company name, item name, variant model/size/material, SKU, unit, and system QR; optional location label includes warehouse/shelf text.
+- [ ] Upgrade `warehouseLazyLoading.test.js` from the Task 1 dependency-only gate: it must execute the AST boundary and prove the real warehouse-owned scanner and label modules contain the literal dynamic callsites for `@zxing/browser` and `qrcode`. Fixture-only evidence is no longer sufficient after this task.
 - [ ] Scope print CSS to `.warehouse-label-print-sheet` and a named `@page warehouse-label`; do not affect existing ERP print pages.
 - [ ] Run the QR/scanner/label tests and `npm run build`.
 - [ ] Commit with message `feat: add warehouse QR scan and labels`.
@@ -93,6 +95,7 @@
 - [ ] Render searchable item cards and a detail/editor panel with name, category, brand, description, active status, multiple variants, model, size, material, unit, SKU, minimum stock, default purchase price, manufacturer QR, system QR, and ordered photos.
 - [ ] Hide all mutation controls unless `manageCatalog`; hide price/cost unless `viewCost`; keep scan and read-only details available to inventory viewers.
 - [ ] Add warehouse/site/shelf management with types normal, project site, and shared tool. Project-site warehouses still support shelf zones but are not broken into extra sub-warehouses.
+- [ ] Upgrade `warehouseLazyLoading.test.js` again to prove the real scanner/label dynamic callsites are reachable through the `WarehouseCatalog` import graph. This is catalog-root reachability only: `App.jsx` route wiring remains Phase 4 work. ExcelJS stays dependency-only until Phase 4 report/export Task 2 creates its real warehouse-owned dynamic export callsite.
 - [ ] Reuse second-version black/gold variables and existing button/table/form class patterns; keep every new selector under `.warehouse-management-page`.
 - [ ] Add mobile tests for 720 px breakpoint, touch targets, stacked fields, image carousel, horizontal table containment, focus rings, and no global print/theme leakage.
 - [ ] Run `node --test src/features/warehouse/WarehouseCatalog.test.js src/features/warehouse/warehouseVisualContract.test.js` and `npm run build`.
@@ -105,4 +108,3 @@
 - [ ] No data URL, public bucket, generic base-record mutation, or localStorage warehouse fallback exists.
 - [ ] `npm test` and `npm run build` pass.
 - [ ] Phase 1 tests remain green.
-
