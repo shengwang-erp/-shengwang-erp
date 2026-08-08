@@ -375,7 +375,8 @@ for (const [fixture, behavior] of [
   ['var-safe-overwrite', 'an unconditional ordinary-object overwrite of a var browser alias'],
   ['block-let-safe-overwrite', 'an unconditional block-local overwrite of a let browser alias'],
   ['var-block-safe-overwrite', 'an unconditional overwrite of a block-declared function-scoped var alias'],
-  ['var-use-before-block-initializer', 'a hoisted var before its block initializer becomes a browser alias'],
+  ['parameter-default-outer-ordinary-alias', 'a parameter default resolves an outer ordinary alias'],
+  ['safe-overwrite-after-function-declaration', 'a nested function return never blocks an outer straight-line overwrite'],
 ]) {
   test(`destination audit permits ${behavior}`, () => {
     const result = runLexicalLocalStorageFixture(fixture)
@@ -394,6 +395,8 @@ for (const [fixture, behavior] of [
   ['catch-browser-access', 'a browser-global access inside a catch scope'],
   ['parameter-default-global', 'a parameter whose default is globalThis'],
   ['parameter-shadowed-default', 'a globalThis-named parameter whose default is the true window'],
+  ['parameter-default-ignores-body-var', 'a parameter default that cannot see a function-body var shadow'],
+  ['parameter-default-outer-browser-alias', 'a parameter default resolves an outer browser alias'],
   ['let-browser-alias', 'a function-local let browser-global alias'],
   ['var-browser-alias', 'a function-local var browser-global alias'],
   ['block-let-browser-alias', 'a block-local let browser-global alias'],
@@ -415,6 +418,18 @@ for (const [fixture, behavior] of [
 for (const [fixture, alias] of [
   ['let-conditional-safe-overwrite', 'browser'],
   ['let-unknown-overwrite', 'browser'],
+  ['let-unknown-from-ordinary', 'browser'],
+  ['let-use-before-first-assignment', 'browser'],
+  ['var-use-before-block-initializer', 'browser'],
+  ['abrupt-break-before-overwrite', 'browser'],
+  ['abrupt-continue-before-overwrite', 'browser'],
+  ['abrupt-return-before-overwrite', 'browser'],
+  ['abrupt-throw-before-overwrite', 'browser'],
+  ['try-before-overwrite', 'browser'],
+  ['finally-overwrite', 'browser'],
+  ['loop-overwrite', 'browser'],
+  ['switch-overwrite', 'browser'],
+  ['short-circuit-overwrite', 'browser'],
   ['browser-alias-cycle', 'a'],
 ]) {
   test(`destination audit fails closed with an exact unresolved alias for ${fixture}`, () => {
