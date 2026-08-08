@@ -12,6 +12,7 @@ import {
   PERMISSION_MODULES,
   SENSITIVE_PERMISSION_CATALOG,
   templateContainsForbiddenProjectFinancialGrant,
+  WAREHOUSE_PERMISSION_CATALOG,
 } from '../auth/permissionCatalog.js'
 import {
   createPermissionTemplateService,
@@ -44,16 +45,18 @@ function createClient(result = { data: emptySnapshot(), error: null }) {
   }
 }
 
-test('permission catalog is the closed 62-key module/action and sensitive set', () => {
+test('permission catalog is the closed 71-key module, sensitive and warehouse set', () => {
   assert.equal(PERMISSION_MODULES.length, 13)
   assert.equal(PERMISSION_ACTIONS.length, 4)
   assert.equal(SENSITIVE_PERMISSION_CATALOG.length, 10)
-  assert.equal(PERMISSION_CATALOG.length, 62)
-  assert.equal(new Set(PERMISSION_CATALOG).size, 62)
+  assert.equal(WAREHOUSE_PERMISSION_CATALOG.length, 9)
+  assert.equal(PERMISSION_CATALOG.length, 71)
+  assert.equal(new Set(PERMISSION_CATALOG).size, 71)
   assert.ok(
     PERMISSION_CATALOG.every((key) =>
       /^module\.[a-z0-9_]+\.(?:view|create|update|delete)$/u.test(key) ||
-      /^sensitive\.[a-z0-9_]+$/u.test(key)
+      /^sensitive\.[a-z0-9_]+$/u.test(key) ||
+      /^warehouse\.[a-z0-9_]+\.[a-z0-9_]+$/u.test(key)
     ),
   )
   assert.ok(!PERMISSION_CATALOG.includes('all'))
@@ -62,6 +65,39 @@ test('permission catalog is the closed 62-key module/action and sensitive set', 
       key.startsWith('module.permission_templates.')
     ),
   )
+})
+
+test('department and position replacements round-trip every warehouse action key', async () => {
+  const warehouseKeys = WAREHOUSE_PERMISSION_CATALOG.map(({ key }) => key).sort()
+
+  for (const [subjectType, subjectCode, collection] of [
+    ['department', '仓库管理部', 'departments'],
+    ['position', '仓库管理员', 'positions'],
+  ]) {
+    const snapshot = emptySnapshot()
+    snapshot[collection][subjectCode] = warehouseKeys
+    const { client, calls } = createClient({ data: snapshot, error: null })
+    const service = createPermissionTemplateService(client, { configured: true })
+
+    const result = await service.replacePermissionTemplate({
+      subjectType,
+      subjectCode,
+      permissionKeys: [...warehouseKeys].reverse(),
+    })
+
+    assert.deepEqual(calls, [{
+      name: 'permission-templates',
+      options: {
+        body: {
+          operation: 'replace',
+          subjectType,
+          subjectCode,
+          permissionKeys: warehouseKeys,
+        },
+      },
+    }])
+    assert.deepEqual(result[collection][subjectCode], warehouseKeys)
+  }
 })
 
 test('project financial template grants use the fixed allowed and forbidden subject matrix', () => {

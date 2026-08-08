@@ -6,6 +6,7 @@ import {
   PERMISSION_MODULES,
   SENSITIVE_PERMISSION_CATALOG,
   templateContainsForbiddenProjectFinancialGrant,
+  WAREHOUSE_PERMISSION_CATALOG,
 } from '../../auth/permissionCatalog.js'
 import {
   applyPermissionTemplateSnapshot,
@@ -471,6 +472,28 @@ function AuthorizedPermissionTemplateEditor({
                 </label>
               )
             })}
+          </div>
+        </fieldset>
+
+        <fieldset
+          className='permission-template-sensitive permission-template-warehouse'
+          disabled={!templates || mutation || loading}
+        >
+          <legend>仓库操作权限</legend>
+          <div className='permission-template-sensitive-grid permission-template-warehouse-grid'>
+            {WAREHOUSE_PERMISSION_CATALOG.map(({ key, label }) => (
+              <label
+                className='permission-template-sensitive-option permission-template-warehouse-option'
+                key={key}
+              >
+                <input
+                  type='checkbox'
+                  checked={draftPermissionKeys.includes(key)}
+                  onChange={() => togglePermission(key)}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
           </div>
         </fieldset>
 

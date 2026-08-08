@@ -5,9 +5,11 @@ import {
   canDelete,
   canEdit,
   canViewSensitive,
+  hasEffectivePermissionKey,
   isSuperAdmin,
 } from '../utils/permissions.js'
 import { canViewProjectFinancials } from '../features/projects/projectPermissions.js'
+import { WAREHOUSE_PERMISSION_KEYS } from '../features/warehouse/warehouseConstants.js'
 
 const ACTIVE_ONLY_VIEWS = new Set([
   'home',
@@ -279,5 +281,25 @@ export function getPurchaseAccess(user) {
       delete: records.delete,
     },
     summary: { view },
+  })
+}
+
+export function getWarehouseAccess(user) {
+  const snapshot = activeUserSnapshot(user)
+  const page = snapshot ? hasModule(snapshot, '仓库库存') : false
+  const hasWarehouseAction = (permissionKey) =>
+    page && hasEffectivePermissionKey(snapshot, permissionKey)
+
+  return freezeProjection({
+    page,
+    manageCatalog: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.catalogManage),
+    submitReceipt: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.receiptSubmit),
+    confirmReceipt: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.receiptConfirm),
+    requestStockFlow: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stockFlowRequest),
+    confirmStockFlow: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stockFlowConfirm),
+    transfer: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.transferManage),
+    stocktake: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.stocktakeConfirm),
+    viewCost: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.costView),
+    exportReports: hasWarehouseAction(WAREHOUSE_PERMISSION_KEYS.reportExport),
   })
 }

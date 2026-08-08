@@ -74,7 +74,7 @@ const employeeDefaults = {
 }
 
 export function isSuperAdmin(employee = {}) {
-  const employeeNumber = employee.employeeNumber ?? employee.employee_number
+  const employeeNumber = employee?.employeeNumber ?? employee?.employee_number
   return normalizeEmployeeNumber(employeeNumber) === 'SW-000'
 }
 
@@ -138,9 +138,9 @@ export function normalizePermissionFields(employee = {}) {
   return normalized
 }
 
-function hasEffectivePermission(employee, permissionKey) {
+export function hasEffectivePermissionKey(employee, permissionKey) {
   if (isSuperAdmin(employee)) return true
-  const permissions = Array.isArray(employee.effectivePermissionKeys)
+  const permissions = Array.isArray(employee?.effectivePermissionKeys)
     ? employee.effectivePermissionKeys
     : []
   return permissions.includes('all') || Boolean(permissionKey && permissions.includes(permissionKey))
@@ -157,21 +157,21 @@ function getSensitivePermissionKey(permissionName) {
 }
 
 export function canAccessModule(employee, moduleName) {
-  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'view'))
+  return hasEffectivePermissionKey(employee, getModulePermissionKey(moduleName, 'view'))
 }
 
 export function canCreate(employee, moduleName) {
-  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'create'))
+  return hasEffectivePermissionKey(employee, getModulePermissionKey(moduleName, 'create'))
 }
 
 export function canEdit(employee, moduleName) {
-  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'update'))
+  return hasEffectivePermissionKey(employee, getModulePermissionKey(moduleName, 'update'))
 }
 
 export function canDelete(employee, moduleName) {
-  return hasEffectivePermission(employee, getModulePermissionKey(moduleName, 'delete'))
+  return hasEffectivePermissionKey(employee, getModulePermissionKey(moduleName, 'delete'))
 }
 
 export function canViewSensitive(employee, permissionName) {
-  return hasEffectivePermission(employee, getSensitivePermissionKey(permissionName))
+  return hasEffectivePermissionKey(employee, getSensitivePermissionKey(permissionName))
 }

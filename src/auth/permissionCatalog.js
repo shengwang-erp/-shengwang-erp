@@ -1,3 +1,5 @@
+import { WAREHOUSE_PERMISSION_KEYS } from '../features/warehouse/warehouseConstants.js'
+
 export const PERMISSION_MODULES = Object.freeze([
   Object.freeze({ code: 'owner_dashboard', label: '老板驾驶舱' }),
   Object.freeze({ code: 'projects', label: '工程项目' }),
@@ -55,11 +57,51 @@ export const SENSITIVE_PERMISSION_CATALOG = Object.freeze([
   }),
 ])
 
+export const WAREHOUSE_PERMISSION_CATALOG = Object.freeze([
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.catalogManage,
+    label: '管理仓库物品与仓位',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.receiptSubmit,
+    label: '提交采购到货',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.receiptConfirm,
+    label: '确认采购入库',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.stockFlowRequest,
+    label: '发起出库与退回申请',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.stockFlowConfirm,
+    label: '确认出库与退回',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.transferManage,
+    label: '管理仓间调拨',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.stocktakeConfirm,
+    label: '确认库存盘点',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.costView,
+    label: '查看仓库成本',
+  }),
+  Object.freeze({
+    key: WAREHOUSE_PERMISSION_KEYS.reportExport,
+    label: '导出仓库报表',
+  }),
+])
+
 export const PERMISSION_CATALOG = Object.freeze([
   ...PERMISSION_MODULES.flatMap(({ code }) =>
     PERMISSION_ACTIONS.map(({ code: action }) => `module.${code}.${action}`)
   ),
   ...SENSITIVE_PERMISSION_CATALOG.map(({ key }) => key),
+  ...WAREHOUSE_PERMISSION_CATALOG.map(({ key }) => key),
 ])
 
 const PERMISSION_CATALOG_SET = new Set(PERMISSION_CATALOG)

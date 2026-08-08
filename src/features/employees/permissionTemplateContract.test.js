@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   SENSITIVE_PERMISSION_CATALOG,
   templateContainsForbiddenProjectFinancialGrant,
+  WAREHOUSE_PERMISSION_CATALOG,
 } from '../../auth/permissionCatalog.js'
 
 const source = await readFile(
@@ -145,6 +146,7 @@ test('editor renders all module actions and sensitive permissions from the close
       'PERMISSION_ACTIONS',
       'PERMISSION_MODULES',
       'SENSITIVE_PERMISSION_CATALOG',
+      'WAREHOUSE_PERMISSION_CATALOG',
     ]
   ) {
     assert.match(permissionCatalogImport[1], new RegExp(`\\b${name}\\b`))
@@ -152,6 +154,7 @@ test('editor renders all module actions and sensitive permissions from the close
   assert.match(source, /PERMISSION_ACTIONS\.map/)
   assert.match(source, /PERMISSION_MODULES\.map/)
   assert.match(source, /SENSITIVE_PERMISSION_CATALOG\.map/)
+  assert.match(source, /WAREHOUSE_PERMISSION_CATALOG\.map/)
   assert.match(source, /`module\.\$\{module\.code\}\.\$\{action\.code\}`/)
   assert.match(source, /type=['"]checkbox['"]/)
   assert.match(
@@ -159,6 +162,13 @@ test('editor renders all module actions and sensitive permissions from the close
     /checked=\{draftPermissionKeys\.includes\(permissionKey\)\}/,
   )
   assert.match(source, /敏感数据权限/)
+  assert.match(source, /仓库操作权限/)
+  for (const { key, label } of WAREHOUSE_PERMISSION_CATALOG) {
+    assert.equal(typeof key, 'string')
+    assert.equal(typeof label, 'string')
+    assert.ok(key.startsWith('warehouse.'))
+    assert.ok(label.length > 0)
+  }
 })
 
 test('forbidden subjects render both project financial checkboxes disabled without disabling unrelated keys', () => {
