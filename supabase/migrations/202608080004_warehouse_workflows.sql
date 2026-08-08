@@ -61,6 +61,14 @@ create table public.warehouse_receipts (
     rejection_reason is null
     or (rejection_reason = btrim(rejection_reason) and char_length(rejection_reason) between 1 and 1000)
   ),
+  constraint warehouse_receipts_state_consistency_check check (
+    (status = 'pending' and confirmed_by_employee_profile_id is null
+      and confirmed_at is null and rejection_reason is null)
+    or (status = 'confirmed' and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is null)
+    or (status in ('rejected', 'void') and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is not null)
+  ),
   constraint warehouse_receipts_purchase_fk foreign key (purchase_record_key)
     references public.purchase_records(record_key) on delete restrict,
   constraint warehouse_receipts_submitter_fk foreign key (submitted_by_employee_profile_id)
@@ -142,6 +150,14 @@ create table public.warehouse_stock_out_requests (
     rejection_reason is null
     or (rejection_reason = btrim(rejection_reason) and char_length(rejection_reason) between 1 and 1000)
   ),
+  constraint warehouse_stock_out_state_consistency_check check (
+    (status = 'pending' and confirmed_by_employee_profile_id is null
+      and confirmed_at is null and rejection_reason is null)
+    or (status = 'confirmed' and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is null)
+    or (status in ('rejected', 'void') and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is not null)
+  ),
   constraint warehouse_stock_out_project_fk foreign key (project_id)
     references public.projects(record_key) on delete restrict,
   constraint warehouse_stock_out_minor_fk foreign key (minor_work_order_id)
@@ -178,7 +194,8 @@ create table public.warehouse_stock_out_lines (
     references public.warehouse_stock_out_requests(id) on delete restrict,
   constraint warehouse_stock_out_lines_variant_fk foreign key (variant_id)
     references public.warehouse_variants(id) on delete restrict,
-  constraint warehouse_stock_out_lines_variant_unique unique (request_id, variant_id)
+  constraint warehouse_stock_out_lines_variant_unique unique (request_id, variant_id),
+  constraint warehouse_stock_out_lines_id_request_unique unique (id, request_id)
 );
 
 create table public.warehouse_return_requests (
@@ -209,18 +226,28 @@ create table public.warehouse_return_requests (
     rejection_reason is null
     or (rejection_reason = btrim(rejection_reason) and char_length(rejection_reason) between 1 and 1000)
   ),
+  constraint warehouse_return_state_consistency_check check (
+    (status = 'pending' and confirmed_by_employee_profile_id is null
+      and confirmed_at is null and rejection_reason is null)
+    or (status = 'confirmed' and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is null)
+    or (status in ('rejected', 'void') and confirmed_by_employee_profile_id is not null
+      and confirmed_at is not null and rejection_reason is not null)
+  ),
   constraint warehouse_return_original_fk foreign key (original_stock_out_id)
     references public.warehouse_stock_out_requests(id) on delete restrict,
   constraint warehouse_return_submitter_fk foreign key (submitted_by_employee_profile_id)
     references public.employee_profiles(id) on delete restrict,
   constraint warehouse_return_confirmer_fk foreign key (confirmed_by_employee_profile_id)
     references public.employee_profiles(id) on delete restrict,
-  constraint warehouse_return_idempotency_unique unique (idempotency_key)
+  constraint warehouse_return_idempotency_unique unique (idempotency_key),
+  constraint warehouse_return_id_original_unique unique (id, original_stock_out_id)
 );
 
 create table public.warehouse_return_lines (
   id uuid primary key default gen_random_uuid(),
   return_id uuid not null,
+  original_stock_out_id uuid not null,
   original_stock_out_line_id uuid not null,
   requested_quantity numeric(18,3) not null,
   confirmed_quantity numeric(18,3),
@@ -239,12 +266,213 @@ create table public.warehouse_return_lines (
       and frozen_total_cost not in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
     )
   ),
-  constraint warehouse_return_lines_return_fk foreign key (return_id)
-    references public.warehouse_return_requests(id) on delete restrict,
-  constraint warehouse_return_lines_stock_out_fk foreign key (original_stock_out_line_id)
-    references public.warehouse_stock_out_lines(id) on delete restrict,
+  constraint warehouse_return_lines_return_original_fk
+    foreign key (return_id, original_stock_out_id)
+    references public.warehouse_return_requests(id, original_stock_out_id) on delete restrict,
+  constraint warehouse_return_lines_stock_out_original_fk
+    foreign key (original_stock_out_line_id, original_stock_out_id)
+    references public.warehouse_stock_out_lines(id, request_id) on delete restrict,
   constraint warehouse_return_lines_original_unique unique (return_id, original_stock_out_line_id)
 );
+
+create or replace function private.assert_warehouse_receipt_document_state(p_receipt_id uuid)
+returns void
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  document_status text;
+  line_count bigint;
+  incomplete_count bigint;
+  complete_count bigint;
+begin
+  select status into document_status
+  from public.warehouse_receipts where id = p_receipt_id;
+  if not found then return; end if;
+
+  select count(*),
+    count(*) filter (where confirmed_quantity is null or unit_cost is null),
+    count(*) filter (where confirmed_quantity is not null and unit_cost is not null)
+  into line_count, incomplete_count, complete_count
+  from public.warehouse_receipt_lines where receipt_id = p_receipt_id;
+
+  if line_count = 0
+    or (document_status = 'confirmed' and incomplete_count <> 0)
+    or (document_status in ('pending', 'rejected') and complete_count <> 0)
+    or (document_status in ('pending', 'rejected') and incomplete_count <> line_count)
+    or (document_status = 'void' and incomplete_count <> 0 and complete_count <> 0)
+    or exists (
+      select 1 from public.warehouse_receipt_lines
+      where receipt_id = p_receipt_id
+        and ((confirmed_quantity is null) <> (unit_cost is null))
+    )
+  then
+    raise exception using errcode = '23514', message = 'warehouse receipt state inconsistent';
+  end if;
+end;
+$$;
+
+create or replace function private.assert_warehouse_stock_out_document_state(p_request_id uuid)
+returns void
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  document_status text;
+  line_count bigint;
+  incomplete_count bigint;
+  complete_count bigint;
+begin
+  select status into document_status
+  from public.warehouse_stock_out_requests where id = p_request_id;
+  if not found then return; end if;
+
+  select count(*),
+    count(*) filter (where confirmed_quantity is null or frozen_total_cost is null),
+    count(*) filter (where confirmed_quantity is not null and frozen_total_cost is not null)
+  into line_count, incomplete_count, complete_count
+  from public.warehouse_stock_out_lines where request_id = p_request_id;
+
+  if line_count = 0
+    or (document_status = 'confirmed' and incomplete_count <> 0)
+    or (document_status in ('pending', 'rejected') and complete_count <> 0)
+    or (document_status in ('pending', 'rejected') and incomplete_count <> line_count)
+    or (document_status = 'void' and incomplete_count <> 0 and complete_count <> 0)
+    or exists (
+      select 1 from public.warehouse_stock_out_lines
+      where request_id = p_request_id
+        and ((confirmed_quantity is null) <> (frozen_total_cost is null))
+    )
+  then
+    raise exception using errcode = '23514', message = 'warehouse stock-out state inconsistent';
+  end if;
+end;
+$$;
+
+create or replace function private.assert_warehouse_return_document_state(p_return_id uuid)
+returns void
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  document_status text;
+  line_count bigint;
+  incomplete_count bigint;
+  complete_count bigint;
+begin
+  select status into document_status
+  from public.warehouse_return_requests where id = p_return_id;
+  if not found then return; end if;
+
+  select count(*),
+    count(*) filter (where confirmed_quantity is null or frozen_total_cost is null),
+    count(*) filter (where confirmed_quantity is not null and frozen_total_cost is not null)
+  into line_count, incomplete_count, complete_count
+  from public.warehouse_return_lines where return_id = p_return_id;
+
+  if line_count = 0
+    or (document_status = 'confirmed' and incomplete_count <> 0)
+    or (document_status in ('pending', 'rejected') and complete_count <> 0)
+    or (document_status in ('pending', 'rejected') and incomplete_count <> line_count)
+    or (document_status = 'void' and incomplete_count <> 0 and complete_count <> 0)
+    or exists (
+      select 1 from public.warehouse_return_lines
+      where return_id = p_return_id
+        and ((confirmed_quantity is null) <> (frozen_total_cost is null))
+    )
+  then
+    raise exception using errcode = '23514', message = 'warehouse return state inconsistent';
+  end if;
+end;
+$$;
+
+create or replace function private.check_warehouse_receipt_document_state()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, private
+as $$
+begin
+  if tg_table_name = 'warehouse_receipts' then
+    perform private.assert_warehouse_receipt_document_state(coalesce(new.id, old.id));
+  else
+    if tg_op <> 'INSERT' then
+      perform private.assert_warehouse_receipt_document_state(old.receipt_id);
+    end if;
+    if tg_op <> 'DELETE' and (tg_op <> 'UPDATE' or new.receipt_id is distinct from old.receipt_id) then
+      perform private.assert_warehouse_receipt_document_state(new.receipt_id);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+
+create or replace function private.check_warehouse_stock_out_document_state()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, private
+as $$
+begin
+  if tg_table_name = 'warehouse_stock_out_requests' then
+    perform private.assert_warehouse_stock_out_document_state(coalesce(new.id, old.id));
+  else
+    if tg_op <> 'INSERT' then
+      perform private.assert_warehouse_stock_out_document_state(old.request_id);
+    end if;
+    if tg_op <> 'DELETE' and (tg_op <> 'UPDATE' or new.request_id is distinct from old.request_id) then
+      perform private.assert_warehouse_stock_out_document_state(new.request_id);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+
+create or replace function private.check_warehouse_return_document_state()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, private
+as $$
+begin
+  if tg_table_name = 'warehouse_return_requests' then
+    perform private.assert_warehouse_return_document_state(coalesce(new.id, old.id));
+  else
+    if tg_op <> 'INSERT' then
+      perform private.assert_warehouse_return_document_state(old.return_id);
+    end if;
+    if tg_op <> 'DELETE' and (tg_op <> 'UPDATE' or new.return_id is distinct from old.return_id) then
+      perform private.assert_warehouse_return_document_state(new.return_id);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+
+create constraint trigger warehouse_receipts_document_state
+after insert or update or delete on public.warehouse_receipts
+deferrable initially deferred for each row
+execute function private.check_warehouse_receipt_document_state();
+create constraint trigger warehouse_receipt_lines_document_state
+after insert or update or delete on public.warehouse_receipt_lines
+deferrable initially deferred for each row
+execute function private.check_warehouse_receipt_document_state();
+create constraint trigger warehouse_stock_out_requests_document_state
+after insert or update or delete on public.warehouse_stock_out_requests
+deferrable initially deferred for each row
+execute function private.check_warehouse_stock_out_document_state();
+create constraint trigger warehouse_stock_out_lines_document_state
+after insert or update or delete on public.warehouse_stock_out_lines
+deferrable initially deferred for each row
+execute function private.check_warehouse_stock_out_document_state();
+create constraint trigger warehouse_return_requests_document_state
+after insert or update or delete on public.warehouse_return_requests
+deferrable initially deferred for each row
+execute function private.check_warehouse_return_document_state();
+create constraint trigger warehouse_return_lines_document_state
+after insert or update or delete on public.warehouse_return_lines
+deferrable initially deferred for each row
+execute function private.check_warehouse_return_document_state();
 
 create index warehouse_receipts_purchase_status_idx
   on public.warehouse_receipts(purchase_record_key, status, submitted_at, id);
@@ -300,14 +528,16 @@ declare
   result text;
 begin
   if jsonb_typeof(p_value->p_field) is distinct from 'string' then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   result := private.normalize_warehouse_catalog_text(p_value->>p_field);
   if (p_required and result = '')
     or char_length(result) > p_maximum
     or private.warehouse_catalog_has_invisible(result)
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   return result;
 end;
@@ -322,11 +552,13 @@ as $$
 declare result uuid;
 begin
   if jsonb_typeof(p_value->p_field) is distinct from 'string' then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   begin result := (p_value->>p_field)::uuid;
   exception when invalid_text_representation then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end;
   return result;
 end;
@@ -341,16 +573,19 @@ as $$
 declare result numeric;
 begin
   if jsonb_typeof(p_value->'requestedQuantity') is distinct from 'number' then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   begin result := (p_value->>'requestedQuantity')::numeric;
   exception when invalid_text_representation or numeric_value_out_of_range then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end;
   if result <= 0 or result > 999999999999999.999 or result <> trunc(result, 3)
     or result in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   return result;
 end;
@@ -365,18 +600,22 @@ as $$
 declare raw text; result date;
 begin
   if jsonb_typeof(p_value->p_field) is distinct from 'string' then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   raw := p_value->>p_field;
   if raw !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   begin result := raw::date;
   exception when datetime_field_overflow then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end;
   if to_char(result, 'YYYY-MM-DD') <> raw then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   return result;
 end;
@@ -392,7 +631,8 @@ begin
   if p_value is null or p_value <> btrim(p_value)
     or p_value !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   return p_value;
 end;
@@ -408,7 +648,8 @@ begin
   if jsonb_typeof(p_lines) is distinct from 'array'
     or jsonb_array_length(p_lines) not between 1 and 100
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
+      hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
 end;
 $$;
@@ -552,7 +793,7 @@ begin
   if not private.warehouse_catalog_payload_keys_exact(
     p_payload, array['title','customerName','workDate','locationText','description']
   ) then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   insert into public.warehouse_minor_work_orders(
     title, customer_name, work_date, location_text, description,
@@ -585,12 +826,15 @@ begin
   if p_minor_work_order_id is null or p_project_id is null
     or p_project_id <> btrim(p_project_id)
     or p_project_id !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$'
-    or not exists (
-      select 1 from public.projects project
-      where project.record_key = p_project_id and project.status = 'active'
-    )
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
+  end if;
+  if not exists (
+    select 1 from public.projects project
+    where project.record_key = p_project_id and project.status = 'active'
+  ) then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   update public.warehouse_minor_work_orders job
     set assigned_project_id = p_project_id, status = 'assigned'
@@ -599,7 +843,8 @@ begin
       and (job.assigned_project_id is null or job.assigned_project_id = p_project_id)
     returning id into saved_id;
   if not found then
-    raise exception using errcode = '55000', message = 'minor work order unavailable';
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   return private.warehouse_minor_work_order_json(saved_id);
 end;
@@ -629,12 +874,12 @@ begin
       where purchase.record_key = p_purchase_record_key and purchase.status = 'active'
     )
   then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   for line in select value from jsonb_array_elements(p_lines) loop
     if not private.warehouse_catalog_payload_keys_exact(
       line, array['variantId','requestedQuantity','warehouseId','locationId']
-    ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+    ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
     perform private.warehouse_workflow_uuid(line, 'variantId');
     perform private.warehouse_workflow_uuid(line, 'warehouseId');
     perform private.warehouse_workflow_uuid(line, 'locationId');
@@ -645,7 +890,7 @@ begin
       select distinct value->>'variantId', value->>'locationId'
       from jsonb_array_elements(p_lines)
     ) distinct_lines
-  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
 
   for resource_id in
     select distinct private.warehouse_workflow_uuid(value, 'locationId')
@@ -667,7 +912,8 @@ begin
     left join public.warehouse_items item on item.id = variant.item_id
     where location.id is null or not location.active or site.id is null or not site.active
        or variant.id is null or not variant.active or item.id is null or not item.active
-  ) then raise exception using errcode = '55000', message = 'active warehouse resources required'; end if;
+  ) then raise exception using errcode = '55000', message = 'active warehouse resources required',
+    hint = 'WAREHOUSE_RESOURCE_INACTIVE'; end if;
 
   insert into public.warehouse_receipts(
     purchase_record_key, submitted_by_employee_profile_id, idempotency_key
@@ -709,7 +955,7 @@ begin
   if not private.warehouse_catalog_payload_keys_exact(
     p_request,
     array['destinationType','projectId','minorWorkOrderId','destinationNameSnapshot','purpose','receiver','requestDate']
-  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
   destination_type_value := private.warehouse_workflow_text(p_request, 'destinationType', 30, true);
   snapshot_value := private.warehouse_workflow_text(p_request, 'destinationNameSnapshot', 500, true);
   if p_request->'projectId' <> 'null'::jsonb then
@@ -729,23 +975,24 @@ begin
   elsif destination_type_value = 'internal_use' and project_id_value is null and minor_id_value is null then
     derived_snapshot := snapshot_value;
   else
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end if;
   if derived_snapshot is null or snapshot_value <> derived_snapshot then
-    raise exception using errcode = '22023', message = 'warehouse workflow input invalid';
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   perform private.warehouse_workflow_text(p_request, 'purpose', 1000, true);
   perform private.warehouse_workflow_text(p_request, 'receiver', 300, true);
   perform private.warehouse_workflow_date(p_request, 'requestDate');
   for line in select value from jsonb_array_elements(p_lines) loop
     if not private.warehouse_catalog_payload_keys_exact(line, array['variantId','requestedQuantity'])
-    then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+    then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
     perform private.warehouse_workflow_uuid(line, 'variantId');
     perform private.warehouse_workflow_quantity(line);
   end loop;
   if (select count(*) from jsonb_array_elements(p_lines)) <> (
     select count(distinct value->>'variantId') from jsonb_array_elements(p_lines)
-  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
 
   for resource_id in
     select distinct private.warehouse_workflow_uuid(value, 'variantId')
@@ -757,7 +1004,8 @@ begin
       on variant.id = private.warehouse_workflow_uuid(entry.value, 'variantId')
     left join public.warehouse_items item on item.id = variant.item_id
     where variant.id is null or not variant.active or item.id is null or not item.active
-  ) then raise exception using errcode = '55000', message = 'active warehouse resources required'; end if;
+  ) then raise exception using errcode = '55000', message = 'active warehouse resources required',
+    hint = 'WAREHOUSE_RESOURCE_INACTIVE'; end if;
 
   insert into public.warehouse_stock_out_requests(
     destination_type, project_id, minor_work_order_id, destination_name_snapshot,
@@ -795,19 +1043,23 @@ begin
   from private.assert_warehouse_permission('warehouse.stock_flow.request');
   perform private.warehouse_workflow_lines(p_lines);
   perform private.warehouse_workflow_idempotency(p_idempotency_key);
-  if p_original_stock_out_id is null or not exists (
+  if p_original_stock_out_id is null or not private.warehouse_catalog_payload_keys_exact(
+    p_request, array['reason','receiver','requestDate']
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
+  if not exists (
     select 1 from public.warehouse_stock_out_requests request
     where request.id = p_original_stock_out_id and request.status = 'confirmed'
-  ) or not private.warehouse_catalog_payload_keys_exact(
-    p_request, array['reason','receiver','requestDate']
-  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+  ) then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
   perform private.warehouse_workflow_text(p_request, 'reason', 1000, true);
   perform private.warehouse_workflow_text(p_request, 'receiver', 300, true);
   perform private.warehouse_workflow_date(p_request, 'requestDate');
   for line in select value from jsonb_array_elements(p_lines) loop
     if not private.warehouse_catalog_payload_keys_exact(
       line, array['originalStockOutLineId','requestedQuantity']
-    ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+    ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
     perform private.warehouse_workflow_uuid(line, 'originalStockOutLineId');
     perform private.warehouse_workflow_quantity(line);
   end loop;
@@ -819,7 +1071,7 @@ begin
       on line.id = private.warehouse_workflow_uuid(entry.value, 'originalStockOutLineId')
      and line.request_id = p_original_stock_out_id
     where line.id is null
-  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid'; end if;
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
 
   for resource_id in
     select distinct stock_line.variant_id
@@ -835,7 +1087,8 @@ begin
     left join public.warehouse_variants variant on variant.id = stock_line.variant_id
     left join public.warehouse_items item on item.id = variant.item_id
     where variant.id is null or not variant.active or item.id is null or not item.active
-  ) then raise exception using errcode = '55000', message = 'active warehouse resources required'; end if;
+  ) then raise exception using errcode = '55000', message = 'active warehouse resources required',
+    hint = 'WAREHOUSE_RESOURCE_INACTIVE'; end if;
 
   insert into public.warehouse_return_requests(
     original_stock_out_id, reason, receiver, request_date,
@@ -847,8 +1100,9 @@ begin
     private.warehouse_workflow_date(p_request, 'requestDate'), actor_id, p_idempotency_key
   ) returning id into saved_id;
   insert into public.warehouse_return_lines(
-    return_id, original_stock_out_line_id, requested_quantity
+    return_id, original_stock_out_id, original_stock_out_line_id, requested_quantity
   ) select saved_id,
+    p_original_stock_out_id,
     private.warehouse_workflow_uuid(value, 'originalStockOutLineId'),
     private.warehouse_workflow_quantity(value)
     from jsonb_array_elements(p_lines);
@@ -862,6 +1116,12 @@ revoke all on function private.warehouse_workflow_quantity(jsonb) from public, a
 revoke all on function private.warehouse_workflow_date(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_idempotency(text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_lines(jsonb) from public, anon, authenticated, service_role;
+revoke all on function private.assert_warehouse_receipt_document_state(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.assert_warehouse_stock_out_document_state(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.assert_warehouse_return_document_state(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.check_warehouse_receipt_document_state() from public, anon, authenticated, service_role;
+revoke all on function private.check_warehouse_stock_out_document_state() from public, anon, authenticated, service_role;
+revoke all on function private.check_warehouse_return_document_state() from public, anon, authenticated, service_role;
 revoke all on function private.reject_warehouse_destination_mutation() from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_minor_work_order_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_receipt_json(uuid) from public, anon, authenticated, service_role;

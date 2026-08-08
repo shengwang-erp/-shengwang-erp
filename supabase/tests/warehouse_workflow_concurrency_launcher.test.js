@@ -143,3 +143,33 @@ test('launcher preserves both primary and cleanup failures', async () => {
       error.errors.some((entry) => /cleanup failed/u.test(entry.message)),
   )
 })
+
+test('post-reset inspect and nonce failures each trigger exactly one cleanup reset', async () => {
+  const inspectFailure = dependencies()
+  const inspectBaseRun = inspectFailure.run
+  let inspectCount = 0
+  inspectFailure.run = async (command, args) => {
+    inspectFailure.calls.push([command, args])
+    if (command === 'docker' && args[2] === 'container' && args[3] === 'inspect') {
+      inspectCount += 1
+      if (inspectCount === 2) throw new Error('post-reset inspect failed')
+    }
+    inspectFailure.calls.pop()
+    return inspectBaseRun(command, args)
+  }
+  await assert.rejects(
+    runWarehouseWorkflowConcurrency(environment, inspectFailure),
+    /post-reset inspect failed/u,
+  )
+  assert.equal(inspectFailure.calls.filter(([command, args]) =>
+    command === 'npx' && args.includes('db') && args.includes('reset')).length, 2)
+
+  const nonceFailure = dependencies()
+  nonceFailure.randomUuid = () => 'not-a-uuid'
+  await assert.rejects(
+    runWarehouseWorkflowConcurrency(environment, nonceFailure),
+    /fresh Task 1 marker nonce is invalid/u,
+  )
+  assert.equal(nonceFailure.calls.filter(([command, args]) =>
+    command === 'npx' && args.includes('db') && args.includes('reset')).length, 2)
+})

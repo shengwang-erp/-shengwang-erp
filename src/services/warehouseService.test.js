@@ -19,6 +19,9 @@ const IDS = Object.freeze({
   stockOut: '9a000000-0000-4000-8000-000000000001',
   stockOutLine: '9b000000-0000-4000-8000-000000000001',
   returnRequest: '9c000000-0000-4000-8000-000000000001',
+  variant2: '93000000-0000-4000-8000-000000000002',
+  location2: '91000000-0000-4000-8000-000000000002',
+  responseLine2: '9b000000-0000-4000-8000-000000000002',
 })
 
 const ITEM = Object.freeze({
@@ -1062,7 +1065,7 @@ test('pending workflow service rejects client authority and malformed server doc
   assert.equal(calls.length, 1)
 })
 
-test('pending workflow responses cannot expose warehouse costs without explicit cost permission', async () => {
+test('pending workflow responses cannot expose costs even when warehouse cost permission exists', async () => {
   const receipt = {
     id: IDS.receipt, purchaseRecordKey: 'BUY-001', status: 'pending',
     submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
@@ -1086,13 +1089,195 @@ test('pending workflow responses cannot expose warehouse costs without explicit 
     createWarehouseService(rpcClient(results).client, { configured: true }).submitReceipt(input),
     safeError('WAREHOUSE_INVALID_RESPONSE', 502),
   )
-  assert.equal(
-    (await createWarehouseService(
+  await assert.rejects(
+    createWarehouseService(
       rpcClient(results).client,
       { configured: true, viewCost: true },
-    ).submitReceipt(input)).lines[0].unitCost,
-    100,
+    ).submitReceipt(input),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
   )
+})
+
+test('workflow submission binds the normalized request to the exact returned document and line set', async () => {
+  const input = {
+    purchaseRecordKey: 'BUY-BOUND', idempotencyKey: 'receipt-bound',
+    lines: [
+      { variantId: IDS.variant, requestedQuantity: 1, warehouseId: IDS.site, locationId: IDS.location },
+      { variantId: IDS.variant2, requestedQuantity: 2.5, warehouseId: IDS.site, locationId: IDS.location2 },
+    ],
+  }
+  const base = {
+    id: IDS.receipt, purchaseRecordKey: 'BUY-BOUND', status: 'pending',
+    submittedByEmployeeProfileId: IDS.operator, submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+    idempotencyKey: 'receipt-bound',
+    lines: [
+      {
+        id: IDS.responseLine2, receiptId: IDS.receipt, variantId: IDS.variant2,
+        requestedQuantity: 2.5, confirmedQuantity: null, warehouseId: IDS.site,
+        locationId: IDS.location2, unitCost: null,
+      },
+      {
+        id: IDS.stockOutLine, receiptId: IDS.receipt, variantId: IDS.variant,
+        requestedQuantity: 1, confirmedQuantity: null, warehouseId: IDS.site,
+        locationId: IDS.location, unitCost: null,
+      },
+    ],
+  }
+  const serviceFor = (data) => createWarehouseService(rpcClient({
+    submit_warehouse_receipt_secure: { data, error: null, status: 200 },
+  }).client, { configured: true })
+
+  assert.deepEqual((await serviceFor(base).submitReceipt(input)).lines, base.lines)
+  for (const forged of [
+    { ...base, purchaseRecordKey: 'BUY-OTHER' },
+    { ...base, idempotencyKey: 'receipt-other' },
+    { ...base, status: 'confirmed', confirmedByEmployeeProfileId: IDS.operator, confirmedAt: '2026-08-09T01:00:00Z' },
+    { ...base, lines: [{ ...base.lines[0], requestedQuantity: 2.25 }, base.lines[1]] },
+    { ...base, lines: [{ ...base.lines[0], variantId: IDS.variant }, base.lines[1]] },
+    { ...base, lines: [{ ...base.lines[0], locationId: IDS.location }, base.lines[1]] },
+    { ...base, lines: [base.lines[1], { ...base.lines[1], id: IDS.responseLine2 }] },
+  ]) {
+    await assert.rejects(
+      serviceFor(forged).submitReceipt(input),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
+})
+
+test('minor, stock-out and return responses reject another otherwise valid document', async () => {
+  const audit = {
+    status: 'pending', submittedByEmployeeProfileId: IDS.operator,
+    submittedAt: '2026-08-09T00:00:00Z', confirmedByEmployeeProfileId: null,
+    confirmedAt: null, rejectionReason: null,
+  }
+  const minorInput = {
+    title: '安装空调', customerName: '未来社', workDate: '2026-08-09',
+    locationText: '东京', description: '',
+  }
+  const minor = {
+    id: IDS.minorWorkOrder, ...minorInput, status: 'open', assignedProjectId: null,
+    createdByEmployeeProfileId: IDS.operator, createdAt: '2026-08-09T00:00:00Z',
+    updatedAt: '2026-08-09T00:00:00Z',
+  }
+  await assert.rejects(
+    createWarehouseService(rpcClient({
+      create_minor_work_order_secure: { data: { ...minor, title: '另一张工事单' }, error: null, status: 200 },
+    }).client, { configured: true }).createMinorWorkOrder(minorInput),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+  await assert.rejects(
+    createWarehouseService(rpcClient({
+      assign_minor_work_order_to_project_secure: {
+        data: { ...minor, status: 'assigned', assignedProjectId: 'P-OTHER' }, error: null, status: 200,
+      },
+    }).client, { configured: true }).assignMinorWorkOrder({
+      minorWorkOrderId: IDS.minorWorkOrder, projectId: 'P001',
+    }),
+    safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+  )
+
+  const stockInput = {
+    destinationType: 'internal_use', projectId: null, minorWorkOrderId: null,
+    destinationNameSnapshot: '公司内部使用', purpose: '维修', receiver: '王师傅',
+    requestDate: '2026-08-09', idempotencyKey: 'out-bound',
+    lines: [{ variantId: IDS.variant, requestedQuantity: 1 }],
+  }
+  const stock = {
+    id: IDS.stockOut, destinationType: 'internal_use', projectId: null,
+    minorWorkOrderId: null, destinationNameSnapshot: '公司内部使用', purpose: '维修',
+    receiver: '王师傅', requestDate: '2026-08-09', ...audit,
+    idempotencyKey: 'out-bound', lines: [{
+      id: IDS.stockOutLine, requestId: IDS.stockOut, variantId: IDS.variant,
+      requestedQuantity: 1, confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  for (const forged of [
+    { ...stock, destinationNameSnapshot: '另一目的地' },
+    { ...stock, purpose: '另一用途' },
+    { ...stock, idempotencyKey: 'out-other' },
+    { ...stock, lines: [{ ...stock.lines[0], requestedQuantity: 2 }] },
+  ]) {
+    await assert.rejects(
+      createWarehouseService(rpcClient({
+        submit_warehouse_stock_out_secure: { data: forged, error: null, status: 200 },
+      }).client, { configured: true }).submitStockOut(stockInput),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
+
+  const returnInput = {
+    originalStockOutId: IDS.stockOut, reason: '未使用', receiver: '仓库负责人',
+    requestDate: '2026-08-10', idempotencyKey: 'return-bound',
+    lines: [{ originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1 }],
+  }
+  const returned = {
+    id: IDS.returnRequest, originalStockOutId: IDS.stockOut, reason: '未使用',
+    receiver: '仓库负责人', requestDate: '2026-08-10', ...audit,
+    idempotencyKey: 'return-bound', lines: [{
+      id: IDS.receipt, returnId: IDS.returnRequest,
+      originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1,
+      confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  for (const forged of [
+    { ...returned, originalStockOutId: IDS.receipt },
+    { ...returned, idempotencyKey: 'return-other' },
+    { ...returned, lines: [{ ...returned.lines[0], originalStockOutLineId: IDS.responseLine2 }] },
+    { ...returned, lines: [{ ...returned.lines[0], requestedQuantity: 0.5 }] },
+  ]) {
+    await assert.rejects(
+      createWarehouseService(rpcClient({
+        submit_warehouse_return_secure: { data: forged, error: null, status: 200 },
+      }).client, { configured: true }).submitReturn(returnInput),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
+    )
+  }
+})
+
+test('workflow database hints map only exact trusted tuples to corrective safe errors', async () => {
+  const input = {
+    purchaseRecordKey: 'BUY-001', idempotencyKey: 'receipt-hint',
+    lines: [{
+      variantId: IDS.variant, requestedQuantity: 1,
+      warehouseId: IDS.site, locationId: IDS.location,
+    }],
+  }
+  for (const [hint, sqlState, transportStatus, safeStatus] of [
+    ['WAREHOUSE_WORKFLOW_INPUT_INVALID', '22023', 400, 400],
+    ['WAREHOUSE_RESOURCE_INACTIVE', '55000', 500, 409],
+    ['WAREHOUSE_DESTINATION_UNAVAILABLE', '55000', 500, 409],
+  ]) {
+    const service = createWarehouseService(rpcClient({
+      submit_warehouse_receipt_secure: {
+        data: null,
+        error: { code: sqlState, hint, message: 'private SQL supplier detail' },
+        status: transportStatus,
+      },
+    }).client, { configured: true })
+    await assert.rejects(
+      service.submitReceipt(input),
+      (error) => error instanceof WarehouseServiceError &&
+        error.code === hint && error.status === safeStatus &&
+        !/private|supplier|sql/iu.test(error.message),
+    )
+  }
+
+  for (const [hint, code, status] of [
+    ['WAREHOUSE_RESOURCE_INACTIVE', '55000', 409],
+    ['WAREHOUSE_WORKFLOW_INPUT_INVALID', '22023', 500],
+    ['WAREHOUSE_DESTINATION_UNAVAILABLE', '42501', 500],
+  ]) {
+    const service = createWarehouseService(rpcClient({
+      submit_warehouse_receipt_secure: {
+        data: null, error: { code, hint, message: 'private detail' }, status,
+      },
+    }).client, { configured: true })
+    await assert.rejects(
+      service.submitReceipt(input),
+      safeError(code === '42501' ? 'ACCESS_DENIED' : 'WAREHOUSE_SERVICE_UNAVAILABLE', code === '42501' ? 403 : 503),
+    )
+  }
 })
 
 test('QR lookup calls only the bound secure RPC and returns an exact immutable cost-free result', async () => {

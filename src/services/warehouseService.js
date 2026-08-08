@@ -98,6 +98,14 @@ const SAFE_ERRORS = Object.freeze({
     message: '仓库申请数据无效，请检查后重试',
     status: 400,
   }),
+  WAREHOUSE_RESOURCE_INACTIVE: Object.freeze({
+    message: '物品型号或仓库位置已停用，请刷新后重新选择',
+    status: 409,
+  }),
+  WAREHOUSE_DESTINATION_UNAVAILABLE: Object.freeze({
+    message: '项目、小工事单或原出库单已不可用，请刷新后重新选择',
+    status: 409,
+  }),
 })
 const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_CATALOG_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
@@ -112,6 +120,9 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_PENDING_SCHEMA_INCOMPLETE', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_QR_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
   ['WAREHOUSE_QR_AMBIGUOUS', Object.freeze({ sqlState: '23505', status: 409 })],
+  ['WAREHOUSE_WORKFLOW_INPUT_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
+  ['WAREHOUSE_RESOURCE_INACTIVE', Object.freeze({ sqlState: '55000', status: 500 })],
+  ['WAREHOUSE_DESTINATION_UNAVAILABLE', Object.freeze({ sqlState: '55000', status: 500 })],
 ])
 const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
 
@@ -702,6 +713,95 @@ function validateReturn(candidate, viewCost) {
   })
 }
 
+function requirePendingDocument(document) {
+  if (
+    document.status !== 'pending' ||
+    document.confirmedByEmployeeProfileId !== null ||
+    document.confirmedAt !== null ||
+    document.rejectionReason !== null
+  ) throw invalidResponse()
+  return document
+}
+
+function sameLineSet(actualLines, requestedLines, fields) {
+  if (actualLines.length !== requestedLines.length) throw invalidResponse()
+  const signature = (line) => JSON.stringify(fields.map((field) => line[field]))
+  const actual = actualLines.map(signature)
+  const requested = requestedLines.map(signature)
+  if (
+    new Set(actual).size !== actual.length ||
+    new Set(requested).size !== requested.length ||
+    actual.slice().sort().some((value, index) => value !== requested.slice().sort()[index])
+  ) throw invalidResponse()
+}
+
+function bindMinorWorkOrderResponse(candidate, request) {
+  const result = validateMinorWorkOrder(candidate)
+  const payload = request.p_payload
+  if (
+    result.status !== 'open' || result.assignedProjectId !== null ||
+    ['title', 'customerName', 'workDate', 'locationText', 'description']
+      .some((field) => result[field] !== payload[field])
+  ) throw invalidResponse()
+  return result
+}
+
+function bindMinorAssignmentResponse(candidate, request) {
+  const result = validateMinorWorkOrder(candidate)
+  if (
+    result.id !== request.p_minor_work_order_id ||
+    result.status !== 'assigned' ||
+    result.assignedProjectId !== request.p_project_id
+  ) throw invalidResponse()
+  return result
+}
+
+function bindReceiptResponse(candidate, request, viewCost) {
+  const result = requirePendingDocument(validateReceipt(candidate, viewCost))
+  if (
+    result.purchaseRecordKey !== request.p_purchase_record_key ||
+    result.idempotencyKey !== request.p_idempotency_key ||
+    result.lines.some((line) =>
+      line.confirmedQuantity !== null || line.unitCost !== null)
+  ) throw invalidResponse()
+  sameLineSet(result.lines, request.p_lines, [
+    'variantId', 'requestedQuantity', 'warehouseId', 'locationId',
+  ])
+  return result
+}
+
+function bindStockOutResponse(candidate, request, viewCost) {
+  const result = requirePendingDocument(validateStockOut(candidate, viewCost))
+  const expected = request.p_request
+  if (
+    result.idempotencyKey !== request.p_idempotency_key ||
+    [
+      'destinationType', 'projectId', 'minorWorkOrderId', 'destinationNameSnapshot',
+      'purpose', 'receiver', 'requestDate',
+    ].some((field) => result[field] !== expected[field]) ||
+    result.lines.some((line) =>
+      line.confirmedQuantity !== null || line.frozenTotalCost !== null)
+  ) throw invalidResponse()
+  sameLineSet(result.lines, request.p_lines, ['variantId', 'requestedQuantity'])
+  return result
+}
+
+function bindReturnResponse(candidate, request, viewCost) {
+  const result = requirePendingDocument(validateReturn(candidate, viewCost))
+  const expected = request.p_request
+  if (
+    result.originalStockOutId !== request.p_original_stock_out_id ||
+    result.idempotencyKey !== request.p_idempotency_key ||
+    ['reason', 'receiver', 'requestDate'].some((field) => result[field] !== expected[field]) ||
+    result.lines.some((line) =>
+      line.confirmedQuantity !== null || line.frozenTotalCost !== null)
+  ) throw invalidResponse()
+  sameLineSet(result.lines, request.p_lines, [
+    'originalStockOutLineId', 'requestedQuantity',
+  ])
+  return result
+}
+
 function primitiveSupplierStatus(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) && Number.isSafeInteger(value) ? value : null
@@ -882,7 +982,7 @@ export function createWarehouseService(client, options = {}) {
     } catch {
       throw fail('WAREHOUSE_WORKFLOW_INPUT_INVALID')
     }
-    return validator(await call(rpcName, request))
+    return validator(await call(rpcName, request), request)
   }
 
   return Object.freeze({
@@ -968,7 +1068,7 @@ export function createWarehouseService(client, options = {}) {
         buildMinorWorkOrderRequest,
         'create_minor_work_order_secure',
         input,
-        validateMinorWorkOrder,
+        bindMinorWorkOrderResponse,
       )
     },
     async assignMinorWorkOrder(input) {
@@ -976,7 +1076,7 @@ export function createWarehouseService(client, options = {}) {
         buildMinorWorkOrderAssignment,
         'assign_minor_work_order_to_project_secure',
         input,
-        validateMinorWorkOrder,
+        bindMinorAssignmentResponse,
       )
     },
     async submitReceipt(input) {
@@ -984,7 +1084,7 @@ export function createWarehouseService(client, options = {}) {
         buildWarehouseReceiptRequest,
         'submit_warehouse_receipt_secure',
         input,
-        (value) => validateReceipt(value, viewCost),
+        (value, request) => bindReceiptResponse(value, request, viewCost),
       )
     },
     async submitStockOut(input) {
@@ -992,7 +1092,7 @@ export function createWarehouseService(client, options = {}) {
         buildWarehouseStockOutRequest,
         'submit_warehouse_stock_out_secure',
         input,
-        (value) => validateStockOut(value, viewCost),
+        (value, request) => bindStockOutResponse(value, request, viewCost),
       )
     },
     async submitReturn(input) {
@@ -1000,7 +1100,7 @@ export function createWarehouseService(client, options = {}) {
         buildWarehouseReturnRequest,
         'submit_warehouse_return_secure',
         input,
-        (value) => validateReturn(value, viewCost),
+        (value, request) => bindReturnResponse(value, request, viewCost),
       )
     },
   })

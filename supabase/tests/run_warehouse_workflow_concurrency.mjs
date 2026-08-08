@@ -111,12 +111,14 @@ export async function runWarehouseWorkflowConcurrency(environment, supplied = {}
   await dependencies.run('npx', [
     '--no-install', 'supabase', 'db', 'reset', '--workdir', target.workdir,
   ])
-  await inspectTarget(target, dependencies.run)
-
-  const nonce = dependencies.randomUuid()
-  if (typeof nonce !== 'string' || !UUID.test(nonce)) fail('fresh Task 1 marker nonce is invalid')
   let primaryError = null
+  let nonce = null
   try {
+    await inspectTarget(target, dependencies.run)
+    nonce = dependencies.randomUuid()
+    if (typeof nonce !== 'string' || !UUID.test(nonce)) {
+      fail('fresh Task 1 marker nonce is invalid')
+    }
     const markerSql = [
       'create extension if not exists pgtap with schema extensions;',
       'create extension if not exists dblink with schema extensions;',

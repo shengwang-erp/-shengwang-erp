@@ -4,6 +4,37 @@ create extension if not exists pgtap with schema extensions;
 set local search_path = public, auth, extensions;
 select no_plan();
 
+create or replace function pg_temp.task1_error_hint(p_statement text)
+returns text
+language plpgsql
+as $$
+declare captured text;
+begin
+  execute p_statement;
+  return null;
+exception when others then
+  get stacked diagnostics captured = PG_EXCEPTION_HINT;
+  return captured;
+end;
+$$;
+
+create or replace function pg_temp.task1_deferred_error(p_statement text)
+returns text
+language plpgsql
+as $$
+declare captured text;
+begin
+  execute p_statement;
+  set constraints all immediate;
+  set constraints all deferred;
+  return null;
+exception when others then
+  get stacked diagnostics captured = RETURNED_SQLSTATE;
+  set constraints all deferred;
+  return captured;
+end;
+$$;
+
 select has_table('public', 'warehouse_receipts', 'pending receipts table exists');
 select has_table('public', 'warehouse_receipt_lines', 'pending receipt lines table exists');
 select has_table('public', 'warehouse_stock_out_requests', 'pending stock-out table exists');
@@ -198,23 +229,47 @@ select throws_ok(
 );
 
 set local role authenticated;
-select throws_ok(
-  $$select public.submit_warehouse_receipt_secure(
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_receipt_secure(
     'PO-WF-001',
     '[{"variantId":"d0300000-0000-4000-8000-000000000002","requestedQuantity":1,"warehouseId":"d0000000-0000-4000-8000-000000000001","locationId":"d0100000-0000-4000-8000-000000000001"}]',
     'receipt-inactive-variant'
-  )$$,
-  '55000', 'active warehouse resources required',
+  )
+  $statement$),
+  'WAREHOUSE_RESOURCE_INACTIVE',
   'receipt submission fails closed after locking an inactive variant'
 );
-select throws_ok(
-  $$select public.submit_warehouse_receipt_secure(
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_receipt_secure(
     'PO-WF-001',
     '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":"d0000000-0000-4000-8000-000000000001","locationId":"d0100000-0000-4000-8000-000000000002"}]',
     'receipt-inactive-location'
-  )$$,
-  '55000', 'active warehouse resources required',
+  )
+  $statement$),
+  'WAREHOUSE_RESOURCE_INACTIVE',
   'receipt submission fails closed after locking an inactive location'
+);
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_receipt_secure(
+      'PO-WF-001', '[]'::jsonb, 'bad input'
+    )
+  $statement$),
+  'WAREHOUSE_WORKFLOW_INPUT_INVALID',
+  'invalid workflow input returns the stable corrective hint'
+);
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_stock_out_secure(
+      '{"destinationType":"minor_work_order","projectId":null,"minorWorkOrderId":"d8000000-0000-4000-8000-000000000099","destinationNameSnapshot":"已失效工事","purpose":"安装","receiver":"王师傅","requestDate":"2026-08-09"}',
+      '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1}]',
+      'expired-destination'
+    )
+  $statement$),
+  'WAREHOUSE_DESTINATION_UNAVAILABLE',
+  'expired destination returns a distinct stable corrective hint'
 );
 
 reset role;
@@ -224,13 +279,57 @@ select is(
   true,
   'real pending receipt and stock-out tables block variant deactivation'
 );
-update public.warehouse_receipts set status = 'confirmed';
-update public.warehouse_stock_out_requests set status = 'confirmed';
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_receipt_lines set confirmed_quantity=1, unit_cost=0 where receipt_id=%L',
+    (select payload->>'id' from saved_receipt)
+  )),
+  '23514',
+  'pending receipt lines cannot carry confirmed quantity or cost'
+);
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_stock_out_lines set confirmed_quantity=1, frozen_total_cost=0 where request_id=%L',
+    (select payload->>'id' from saved_out)
+  )),
+  '23514',
+  'pending stock-out lines cannot carry confirmed quantity or frozen cost'
+);
+update public.warehouse_receipt_lines
+  set confirmed_quantity = requested_quantity, unit_cost = 0
+  where receipt_id = (select (payload->>'id')::uuid from saved_receipt);
+update public.warehouse_receipts
+  set status = 'confirmed',
+      confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+      confirmed_at = statement_timestamp()
+  where id = (select (payload->>'id')::uuid from saved_receipt);
+update public.warehouse_stock_out_lines
+  set confirmed_quantity = requested_quantity, frozen_total_cost = 0
+  where request_id = (select (payload->>'id')::uuid from saved_out);
+update public.warehouse_stock_out_requests
+  set status = 'confirmed',
+      confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+      confirmed_at = statement_timestamp()
+  where id = (select (payload->>'id')::uuid from saved_out);
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_receipt_lines set unit_cost=null where receipt_id=%L',
+    (select payload->>'id' from saved_receipt)
+  )),
+  '23514',
+  'confirmed receipt lines require both confirmed quantity and cost'
+);
 select is(
   private.warehouse_variant_has_pending_documents('d0300000-0000-4000-8000-000000000001'),
   false,
   'confirmed real pending documents no longer block variant deactivation'
 );
+update public.warehouse_receipts
+  set status = 'void', rejection_reason = '确认后作废测试'
+  where id = (select (payload->>'id')::uuid from saved_receipt);
+set constraints all immediate;
+select pass('void after confirmation preserves a complete confirmed line tuple');
+set constraints all deferred;
 
 set local role authenticated;
 create temporary table saved_return as
@@ -245,17 +344,56 @@ select public.submit_warehouse_return_secure(
 ) as payload;
 select is((select payload->>'status' from saved_return), 'pending', 'return submission stays pending');
 reset role;
+select has_column(
+  'public', 'warehouse_return_lines', 'original_stock_out_id',
+  'return line stores the original stock-out header identity for composite integrity'
+);
+select is(
+  (
+    select line.original_stock_out_id
+    from public.warehouse_return_lines line
+    where line.id = (select (payload#>>'{lines,0,id}')::uuid from saved_return)
+  ),
+  (select (payload->>'originalStockOutId')::uuid from saved_return),
+  'secure return submission binds every line to its header original stock-out'
+);
 select is(
   private.warehouse_variant_has_pending_documents('d0300000-0000-4000-8000-000000000001'),
   true,
   'a real pending return blocks its original stock-out variant'
 );
-update public.warehouse_return_requests set status = 'rejected';
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_return_lines set confirmed_quantity=1, frozen_total_cost=0 where return_id=%L',
+    (select payload->>'id' from saved_return)
+  )),
+  '23514',
+  'pending return lines cannot carry confirmed quantity or frozen cost'
+);
+update public.warehouse_return_requests
+  set status = 'rejected', rejection_reason = '仓库拒绝测试',
+      confirmed_by_employee_profile_id = 'd0600000-0000-4000-8000-000000000001',
+      confirmed_at = statement_timestamp()
+  where id = (select (payload->>'id')::uuid from saved_return);
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_return_lines set confirmed_quantity=1, frozen_total_cost=0 where return_id=%L',
+    (select payload->>'id' from saved_return)
+  )),
+  '23514',
+  'rejected return lines remain unconfirmed and uncosted'
+);
 select is(
   private.warehouse_variant_has_pending_documents('d0300000-0000-4000-8000-000000000001'),
   false,
   'a rejected real return no longer blocks the variant'
 );
+update public.warehouse_return_requests
+  set status = 'void', rejection_reason = '确认前作废测试'
+  where id = (select (payload->>'id')::uuid from saved_return);
+set constraints all immediate;
+select pass('void before confirmation preserves a wholly unconfirmed line tuple');
+set constraints all deferred;
 
 select throws_ok(
   $$insert into public.warehouse_receipts(
@@ -275,6 +413,43 @@ select throws_ok(
     )$$,
   '23514', null,
   'pending line quantities must be positive'
+);
+
+select throws_ok(
+  $$update public.warehouse_receipts
+      set confirmed_at = null
+      where id = (select (payload->>'id')::uuid from saved_receipt)$$,
+  '23514', null,
+  'terminal headers require a consistent audit tuple rather than a missing confirmation time'
+);
+
+insert into public.warehouse_stock_out_requests(
+  id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
+  status, submitted_by_employee_profile_id, confirmed_by_employee_profile_id,
+  confirmed_at, idempotency_key
+) values (
+  'd8200000-0000-4000-8000-000000000001', 'internal_use', '另一个出库',
+  '完整性测试', '测试员', '2026-08-09', 'confirmed',
+  'd0600000-0000-4000-8000-000000000001',
+  'd0600000-0000-4000-8000-000000000001', statement_timestamp(), 'other-stock-out'
+);
+insert into public.warehouse_stock_out_lines(
+  id, request_id, variant_id, requested_quantity, confirmed_quantity, frozen_total_cost
+) values (
+  'd8300000-0000-4000-8000-000000000001',
+  'd8200000-0000-4000-8000-000000000001',
+  'd0300000-0000-4000-8000-000000000001', 1, 1, 0
+);
+select throws_ok(
+  $$insert into public.warehouse_return_lines(
+      return_id, original_stock_out_id, original_stock_out_line_id, requested_quantity
+    ) values (
+      (select (payload->>'id')::uuid from saved_return),
+      'd8200000-0000-4000-8000-000000000001',
+      'd8300000-0000-4000-8000-000000000001', 1
+    )$$,
+  '23503', null,
+  'return line cannot reference a stock-out line from another header'
 );
 
 select * from finish();

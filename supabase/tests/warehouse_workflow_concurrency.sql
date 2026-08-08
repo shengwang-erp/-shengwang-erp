@@ -155,6 +155,7 @@ language plpgsql
 volatile
 set search_path = pg_catalog, public
 as $$
+declare captured text;
 begin
   perform public.submit_warehouse_receipt_secure(
     'PO-WF-RACE',
@@ -163,7 +164,8 @@ begin
   );
   return null;
 exception when others then
-  return sqlerrm;
+  get stacked diagnostics captured = PG_EXCEPTION_HINT;
+  return coalesce(captured, sqlerrm);
 end;
 $$;
 
@@ -241,7 +243,7 @@ select is(
 select extensions.dblink_exec('wf_catalog', 'commit');
 select is(
   (select result from extensions.dblink_get_result('wf_submit') as response(result text)),
-  'active warehouse resources required',
+  'WAREHOUSE_RESOURCE_INACTIVE',
   'waiting receipt rechecks the location and fails closed without a pending write'
 );
 select extensions.dblink_exec('wf_submit', 'rollback');
