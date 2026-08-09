@@ -496,6 +496,12 @@
   font: inherit;
 }
 
+.erp-black-gold .labor-accounting-page button {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+
 .erp-black-gold .primary-button,
 .erp-black-gold .back-button,
 .erp-black-gold .ghost-button,
@@ -702,6 +708,31 @@
   background: var(--erp-bg-surface);
 }
 
+.erp-black-gold .labor-accounting-page .labor-resolution-dialog,
+.erp-black-gold .labor-accounting-page .labor-month-calendar-dialog {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.erp-black-gold .labor-accounting-page .labor-dialog-actions {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-month-calendar-day,
+.erp-black-gold .labor-accounting-page .labor-month-calendar-spacer {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-month-calendar-day[data-eligible='false'] {
+  color: var(--erp-text-muted);
+  background: var(--erp-bg-elevated);
+}
+
 .erp-black-gold .labor-accounting-page .labor-board-toolbar,
 .erp-black-gold .labor-accounting-page .labor-summary-card,
 .erp-black-gold .labor-accounting-page .labor-daily-filters,
@@ -824,6 +855,7 @@
 .erp-black-gold .attendance-page .attendance-location-relocate,
 .erp-black-gold .attendance-page .attendance-photo-open,
 .erp-black-gold .attendance-page .attendance-photo-retry,
+.erp-black-gold .attendance-page .attendance-photo-abandon,
 .erp-black-gold .attendance-page .attendance-record-more,
 .erp-black-gold .attendance-page .attendance-retry-refresh,
 .erp-black-gold .attendance-page .attendance-photo-modal-close,

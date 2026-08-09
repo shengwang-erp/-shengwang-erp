@@ -283,3 +283,18 @@ test('page-specific light surfaces are overridden inside the authenticated theme
     assert.equal(declarationsFor(selector).get('background'), background, selector)
   }
 })
+
+test('reviewed attendance and labor controls, dialogs, and calendars use dark surfaces', () => {
+  const expected = new Map([
+    ['.erp-black-gold .attendance-page .attendance-photo-abandon', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .labor-accounting-page button', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .labor-accounting-page .labor-resolution-dialog', 'var(--erp-bg-canvas)'],
+    ['.erp-black-gold .labor-accounting-page .labor-dialog-actions', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .labor-accounting-page .labor-month-calendar-dialog', 'var(--erp-bg-canvas)'],
+    ['.erp-black-gold .labor-accounting-page .labor-month-calendar-day', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .labor-accounting-page .labor-month-calendar-spacer', 'var(--erp-bg-surface)'],
+  ])
+  for (const [selector, background] of expected) {
+    assert.equal(declarationsFor(selector).get('background'), background, selector)
+  }
+})
