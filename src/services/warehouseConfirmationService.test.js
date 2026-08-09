@@ -662,6 +662,7 @@ test('confirmation transport maps only trusted warehouse failures and hides supp
   const cases = [
     [{ code: '42501', message: 'private role detail' }, 403, 'ACCESS_DENIED', 403],
     [{ code: '23514', hint: 'WAREHOUSE_INSUFFICIENT_STOCK', message: 'private stock detail' }, 409, 'WAREHOUSE_INSUFFICIENT_STOCK', 409],
+    [{ code: '54000', hint: 'WAREHOUSE_OPERATION_TOO_COMPLEX', message: 'private batch detail' }, 409, 'WAREHOUSE_OPERATION_TOO_COMPLEX', 409],
     [{ code: '23505', hint: 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT', message: 'private payload' }, 409, 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT', 409],
     [{ code: 'XX000', hint: 'WAREHOUSE_INSUFFICIENT_STOCK', message: 'database secret' }, 500, 'WAREHOUSE_CONFIRMATION_FAILED', 503],
   ]
@@ -822,4 +823,337 @@ test('exact retries accept authoritative void-after-confirmation documents with 
   })
   assert.equal(receipt.status, 'void')
   assert.equal(stockOut.status, 'void')
+})
+
+test('operation methods call only secure RPCs and accept server-derived actor, time, and cost', async () => {
+  const { createWarehouseConfirmationService } = await loadService()
+  const transferId = 'b1000000-0000-4000-8000-000000000001'
+  const stocktakeId = 'b2000000-0000-4000-8000-000000000001'
+  const stocktakeLineId = 'b2100000-0000-4000-8000-000000000001'
+  const sourceDocumentId = 'b3000000-0000-4000-8000-000000000001'
+  const destinationWarehouse = 'b4000000-0000-4000-8000-000000000002'
+  const destinationLocation = 'b4100000-0000-4000-8000-000000000002'
+  const movementA = 'b6000000-0000-4000-8000-000000000001'
+  const movementB = 'b6000000-0000-4000-8000-000000000002'
+  const { client, calls } = rpcClient({
+    confirm_warehouse_transfer_secure: { data: {
+      id: transferId,
+      status: 'confirmed',
+      variantId: IDS.variant,
+      sourceWarehouseId: IDS.warehouse,
+      sourceLocationId: IDS.location,
+      destinationWarehouseId: destinationWarehouse,
+      destinationLocationId: destinationLocation,
+      quantity: 1.25,
+      totalCost: 125,
+      confirmedByEmployeeProfileId: IDS.confirmer,
+      confirmedAt: '2026-08-09T06:00:00+00:00',
+      idempotencyKey: 'transfer-confirm-1',
+      movementIds: [movementA, movementB],
+      reversalId: null,
+      reversalReason: null,
+    }, error: null, status: 200 },
+    confirm_warehouse_stocktake_secure: { data: {
+      id: stocktakeId,
+      warehouseId: IDS.warehouse,
+      stocktakeMonth: '2026-08',
+      status: 'confirmed',
+      confirmedByEmployeeProfileId: IDS.confirmer,
+      confirmedAt: '2026-08-09T06:05:00+00:00',
+      idempotencyKey: 'stocktake-confirm-1',
+      reversalId: null,
+      reversalReason: null,
+      lines: [{
+        id: stocktakeLineId,
+        variantId: IDS.variant,
+        locationId: IDS.location,
+        bookQuantity: 1.25,
+        countedQuantity: 1,
+        quantityDelta: -0.25,
+        differenceType: 'loss',
+        reason: '盘亏复核',
+        totalCost: 25,
+        movementIds: [movementA],
+      }],
+    }, error: null, status: 200 },
+    reverse_warehouse_operation_secure: { data: {
+      id: 'b7000000-0000-4000-8000-000000000001',
+      sourceDocumentType: 'warehouse_stock_out',
+      sourceDocumentId,
+      status: 'confirmed',
+      reason: '整单录入错误',
+      reversedByEmployeeProfileId: IDS.confirmer,
+      reversedAt: '2026-08-09T06:10:00+00:00',
+      idempotencyKey: 'reverse-operation-1',
+      movementIds: [movementB],
+      costAdjustment: -125,
+    }, error: null, status: 200 },
+  })
+  const service = createWarehouseConfirmationService(client, { configured: true, viewCost: true })
+
+  const transfer = await service.confirmTransfer({
+    transferId,
+    variantId: IDS.variant,
+    sourceWarehouseId: IDS.warehouse,
+    sourceLocationId: IDS.location,
+    destinationWarehouseId: destinationWarehouse,
+    destinationLocationId: destinationLocation,
+    quantity: 1.25,
+    reason: '项目间调拨',
+    idempotencyKey: 'transfer-confirm-1',
+  })
+  const stocktake = await service.confirmStocktake({
+    stocktakeId,
+    warehouseId: IDS.warehouse,
+    stocktakeMonth: '2026-08',
+    idempotencyKey: 'stocktake-confirm-1',
+    lines: [{
+      stocktakeLineId,
+      variantId: IDS.variant,
+      locationId: IDS.location,
+      countedQuantity: 1,
+      differenceType: 'loss',
+      reason: '盘亏复核',
+      approvedUnitCost: null,
+    }],
+  })
+  const reversal = await service.reverseOperation({
+    sourceDocumentType: 'warehouse_stock_out',
+    sourceDocumentId,
+    reason: '整单录入错误',
+    idempotencyKey: 'reverse-operation-1',
+  })
+
+  assert.equal(transfer.totalCost, 125)
+  assert.equal(stocktake.lines[0].totalCost, 25)
+  assert.equal(reversal.costAdjustment, -125)
+  assert.deepEqual(calls.map((call) => call.name), [
+    'confirm_warehouse_transfer_secure',
+    'confirm_warehouse_stocktake_secure',
+    'reverse_warehouse_operation_secure',
+  ])
+  assert.equal(JSON.stringify(calls).includes('confirmedAt'), false)
+  assert.equal(JSON.stringify(calls).includes('unitCost'), false)
+  assert.equal(JSON.stringify(calls).includes('operator'), false)
+})
+
+test('operation responses redact every cost without warehouse cost permission', async () => {
+  const { createWarehouseConfirmationService } = await loadService()
+  const transferId = 'b1000000-0000-4000-8000-000000000001'
+  const movementId = 'b6000000-0000-4000-8000-000000000001'
+  const { client } = rpcClient({
+    confirm_warehouse_transfer_secure: { data: {
+      id: transferId,
+      status: 'confirmed',
+      variantId: IDS.variant,
+      sourceWarehouseId: IDS.warehouse,
+      sourceLocationId: IDS.location,
+      destinationWarehouseId: 'b4000000-0000-4000-8000-000000000002',
+      destinationLocationId: 'b4100000-0000-4000-8000-000000000002',
+      quantity: 1,
+      totalCost: null,
+      confirmedByEmployeeProfileId: IDS.confirmer,
+      confirmedAt: '2026-08-09T06:00:00+00:00',
+      idempotencyKey: 'transfer-confirm-redacted',
+      movementIds: [movementId, 'b6000000-0000-4000-8000-000000000002'],
+      reversalId: null,
+      reversalReason: null,
+    }, error: null, status: 200 },
+  })
+  const service = createWarehouseConfirmationService(client, { configured: true, viewCost: false })
+  const result = await service.confirmTransfer({
+    transferId,
+    variantId: IDS.variant,
+    sourceWarehouseId: IDS.warehouse,
+    sourceLocationId: IDS.location,
+    destinationWarehouseId: 'b4000000-0000-4000-8000-000000000002',
+    destinationLocationId: 'b4100000-0000-4000-8000-000000000002',
+    quantity: 1,
+    reason: '调拨',
+    idempotencyKey: 'transfer-confirm-redacted',
+  })
+  assert.equal(result.totalCost, null)
+})
+
+test('large authoritative multi-batch movement responses stay aligned with the server operation limit', async () => {
+  const { createWarehouseConfirmationService } = await loadService()
+  const movementIds = Array.from({ length: 502 }, (_, index) => (
+    `b6${index.toString(16).padStart(6, '0')}-0000-4000-8000-000000000001`
+  ))
+  const input = {
+    transferId: 'b1000000-0000-4000-8000-000000000001',
+    variantId: IDS.variant,
+    sourceWarehouseId: IDS.warehouse,
+    sourceLocationId: IDS.location,
+    destinationWarehouseId: 'b4000000-0000-4000-8000-000000000002',
+    destinationLocationId: 'b4100000-0000-4000-8000-000000000002',
+    quantity: 251,
+    reason: '跨多价格批次调拨',
+    idempotencyKey: 'transfer-many-batches',
+  }
+  const { client } = rpcClient({
+    confirm_warehouse_transfer_secure: { data: {
+      id: input.transferId,
+      status: 'confirmed',
+      variantId: input.variantId,
+      sourceWarehouseId: input.sourceWarehouseId,
+      sourceLocationId: input.sourceLocationId,
+      destinationWarehouseId: input.destinationWarehouseId,
+      destinationLocationId: input.destinationLocationId,
+      quantity: input.quantity,
+      totalCost: 251,
+      confirmedByEmployeeProfileId: IDS.confirmer,
+      confirmedAt: '2026-08-09T06:00:00+00:00',
+      idempotencyKey: input.idempotencyKey,
+      movementIds,
+      reversalId: null,
+      reversalReason: null,
+    }, error: null, status: 200 },
+  })
+
+  const result = await createWarehouseConfirmationService(
+    client, { configured: true, viewCost: true },
+  ).confirmTransfer(input)
+  assert.equal(result.movementIds.length, 502)
+  assert.equal(Object.isFrozen(result.movementIds), true)
+})
+
+test('zero-stock gain cost requires cost-view and transfer responses require complete distinct movement pairs', async () => {
+  const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
+  const transferId = 'b1000000-0000-4000-8000-000000000001'
+  const destinationWarehouseId = 'b4000000-0000-4000-8000-000000000002'
+  const destinationLocationId = 'b4100000-0000-4000-8000-000000000002'
+  const baseResult = {
+    id: transferId,
+    status: 'confirmed',
+    variantId: IDS.variant,
+    sourceWarehouseId: IDS.warehouse,
+    sourceLocationId: IDS.location,
+    destinationWarehouseId,
+    destinationLocationId,
+    quantity: 1,
+    totalCost: 0,
+    confirmedByEmployeeProfileId: IDS.confirmer,
+    confirmedAt: '2026-08-09T06:00:00+00:00',
+    idempotencyKey: 'transfer-pair-1',
+    movementIds: ['b6000000-0000-4000-8000-000000000001'],
+    reversalId: null,
+    reversalReason: null,
+  }
+  const input = {
+    transferId,
+    variantId: IDS.variant,
+    sourceWarehouseId: IDS.warehouse,
+    sourceLocationId: IDS.location,
+    destinationWarehouseId,
+    destinationLocationId,
+    quantity: 1,
+    reason: '调拨',
+    idempotencyKey: 'transfer-pair-1',
+  }
+  for (const movementIds of [
+    baseResult.movementIds,
+    [baseResult.movementIds[0], baseResult.movementIds[0]],
+    [
+      baseResult.movementIds[0], 'b6000000-0000-4000-8000-000000000002',
+      'b6000000-0000-4000-8000-000000000003',
+    ],
+  ]) {
+    const { client } = rpcClient({
+      confirm_warehouse_transfer_secure: {
+        data: { ...baseResult, movementIds }, error: null, status: 200,
+      },
+    })
+    const service = createWarehouseConfirmationService(client, { configured: true, viewCost: true })
+    await assert.rejects(() => service.confirmTransfer(input), (error) => (
+      error instanceof WarehouseConfirmationServiceError &&
+      error.code === 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+    ))
+  }
+
+  const { client, calls } = rpcClient({})
+  const redacted = createWarehouseConfirmationService(client, { configured: true, viewCost: false })
+  await assert.rejects(() => redacted.confirmStocktake({
+    stocktakeId: 'b2000000-0000-4000-8000-000000000001',
+    warehouseId: IDS.warehouse,
+    stocktakeMonth: '2026-08',
+    idempotencyKey: 'stocktake-gain-1',
+    lines: [{
+      stocktakeLineId: 'b2100000-0000-4000-8000-000000000001',
+      variantId: IDS.variant,
+      locationId: IDS.location,
+      countedQuantity: 1,
+      differenceType: 'gain',
+      reason: '首次盘盈审批',
+      approvedUnitCost: 0,
+    }],
+  }), (error) => (
+    error instanceof WarehouseConfirmationServiceError &&
+    error.code === 'WAREHOUSE_CONFIRMATION_INPUT_INVALID'
+  ))
+  assert.equal(calls.length, 0)
+})
+
+test('stocktake response requires exact signed fixed-decimal delta and matching difference type', async () => {
+  const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
+  const stocktakeId = 'b2000000-0000-4000-8000-000000000001'
+  const stocktakeLineId = 'b2100000-0000-4000-8000-000000000001'
+  const movementId = 'b6000000-0000-4000-8000-000000000001'
+  const input = {
+    stocktakeId,
+    warehouseId: IDS.warehouse,
+    stocktakeMonth: '2026-08',
+    idempotencyKey: 'stocktake-delta-1',
+    lines: [{
+      stocktakeLineId,
+      variantId: IDS.variant,
+      locationId: IDS.location,
+      countedQuantity: 1,
+      differenceType: 'loss',
+      reason: '盘亏复核',
+      approvedUnitCost: null,
+    }],
+  }
+  const base = {
+    id: stocktakeId,
+    warehouseId: IDS.warehouse,
+    stocktakeMonth: '2026-08',
+    status: 'confirmed',
+    confirmedByEmployeeProfileId: IDS.confirmer,
+    confirmedAt: '2026-08-09T06:05:00+00:00',
+    idempotencyKey: 'stocktake-delta-1',
+    reversalId: null,
+    reversalReason: null,
+    lines: [{
+      id: stocktakeLineId,
+      variantId: IDS.variant,
+      locationId: IDS.location,
+      bookQuantity: 1.25,
+      countedQuantity: 1,
+      quantityDelta: -0.25,
+      differenceType: 'loss',
+      reason: '盘亏复核',
+      totalCost: 25,
+      movementIds: [movementId],
+    }],
+  }
+  for (const override of [
+    { quantityDelta: -0.0001 },
+    { quantityDelta: -9007199254741 },
+    { quantityDelta: -0.5 },
+    { differenceType: 'gain' },
+  ]) {
+    const response = {
+      ...base,
+      lines: [{ ...base.lines[0], ...override }],
+    }
+    const { client } = rpcClient({
+      confirm_warehouse_stocktake_secure: { data: response, error: null, status: 200 },
+    })
+    const service = createWarehouseConfirmationService(client, { configured: true, viewCost: true })
+    await assert.rejects(() => service.confirmStocktake(input), (error) => (
+      error instanceof WarehouseConfirmationServiceError &&
+      error.code === 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+    ))
+  }
 })

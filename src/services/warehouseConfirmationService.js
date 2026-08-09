@@ -4,12 +4,18 @@ import {
   parseQuantityUnits,
   quantityUnitsToNumber,
 } from '../features/warehouse/warehouseDecimal.js'
+import {
+  buildOperationReversalCommand,
+  buildStocktakeConfirmationCommand,
+  buildTransferConfirmationCommand,
+} from '../features/warehouse/warehouseOperations.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const RECORD_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u
 const DATE = /^\d{4}-\d{2}-\d{2}$/u
 const SUPPLIER_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
+const MAX_OPERATION_MOVEMENT_IDS = 20_000
 
 const ERRORS = Object.freeze({
   WAREHOUSE_CONFIRMATION_NOT_CONFIGURED: Object.freeze({ message: '仓库确认服务未配置', status: 503 }),
@@ -26,6 +32,7 @@ const ERRORS = Object.freeze({
   WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED: Object.freeze({ message: '确认数量超过采购剩余数量，请刷新后重试', status: 409 }),
   WAREHOUSE_INSUFFICIENT_STOCK: Object.freeze({ message: '所选货架区库存不足，未执行任何出库', status: 409 }),
   WAREHOUSE_RETURN_QUANTITY_EXCEEDED: Object.freeze({ message: '退回数量超过原出库可退数量，请刷新后重试', status: 409 }),
+  WAREHOUSE_OPERATION_TOO_COMPLEX: Object.freeze({ message: '本次仓库操作涉及的批次数量过多，请拆分后重试', status: 409 }),
 })
 
 const TRUSTED_HINTS = new Map([
@@ -38,6 +45,7 @@ const TRUSTED_HINTS = new Map([
   ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', '23514'],
   ['WAREHOUSE_INSUFFICIENT_STOCK', '23514'],
   ['WAREHOUSE_RETURN_QUANTITY_EXCEEDED', '23514'],
+  ['WAREHOUSE_OPERATION_TOO_COMPLEX', '54000'],
 ])
 
 export class WarehouseConfirmationServiceError extends Error {
@@ -133,6 +141,20 @@ function quantity(value, errorCode, { positive = true } = {}) {
   }
 }
 
+function signedQuantity(value, errorCode) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw fail(errorCode)
+  const sign = value < 0 ? -1n : 1n
+  try {
+    const absoluteUnits = parseQuantityUnits(Math.abs(value))
+    return {
+      units: sign * absoluteUnits,
+      value: Number(sign) * quantityUnitsToNumber(absoluteUnits),
+    }
+  } catch {
+    throw fail(errorCode)
+  }
+}
+
 function nullableCost(value, errorCode, viewCost) {
   if (!viewCost) {
     if (value !== null) throw fail(errorCode)
@@ -141,6 +163,20 @@ function nullableCost(value, errorCode, viewCost) {
   try {
     const units = parseCostUnits(value)
     return costUnitsToNumber(units)
+  } catch {
+    throw fail(errorCode)
+  }
+}
+
+function nullableSignedCost(value, errorCode, viewCost) {
+  if (!viewCost) {
+    if (value !== null) throw fail(errorCode)
+    return null
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw fail(errorCode)
+  const sign = value < 0 ? -1 : 1
+  try {
+    return sign * costUnitsToNumber(parseCostUnits(Math.abs(value)))
   } catch {
     throw fail(errorCode)
   }
@@ -611,6 +647,176 @@ function returnRejectionResponse(value, request) {
   return deepFreeze(result)
 }
 
+function movementIds(value, errorCode, {
+  exactLength,
+  maximum = MAX_OPERATION_MOVEMENT_IDS,
+} = {}) {
+  const ids = denseArray(value, errorCode, {
+    minimum: exactLength ?? 1,
+    maximum: exactLength ?? maximum,
+  }).map((entry) => uuid(entry, errorCode))
+  if (
+    (exactLength !== undefined && ids.length !== exactLength) ||
+    new Set(ids).size !== ids.length
+  ) throw fail(errorCode)
+  return ids
+}
+
+function transferMovementIds(value, errorCode) {
+  const ids = movementIds(value, errorCode)
+  if (ids.length < 2 || ids.length % 2 !== 0) throw fail(errorCode)
+  return ids
+}
+
+function operationOutcome(row, errorCode) {
+  if (!['confirmed', 'void'].includes(row.status)) throw fail(errorCode)
+  const reversalId = row.reversalId === null ? null : uuid(row.reversalId, errorCode)
+  const reversalReason = row.reversalReason === null
+    ? null
+    : displayText(row.reversalReason, 1000, errorCode)
+  if (
+    (row.status === 'confirmed' && (reversalId !== null || reversalReason !== null)) ||
+    (row.status === 'void' && (reversalId === null || reversalReason === null))
+  ) throw fail(errorCode)
+  return { reversalId, reversalReason }
+}
+
+function transferResponse(value, request, viewCost) {
+  const errorCode = 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+  const row = exactObject(value, [
+    'id', 'status', 'variantId', 'sourceWarehouseId', 'sourceLocationId',
+    'destinationWarehouseId', 'destinationLocationId', 'quantity', 'totalCost',
+    'confirmedByEmployeeProfileId', 'confirmedAt', 'idempotencyKey', 'movementIds',
+    'reversalId', 'reversalReason',
+  ], errorCode)
+  const result = {
+    id: uuid(row.id, errorCode),
+    status: row.status,
+    variantId: uuid(row.variantId, errorCode),
+    sourceWarehouseId: uuid(row.sourceWarehouseId, errorCode),
+    sourceLocationId: uuid(row.sourceLocationId, errorCode),
+    destinationWarehouseId: uuid(row.destinationWarehouseId, errorCode),
+    destinationLocationId: uuid(row.destinationLocationId, errorCode),
+    quantity: quantity(row.quantity, errorCode).value,
+    totalCost: nullableCost(row.totalCost, errorCode, viewCost),
+    confirmedByEmployeeProfileId: uuid(row.confirmedByEmployeeProfileId, errorCode),
+    confirmedAt: timestamp(row.confirmedAt, errorCode),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, errorCode),
+    movementIds: transferMovementIds(row.movementIds, errorCode),
+    ...operationOutcome(row, errorCode),
+  }
+  if (
+    result.id !== request.transferId || result.variantId !== request.variantId ||
+    result.sourceWarehouseId !== request.sourceWarehouseId ||
+    result.sourceLocationId !== request.sourceLocationId ||
+    result.destinationWarehouseId !== request.destinationWarehouseId ||
+    result.destinationLocationId !== request.destinationLocationId ||
+    quantity(result.quantity, errorCode).units !== quantity(request.quantity, errorCode).units ||
+    result.idempotencyKey !== request.idempotencyKey
+  ) throw fail(errorCode)
+  return deepFreeze(result)
+}
+
+function stocktakeResponse(value, request, viewCost) {
+  const errorCode = 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+  const row = exactObject(value, [
+    'id', 'warehouseId', 'stocktakeMonth', 'status', 'confirmedByEmployeeProfileId',
+    'confirmedAt', 'idempotencyKey', 'reversalId', 'reversalReason', 'lines',
+  ], errorCode)
+  const expected = new Map(request.lines.map((line) => [line.stocktakeLineId, line]))
+  const lines = denseArray(row.lines, errorCode).map((value) => {
+    const line = exactObject(value, [
+      'id', 'variantId', 'locationId', 'bookQuantity', 'countedQuantity',
+      'quantityDelta', 'differenceType', 'reason', 'totalCost', 'movementIds',
+    ], errorCode)
+    if (!['gain', 'loss', 'damaged', 'scrapped', 'no_change'].includes(line.differenceType)) {
+      throw fail(errorCode)
+    }
+    const bookQuantity = quantity(line.bookQuantity, errorCode, { positive: false })
+    const countedQuantity = quantity(line.countedQuantity, errorCode, { positive: false })
+    const quantityDelta = signedQuantity(line.quantityDelta, errorCode)
+    const expectedDelta = countedQuantity.units - bookQuantity.units
+    const expectedType = expectedDelta > 0n
+      ? 'gain'
+      : expectedDelta === 0n
+        ? 'no_change'
+        : null
+    const reason = line.reason === '' ? '' : displayText(line.reason, 1000, errorCode)
+    if (
+      quantityDelta.units !== expectedDelta ||
+      (expectedType !== null && line.differenceType !== expectedType) ||
+      (expectedDelta < 0n && !['loss', 'damaged', 'scrapped'].includes(line.differenceType)) ||
+      (expectedDelta === 0n ? reason !== '' : reason === '')
+    ) throw fail(errorCode)
+    const normalized = {
+      id: uuid(line.id, errorCode),
+      variantId: uuid(line.variantId, errorCode),
+      locationId: uuid(line.locationId, errorCode),
+      bookQuantity: bookQuantity.value,
+      countedQuantity: countedQuantity.value,
+      quantityDelta: quantityDelta.value,
+      differenceType: line.differenceType,
+      reason,
+      totalCost: nullableCost(line.totalCost, errorCode, viewCost),
+      movementIds: movementIds(line.movementIds, errorCode),
+    }
+    const input = expected.get(normalized.id)
+    if (
+      !input || normalized.variantId !== input.variantId ||
+      normalized.locationId !== input.locationId ||
+      quantity(normalized.countedQuantity, errorCode, { positive: false }).units !==
+        quantity(input.countedQuantity, errorCode, { positive: false }).units ||
+      normalized.differenceType !== input.differenceType || normalized.reason !== input.reason
+    ) throw fail(errorCode)
+    expected.delete(normalized.id)
+    return normalized
+  })
+  const result = {
+    id: uuid(row.id, errorCode),
+    warehouseId: uuid(row.warehouseId, errorCode),
+    stocktakeMonth: text(row.stocktakeMonth, /^\d{4}-(?:0[1-9]|1[0-2])$/u, errorCode),
+    status: row.status,
+    confirmedByEmployeeProfileId: uuid(row.confirmedByEmployeeProfileId, errorCode),
+    confirmedAt: timestamp(row.confirmedAt, errorCode),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, errorCode),
+    ...operationOutcome(row, errorCode),
+    lines,
+  }
+  if (
+    result.id !== request.stocktakeId || result.warehouseId !== request.warehouseId ||
+    result.stocktakeMonth !== request.stocktakeMonth ||
+    result.idempotencyKey !== request.idempotencyKey || expected.size !== 0
+  ) throw fail(errorCode)
+  return deepFreeze(result)
+}
+
+function reversalResponse(value, request, viewCost) {
+  const errorCode = 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+  const row = exactObject(value, [
+    'id', 'sourceDocumentType', 'sourceDocumentId', 'status', 'reason',
+    'reversedByEmployeeProfileId', 'reversedAt', 'idempotencyKey', 'movementIds',
+    'costAdjustment',
+  ], errorCode)
+  const result = {
+    id: uuid(row.id, errorCode),
+    sourceDocumentType: row.sourceDocumentType,
+    sourceDocumentId: uuid(row.sourceDocumentId, errorCode),
+    status: row.status,
+    reason: displayText(row.reason, 1000, errorCode),
+    reversedByEmployeeProfileId: uuid(row.reversedByEmployeeProfileId, errorCode),
+    reversedAt: timestamp(row.reversedAt, errorCode),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, errorCode),
+    movementIds: movementIds(row.movementIds, errorCode),
+    costAdjustment: nullableSignedCost(row.costAdjustment, errorCode, viewCost),
+  }
+  if (
+    result.sourceDocumentType !== request.sourceDocumentType ||
+    result.sourceDocumentId !== request.sourceDocumentId || result.status !== 'confirmed' ||
+    result.reason !== request.reason || result.idempotencyKey !== request.idempotencyKey
+  ) throw fail(errorCode)
+  return deepFreeze(result)
+}
+
 function requestContextResponse(value, viewCost) {
   const errorCode = 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
   const root = exactObject(value, [
@@ -924,6 +1130,57 @@ export function createWarehouseConfirmationService(client, options = {}) {
         p_reason: request.reason,
         p_idempotency_key: request.idempotencyKey,
       }), request)
+    },
+    async confirmTransfer(input) {
+      let request
+      try {
+        request = buildTransferConfirmationCommand(input)
+      } catch {
+        throw fail('WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+      }
+      return transferResponse(await call('confirm_warehouse_transfer_secure', {
+        p_transfer_id: request.transferId,
+        p_variant_id: request.variantId,
+        p_source_warehouse_id: request.sourceWarehouseId,
+        p_source_location_id: request.sourceLocationId,
+        p_destination_warehouse_id: request.destinationWarehouseId,
+        p_destination_location_id: request.destinationLocationId,
+        p_quantity: request.quantity,
+        p_reason: request.reason,
+        p_idempotency_key: request.idempotencyKey,
+      }), request, viewCost)
+    },
+    async confirmStocktake(input) {
+      let request
+      try {
+        request = buildStocktakeConfirmationCommand(input)
+      } catch {
+        throw fail('WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+      }
+      if (!viewCost && request.lines.some((line) => line.approvedUnitCost !== null)) {
+        throw fail('WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+      }
+      return stocktakeResponse(await call('confirm_warehouse_stocktake_secure', {
+        p_stocktake_id: request.stocktakeId,
+        p_warehouse_id: request.warehouseId,
+        p_stocktake_month: request.stocktakeMonth,
+        p_lines: request.lines,
+        p_idempotency_key: request.idempotencyKey,
+      }), request, viewCost)
+    },
+    async reverseOperation(input) {
+      let request
+      try {
+        request = buildOperationReversalCommand(input)
+      } catch {
+        throw fail('WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+      }
+      return reversalResponse(await call('reverse_warehouse_operation_secure', {
+        p_source_document_type: request.sourceDocumentType,
+        p_source_document_id: request.sourceDocumentId,
+        p_reason: request.reason,
+        p_idempotency_key: request.idempotencyKey,
+      }), request, viewCost)
     },
     async listRequestContext() {
       return requestContextResponse(
