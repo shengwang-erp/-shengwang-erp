@@ -25,7 +25,14 @@ const LOCAL_SOURCE_FIELDS = Object.freeze([
 const CATEGORY_ORDER = Object.freeze([
   '人工费', '材料费', '车辆费', '工具费', '外包费', '运输费', '经营费用', '其他费用',
 ])
+const ALLOWED_PAGE_SIZES = new Set([20, 50, 100])
 const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+const INACTIVE_STATUSES = new Set([
+  'void', 'deleted', 'inactive', 'cancelled', 'canceled', '作废', '已删除', '取消', '已取消',
+])
+const CONFIRMED_WAREHOUSE_STATUSES = new Set([
+  'confirmed', 'ready', 'approved', 'completed', '已确认', '已完成',
+])
 const DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
 
 function isPlainObject(value) {
@@ -156,7 +163,7 @@ function safeInteger(value, minimum, name) {
 
 function allowedPageSize(value) {
   const pageSize = safeInteger(value, 1, 'pageSize')
-  if (pageSize > 100) throw new TypeError('pageSize invalid')
+  if (!ALLOWED_PAGE_SIZES.has(pageSize)) throw new TypeError('pageSize invalid')
   return pageSize
 }
 
@@ -177,6 +184,13 @@ function normalizeLedgerRow(value) {
   const units = toSignedFourDecimalUnits(originalAmount) + toSignedFourDecimalUnits(adjustmentAmount)
   if (fromFourDecimalUnits(units) !== effectiveAmount || typeof row.adjusted !== 'boolean' ||
       row.adjusted !== (adjustmentAmount !== 0)) throw new TypeError('project cost ledger row invalid')
+  const allocations = exactArray(row.allocations).map(normalizeAllocation)
+  const allocationUnits = allocations.reduce(
+    (total, allocation) => total + BigInt(toSignedFourDecimalUnits(allocation.amount)), 0n,
+  )
+  if (allocationUnits !== BigInt(toSignedFourDecimalUnits(effectiveAmount))) {
+    throw new TypeError('project cost ledger row invalid')
+  }
   return {
     sourceKey: text(row.sourceKey, 'sourceKey'), sourceModule: text(row.sourceModule, 'sourceModule'),
     sourceDocumentType: text(row.sourceDocumentType, 'sourceDocumentType'),
@@ -186,7 +200,7 @@ function normalizeLedgerRow(value) {
     description: text(row.description, 'description', true), originalAmount, adjustmentAmount,
     effectiveAmount, operator: text(row.operator, 'operator', true), adjusted: row.adjusted,
     version: safeInteger(row.version, 1, 'version'),
-    allocations: exactArray(row.allocations).map(normalizeAllocation),
+    allocations,
     auditEvents: exactArray(row.auditEvents).map((event) => deepCopy(event)),
   }
 }
@@ -228,6 +242,38 @@ function localAmount(row) {
   return null
 }
 
+function inactiveLocalRow(row) {
+  if (row.deleted === true || row.isDeleted === true) return true
+  return ['status', 'statusCode', 'recordStatus', 'purchaseStatus'].some((field) => {
+    const status = row[field]
+    return typeof status === 'string' && (
+      INACTIVE_STATUSES.has(status) || INACTIVE_STATUSES.has(status.toLowerCase())
+    )
+  })
+}
+
+function safeSourcePurchaseKeys(row) {
+  if (!Object.hasOwn(row, 'sourcePurchaseRecordKeys')) return []
+  const keys = exactArray(row.sourcePurchaseRecordKeys, 'warehouse purchase links invalid')
+  if (keys.some((key) => typeof key !== 'string' || key.length === 0 ||
+      key.trim() !== key || POLLUTION_KEYS.has(key))) {
+    throw new TypeError('warehouse purchase links invalid')
+  }
+  return keys
+}
+
+function confirmedWarehouseRow(row) {
+  for (const field of ['batchStatus', 'confirmationStatus', 'confirmedStatus']) {
+    if (!Object.hasOwn(row, field)) continue
+    const status = row[field]
+    return typeof status === 'string' && (
+      CONFIRMED_WAREHOUSE_STATUSES.has(status) ||
+      CONFIRMED_WAREHOUSE_STATUSES.has(status.toLowerCase())
+    )
+  }
+  return row.confirmed !== false && row.isConfirmed !== false
+}
+
 function localFact(module, row, config) {
   const id = localValue(row, config.ids)
   const projectId = localValue(row, ['projectId'])
@@ -242,7 +288,7 @@ function localFact(module, row, config) {
     date: rowDate, description: localValue(row, ['description', 'name'], ''),
     originalAmount: amount, adjustmentAmount: 0, effectiveAmount: amount,
     operator: localValue(row, ['operator', 'createdBy'], ''), adjusted: false, version: 1,
-    allocations: [], auditEvents: [],
+    allocations: amount === 0 ? [] : [{ projectId, amount }], auditEvents: [],
   }
 }
 
@@ -258,10 +304,24 @@ const LOCAL_SOURCE_CONFIG = Object.freeze([
 
 export function buildLocalSourceFacts(input) {
   const source = exactObject(input, LOCAL_SOURCE_FIELDS, 'local ledger sources invalid')
+  const localRows = Object.fromEntries(LOCAL_SOURCE_FIELDS.map((key) => [
+    key, exactArray(source[key], `local ${key} invalid`).map(safeLocalRow),
+  ]))
+  const warehouseConfig = LOCAL_SOURCE_CONFIG.find(([, key]) => key === 'warehouseCosts')[2]
+  const warehouseRows = localRows.warehouseCosts.filter(
+    (row) => !inactiveLocalRow(row) && confirmedWarehouseRow(row) &&
+      localFact('warehouse', row, warehouseConfig) !== null,
+  )
+  const warehousePurchaseKeys = new Set(
+    warehouseRows.flatMap((row) => safeSourcePurchaseKeys(row)),
+  )
   const facts = []
   for (const [module, key, config] of LOCAL_SOURCE_CONFIG) {
-    for (const rawRow of exactArray(source[key], `local ${key} invalid`)) {
-      const fact = localFact(module, safeLocalRow(rawRow), config)
+    const rows = key === 'warehouseCosts' ? warehouseRows : localRows[key]
+    for (const row of rows) {
+      if (inactiveLocalRow(row) || (key === 'purchaseRows' &&
+          warehousePurchaseKeys.has(localValue(row, config.ids)))) continue
+      const fact = localFact(module, row, config)
       if (fact) facts.push(fact)
     }
   }
@@ -303,9 +363,10 @@ export function applyLedgerFilters(snapshot, filters = {}) {
   }))
 }
 
-export function paginateLedgerRows(rows, page, pageSize) {
+export function paginateLedgerRows(rows, page = 1, pageSize = 20) {
   const safeRows = exactArray(rows, 'ledger rows invalid').map(normalizeLedgerRow)
   if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(pageSize) || pageSize < 1) return deepFreeze([])
+  allowedPageSize(pageSize)
   const start = (page - 1) * pageSize
   if (!Number.isSafeInteger(start)) return deepFreeze([])
   return deepFreeze(safeRows.slice(start, start + pageSize))
@@ -355,25 +416,75 @@ export function buildAllocationAmounts(effectiveAmount, drafts) {
   const mode = allocations[0].mode
   if (allocations.some((allocation) => allocation.mode !== mode)) throw new TypeError('allocation modes must match')
   const amounts = []
-  let assignedUnits = 0
   if (mode === 'percent') {
-    const percentageUnits = allocations.reduce((total, allocation) => total + toSignedFourDecimalUnits(allocation.value), 0)
-    if (percentageUnits !== 1000000) throw new TypeError('allocation percentages must equal 100')
-    for (let index = 0; index < allocations.length; index += 1) {
-      const allocation = allocations[index]
-      const amountUnits = index === allocations.length - 1
-        ? effectiveUnits - assignedUnits
-        : Math.round((effectiveUnits * toSignedFourDecimalUnits(allocation.value)) / 1000000)
-      assignedUnits += amountUnits
-      amounts.push({ projectId: allocation.projectId, amount: fromFourDecimalUnits(amountUnits) })
+    const percentageUnits = allocations.reduce(
+      (total, allocation) => total + BigInt(toSignedFourDecimalUnits(allocation.value)), 0n,
+    )
+    if (percentageUnits !== 1000000n) throw new TypeError('allocation percentages must equal 100')
+    const fixedUnits = BigInt(effectiveUnits)
+    const allocated = allocations.slice(0, -1).map((allocation) => stableAllocationAmount(
+      roundedAllocationUnits(effectiveUnits, toSignedFourDecimalUnits(allocation.value)),
+    ))
+    const finalAllocation = finalStableAllocation(fixedUnits, allocated)
+    for (let index = 0; index < allocations.length - 1; index += 1) {
+      amounts.push({ projectId: allocations[index].projectId, amount: allocated[index].amount })
     }
+    amounts.push({ projectId: allocations.at(-1).projectId, amount: finalAllocation.amount })
   } else {
+    let assignedUnits = 0n
     for (const allocation of allocations) {
-      const amountUnits = toSignedFourDecimalUnits(allocation.value)
-      assignedUnits += amountUnits
-      amounts.push({ projectId: allocation.projectId, amount: fromFourDecimalUnits(amountUnits) })
+      const amount = stableAllocationAmount(BigInt(toSignedFourDecimalUnits(allocation.value)))
+      assignedUnits += amount.units
+      amounts.push({ projectId: allocation.projectId, amount: amount.amount })
     }
-    if (assignedUnits !== effectiveUnits) throw new TypeError('allocation amounts must equal effective amount')
+    if (assignedUnits !== BigInt(effectiveUnits)) throw new TypeError('allocation amounts must equal effective amount')
   }
   return deepFreeze(amounts)
+}
+
+function roundedAllocationUnits(effectiveUnits, percentageUnits) {
+  const numerator = BigInt(effectiveUnits) * BigInt(percentageUnits)
+  const divisor = 1000000n
+  const sign = numerator < 0n ? -1n : 1n
+  return sign * ((sign * numerator + divisor / 2n) / divisor)
+}
+
+function stableAllocationAmount(units) {
+  if (units < BigInt(Number.MIN_SAFE_INTEGER) || units > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError('allocation amount overflow')
+  }
+  const original = Number(units)
+  const directAmount = fromFourDecimalUnits(original)
+  if (toSignedFourDecimalUnits(directAmount) === original) {
+    return { units, amount: directAmount }
+  }
+  for (let distance = 1n; distance <= 16n; distance += 1n) {
+    for (const candidate of [units - distance, units + distance]) {
+      if (candidate < BigInt(Number.MIN_SAFE_INTEGER) || candidate > BigInt(Number.MAX_SAFE_INTEGER)) continue
+      const amount = fromFourDecimalUnits(Number(candidate))
+      if (toSignedFourDecimalUnits(amount) === Number(candidate)) return { units: candidate, amount }
+    }
+  }
+  throw new TypeError('allocation amount is not representable')
+}
+
+function finalStableAllocation(effectiveUnits, allocated) {
+  const allocatedUnits = () => allocated.reduce((total, allocation) => total + allocation.units, 0n)
+  let remainder = effectiveUnits - allocatedUnits()
+  let final = stableAllocationAmount(remainder)
+  if (final.units === remainder) return final
+  for (let index = allocated.length - 1; index >= 0; index -= 1) {
+    const original = allocated[index]
+    for (let delta = 1n; delta <= 16n; delta += 1n) {
+      for (const direction of [-1n, 1n]) {
+        const adjusted = stableAllocationAmount(original.units + direction * delta)
+        allocated[index] = adjusted
+        remainder = effectiveUnits - allocatedUnits()
+        final = stableAllocationAmount(remainder)
+        if (final.units === remainder) return final
+      }
+    }
+    allocated[index] = original
+  }
+  throw new TypeError('allocation remainder is not representable')
 }
