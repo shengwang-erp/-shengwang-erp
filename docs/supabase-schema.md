@@ -3,9 +3,10 @@
 新环境和已有环境都以 [`supabase/migrations/`](../supabase/migrations/) 中按文件名排序的
 迁移为唯一规范路径，并按目录内实际文件名排序执行，不可跳过或交换顺序。本功能的直接链为
 `202607140001`、`202607140002`、`202607140003`、`202607140004`、`202607150001`、
-`202607150003`、`202607160001`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
+`202607150003`、`202607160001`、`202607160002`、`202608080001`–`005`、
+`202608090001`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
 [supabase-schema.sql](./supabase-schema.sql) 包含 `202607140001` 历史基础快照和
-`202607160001` 考勤核算审查快照；它仍不包含中间迁移的完整依赖，不能作为最终 bootstrap，
+`202607160001` 考勤核算审查快照以及 `202608090001` 账本接口摘要；它仍不包含中间迁移的完整依赖，不能作为最终 bootstrap，
 也不能在已执行有序迁移的数据库上再次运行。
 
 业务模块暂时继续使用“每模块一张表 + `payload jsonb` + 公共审计字段”的兼容结构，
@@ -460,6 +461,47 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 - `project_id text`
 - `project_name text`
 - `remark text`
+
+### 统一项目成本明细账（迁移 `202608090001`）
+
+账本不复制或改写各业务模块的原始记录。私有稳定函数
+`private.private_project_cost_source_facts()` 将直采、仓库项目出库及冲回、已确认/已锁月人工
+分摊、项目车辆燃油/费用/维修、项目工具责任、项目经营费用、旧手工项目成本和新手工账本
+统一为固定类型列：来源键、来源模块、单据类型与 ID、项目、类别、成本日期、摘要、
+`numeric(18,4)` 原始金额和经办人。
+
+来源键使用固定前缀：`purchase:`、`warehouse:`、`labor:`、`vehicle-fuel:`、
+`vehicle-expense:`、`vehicle-issue:`、`tool-responsibility:`、`operating:`、
+`legacy-manual:`、`manual:`。外层删除/作废和业务取消记录不进入事实集；项目 ID、日期或金额
+无效的 JSON 记录也不会被错误转换为零金额。采购付款、到货和发票状态不影响项目直采确认；
+车辆维修不等待处理完成。工具丢失按工具原值计入项目毛成本，其他责任类型按维修费计入，
+员工赔偿是独立回收事实，不冲减项目毛费用。
+
+仓库生成的 `project_cost_records.payload.sourcePurchaseRecordKeys` 是防重复权威集合：已由
+仓库冻结批次成本归集的采购不会再走直采分支。人工仅使用
+`attendance_day_resolutions.accounting_status in ('confirmed', 'month_locked')` 的已平衡
+`attendance_project_allocations`。
+
+账本拥有三张规范化追加表：
+
+| 表 | 用途与关键字段 |
+| --- | --- |
+| `project_cost_manual_entries` | 不可变 `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人与服务端创建人/时间 |
+| `project_cost_adjustment_events` | `source_key + sequence_no` 唯一，调整前/调整额/调整后、原因、服务端操作人/时间 |
+| `project_cost_allocation_events` | `source_key + sequence_no` 唯一，金额快照、项目分摊 JSON、原因、服务端操作人/时间 |
+
+三表全部启用并强制 RLS；`public`、`anon`、`authenticated` 和 `service_role` 均没有直接表
+权限，UPDATE、DELETE、TRUNCATE 还会被追加性触发器拒绝。客户端不能直接伪造调整或分摊。
+
+读取只调用
+`list_project_cost_ledger_secure(p_filters jsonb default '{}'::jsonb)`。RPC 要求有效员工和
+`module.project_costs.view`，不要求采购、仓库、车辆、工具或经营费用模块权限；它接受的字段
+仅为 `projectId`、`dateFrom`、`dateTo`、`category`、`sourceModule`、`adjusted`、`keyword`、
+`page`、`pageSize`，页尺寸只能为 20、50、100。RPC 应用每个来源最新的调整和分摊，按最终
+项目分摊逐行输出，在分页前计算总行数、类别汇总、总金额和调整总额，并按日期倒序、来源键、
+分摊项目排序。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；完整读取时
+`incompleteSources` 为空。公有 RPC 和私有来源 helper 都是固定空 `search_path` 的
+`SECURITY DEFINER`，私有 helper 对客户端角色无执行权。
 
 ## 权限与安全
 

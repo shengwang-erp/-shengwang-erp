@@ -5675,3 +5675,44 @@ grant select on table
 to service_role;
 
 commit;
+
+-- ---------------------------------------------------------------------------
+-- Review snapshot: 202608090001_project_cost_ledger.sql
+-- ---------------------------------------------------------------------------
+-- The executable, transaction-wrapped definition is maintained in
+-- supabase/migrations/202608090001_project_cost_ledger.sql. Its public schema
+-- contract is recorded here so this review snapshot stays searchable without
+-- pretending to be the ordered migration bootstrap:
+--
+--   public.project_cost_manual_entries
+--     id uuid primary key; immutable source_key; project/category/date;
+--     signed original_amount numeric(18,4); description/operator/creator and
+--     a server timestamp.
+--
+--   public.project_cost_adjustment_events
+--     source_key + sequence_no unique; amount_before, adjustment_amount and
+--     amount_after numeric(18,4); reason; server actor and timestamp.
+--
+--   public.project_cost_allocation_events
+--     source_key + sequence_no unique; amount_snapshot numeric(18,4);
+--     allocations jsonb; reason; server actor and timestamp.
+--
+-- All three tables enable and force RLS, expose no direct browser/service-role
+-- table privileges, reject UPDATE/DELETE/TRUNCATE, and are reachable only via
+-- closed SECURITY DEFINER functions. The private stable typed union is:
+--
+--   private.private_project_cost_source_facts()
+--     -> (source_key, source_module, source_document_type,
+--         source_document_id, project_id, project_name, category, cost_date,
+--         description, original_amount numeric(18,4), operator)
+--
+-- The authenticated/service-role read boundary is:
+--
+--   public.list_project_cost_ledger_secure(p_filters jsonb default '{}')
+--     -> jsonb
+--
+-- It requires an active employee plus module.project_costs.view, validates the
+-- closed filter set, applies the latest adjustment/allocation, emits one row
+-- per final project allocation, summarizes before pagination, and returns the
+-- exact normalizeLedgerSnapshot() JSON shape. Both the public RPC and private
+-- source helper are SECURITY DEFINER with an empty fixed search_path.
