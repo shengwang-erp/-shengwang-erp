@@ -3,12 +3,20 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import postcss from 'postcss'
 
-const [themeSource, mainSource, appSource, shellSource, executiveDashboardStyles] = await Promise.all([
+const [
+  themeSource,
+  mainSource,
+  appSource,
+  shellSource,
+  executiveDashboardStyles,
+  laborAccountingStyles,
+] = await Promise.all([
   readFile(new URL('./blackGoldTheme.css', import.meta.url), 'utf8').catch(() => ''),
   readFile(new URL('./main.jsx', import.meta.url), 'utf8'),
   readFile(new URL('./App.jsx', import.meta.url), 'utf8'),
   readFile(new URL('./DesktopAdminShell.jsx', import.meta.url), 'utf8'),
   readFile(new URL('./features/executive-dashboard/executiveDashboard.css', import.meta.url), 'utf8'),
+  readFile(new URL('./features/labor-accounting/laborAccounting.css', import.meta.url), 'utf8'),
 ])
 
 const themeRoot = postcss.parse(themeSource, { from: 'blackGoldTheme.css' })
@@ -25,6 +33,46 @@ function declarationsFor(selector, media = null) {
     }
   })
   return declarations
+}
+
+function selectorSpecificity(selector) {
+  const withoutNot = selector.replace(/:not\(([^)]+)\)/gu, '$1')
+  const ids = (withoutNot.match(/#[\w-]+/gu) || []).length
+  const classLike = (withoutNot.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/gu) || []).length
+  const types = withoutNot
+    .replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+/gu, ' ')
+    .split(/[\s>+~]+/u)
+    .filter((part) => part && part !== '*').length
+  return [ids, classLike, types]
+}
+
+function compareSpecificity(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return 0
+}
+
+function effectiveLaborDeclaration(candidateSelectors, property) {
+  let winner = null
+  let order = 0
+  for (const source of [laborAccountingStyles, themeSource]) {
+    postcss.parse(source).walkRules((rule) => {
+      for (const selector of rule.selectors) {
+        if (!candidateSelectors.includes(selector)) continue
+        for (const node of rule.nodes) {
+          if (node.type !== 'decl' || node.prop !== property) continue
+          const candidate = { selector, value: node.value, specificity: selectorSpecificity(selector), order }
+          if (!winner || compareSpecificity(candidate.specificity, winner.specificity) > 0 ||
+              (compareSpecificity(candidate.specificity, winner.specificity) === 0 && candidate.order > winner.order)) {
+            winner = candidate
+          }
+          order += 1
+        }
+      }
+    })
+  }
+  return winner
 }
 
 test('black-gold theme loads after legacy styles and defines the exact palette tokens', () => {
@@ -304,6 +352,167 @@ test('labor calendar-day buttons remain transparent over semantic parent surface
     declarationsFor(
       '.erp-black-gold .labor-accounting-page .labor-month-calendar-day > button',
     ).get('background'),
+    'transparent',
+  )
+})
+
+test('semantic feedback panels use dark status surfaces without losing their semantic colors', () => {
+  const warningSelectors = [
+    '.erp-black-gold .personnel-message',
+    '.erp-black-gold .personnel-inline-note',
+    '.erp-black-gold .labor-accounting-page .labor-configuration-notice',
+    '.erp-black-gold .labor-accounting-page .labor-locked-notice',
+    '.erp-black-gold .labor-accounting-page .labor-stale-warning',
+    '.erp-black-gold .labor-accounting-page .labor-reconciliation-warning',
+  ]
+  for (const selector of warningSelectors) {
+    const declarations = declarationsFor(selector)
+    assert.equal(declarations.get('background'), 'var(--erp-status-warning-surface)', selector)
+    assert.equal(declarations.get('color'), 'var(--erp-status-warning)', selector)
+    assert.equal(declarations.get('border-color'), 'var(--erp-status-warning)', selector)
+  }
+  assert.equal(
+    declarationsFor(
+      '.erp-black-gold .labor-accounting-page .labor-stale-warning small',
+    ).get('color'),
+    'var(--erp-status-warning)',
+  )
+
+  const dangerSelectors = [
+    '.erp-black-gold .labor-accounting-page .labor-salary-warning',
+    '.erp-black-gold .labor-accounting-page .labor-allocation-balance',
+    '.erp-black-gold .labor-accounting-page .labor-dialog-error',
+    '.erp-black-gold .labor-accounting-page .labor-confirm-blockers',
+  ]
+  for (const selector of dangerSelectors) {
+    const declarations = declarationsFor(selector)
+    assert.equal(declarations.get('background'), 'var(--erp-status-danger-surface)', selector)
+    assert.equal(declarations.get('color'), 'var(--erp-status-danger)', selector)
+  }
+
+  const validAllocation = declarationsFor(
+    ".erp-black-gold .labor-accounting-page .labor-allocation-balance[data-valid='true']",
+  )
+  assert.equal(validAllocation.get('background'), 'var(--erp-status-success-surface)')
+  assert.equal(validAllocation.get('color'), 'var(--erp-status-success)')
+  assert.equal(validAllocation.get('border-color'), 'var(--erp-status-success)')
+})
+
+test('labor readonly notice uses a dark informational surface', () => {
+  const declarations = declarationsFor(
+    '.erp-black-gold .labor-accounting-page .labor-redacted-note',
+  )
+  assert.equal(declarations.get('background'), 'var(--erp-status-info-surface)')
+  assert.equal(declarations.get('color'), 'var(--erp-status-info)')
+  assert.equal(declarations.get('border-color'), 'var(--erp-status-info)')
+})
+
+test('attendance result and error states use dark semantic surfaces', () => {
+  const expected = new Map([
+    ['.erp-black-gold .attendance-page .attendance-location-result', ['warning', true]],
+    [".erp-black-gold .attendance-page .attendance-location-result[data-result='normal']", ['success', true]],
+    [".erp-black-gold .attendance-page .attendance-location-result[data-result='abnormal']", ['danger', true]],
+    ['.erp-black-gold .attendance-page .attendance-error', ['danger', false]],
+    ['.erp-black-gold .attendance-page .attendance-location-error', ['danger', false]],
+    ['.erp-black-gold .attendance-page .attendance-photo-error', ['danger', false]],
+    ['.erp-black-gold .attendance-page .attendance-work-point-error', ['danger', false]],
+  ])
+  for (const [selector, [tone, hasBorder]] of expected) {
+    const declarations = declarationsFor(selector)
+    assert.equal(declarations.get('background'), `var(--erp-status-${tone}-surface)`, selector)
+    assert.equal(declarations.get('color'), `var(--erp-status-${tone})`, selector)
+    if (hasBorder) assert.equal(declarations.get('border-color'), `var(--erp-status-${tone})`, selector)
+  }
+})
+
+test('attendance result badges use dark semantic surfaces', () => {
+  const expected = new Map([
+    ['.erp-black-gold .attendance-page .attendance-location-result strong', 'warning'],
+    [".erp-black-gold .attendance-page .attendance-location-result[data-result='normal'] strong", 'success'],
+    [".erp-black-gold .attendance-page .attendance-location-result[data-result='abnormal'] strong", 'danger'],
+  ])
+  for (const [selector, tone] of expected) {
+    const declarations = declarationsFor(selector)
+    assert.equal(declarations.get('background'), `var(--erp-status-${tone}-surface)`, selector)
+    assert.equal(declarations.get('color'), `var(--erp-status-${tone})`, selector)
+  }
+})
+
+test('labor primary actions win the effective normal and hover cascade', () => {
+  const baseButtonSelectors = [
+    '.labor-accounting-page button',
+    '.erp-black-gold .labor-accounting-page button',
+  ]
+  const primarySelectors = [
+    ...baseButtonSelectors,
+    '.labor-accounting-page .labor-primary-action',
+    '.erp-black-gold .labor-primary-action',
+    '.erp-black-gold .labor-accounting-page .labor-primary-action',
+  ]
+  assert.equal(
+    effectiveLaborDeclaration(primarySelectors, 'background')?.value,
+    'var(--erp-accent-gold)',
+  )
+
+  const hoverSelectors = [
+    ...primarySelectors,
+    '.labor-accounting-page button:hover:not(:disabled)',
+    '.labor-accounting-page .labor-primary-action:hover:not(:disabled)',
+    '.erp-black-gold button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page .labor-primary-action:hover:not(:disabled)',
+  ]
+  assert.equal(
+    effectiveLaborDeclaration(hoverSelectors, 'background')?.value,
+    'var(--erp-accent-gold)',
+  )
+
+})
+
+test('labor save actions win the effective normal cascade', () => {
+  const saveSelectors = [
+    '.labor-accounting-page button',
+    '.erp-black-gold .labor-accounting-page button',
+    '.labor-accounting-page .labor-save-draft',
+    '.erp-black-gold .labor-accounting-page .labor-save-draft',
+  ]
+  assert.equal(
+    effectiveLaborDeclaration(saveSelectors, 'background')?.value,
+    'var(--erp-accent-gold-surface)',
+  )
+})
+
+test('labor ordinary hover cascade stays dark', () => {
+  const ordinaryHoverSelectors = [
+    '.labor-accounting-page button',
+    '.labor-accounting-page button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page button',
+    '.erp-black-gold button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page button:hover:not(:disabled)',
+  ]
+  assert.equal(
+    effectiveLaborDeclaration(ordinaryHoverSelectors, 'background')?.value,
+    'var(--erp-bg-hover)',
+  )
+})
+
+test('labor calendar-day hover cascade stays transparent', () => {
+  const ordinaryHoverSelectors = [
+    '.labor-accounting-page button',
+    '.labor-accounting-page button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page button',
+    '.erp-black-gold button:hover:not(:disabled)',
+    '.erp-black-gold .labor-accounting-page button:hover:not(:disabled)',
+  ]
+  const calendarHoverSelectors = [
+    ...ordinaryHoverSelectors,
+    '.labor-accounting-page .labor-month-calendar-day > button',
+    '.labor-accounting-page .labor-month-calendar-day > button:hover',
+    '.erp-black-gold .labor-accounting-page .labor-month-calendar-day > button',
+    '.erp-black-gold .labor-accounting-page .labor-month-calendar-day > button:hover',
+  ]
+  assert.equal(
+    effectiveLaborDeclaration(calendarHoverSelectors, 'background')?.value,
     'transparent',
   )
 })
