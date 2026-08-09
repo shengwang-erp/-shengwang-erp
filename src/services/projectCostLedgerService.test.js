@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import {
+  ProjectCostLedgerServiceError,
+  createProjectCostLedgerService,
+} from './projectCostLedgerService.js'
+
+const LEDGER_ROW = {
+  sourceKey: 'warehouse:SO-1', sourceModule: 'warehouse',
+  sourceDocumentType: 'warehouse_stock_out', sourceDocumentId: 'SO-1',
+  projectId: 'P1', projectName: '第一项目', category: '材料费', date: '2026-08-01',
+  description: '铜管领用', originalAmount: 100, adjustmentAmount: 0,
+  effectiveAmount: 100, operator: '王工', adjusted: false, version: 1,
+  allocations: [{ projectId: 'P1', amount: 100 }], auditEvents: [],
+}
+
+const LEDGER_RESPONSE = {
+  status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', page: 1, pageSize: 20,
+  totalRows: 1, rows: [LEDGER_ROW], categoryTotals: [{ category: '材料费', amount: 100 }],
+  totalAmount: 100, adjustmentTotal: 0, incompleteSources: [],
+}
+
+function clientReturning(result) {
+  const calls = []
+  return {
+    calls,
+    client: {
+      async rpc(name, params) {
+        calls.push([name, params])
+        return typeof result === 'function' ? result(name, params) : result
+      },
+    },
+  }
+}
+
+test('list sends only normalized own filters to the secure ledger RPC', async () => {
+  const { client, calls } = clientReturning({ data: LEDGER_RESPONSE, error: null, status: 200 })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  const filters = { projectId: 'P1', page: 1, pageSize: 20 }
+  const result = await service.list(filters)
+  assert.deepEqual(calls, [['list_project_cost_ledger_secure', {
+    p_filters: { projectId: 'P1', page: 1, pageSize: 20 },
+  }]])
+  assert.equal(result.rows[0].sourceKey, 'warehouse:SO-1')
+  assert.equal(Object.isFrozen(result.rows[0]), true)
+})
+
+test('requests reject unknown, inherited, accessor, sparse, oversized and invalid date input before RPC', async () => {
+  const { client, calls } = clientReturning({ data: LEDGER_RESPONSE, error: null })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  await assert.rejects(service.list({ projectId: 'P1', unknown: true }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list(Object.create({ projectId: 'P1' })), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  const accessor = {}
+  Object.defineProperty(accessor, 'projectId', { enumerable: true, get() { return 'P1' } })
+  await assert.rejects(service.list(accessor), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ keyword: 'x'.repeat(201) }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ sourceModule: 'x'.repeat(101) }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ dateFrom: '2026-02-30' }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ page: 2_147_483_648 }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  const allocations = new Array(1)
+  await assert.rejects(service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '分摊', allocations }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  assert.equal(calls.length, 0)
+})
+
+test('mutation methods emit exact secure RPC argument shapes and normalize returned DTOs', async () => {
+  const { client, calls } = clientReturning((name) => ({
+    data: name === 'create_project_cost_adjustment_secure'
+      ? { sourceKey: 'warehouse:SO-1', version: 2, effectiveAmount: 90 }
+      : name === 'replace_project_cost_allocations_secure'
+        ? { sourceKey: 'warehouse:SO-1', version: 3, allocations: [{ projectId: 'P1', amount: 90 }] }
+        : { sourceKey: 'manual:11111111-1111-4111-8111-111111111111', projectId: 'P1', category: '其他费用', date: '2026-08-10', amount: -20, description: '退费', operator: '王工', reason: '冲销', actorName: '会计', createdAt: '2026-08-10T01:00:00.000Z' },
+    error: null, status: 200,
+  }))
+  const service = createProjectCostLedgerService(client, { configured: true })
+  assert.deepEqual(await service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: -10, reason: '更正' }), {
+    sourceKey: 'warehouse:SO-1', version: 2, effectiveAmount: 90,
+  })
+  assert.deepEqual(await service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 2, reason: '分摊', allocations: [{ projectId: 'P1', amount: 90 }] }), {
+    sourceKey: 'warehouse:SO-1', version: 3, allocations: [{ projectId: 'P1', amount: 90 }],
+  })
+  await service.createManual({ requestId: '11111111-1111-4111-8111-111111111111', entry: { projectId: 'P1', category: '其他费用', date: '2026-08-10', amount: -20, description: '退费', operator: '王工', reason: '冲销' } })
+  assert.deepEqual(calls, [
+    ['create_project_cost_adjustment_secure', { p_source_key: 'warehouse:SO-1', p_expected_version: 1, p_adjustment_amount: -10, p_reason: '更正' }],
+    ['replace_project_cost_allocations_secure', { p_source_key: 'warehouse:SO-1', p_expected_version: 2, p_reason: '分摊', p_allocations: [{ projectId: 'P1', amount: 90 }] }],
+    ['create_manual_project_cost_secure', { p_request_id: '11111111-1111-4111-8111-111111111111', p_entry: { projectId: 'P1', category: '其他费用', date: '2026-08-10', amount: -20, description: '退费', operator: '王工', reason: '冲销' } }],
+  ])
+})
+
+test('listAudit accepts only documented filters and rejects hostile supplier response graphs', async () => {
+  const hostile = { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z' }
+  Object.defineProperty(hostile, 'events', { enumerable: true, get() { return [] } })
+  const { client, calls } = clientReturning({ data: hostile, error: null, status: 200 })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  await assert.rejects(service.listAudit({ projectId: 'P1', dateFrom: '2026-08-01', dateTo: '2026-08-10' }), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+  assert.deepEqual(calls[0], ['list_project_cost_audit_secure', { p_filters: { projectId: 'P1', dateFrom: '2026-08-01', dateTo: '2026-08-10' } }])
+})
+
+test('only documented own SQL hints map to safe errors and supplier details never escape', async () => {
+  const cases = [
+    ['22023', 'PROJECT_COST_LEDGER_INPUT_INVALID'],
+    ['42501', 'PROJECT_COST_LEDGER_ACCESS_DENIED'],
+    ['P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT'],
+    ['22023', 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED'],
+    ['22023', 'PROJECT_COST_LEDGER_SOURCE_MISSING'],
+  ]
+  for (const [sqlState, hint] of cases) {
+    const { client } = clientReturning({ data: null, error: { code: sqlState, hint, message: 'select private_secret from payroll' }, status: 400 })
+    const service = createProjectCostLedgerService(client, { configured: true })
+    await assert.rejects(service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: 1, reason: '修正' }), (error) => {
+      assert.equal(error.code, hint)
+      assert.doesNotMatch(`${error.message} ${JSON.stringify(error)}`, /private_secret|payroll|select/i)
+      return true
+    })
+  }
+  for (const supplierError of [
+    { code: 'XX000', hint: 'PROJECT_COST_LEDGER_VERSION_CONFLICT', message: 'secret SQL' },
+    Object.assign(Object.create({ hint: 'PROJECT_COST_LEDGER_SOURCE_MISSING' }), { code: '22023', message: 'secret payload' }),
+  ]) {
+    const { client } = clientReturning({ data: null, error: supplierError, status: 500 })
+    await assert.rejects(createProjectCostLedgerService(client, { configured: true }).adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: 1, reason: '修正' }), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+  }
+})
+
+test('expired sessions set authInvalid while access denial and unconfigured clients do not', async () => {
+  const expired = clientReturning({ data: null, error: { code: 'PGRST301', message: 'expired token' }, status: 401 })
+  await assert.rejects(createProjectCostLedgerService(expired.client, { configured: true }).list({}), (error) => {
+    assert.equal(error.code, 'AUTH_SESSION_INVALID')
+    assert.equal(error.authInvalid, true)
+    return true
+  })
+  const denied = clientReturning({ data: null, error: { code: '42501', hint: 'PROJECT_COST_LEDGER_ACCESS_DENIED' }, status: 403 })
+  await assert.rejects(createProjectCostLedgerService(denied.client, { configured: true }).list({}), (error) => {
+    assert.equal(error.code, 'PROJECT_COST_LEDGER_ACCESS_DENIED')
+    assert.equal(error.authInvalid, false)
+    return true
+  })
+  const unavailable = clientReturning({ data: LEDGER_RESPONSE, error: null })
+  await assert.rejects(createProjectCostLedgerService(unavailable.client, { configured: false }).list({}), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+  assert.equal(unavailable.calls.length, 0)
+})
+
+test('malformed successful mutation responses fail closed without preserving supplier payloads', async () => {
+  const payload = { sourceKey: 'warehouse:SO-1', version: 2, effectiveAmount: 90, sql: 'private' }
+  const { client } = clientReturning({ data: payload, error: null, status: 200 })
+  await assert.rejects(createProjectCostLedgerService(client, { configured: true }).adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: -10, reason: '更正' }), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+})
+
+test('successful mutation responses must correlate to the normalized request', async () => {
+  const { client } = clientReturning({
+    data: { sourceKey: 'warehouse:OTHER', version: 99, effectiveAmount: 90 },
+    error: null, status: 200,
+  })
+  await assert.rejects(createProjectCostLedgerService(client, { configured: true }).adjust({
+    sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: -10, reason: '更正',
+  }), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+})
+
+function errorCode(code) {
+  return (error) => error instanceof ProjectCostLedgerServiceError && error.code === code
+}
