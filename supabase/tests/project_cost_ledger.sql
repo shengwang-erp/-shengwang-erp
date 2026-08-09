@@ -749,6 +749,42 @@ select throws_ok(
   '42501', 'project cost ledger view permission required',
   'active employee without project-cost view is rejected'
 );
+select is(
+  pg_temp.project_cost_error_hint(
+    $$select public.list_project_cost_ledger_secure('{}')$$
+  ),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'ledger read exposes a safe access-denied hint to an unprivileged employee'
+);
+select is(
+  pg_temp.project_cost_error_hint(
+    $$select public.list_project_cost_audit_secure('{}')$$
+  ),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'audit read exposes a safe access-denied hint to an unprivileged employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:missing', 1, 1.0000, '权限测试'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'adjustment exposes a safe access-denied hint to an unprivileged employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.replace_project_cost_allocations_secure(
+    'warehouse:missing', 1, '权限测试',
+    '[{"projectId":"LEDGER-P-A","amount":1.0000}]'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'allocation exposes a safe access-denied hint to an unprivileged employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000090', '{}'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'manual creation exposes a safe access-denied hint to an unprivileged employee'
+);
 reset role;
 
 select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000003', true);
@@ -757,6 +793,42 @@ select throws_ok(
   $$select public.list_project_cost_ledger_secure('{}')$$,
   '42501', 'active employee required',
   'inactive employee is rejected before permission evaluation'
+);
+select is(
+  pg_temp.project_cost_error_hint(
+    $$select public.list_project_cost_ledger_secure('{}')$$
+  ),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'ledger read exposes a safe access-denied hint to an inactive employee'
+);
+select is(
+  pg_temp.project_cost_error_hint(
+    $$select public.list_project_cost_audit_secure('{}')$$
+  ),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'audit read exposes a safe access-denied hint to an inactive employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:missing', 1, 1.0000, '权限测试'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'adjustment exposes a safe access-denied hint to an inactive employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.replace_project_cost_allocations_secure(
+    'warehouse:missing', 1, '权限测试',
+    '[{"projectId":"LEDGER-P-A","amount":1.0000}]'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'allocation exposes a safe access-denied hint to an inactive employee'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000091', '{}'
+  )$$),
+  'PROJECT_COST_LEDGER_ACCESS_DENIED',
+  'manual creation exposes a safe access-denied hint to an inactive employee'
 );
 reset role;
 

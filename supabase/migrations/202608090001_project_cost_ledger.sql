@@ -946,12 +946,15 @@ declare
   response jsonb;
 begin
   if not public.is_current_employee_active() then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if not public.has_current_permission('module.project_costs.view') then
     raise exception using
       errcode = '42501',
-      message = 'project cost ledger view permission required';
+      message = 'project cost ledger view permission required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   if p_filters is null
@@ -1496,12 +1499,15 @@ declare
   amount_after numeric;
 begin
   if not public.is_current_employee_active() then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if not public.has_current_permission('module.project_costs.update') then
     raise exception using
       errcode = '42501',
-      message = 'project cost ledger update permission required';
+      message = 'project cost ledger update permission required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   normalized_source_key := private.project_cost_safe_text(
@@ -1535,7 +1541,9 @@ begin
     and not employee.must_change_password
     and employee.deleted_at is null;
   if not found then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   select * into source_state
@@ -1622,12 +1630,15 @@ declare
   allocation_total numeric;
 begin
   if not public.is_current_employee_active() then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if not public.has_current_permission('module.project_costs.update') then
     raise exception using
       errcode = '42501',
-      message = 'project cost ledger update permission required';
+      message = 'project cost ledger update permission required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   normalized_source_key := private.project_cost_safe_text(
@@ -1693,7 +1704,9 @@ begin
     and not employee.must_change_password
     and employee.deleted_at is null;
   if not found then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   select * into source_state
@@ -1801,12 +1814,15 @@ declare
   reason_value text;
 begin
   if not public.is_current_employee_active() then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if not public.has_current_permission('module.project_costs.create') then
     raise exception using
       errcode = '42501',
-      message = 'project cost ledger create permission required';
+      message = 'project cost ledger create permission required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   if p_request_id is null
@@ -1861,7 +1877,9 @@ begin
     and not employee.must_change_password
     and employee.deleted_at is null;
   if not found then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
 
   source_key_value := 'manual:' || p_request_id::text;
@@ -1960,11 +1978,14 @@ declare
   response jsonb;
 begin
   if not public.is_current_employee_active() then
-    raise exception using errcode = '42501', message = 'active employee required';
+    raise exception using
+      errcode = '42501', message = 'active employee required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if not public.has_current_permission('module.project_costs.view') then
     raise exception using
-      errcode = '42501', message = 'project cost ledger view permission required';
+      errcode = '42501', message = 'project cost ledger view permission required',
+      hint = 'PROJECT_COST_LEDGER_ACCESS_DENIED';
   end if;
   if p_filters is null
     or pg_catalog.jsonb_typeof(p_filters) <> 'object'

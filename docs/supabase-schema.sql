@@ -5752,9 +5752,11 @@ commit;
 -- Audit rows expose exact before/after values, allocation snapshots, reason,
 -- server actor, and server timestamp. Audit and ledger projectId filters assign
 -- the same safe-text normalization result. Public semantic errors retain their
--- SQLSTATE and publish only documented PROJECT_COST_LEDGER_* HINT codes. All
--- four functions are closed SECURITY DEFINER boundaries with an empty fixed
--- search_path.
+-- SQLSTATE and publish only documented PROJECT_COST_LEDGER_* HINT codes. Every
+-- public ledger RPC active-employee or permission failure retains SQLSTATE
+-- 42501 and publishes PROJECT_COST_LEDGER_ACCESS_DENIED, so clients never parse
+-- permission messages. All public functions are closed SECURITY DEFINER
+-- boundaries with an empty fixed search_path.
 --
 -- The source union normalizes text with the ECMAScript trim character set.
 -- Invalid optional display text falls back to empty without losing the amount;
