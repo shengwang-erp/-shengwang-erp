@@ -57,6 +57,26 @@ test('demo allocations replace the effective view and preserve immutable history
   assert.equal(eventStore.allocations[0].allocations[0].amount, 100)
 })
 
+test('demo assigns the original-amount remainder after stable project sorting like secure SQL', async () => {
+  const sources = demoSources()
+  sources.purchaseRows.find(({ purchaseId }) => purchaseId === 'PO-DIRECT').totalCost = 1
+  const service = createProjectCostLedgerDemoService({
+    getSources: () => sources,
+    eventStore: { adjustments: [], allocations: [], manualEntries: [] },
+  })
+  await service.adjust({ sourceKey: 'purchase:PO-DIRECT', expectedVersion: 1, adjustmentAmount: 2, reason: '调整为三日元' })
+  await service.replaceAllocations({
+    sourceKey: 'purchase:PO-DIRECT', expectedVersion: 2, reason: '三项目均分',
+    allocations: [{ projectId: 'P3', amount: 1 }, { projectId: 'P1', amount: 1 }, { projectId: 'P2', amount: 1 }],
+  })
+  const rows = (await service.list({ sourceModule: 'purchase' })).rows.filter(({ sourceKey }) => sourceKey === 'purchase:PO-DIRECT')
+  assert.deepEqual(rows.map(({ projectId, originalAmount, adjustmentAmount }) => ({ projectId, originalAmount, adjustmentAmount })), [
+    { projectId: 'P1', originalAmount: 0.3333, adjustmentAmount: 0.6667 },
+    { projectId: 'P2', originalAmount: 0.3333, adjustmentAmount: 0.6667 },
+    { projectId: 'P3', originalAmount: 0.3334, adjustmentAmount: 0.6666 },
+  ])
+})
+
 test('demo signed manual entries are idempotent and included immediately', async () => {
   const { service, eventStore } = createDemo()
   const request = { requestId: '11111111-1111-4111-8111-111111111111', entry: { projectId: 'P1', category: '其他费用', date: '2026-08-10', amount: -20, description: '退费', operator: '王工', reason: '冲销' } }
@@ -86,4 +106,31 @@ test('demo rejects unbalanced allocations and missing sources without appending 
   await assert.rejects(service.adjust({ sourceKey: 'warehouse:missing', expectedVersion: 1, adjustmentAmount: 1, reason: '更正' }), (error) => error.code === 'PROJECT_COST_LEDGER_SOURCE_MISSING')
   assert.equal(eventStore.allocations.length, 0)
   assert.equal(eventStore.adjustments.length, 0)
+})
+
+test('demo accepts neutral filters but rejects unknown modules and oversized pages locally', async () => {
+  const { service } = createDemo()
+  assert.equal((await service.list({ sourceModule: '' })).totalRows, 2)
+  assert.equal((await service.list({ sourceModule: 'all' })).totalRows, 2)
+  await assert.rejects(service.list({ sourceModule: 'private_ledger' }), (error) => error.code === 'PROJECT_COST_LEDGER_INPUT_INVALID')
+  await assert.rejects(service.list({ page: 1_000_001 }), (error) => error.code === 'PROJECT_COST_LEDGER_INPUT_INVALID')
+})
+
+test('demo rejects accessor, sparse and forged event stores with safe service errors', async () => {
+  const accessorStore = { allocations: [], manualEntries: [] }
+  Object.defineProperty(accessorStore, 'adjustments', { enumerable: true, get() { throw new Error('private payload') } })
+  assert.throws(() => createProjectCostLedgerDemoService({ getSources: demoSources, eventStore: accessorStore }), (error) => error instanceof ProjectCostLedgerServiceError && error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE')
+
+  const sparseStore = { adjustments: new Array(1), allocations: [], manualEntries: [] }
+  assert.throws(() => createProjectCostLedgerDemoService({ getSources: demoSources, eventStore: sparseStore }), (error) => error instanceof ProjectCostLedgerServiceError && error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE')
+
+  const frozenStore = { adjustments: Object.freeze([]), allocations: [], manualEntries: [] }
+  assert.throws(() => createProjectCostLedgerDemoService({ getSources: demoSources, eventStore: frozenStore }), (error) => error instanceof ProjectCostLedgerServiceError && error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE')
+
+  const eventStore = { adjustments: [], allocations: [], manualEntries: [] }
+  const service = createProjectCostLedgerDemoService({ getSources: demoSources, eventStore })
+  const forged = {}
+  Object.defineProperty(forged, 'sourceKey', { enumerable: true, get() { throw new Error('select private') } })
+  eventStore.adjustments.push(forged)
+  await assert.rejects(service.list({}), (error) => error instanceof ProjectCostLedgerServiceError && error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE' && !/private|select/i.test(error.message))
 })

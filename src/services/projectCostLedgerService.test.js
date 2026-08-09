@@ -56,11 +56,21 @@ test('requests reject unknown, inherited, accessor, sparse, oversized and invali
   await assert.rejects(service.list(accessor), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
   await assert.rejects(service.list({ keyword: 'x'.repeat(201) }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
   await assert.rejects(service.list({ sourceModule: 'x'.repeat(101) }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ sourceModule: 'private_ledger' }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
   await assert.rejects(service.list({ dateFrom: '2026-02-30' }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
-  await assert.rejects(service.list({ page: 2_147_483_648 }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
+  await assert.rejects(service.list({ page: 1_000_001 }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
   const allocations = new Array(1)
   await assert.rejects(service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '分摊', allocations }), errorCode('PROJECT_COST_LEDGER_INPUT_INVALID'))
   assert.equal(calls.length, 0)
+})
+
+test('neutral source filters stay valid while the seven SQL source modules are exact', async () => {
+  const { client, calls } = clientReturning({ data: LEDGER_RESPONSE, error: null, status: 200 })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  for (const sourceModule of ['', 'all', 'purchase', 'warehouse', 'labor', 'vehicle', 'tool', 'operating', 'manual']) {
+    await service.list({ sourceModule })
+  }
+  assert.deepEqual(calls.map(([, args]) => args.p_filters.sourceModule), ['', 'all', 'purchase', 'warehouse', 'labor', 'vehicle', 'tool', 'operating', 'manual'])
 })
 
 test('mutation methods emit exact secure RPC argument shapes and normalize returned DTOs', async () => {
@@ -144,6 +154,40 @@ test('malformed successful mutation responses fail closed without preserving sup
   const payload = { sourceKey: 'warehouse:SO-1', version: 2, effectiveAmount: 90, sql: 'private' }
   const { client } = clientReturning({ data: payload, error: null, status: 200 })
   await assert.rejects(createProjectCostLedgerService(client, { configured: true }).adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: -10, reason: '更正' }), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+})
+
+test('a thrown decorated public service error is reconstructed and cannot leak its message or payload', async () => {
+  const hostile = new ProjectCostLedgerServiceError('PROJECT_COST_LEDGER_VERSION_CONFLICT')
+  hostile.message = 'select secret_salary from payroll'
+  hostile.hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT'
+  hostile.payload = { password: 'private' }
+  const service = createProjectCostLedgerService({ async rpc() { throw hostile } }, { configured: true })
+  await assert.rejects(service.list({}), (error) => {
+    assert.equal(error.code, 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE')
+    assert.equal(error.authInvalid, false)
+    assert.doesNotMatch(`${error.message} ${JSON.stringify(error)}`, /secret_salary|payroll|password|private/i)
+    return true
+  })
+})
+
+test('audit responses enforce event arithmetic, allocation shape and strict ISO instants', async () => {
+  const validAdjustment = {
+    eventType: 'adjustment', sourceKey: 'warehouse:SO-1', sequenceNo: 1,
+    amountBefore: 100, amountAfter: 110, adjustmentAmount: 10,
+    allocationsBefore: null, allocationsAfter: null, reason: '更正', actorName: '会计',
+    createdAt: '2026-08-10T01:00:00.000Z',
+  }
+  const invalidResponses = [
+    { status: 'ready', generatedAt: '1', events: [] },
+    { status: 'ready', generatedAt: '2026-02-30T01:00:00Z', events: [] },
+    { status: 'ready', generatedAt: '2026-08-10T01:00:00Z', events: [{ ...validAdjustment, amountAfter: 111 }] },
+    { status: 'ready', generatedAt: '2026-08-10T01:00:00Z', events: [{ ...validAdjustment, allocationsBefore: [] }] },
+    { status: 'ready', generatedAt: '2026-08-10T01:00:00Z', events: [{ ...validAdjustment, eventType: 'allocation', adjustmentAmount: 0, amountAfter: 100, allocationsBefore: null, allocationsAfter: [{ projectId: 'P1', amount: 100 }] }] },
+  ]
+  for (const response of invalidResponses) {
+    const { client } = clientReturning({ data: response, error: null, status: 200 })
+    await assert.rejects(createProjectCostLedgerService(client, { configured: true }).listAudit({}), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+  }
 })
 
 test('successful mutation responses must correlate to the normalized request', async () => {

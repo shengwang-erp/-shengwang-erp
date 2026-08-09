@@ -4,6 +4,8 @@ import { toSignedFourDecimalUnits } from '../features/cost-accounting/fixedPoint
 const DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const PAGE_SIZES = new Set([20, 50, 100])
+const SOURCE_MODULES = new Set(['', 'all', 'purchase', 'warehouse', 'labor', 'vehicle', 'tool', 'operating', 'manual'])
+const STRICT_INSTANT_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u
 const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const FILTER_FIELDS = ['projectId', 'dateFrom', 'dateTo', 'category', 'sourceModule', 'adjusted', 'keyword', 'page', 'pageSize']
 const AUDIT_FILTER_FIELDS = ['projectId', 'dateFrom', 'dateTo']
@@ -120,7 +122,8 @@ function validDate(value, { input = true } = {}) {
 }
 
 function validInstant(value) {
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) throw unavailableError()
+  if (typeof value !== 'string' || !STRICT_INSTANT_PATTERN.test(value) || !Number.isFinite(Date.parse(value))) throw unavailableError()
+  validDate(value.slice(0, 10), { input: false })
   return value
 }
 
@@ -149,8 +152,9 @@ function normalizeFilters(value = {}, audit = false) {
   const source = objectFields(value, audit ? AUDIT_FILTER_FIELDS : FILTER_FIELDS)
   const result = {}
   for (const key of ['projectId', 'category', 'sourceModule']) {
-    if (Object.hasOwn(source, key)) result[key] = text(source[key], key === 'projectId' ? 500 : 100)
+    if (Object.hasOwn(source, key)) result[key] = text(source[key], key === 'projectId' ? 500 : 100, { empty: true })
   }
+  if (Object.hasOwn(result, 'sourceModule') && !SOURCE_MODULES.has(result.sourceModule)) throw inputError()
   for (const key of ['dateFrom', 'dateTo']) {
     if (Object.hasOwn(source, key)) result[key] = source[key] === '' ? '' : validDate(source[key])
   }
@@ -160,7 +164,7 @@ function normalizeFilters(value = {}, audit = false) {
     result.adjusted = source.adjusted
   }
   if (Object.hasOwn(source, 'keyword')) result.keyword = text(source.keyword, 200, { empty: true })
-  if (Object.hasOwn(source, 'page')) result.page = positiveInteger(source.page, { maximum: 2_147_483_647 })
+  if (Object.hasOwn(source, 'page')) result.page = positiveInteger(source.page, { maximum: 1_000_000 })
   if (Object.hasOwn(source, 'pageSize')) {
     if (!PAGE_SIZES.has(source.pageSize)) throw inputError()
     result.pageSize = source.pageSize
@@ -235,9 +239,17 @@ function normalizeManualResponse(value) {
   })
 }
 
-function normalizeAuditAllocations(value) {
+function normalizeAuditAllocations(value, { required = false } = {}) {
   if (value === null) return null
-  return exactArray(value, { maximum: 100 }).map((item) => normalizeAllocation(item, { input: false }))
+  const allocations = exactArray(value, { maximum: 100 }).map((item) => normalizeAllocation(item, { input: false, nonzero: true }))
+  if ((required && allocations.length === 0) || new Set(allocations.map(({ projectId }) => projectId)).size !== allocations.length) throw unavailableError()
+  return allocations
+}
+
+function moneyUnits(value) {
+  const units = toSignedFourDecimalUnits(value)
+  if (units === null) throw unavailableError()
+  return BigInt(units)
 }
 
 function normalizeAuditResponse(value) {
@@ -246,10 +258,23 @@ function normalizeAuditResponse(value) {
   const events = exactArray(source.events).map((candidate) => {
     const event = exactObject(candidate, ['eventType', 'sourceKey', 'sequenceNo', 'amountBefore', 'amountAfter', 'adjustmentAmount', 'allocationsBefore', 'allocationsAfter', 'reason', 'actorName', 'createdAt'])
     if (!['adjustment', 'allocation'].includes(event.eventType)) throw unavailableError()
+    const amountBefore = money(event.amountBefore, { input: false })
+    const amountAfter = money(event.amountAfter, { input: false })
+    const adjustmentAmount = money(event.adjustmentAmount, { input: false })
+    const allocationsBefore = normalizeAuditAllocations(event.allocationsBefore, { required: event.eventType === 'allocation' })
+    const allocationsAfter = normalizeAuditAllocations(event.allocationsAfter, { required: event.eventType === 'allocation' })
+    if (event.eventType === 'adjustment') {
+      if (allocationsBefore !== null || allocationsAfter !== null || moneyUnits(amountBefore) + moneyUnits(adjustmentAmount) !== moneyUnits(amountAfter)) throw unavailableError()
+    } else {
+      if (allocationsBefore === null || allocationsAfter === null || adjustmentAmount !== 0 || amountBefore !== amountAfter) throw unavailableError()
+      for (const allocations of [allocationsBefore, allocationsAfter]) {
+        const total = allocations.reduce((sum, allocation) => sum + moneyUnits(allocation.amount), 0n)
+        if (total !== moneyUnits(amountBefore)) throw unavailableError()
+      }
+    }
     return {
       eventType: event.eventType, sourceKey: text(event.sourceKey, 600, { input: false }), sequenceNo: positiveInteger(event.sequenceNo, { input: false }),
-      amountBefore: money(event.amountBefore, { input: false }), amountAfter: money(event.amountAfter, { input: false }), adjustmentAmount: money(event.adjustmentAmount, { input: false }),
-      allocationsBefore: normalizeAuditAllocations(event.allocationsBefore), allocationsAfter: normalizeAuditAllocations(event.allocationsAfter),
+      amountBefore, amountAfter, adjustmentAmount, allocationsBefore, allocationsAfter,
       reason: text(event.reason, 2000, { input: false }), actorName: text(event.actorName, 500, { input: false }), createdAt: validInstant(event.createdAt),
     }
   })
@@ -293,7 +318,6 @@ export function createProjectCostLedgerService(client, { configured } = {}) {
     try {
       raw = await client.rpc(name, params)
     } catch (error) {
-      if (error instanceof ProjectCostLedgerServiceError) throw error
       throw safeRemoteError(error)
     }
     let response
@@ -305,8 +329,7 @@ export function createProjectCostLedgerService(client, { configured } = {}) {
     if (response.error !== null) throw safeRemoteError(response.error, response.status)
     try {
       return normalize(response.data)
-    } catch (error) {
-      if (error instanceof ProjectCostLedgerServiceError && error.code === 'AUTH_SESSION_INVALID') throw error
+    } catch {
       throw unavailableError()
     }
   }

@@ -20,6 +20,10 @@ import {
 } from '../../services/projectCostLedgerService.js'
 
 const DEMO_ACTOR = '本地验收会计'
+const STORE_FIELDS = ['adjustments', 'allocations', 'manualEntries']
+const ADJUSTMENT_EVENT_FIELDS = ['eventType', 'sourceKey', 'sequenceNo', 'amountBefore', 'adjustmentAmount', 'amountAfter', 'reason', 'actorName', 'createdAt']
+const ALLOCATION_EVENT_FIELDS = ['eventType', 'sourceKey', 'sequenceNo', 'amountSnapshot', 'allocationsBefore', 'allocations', 'reason', 'actorName', 'createdAt']
+const MANUAL_EVENT_FIELDS = ['requestId', 'entry', 'response']
 
 function freeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -54,13 +58,62 @@ function unavailable() {
   return projectCostLedgerError('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE')
 }
 
-function validateStore(eventStore) {
-  if (!eventStore || typeof eventStore !== 'object' || Array.isArray(eventStore)) throw unavailable()
-  for (const key of ['adjustments', 'allocations', 'manualEntries']) {
-    const descriptor = Object.getOwnPropertyDescriptor(eventStore, key)
-    if (!descriptor || !Object.hasOwn(descriptor, 'value') || !Array.isArray(descriptor.value)) throw unavailable()
+function exactStoredRecord(value, fields) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+      Object.getOwnPropertySymbols(value).length !== 0 ||
+      Object.getOwnPropertyNames(value).length !== fields.length) throw unavailable()
+  const result = {}
+  for (const field of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field)
+    if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, 'value')) throw unavailable()
+    result[field] = descriptor.value
   }
-  return eventStore
+  return result
+}
+
+function denseStoredArray(value) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+      !Object.isExtensible(value) || Object.getOwnPropertyDescriptor(value, 'length')?.writable !== true ||
+      Object.getOwnPropertySymbols(value).length !== 0 ||
+      Object.getOwnPropertyNames(value).length !== value.length + 1) throw unavailable()
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+    if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, 'value')) throw unavailable()
+  }
+  return value
+}
+
+function validateStoredAdjustment(candidate) {
+  const event = exactStoredRecord(candidate, ADJUSTMENT_EVENT_FIELDS)
+  if (event.eventType !== 'adjustment') throw unavailable()
+  projectCostLedgerResponseNormalizers.listAudit({ status: 'ready', generatedAt: eventTime(), events: [auditDto(event)] })
+}
+
+function validateStoredAllocation(candidate) {
+  const event = exactStoredRecord(candidate, ALLOCATION_EVENT_FIELDS)
+  if (event.eventType !== 'allocation') throw unavailable()
+  projectCostLedgerResponseNormalizers.listAudit({ status: 'ready', generatedAt: eventTime(), events: [auditDto(event)] })
+}
+
+function validateStoredManual(candidate) {
+  const event = exactStoredRecord(candidate, MANUAL_EVENT_FIELDS)
+  const request = normalizeProjectCostManualRequest({ requestId: event.requestId, entry: event.entry })
+  const response = projectCostLedgerResponseNormalizers.createManual(event.response)
+  if (response.sourceKey !== `manual:${request.requestId}` ||
+      ['projectId', 'category', 'date', 'amount', 'description', 'operator', 'reason'].some((key) => response[key] !== request.entry[key])) throw unavailable()
+}
+
+function validateStore(eventStore) {
+  try {
+    const source = exactStoredRecord(eventStore, STORE_FIELDS)
+    for (const event of denseStoredArray(source.adjustments)) validateStoredAdjustment(event)
+    for (const event of denseStoredArray(source.allocations)) validateStoredAllocation(event)
+    for (const event of denseStoredArray(source.manualEntries)) validateStoredManual(event)
+    return eventStore
+  } catch {
+    throw unavailable()
+  }
 }
 
 function eventTime() {
@@ -113,6 +166,7 @@ function sourceState(fact, store) {
 }
 
 function currentStates(getSources, store) {
+  validateStore(store)
   return allFacts(getSources, store).map((fact) => sourceState(fact, store))
 }
 
@@ -176,7 +230,8 @@ function buildRows(states) {
       incompleteSources.push(state.fact.sourceKey)
       continue
     }
-    const allocations = state.allocation?.allocations ?? [{ projectId: state.fact.projectId, amount: state.effectiveAmount }]
+    const allocations = [...(state.allocation?.allocations ?? [{ projectId: state.fact.projectId, amount: state.effectiveAmount }])]
+      .sort((left, right) => left.projectId.localeCompare(right.projectId))
     const originalAmounts = allocatedOriginalAmounts(state.fact.originalAmount, state.effectiveAmount, allocations)
     const auditEvents = state.events.map(auditDto)
     for (let index = 0; index < allocations.length; index += 1) {
@@ -224,7 +279,12 @@ export function createProjectCostLedgerDemoService({ getSources, eventStore } = 
       const normalized = normalizeProjectCostLedgerListFilters(filters)
       const page = normalized.page ?? 1
       const pageSize = normalized.pageSize ?? 20
-      const activeFilters = Object.fromEntries(Object.entries(normalized).filter(([key]) => !['page', 'pageSize'].includes(key)))
+      const activeFilters = Object.fromEntries(Object.entries(normalized).filter(([key, value]) => {
+        if (['page', 'pageSize'].includes(key)) return false
+        if (['projectId', 'category', 'sourceModule'].includes(key) && ['', 'all'].includes(value)) return false
+        if (key === 'adjusted' && value === 'all') return false
+        return value !== ''
+      }))
       const built = buildRows(currentStates(getSources, store))
       const filtered = applyLedgerFilters({ rows: built.rows }, activeFilters)
       const summary = summarizeLedgerRows(filtered)
@@ -278,6 +338,7 @@ export function createProjectCostLedgerDemoService({ getSources, eventStore } = 
     },
 
     async createManual(request) {
+      validateStore(store)
       const value = normalizeProjectCostManualRequest(request)
       const existing = store.manualEntries.find(({ requestId }) => requestId === value.requestId)
       if (existing) {
