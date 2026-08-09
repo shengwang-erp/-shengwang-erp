@@ -265,3 +265,21 @@ test('shared legacy form groups and readonly fields use black-gold surfaces', ()
     'var(--erp-accent-gold)',
   )
 })
+
+test('page-specific light surfaces are overridden inside the authenticated theme', () => {
+  const expected = new Map([
+    ['.erp-black-gold .personnel-summary > div', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .personnel-empty', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .personnel-sensitive-section', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .personnel-field input[readonly]', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .labor-accounting-page .labor-loading-panel', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .labor-accounting-page .labor-checkbox-filter', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .attendance-page .attendance-back', 'var(--erp-accent-gold-surface)'],
+    ['.erp-black-gold .attendance-page .attendance-photo-control', 'var(--erp-bg-surface)'],
+    ['.erp-black-gold .project-page .project-location-picker', 'var(--erp-bg-elevated)'],
+    ['.erp-black-gold .project-page .project-location-coordinates', 'var(--erp-bg-surface)'],
+  ])
+  for (const [selector, background] of expected) {
+    assert.equal(declarationsFor(selector).get('background'), background, selector)
+  }
+})

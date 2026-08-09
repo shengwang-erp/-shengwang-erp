@@ -426,6 +426,39 @@
   background: var(--erp-bg-elevated);
 }
 
+.erp-black-gold .project-page .project-location-picker {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .project-page .project-location-actions,
+.erp-black-gold .project-page .project-location-attribution {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .project-page .project-location-action {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .project-page .project-location-coordinates {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-page .project-location-resolved-address {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .project-page .project-location-attribution a {
+  color: var(--erp-accent-gold-soft);
+}
+
 .erp-black-gold .project-page .project-form-error {
   border-color: var(--erp-status-danger);
   color: var(--erp-status-danger);
@@ -594,6 +627,242 @@
   border-color: var(--erp-border-subtle);
   color: var(--erp-text-primary);
   background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .personnel-summary > div,
+.erp-black-gold .personnel-empty {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .personnel-summary strong,
+.erp-black-gold .personnel-section-heading h2 {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .personnel-summary span,
+.erp-black-gold .personnel-section-heading span {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .personnel-sensitive-section {
+  border-color: var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .personnel-field input,
+.erp-black-gold .personnel-field select,
+.erp-black-gold .personnel-field textarea {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .personnel-field input[readonly] {
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .personnel-generated-number {
+  border-color: var(--erp-border-gold-muted);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .personnel-generated-number span {
+  color: var(--erp-accent-gold-soft);
+}
+
+.erp-black-gold .personnel-generated-number strong {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .labor-accounting-page {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .labor-accounting-page input,
+.erp-black-gold .labor-accounting-page select,
+.erp-black-gold .labor-accounting-page textarea {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-checkbox-filter {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-loading-panel {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-board-toolbar,
+.erp-black-gold .labor-accounting-page .labor-summary-card,
+.erp-black-gold .labor-accounting-page .labor-daily-filters,
+.erp-black-gold .labor-accounting-page .labor-all-employees,
+.erp-black-gold .labor-accounting-page .labor-exception-queue,
+.erp-black-gold .labor-accounting-page .labor-employee-card:not([data-has-issues='true']),
+.erp-black-gold .labor-accounting-page .labor-dialog-section,
+.erp-black-gold .labor-accounting-page .labor-report-heading,
+.erp-black-gold .labor-accounting-page .labor-report-filters,
+.erp-black-gold .labor-accounting-page .labor-report-summary > article,
+.erp-black-gold .labor-accounting-page .labor-project-summary > article,
+.erp-black-gold .labor-accounting-page .labor-report-table-card,
+.erp-black-gold .labor-accounting-page .labor-report-card,
+.erp-black-gold .labor-accounting-page .labor-settings-card,
+.erp-black-gold .labor-accounting-page .labor-report-mobile-card,
+.erp-black-gold .labor-accounting-page .labor-detail-loading-dialog {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-fact-summary > div,
+.erp-black-gold .labor-accounting-page .labor-salary-summary > section,
+.erp-black-gold .labor-accounting-page .labor-salary-summary section > dl > div,
+.erp-black-gold .labor-accounting-page .labor-fact-sessions > article,
+.erp-black-gold .labor-accounting-page .labor-session-events > div,
+.erp-black-gold .labor-accounting-page .labor-allocation-list > article,
+.erp-black-gold .labor-accounting-page .labor-payroll-counts > div,
+.erp-black-gold .labor-accounting-page .labor-payroll-money-facts > div,
+.erp-black-gold .labor-accounting-page .labor-report-mobile-card > dl > div,
+.erp-black-gold .labor-accounting-page .labor-composition-list > article,
+.erp-black-gold .labor-accounting-page .labor-settings-actions {
+  border-color: var(--erp-border-subtle);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-status-table th,
+.erp-black-gold .labor-accounting-page .labor-status-table td,
+.erp-black-gold .labor-accounting-page .labor-report-table th,
+.erp-black-gold .labor-accounting-page .labor-report-table td {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .labor-accounting-page .labor-status-table thead th,
+.erp-black-gold .labor-accounting-page .labor-report-table thead th {
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-status-table tbody tr:not([data-has-issues='true']) > *,
+.erp-black-gold .labor-accounting-page .labor-report-table tbody > tr > * {
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-status-table tbody tr[data-has-issues='true'] > *,
+.erp-black-gold .labor-accounting-page .labor-employee-card[data-has-issues='true'],
+.erp-black-gold .labor-accounting-page [data-tone='danger'] {
+  border-color: var(--erp-status-danger);
+  color: var(--erp-status-danger);
+  background: var(--erp-status-danger-surface);
+}
+
+.erp-black-gold .labor-accounting-page [data-tone='warning'] {
+  border-color: var(--erp-status-warning);
+  color: var(--erp-status-warning);
+  background: var(--erp-status-warning-surface);
+}
+
+.erp-black-gold .labor-accounting-page [data-tone='success'],
+.erp-black-gold .labor-accounting-page [data-tone='locked'] {
+  border-color: var(--erp-status-success);
+  color: var(--erp-status-success);
+  background: var(--erp-status-success-surface);
+}
+
+.erp-black-gold .labor-accounting-page [data-tone='working'] {
+  border-color: var(--erp-status-info);
+  color: var(--erp-status-info);
+  background: var(--erp-status-info-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-resolution-options label,
+.erp-black-gold .labor-accounting-page .labor-weekday-options label {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-resolution-options label:has(input:checked),
+.erp-black-gold .labor-accounting-page .labor-weekday-options label:has(input:checked) {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .labor-accounting-page .labor-queue-empty,
+.erp-black-gold .labor-accounting-page .labor-empty-state {
+  color: var(--erp-text-muted);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .labor-accounting-page .labor-empty-inline,
+.erp-black-gold .labor-accounting-page .labor-month-calendar-unavailable {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .attendance-page .attendance-back {
+  border-color: var(--erp-border-gold-muted);
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .attendance-page .attendance-view-tabs button,
+.erp-black-gold .attendance-page .attendance-work-point-add,
+.erp-black-gold .attendance-page .attendance-work-point-save,
+.erp-black-gold .attendance-page .attendance-location-start,
+.erp-black-gold .attendance-page .attendance-location-submit,
+.erp-black-gold .attendance-page .attendance-location-retry,
+.erp-black-gold .attendance-page .attendance-location-relocate,
+.erp-black-gold .attendance-page .attendance-photo-open,
+.erp-black-gold .attendance-page .attendance-photo-retry,
+.erp-black-gold .attendance-page .attendance-record-more,
+.erp-black-gold .attendance-page .attendance-retry-refresh,
+.erp-black-gold .attendance-page .attendance-photo-modal-close,
+.erp-black-gold .attendance-page .attendance-action-row button,
+.erp-black-gold .attendance-page .attendance-photo-action,
+.erp-black-gold .attendance-page .attendance-project-select {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .attendance-page .attendance-view-tabs button[aria-selected='true'] {
+  border-color: var(--erp-accent-gold);
+  color: var(--erp-bg-canvas);
+  background: var(--erp-accent-gold);
+}
+
+.erp-black-gold .attendance-page .attendance-session-card,
+.erp-black-gold .attendance-page .attendance-work-point-card,
+.erp-black-gold .attendance-page .attendance-record-card,
+.erp-black-gold .attendance-page .attendance-active-session,
+.erp-black-gold .attendance-page .attendance-history,
+.erp-black-gold .attendance-page .attendance-record-viewer,
+.erp-black-gold .attendance-page .attendance-photo-control {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .attendance-page .attendance-work-point-input,
+.erp-black-gold .attendance-page .attendance-work-point-textarea,
+.erp-black-gold .attendance-page .attendance-project-select,
+.erp-black-gold .attendance-page .attendance-record-filters input,
+.erp-black-gold .attendance-page .attendance-record-filters select,
+.erp-black-gold .attendance-page .attendance-location-reason textarea,
+.erp-black-gold .attendance-page .attendance-photo-input {
+  border-color: var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
 }
 
 .erp-black-gold .labor-tabs,
