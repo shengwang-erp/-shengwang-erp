@@ -502,6 +502,10 @@
   background: var(--erp-bg-elevated);
 }
 
+.erp-black-gold .labor-accounting-page .labor-month-calendar-day > button {
+  background: transparent;
+}
+
 .erp-black-gold .primary-button,
 .erp-black-gold .back-button,
 .erp-black-gold .ghost-button,

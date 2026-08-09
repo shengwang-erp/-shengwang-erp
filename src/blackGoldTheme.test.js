@@ -298,3 +298,12 @@ test('reviewed attendance and labor controls, dialogs, and calendars use dark su
     assert.equal(declarationsFor(selector).get('background'), background, selector)
   }
 })
+
+test('labor calendar-day buttons remain transparent over semantic parent surfaces', () => {
+  assert.equal(
+    declarationsFor(
+      '.erp-black-gold .labor-accounting-page .labor-month-calendar-day > button',
+    ).get('background'),
+    'transparent',
+  )
+})
