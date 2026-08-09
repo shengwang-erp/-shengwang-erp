@@ -1066,6 +1066,83 @@ select ok(
 );
 reset role;
 
+insert into public.purchase_records(record_key, payload, status) values (
+  'LEDGER-ROUND3-PO-PROJECT', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-ROUND3-PO-PROJECT',
+    'purchaseDate', '2099-02-05', 'itemName', '项目ID类型错误采购',
+    'totalCost', 101, 'projectId', 17, 'projectName', '甲项目',
+    'purchaseStatus', '正常'
+  ), 'active'
+);
+insert into public.tool_responsibility_records(record_key, payload, status) values
+  ('LEDGER-ROUND3-TOOL-TYPE', pg_catalog.jsonb_build_object(
+    'responsibilityRecordId', 'LEDGER-ROUND3-TOOL-TYPE',
+    'recordDate', '2099-02-05', 'issueType', 17, 'repairCost', 102,
+    'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
+  ), 'active'),
+  ('LEDGER-ROUND3-TOOL-PROJECT', pg_catalog.jsonb_build_object(
+    'responsibilityRecordId', 'LEDGER-ROUND3-TOOL-PROJECT',
+    'recordDate', '2099-02-05', 'issueType', '损坏', 'repairCost', 103,
+    'projectId', 17, 'projectName', '甲项目'
+  ), 'active');
+insert into public.project_cost_records(record_key, payload, status) values
+  ('LEDGER-ROUND3-LEGACY-SOURCE', pg_catalog.jsonb_build_object(
+    'costRecordId', 'LEDGER-ROUND3-LEGACY-SOURCE',
+    'date', '2099-02-05', 'amount', 104, 'costType', '其他费用',
+    'sourceType', 17, 'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
+  ), 'active'),
+  ('LEDGER-ROUND3-LEGACY-PROJECT', pg_catalog.jsonb_build_object(
+    'costRecordId', 'LEDGER-ROUND3-LEGACY-PROJECT',
+    'date', '2099-02-05', 'amount', 105, 'costType', '其他费用',
+    'projectId', 17, 'projectName', '甲项目'
+  ), 'active');
+
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table round3_malformed_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-02-05","dateTo":"2099-02-05","pageSize":20}'
+) payload;
+reset role;
+
+select ok(
+  (select (payload->>'totalRows')::integer = 0
+      and (payload->>'totalAmount')::numeric = 0
+      and payload->'rows' = '[]'::jsonb
+   from round3_malformed_snapshot),
+  'malformed required supplier fields never enter rows or summary totals'
+);
+select ok(
+  (select payload->'incompleteSources'
+      @> '["purchase:LEDGER-ROUND3-PO-PROJECT"]'::jsonb
+   from round3_malformed_snapshot),
+  'purchase with malformed projectId is marked incomplete'
+);
+select ok(
+  (select payload->'incompleteSources'
+      @> '["tool-responsibility:LEDGER-ROUND3-TOOL-TYPE"]'::jsonb
+   from round3_malformed_snapshot),
+  'tool cost with wrong-type issueType is marked incomplete'
+);
+select ok(
+  (select payload->'incompleteSources'
+      @> '["tool-responsibility:LEDGER-ROUND3-TOOL-PROJECT"]'::jsonb
+   from round3_malformed_snapshot),
+  'tool cost with malformed projectId is marked incomplete'
+);
+select ok(
+  (select payload->'incompleteSources'
+      @> '["legacy-manual:LEDGER-ROUND3-LEGACY-SOURCE"]'::jsonb
+   from round3_malformed_snapshot),
+  'legacy cost with wrong-type sourceType is marked incomplete'
+);
+select ok(
+  (select payload->'incompleteSources'
+      @> '["legacy-manual:LEDGER-ROUND3-LEGACY-PROJECT"]'::jsonb
+   from round3_malformed_snapshot),
+  'legacy cost with malformed projectId is marked incomplete'
+);
+
 insert into public.projects(record_key, payload, status) values (
   'LEDGER-P-TEXT-BAD',
   '{"projectId":"LEDGER-P-TEXT-BAD","projectName":"constructor"}',

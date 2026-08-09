@@ -466,7 +466,11 @@ as $$
       'purchase'::text,
       'purchase_order'::text,
       purchase.record_key,
-      purchase.payload->>'projectId',
+      case
+        when pg_catalog.jsonb_typeof(purchase.payload->'projectId') = 'string'
+          then purchase.payload->>'projectId'
+        else null
+      end,
       coalesce(private.project_cost_safe_text(
         purchase.payload->'projectName', true, 500
       ), ''),
@@ -493,12 +497,6 @@ as $$
     ) parsed
     where purchase.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(purchase.payload)
-      and pg_catalog.jsonb_typeof(purchase.payload->'projectId') = 'string'
-      and purchase.payload->>'projectId' = pg_catalog.btrim(purchase.payload->>'projectId')
-      and pg_catalog.char_length(purchase.payload->>'projectId') between 1 and 500
-      and purchase.payload->>'projectId' not in (
-        '__proto__', 'constructor', 'prototype'
-      )
       and parsed.cost_date is not null
       and parsed.amount_value is not null
       and parsed.amount_value > 0
@@ -683,9 +681,22 @@ as $$
     select
       'tool-responsibility:' || responsibility.record_key,
       'tool'::text,
-      'tool_responsibility'::text,
+      case
+        when responsibility.payload ? 'issueType'
+          and pg_catalog.jsonb_typeof(
+            responsibility.payload->'issueType'
+          ) <> 'string'
+          then null
+        else 'tool_responsibility'::text
+      end,
       responsibility.record_key,
-      responsibility.payload->>'projectId',
+      case
+        when pg_catalog.jsonb_typeof(
+          responsibility.payload->'projectId'
+        ) = 'string'
+          then responsibility.payload->>'projectId'
+        else null
+      end,
       coalesce(private.project_cost_safe_text(
         responsibility.payload->'projectName', true, 500
       ), ''),
@@ -718,15 +729,6 @@ as $$
     ) parsed
     where responsibility.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(responsibility.payload)
-      and private.project_cost_text_fields_valid(responsibility.payload, array[
-        'issueType'
-      ]::text[])
-      and pg_catalog.jsonb_typeof(responsibility.payload->'projectId') = 'string'
-      and responsibility.payload->>'projectId'
-        = pg_catalog.btrim(responsibility.payload->>'projectId')
-      and pg_catalog.char_length(
-        responsibility.payload->>'projectId'
-      ) between 1 and 500
       and parsed.cost_date is not null
       and parsed.amount_value is not null
       and parsed.amount_value > 0
@@ -780,9 +782,18 @@ as $$
     select
       'legacy-manual:' || cost.record_key,
       'manual'::text,
-      'manual_project_cost'::text,
+      case
+        when cost.payload ? 'sourceType'
+          and pg_catalog.jsonb_typeof(cost.payload->'sourceType') <> 'string'
+          then null
+        else 'manual_project_cost'::text
+      end,
       cost.record_key,
-      cost.payload->>'projectId',
+      case
+        when pg_catalog.jsonb_typeof(cost.payload->'projectId') = 'string'
+          then cost.payload->>'projectId'
+        else null
+      end,
       coalesce(private.project_cost_safe_text(
         cost.payload->'projectName', true, 500
       ), ''),
@@ -809,16 +820,14 @@ as $$
         private.project_cost_safe_date(cost.payload->'date') cost_date
     ) parsed
     where cost.status not in ('deleted', 'void')
-      and private.project_cost_text_fields_valid(cost.payload, array[
-        'sourceType'
-      ]::text[])
-      and coalesce(cost.payload->>'sourceType', '') not in (
-        'warehouse', 'warehouseReversal'
+      and (
+        not cost.payload ? 'sourceType'
+        or pg_catalog.jsonb_typeof(cost.payload->'sourceType') <> 'string'
+        or cost.payload->>'sourceType' not in (
+          'warehouse', 'warehouseReversal'
+        )
       )
       and not private.project_cost_payload_cancelled(cost.payload)
-      and pg_catalog.jsonb_typeof(cost.payload->'projectId') = 'string'
-      and cost.payload->>'projectId' = pg_catalog.btrim(cost.payload->>'projectId')
-      and pg_catalog.char_length(cost.payload->>'projectId') between 1 and 500
       and parsed.cost_date is not null
       and parsed.amount_value is not null
       and parsed.amount_value <> 0

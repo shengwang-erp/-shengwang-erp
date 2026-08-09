@@ -5721,7 +5721,10 @@ commit;
 -- The source union normalizes text with the ECMAScript trim character set.
 -- Invalid optional display text falls back to empty without losing the amount;
 -- invalid required identity/category text is excluded from rows and surfaced by
--- a safe incompleteSources key. Warehouse purchase de-duplication is derived
+-- a safe incompleteSources key. Malformed required purchase project IDs, tool
+-- issue types/project IDs, and legacy source types/project IDs reach this same
+-- invalid-source path after amount/date candidate validation instead of being
+-- filtered before the source union. Warehouse purchase de-duplication is derived
 -- only from the same strictly validated WAREHOUSE-SO/MWO/SR/WR facts (identity,
 -- type, costRecordId, UUID provenance arrays, project/date/amount).
 -- A valid zero-value MWO still contributes authoritative purchase keys, while
