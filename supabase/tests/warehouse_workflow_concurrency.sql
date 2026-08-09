@@ -58,6 +58,46 @@ $$;
 set search_path = public, auth, extensions;
 select no_plan();
 
+create or replace function pg_temp.wf_result_text(p_connection text)
+returns text
+language plpgsql
+as $$
+declare
+  result_value text;
+begin
+  select response.result into result_value
+  from extensions.dblink_get_result(p_connection) response(result text);
+  -- Consume libpq's terminal empty result before sending COMMIT/ROLLBACK on
+  -- this asynchronous connection.
+  perform 1
+  from extensions.dblink_get_result(p_connection) response(result text);
+  return result_value;
+end;
+$$;
+
+create or replace function pg_temp.wf_wait_for_marker(p_marker bigint)
+returns boolean
+language plpgsql
+as $$
+begin
+  for attempt in 1..500 loop
+    if exists (
+      select 1
+      from pg_catalog.pg_locks
+      where locktype = 'advisory'
+        and not granted
+        and classid = 0
+        and objid = p_marker::oid
+        and pid <> pg_backend_pid()
+    ) then
+      return true;
+    end if;
+    perform pg_sleep(0.01);
+  end loop;
+  return false;
+end;
+$$;
+
 insert into auth.users(
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
   raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -349,20 +389,24 @@ select extensions.dblink_exec('wf_catalog', 'set request.jwt.claim.role = ''auth
 select extensions.dblink_exec('wf_catalog', 'set request.jwt.claim.sub = ''de500000-0000-4000-8000-000000000001''');
 select extensions.dblink_exec('wf_catalog', 'set role authenticated');
 select extensions.dblink_send_query('wf_submit', 'select public.task1_pause_stock_out(90108001)');
-select pg_sleep(0.2);
+do $$begin
+  if not pg_temp.wf_wait_for_marker(90108001) then
+    raise exception 'stock-out submit race did not reach the marker lock';
+  end if;
+end$$;
 select extensions.dblink_send_query('wf_catalog', 'select public.task1_variant_deactivation_error()');
 select pg_sleep(0.2);
 select is(extensions.dblink_is_busy('wf_submit'), 1, 'submission is paused while holding the variant resource lock');
 select is(extensions.dblink_is_busy('wf_catalog'), 1, 'concurrent variant deactivation waits for submission');
 select pg_advisory_unlock(90108001);
 select is(
-  (select result from extensions.dblink_get_result('wf_submit') as response(result text)),
+  pg_temp.wf_result_text('wf_submit'),
   'submitted',
   'pending stock-out finishes before the waiting catalog mutation'
 );
 select extensions.dblink_exec('wf_submit', 'commit');
 select is(
-  (select result from extensions.dblink_get_result('wf_catalog') as response(result text)),
+  pg_temp.wf_result_text('wf_catalog'),
   'WAREHOUSE_VARIANT_HAS_PENDING_DOCUMENT',
   'waiting variant deactivation rechecks and is refused after pending submission commits'
 );
@@ -378,20 +422,24 @@ select extensions.dblink_exec('wf_submit', 'set request.jwt.claim.role = ''authe
 select extensions.dblink_exec('wf_submit', 'set request.jwt.claim.sub = ''de500000-0000-4000-8000-000000000001''');
 select extensions.dblink_exec('wf_submit', 'set role authenticated');
 select extensions.dblink_send_query('wf_catalog', 'select public.task1_pause_location_deactivation(90108002)');
-select pg_sleep(0.2);
+do $$begin
+  if not pg_temp.wf_wait_for_marker(90108002) then
+    raise exception 'location deactivation race did not reach the marker lock';
+  end if;
+end$$;
 select extensions.dblink_send_query('wf_submit', 'select public.task1_receipt_submission_error()');
 select pg_sleep(0.2);
 select is(extensions.dblink_is_busy('wf_catalog'), 1, 'catalog transaction is paused after deactivating the location');
 select is(extensions.dblink_is_busy('wf_submit'), 1, 'receipt submission waits for the location resource lock');
 select pg_advisory_unlock(90108002);
 select is(
-  (select result from extensions.dblink_get_result('wf_catalog') as response(result text)),
+  pg_temp.wf_result_text('wf_catalog'),
   'deactivated',
   'location deactivation completes first'
 );
 select extensions.dblink_exec('wf_catalog', 'commit');
 select is(
-  (select result from extensions.dblink_get_result('wf_submit') as response(result text)),
+  pg_temp.wf_result_text('wf_submit'),
   'WAREHOUSE_RESOURCE_INACTIVE',
   'waiting receipt rechecks the location and fails closed without a pending write'
 );
@@ -424,7 +472,11 @@ select extensions.dblink_send_query(
     't3-race-receipt-confirm', 90108003
   )$$
 );
-select pg_sleep(0.2);
+do $$begin
+  if not pg_temp.wf_wait_for_marker(90108003) then
+    raise exception 'receipt confirmation race did not reach the marker lock';
+  end if;
+end$$;
 select extensions.dblink_send_query(
   'wf_catalog',
   $$select public.confirm_warehouse_receipt_secure(
@@ -438,13 +490,13 @@ select is(extensions.dblink_is_busy('wf_submit'), 1, 'first receipt confirmation
 select is(extensions.dblink_is_busy('wf_catalog'), 1, 'concurrent exact receipt confirmation waits instead of double-posting');
 select pg_advisory_unlock(90108003);
 select is(
-  (select result from extensions.dblink_get_result('wf_submit') response(result text)),
+  pg_temp.wf_result_text('wf_submit'),
   'confirmed',
   'first receipt confirmation completes'
 );
 select extensions.dblink_exec('wf_submit', 'commit');
 select is(
-  (select result from extensions.dblink_get_result('wf_catalog') response(result text)),
+  pg_temp.wf_result_text('wf_catalog'),
   'confirmed',
   'waiting exact receipt retry returns the authoritative confirmed document'
 );
@@ -481,7 +533,11 @@ select extensions.dblink_send_query(
     't3-race-edit-confirm', 90108004
   )$$
 );
-select pg_sleep(0.2);
+do $$begin
+  if not pg_temp.wf_wait_for_marker(90108004) then
+    raise exception 'purchase cost race did not reach the marker lock';
+  end if;
+end$$;
 select extensions.dblink_send_query(
   'wf_catalog',
   $$select public.task3_edit_purchase_cost('PO-T3-RACE-EDIT', 999)$$
@@ -491,13 +547,13 @@ select is(extensions.dblink_is_busy('wf_submit'), 1, 'receipt confirmation pause
 select is(extensions.dblink_is_busy('wf_catalog'), 1, 'concurrent purchase edit waits on receipt purchase row without deadlock');
 select pg_advisory_unlock(90108004);
 select is(
-  (select result from extensions.dblink_get_result('wf_submit') response(result text)),
+  pg_temp.wf_result_text('wf_submit'),
   'confirmed',
   'receipt confirmation wins the purchase serialization point'
 );
 select extensions.dblink_exec('wf_submit', 'commit');
 select is(
-  (select result from extensions.dblink_get_result('wf_catalog') response(result text)),
+  pg_temp.wf_result_text('wf_catalog'),
   'edited',
   'waiting purchase edit completes after receipt confirmation commits'
 );
@@ -533,7 +589,11 @@ select extensions.dblink_send_query(
     't3-race-stock-confirm-a', 90108005
   )$$
 );
-select pg_sleep(0.2);
+do $$begin
+  if not pg_temp.wf_wait_for_marker(90108005) then
+    raise exception 'stock confirmation race did not reach the marker lock';
+  end if;
+end$$;
 select extensions.dblink_send_query(
   'wf_catalog',
   $$select public.task3_stock_confirmation_error(
@@ -547,13 +607,13 @@ select is(extensions.dblink_is_busy('wf_submit'), 1, 'first stock-out confirmati
 select is(extensions.dblink_is_busy('wf_catalog'), 1, 'second stock-out confirmation waits for the same stock resources');
 select pg_advisory_unlock(90108005);
 select is(
-  (select result from extensions.dblink_get_result('wf_submit') response(result text)),
+  pg_temp.wf_result_text('wf_submit'),
   'confirmed',
   'first stock-out consumes both available units'
 );
 select extensions.dblink_exec('wf_submit', 'commit');
 select is(
-  (select result from extensions.dblink_get_result('wf_catalog') response(result text)),
+  pg_temp.wf_result_text('wf_catalog'),
   'WAREHOUSE_INSUFFICIENT_STOCK',
   'waiting concurrent stock-out fails closed after authoritative re-read'
 );

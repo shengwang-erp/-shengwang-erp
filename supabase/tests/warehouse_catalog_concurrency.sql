@@ -392,9 +392,28 @@ language plpgsql
 as $$
 declare
   result_count integer;
+  drained_count integer;
+  drain_calls integer;
 begin
-  select count(*)::integer into result_count
-  from extensions.dblink_get_result(p_connection, p_fail_on_error) result(value jsonb);
+  for attempt in 1..1000 loop
+    exit when extensions.dblink_is_busy(p_connection) = 0;
+    perform pg_sleep(0.01);
+  end loop;
+  if extensions.dblink_is_busy(p_connection) <> 0 then
+    raise exception 'concurrent catalog query did not finish before result drain';
+  end if;
+  result_count := 0;
+  drain_calls := 0;
+  loop
+    select count(*)::integer into drained_count
+    from extensions.dblink_get_result(p_connection, p_fail_on_error) result(value jsonb);
+    drain_calls := drain_calls + 1;
+    result_count := result_count + drained_count;
+    -- libpq returns an error result as an empty row set.  One further
+    -- dblink_get_result call is still required to consume the terminal result
+    -- before COMMIT/ROLLBACK can be sent on the connection.
+    exit when drained_count = 0 and drain_calls >= 2;
+  end loop;
   return result_count;
 end;
 $$;

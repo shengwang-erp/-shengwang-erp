@@ -891,12 +891,12 @@ select is(
   'stock-out headers cannot be physically deleted'
 );
 select is(
-  pg_temp.task1_deferred_error(format(
+  pg_temp.task1_error_hint(format(
     'update public.warehouse_receipt_lines set unit_cost=null where receipt_id=%L',
     (select payload->>'id' from saved_receipt)
   )),
-  '23514',
-  'confirmed receipt lines require both confirmed quantity and cost'
+  'WAREHOUSE_OPERATION_IMMUTABLE',
+  'confirmed receipt lines are immutable after the operation is posted'
 );
 select is(
   private.warehouse_variant_has_pending_documents('d0300000-0000-4000-8000-000000000001'),
@@ -1012,12 +1012,12 @@ select throws_ok(
   'pending line quantities must be positive'
 );
 
-select throws_ok(
-  $$update public.warehouse_receipts
+select is(
+  pg_temp.task1_error_hint($$update public.warehouse_receipts
       set confirmed_at = null
-      where id = (select (payload->>'id')::uuid from saved_receipt)$$,
-  '23514', null,
-  'terminal headers require a consistent audit tuple rather than a missing confirmation time'
+      where id = (select (payload->>'id')::uuid from saved_receipt)$$),
+  'WAREHOUSE_OPERATION_IMMUTABLE',
+  'terminal receipt audit fields are immutable after confirmation'
 );
 
 insert into public.warehouse_stock_out_requests(
@@ -2093,6 +2093,10 @@ select
   'active'
 from task4_atomic_conflict_out;
 select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+create temporary table task4_atomic_balance_before as
+select quantity from public.warehouse_batch_locations
+where batch_id = 'f1400000-0000-4000-8000-000000000001'
+  and location_id = 'e1100000-0000-4000-8000-000000000001';
 set local role authenticated;
 select is(
   pg_temp.task1_error_hint(format(
@@ -2120,7 +2124,7 @@ select is(
   (select quantity from public.warehouse_batch_locations
    where batch_id = 'f1400000-0000-4000-8000-000000000001'
      and location_id = 'e1100000-0000-4000-8000-000000000001'),
-  2.000::numeric,
+  (select quantity from task4_atomic_balance_before),
   'project-cost insert failure rolls the FIFO balance back exactly'
 );
 select is(
@@ -2129,10 +2133,8 @@ select is(
   0::bigint,
   'project-cost insert failure leaves no partial stock movement'
 );
-delete from public.warehouse_batch_locations
+update public.warehouse_batch_locations set quantity = 0
 where batch_id = 'f1400000-0000-4000-8000-000000000001';
-delete from public.warehouse_batches
-where id = 'f1400000-0000-4000-8000-000000000001';
 select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
 set local role authenticated;
 select is(
