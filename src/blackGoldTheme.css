@@ -373,12 +373,33 @@
   box-shadow: var(--erp-shadow-card);
 }
 
-.erp-black-gold .form-group,
 .erp-black-gold .personnel-fieldset,
 .erp-black-gold .record-header,
 .erp-black-gold .section-heading,
 .erp-black-gold .labor-section-heading {
   border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .form-group {
+  border: 1px solid var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .form-group legend {
+  border: 1px solid var(--erp-border-gold-muted);
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-bg-canvas);
+}
+
+.erp-black-gold .field span {
+  color: var(--erp-accent-gold);
+}
+
+.erp-black-gold .readonly-field strong {
+  border: 1px solid var(--erp-border-subtle);
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
 }
 
 .erp-black-gold .project-page .project-form-heading {

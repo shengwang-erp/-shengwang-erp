@@ -244,3 +244,24 @@ test('Home and mobile surfaces consume shared route and access sources', () => {
   assert.match(appSource, /rootClassName="tool-management-page"/u)
   assert.match(appSource, /className="inventory-section"/u)
 })
+
+test('shared legacy form groups and readonly fields use black-gold surfaces', () => {
+  const formGroup = declarationsFor('.erp-black-gold .form-group')
+  assert.equal(formGroup.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(formGroup.get('border'), '1px solid var(--erp-border-subtle)')
+  assert.equal(formGroup.get('color'), 'var(--erp-text-primary)')
+
+  const legend = declarationsFor('.erp-black-gold .form-group legend')
+  assert.equal(legend.get('color'), 'var(--erp-accent-gold-soft)')
+  assert.equal(legend.get('background'), 'var(--erp-bg-canvas)')
+
+  const readonly = declarationsFor('.erp-black-gold .readonly-field strong')
+  assert.equal(readonly.get('color'), 'var(--erp-text-primary)')
+  assert.equal(readonly.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(readonly.get('border'), '1px solid var(--erp-border-subtle)')
+
+  assert.equal(
+    declarationsFor('.erp-black-gold .field span').get('color'),
+    'var(--erp-accent-gold)',
+  )
+})
