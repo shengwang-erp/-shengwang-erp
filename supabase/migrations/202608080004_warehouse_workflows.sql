@@ -326,6 +326,88 @@ create table public.warehouse_return_lines (
   constraint warehouse_return_lines_original_unique unique (return_id, original_stock_out_line_id)
 );
 
+create or replace function private.guard_warehouse_project_cost_write()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+declare
+  relation_owner name;
+  old_managed boolean := false;
+  new_managed boolean := false;
+begin
+  select role.rolname into relation_owner
+  from pg_catalog.pg_class relation
+  join pg_catalog.pg_roles role on role.oid = relation.relowner
+  where relation.oid = tg_relid;
+  if current_user = relation_owner then
+    return case when tg_op = 'DELETE' then old else new end;
+  end if;
+  if tg_op <> 'INSERT' then
+    old_managed := left(old.record_key, 10) = 'WAREHOUSE-'
+      or left(coalesce(old.payload->>'costRecordId', ''), 10) = 'WAREHOUSE-'
+      or old.payload->>'sourceType' in ('warehouse', 'warehouseReversal');
+  end if;
+  if tg_op <> 'DELETE' then
+    new_managed := left(new.record_key, 10) = 'WAREHOUSE-'
+      or left(coalesce(new.payload->>'costRecordId', ''), 10) = 'WAREHOUSE-'
+      or new.payload->>'sourceType' in ('warehouse', 'warehouseReversal');
+  end if;
+  if tg_op = 'INSERT' and new_managed then
+    raise exception using errcode = '42501',
+      message = 'warehouse project cost namespace reserved',
+      hint = 'WAREHOUSE_PROJECT_COST_NAMESPACE_RESERVED';
+  elsif old_managed or new_managed then
+    raise exception using errcode = '55000',
+      message = 'warehouse project cost immutable',
+      hint = 'WAREHOUSE_PROJECT_COST_IMMUTABLE';
+  end if;
+  return case when tg_op = 'DELETE' then old else new end;
+end;
+$$;
+
+create trigger guard_warehouse_project_cost_write
+before insert or update or delete on public.project_cost_records
+for each row execute function private.guard_warehouse_project_cost_write();
+
+create or replace function private.enforce_project_cost_write_permission()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  relation_owner name;
+  required_action text;
+begin
+  select role.rolname into relation_owner
+  from pg_catalog.pg_class relation
+  join pg_catalog.pg_roles role on role.oid = relation.relowner
+  where relation.oid = tg_relid;
+  if current_user = relation_owner or auth.role() = 'service_role' then return new; end if;
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+  required_action := case
+    when old.status in ('deleted', 'void') or new.status in ('deleted', 'void')
+      then 'delete'
+    else 'update'
+  end;
+  if not public.has_current_permission('module.project_costs.' || required_action) then
+    raise exception using errcode = '42501', message = required_action || ' permission required';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_project_cost_records_status_permission
+on public.project_cost_records;
+create trigger enforce_project_cost_records_status_permission
+before update on public.project_cost_records
+for each row execute function private.enforce_project_cost_write_permission();
+
+revoke truncate on table public.project_cost_records
+from public, anon, authenticated, service_role;
+
 create or replace function private.reject_warehouse_workflow_delete()
 returns trigger
 language plpgsql
@@ -914,10 +996,226 @@ as $$
     'workDate', job.work_date, 'locationText', job.location_text,
     'description', job.description, 'status', job.status,
     'assignedProjectId', job.assigned_project_id,
+    'materialCost', case when public.has_current_permission('warehouse.cost.view') then (
+      select coalesce(sum(line.frozen_total_cost), 0)
+      from public.warehouse_stock_out_requests request
+      join public.warehouse_stock_out_lines line on line.request_id = request.id
+      where request.minor_work_order_id = job.id
+        and request.destination_type = 'minor_work_order'
+        and request.status = 'confirmed'
+    ) else null end,
     'createdByEmployeeProfileId', job.created_by_employee_profile_id,
     'createdAt', job.created_at, 'updatedAt', job.updated_at
   )
   from public.warehouse_minor_work_orders job where job.id = p_id
+$$;
+
+create or replace function private.upsert_warehouse_project_cost(
+  p_record_key text,
+  p_project_id text,
+  p_amount numeric,
+  p_actor_id uuid,
+  p_occurred_at timestamptz,
+  p_cost_date date,
+  p_source_document_id uuid,
+  p_source_document_type text,
+  p_source_purchase_record_keys jsonb,
+  p_source_stock_out_ids jsonb
+)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  project public.projects%rowtype;
+  existing public.project_cost_records%rowtype;
+  next_payload jsonb;
+begin
+  if p_record_key is null or p_record_key <> btrim(p_record_key)
+    or p_record_key !~ '^WAREHOUSE-(SO|MWO):[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    or p_project_id is null or p_actor_id is null or p_occurred_at is null
+    or p_cost_date is null
+    or p_source_document_id is null
+    or p_source_document_type not in ('warehouse_stock_out', 'warehouse_minor_work_order')
+    or p_amount is null or p_amount <= 0 or p_amount > 900719925474.0991
+    or p_amount in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+    or jsonb_typeof(p_source_purchase_record_keys) is distinct from 'array'
+    or jsonb_typeof(p_source_stock_out_ids) is distinct from 'array'
+  then
+    raise exception using errcode = '22023', message = 'warehouse project cost invalid',
+      hint = 'WAREHOUSE_PROJECT_COST_INVALID';
+  end if;
+  select * into actor from public.employee_profiles where id = p_actor_id;
+  select * into project from public.projects
+  where record_key = p_project_id and status = 'active';
+  if actor.id is null or project.id is null then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  next_payload := jsonb_build_object(
+    'costRecordId', p_record_key,
+    'projectId', p_project_id,
+    'projectName', coalesce(project.payload->>'projectName', p_project_id),
+    'employeeId', actor.employee_number,
+    'employeeName', actor.name,
+    'costType', '材料费',
+    'amount', round(p_amount, 4),
+    'date', p_cost_date,
+    'operator', actor.name,
+    'remark', '仓库出库自动归集',
+    'sourceType', 'warehouse',
+    'sourceDocumentId', p_source_document_id,
+    'sourceDocumentType', p_source_document_type,
+    'sourcePurchaseRecordKeys', p_source_purchase_record_keys,
+    'sourceStockOutIds', p_source_stock_out_ids,
+    'createdAt', p_occurred_at,
+    'updatedAt', p_occurred_at,
+    'updatedByEmployeeId', actor.employee_number,
+    'updatedByEmployeeName', actor.name
+  );
+  select * into existing from public.project_cost_records
+  where record_key = p_record_key for update;
+  if found then
+    if existing.status <> 'active'
+      or existing.payload->>'sourceType' <> 'warehouse'
+      or existing.payload->>'costRecordId' <> p_record_key
+      or existing.payload->>'projectId' <> p_project_id
+      or existing.payload->>'sourceDocumentId' <> p_source_document_id::text
+      or existing.payload->>'sourceDocumentType' <> p_source_document_type
+      or (
+        p_source_document_type = 'warehouse_stock_out'
+        and existing.payload is distinct from next_payload
+      )
+      or (
+        p_source_document_type = 'warehouse_minor_work_order'
+        and (existing.payload->>'amount')::numeric > p_amount
+      )
+    then
+      raise exception using errcode = '23505', message = 'warehouse project cost conflict',
+        hint = 'WAREHOUSE_PROJECT_COST_CONFLICT';
+    end if;
+    if p_source_document_type = 'warehouse_minor_work_order'
+      and (existing.payload->>'amount')::numeric = p_amount
+      and existing.payload->'sourcePurchaseRecordKeys' = p_source_purchase_record_keys
+      and existing.payload->'sourceStockOutIds' = p_source_stock_out_ids
+    then
+      return;
+    end if;
+    if p_source_document_type = 'warehouse_minor_work_order'
+      and existing.payload is distinct from next_payload
+    then
+      next_payload := jsonb_set(
+        next_payload, '{createdAt}', existing.payload->'createdAt', true
+      );
+      update public.project_cost_records
+      set payload = next_payload,
+          updated_at = p_occurred_at,
+          updated_by_employee_id = actor.employee_number,
+          updated_by_employee_name = actor.name
+      where record_key = p_record_key;
+    end if;
+    return;
+  end if;
+  insert into public.project_cost_records(
+    record_key, payload, status,
+    created_at, updated_at,
+    created_by_employee_id, created_by_employee_name,
+    updated_by_employee_id, updated_by_employee_name
+  ) values (
+    p_record_key, next_payload, 'active',
+    p_occurred_at, p_occurred_at,
+    actor.employee_number, actor.name,
+    actor.employee_number, actor.name
+  );
+end;
+$$;
+
+create or replace function private.post_minor_work_order_cost(
+  p_minor_work_order_id uuid,
+  p_actor_id uuid,
+  p_occurred_at timestamptz
+)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  job public.warehouse_minor_work_orders%rowtype;
+  total_cost numeric;
+  purchase_keys jsonb;
+  stock_out_ids jsonb;
+begin
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-minor-work-cost:' || p_minor_work_order_id::text, 0
+  ));
+  select * into job from public.warehouse_minor_work_orders
+  where id = p_minor_work_order_id for update;
+  if not found or job.assigned_project_id is null then return; end if;
+  select coalesce(sum(line.frozen_total_cost), 0),
+    coalesce(jsonb_agg(distinct request.id order by request.id), '[]'::jsonb)
+  into total_cost, stock_out_ids
+  from public.warehouse_stock_out_requests request
+  join public.warehouse_stock_out_lines line on line.request_id = request.id
+  where request.minor_work_order_id = p_minor_work_order_id
+    and request.destination_type = 'minor_work_order'
+    and request.status = 'confirmed';
+  if total_cost = 0 then return; end if;
+  select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
+  from (
+    select distinct receipt.purchase_record_key as key
+    from public.warehouse_stock_out_requests request
+    join public.warehouse_inventory_movements movement
+      on movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = request.id::text
+    join public.warehouse_batches batch on batch.id = movement.batch_id
+    join public.warehouse_receipt_lines receipt_line on receipt_line.id = batch.receipt_line_id
+    join public.warehouse_receipts receipt on receipt.id = receipt_line.receipt_id
+    where request.minor_work_order_id = p_minor_work_order_id
+      and request.status = 'confirmed'
+  ) provenance;
+  perform private.upsert_warehouse_project_cost(
+    'WAREHOUSE-MWO:' || p_minor_work_order_id::text,
+    job.assigned_project_id, total_cost, p_actor_id, p_occurred_at, job.work_date,
+    p_minor_work_order_id, 'warehouse_minor_work_order', purchase_keys, stock_out_ids
+  );
+end;
+$$;
+
+create or replace function public.list_warehouse_material_cost_context_secure()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.is_current_employee_active()
+    or not public.has_current_permission('module.purchases.view')
+    or not public.has_current_permission('module.project_costs.view')
+  then
+    raise exception using errcode = '42501',
+      message = 'warehouse material cost context permission required';
+  end if;
+  return jsonb_build_object(
+    'trackedPurchaseRecordKeys', coalesce((
+      select jsonb_agg(receipt.purchase_record_key order by receipt.purchase_record_key)
+      from (
+        select distinct header.purchase_record_key
+        from public.warehouse_receipts header
+        join public.warehouse_receipt_lines line on line.receipt_id = header.id
+        join public.warehouse_batches batch on batch.receipt_line_id = line.id
+        where header.confirmed_at is not null
+          and header.confirmation_idempotency_key is not null
+          and header.status in ('confirmed', 'void')
+      ) receipt
+    ), '[]'::jsonb)
+  );
+end;
 $$;
 
 create or replace function private.warehouse_receipt_json(p_id uuid)
@@ -1072,14 +1370,24 @@ volatile
 security definer
 set search_path = pg_catalog, public, private
 as $$
-declare saved_id uuid;
+declare saved_id uuid; actor_id uuid;
 begin
-  perform 1 from private.assert_warehouse_permission('warehouse.stock_flow.request');
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.stock_flow.request');
   if p_minor_work_order_id is null or p_project_id is null
     or p_project_id <> btrim(p_project_id)
     or p_project_id !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$'
   then
     raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-minor-work-cost:' || p_minor_work_order_id::text, 0
+  ));
+  perform 1 from public.warehouse_minor_work_orders job
+  where job.id = p_minor_work_order_id for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   if not exists (
     select 1 from public.projects project
@@ -1098,6 +1406,9 @@ begin
     raise exception using errcode = '55000', message = 'warehouse destination unavailable',
       hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
+  perform private.post_minor_work_order_cost(
+    p_minor_work_order_id, actor_id, clock_timestamp()
+  );
   return private.warehouse_minor_work_order_json(saved_id);
 end;
 $$;
@@ -1937,6 +2248,8 @@ declare
   total_cost numeric;
   confirmed_at_value timestamptz;
   view_cost boolean;
+  project_total numeric;
+  purchase_keys jsonb;
 begin
   select employee_profile_id into actor_id
   from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
@@ -1989,6 +2302,17 @@ begin
   if not found then
     raise exception using errcode = '55000', message = 'warehouse stock-out unavailable',
       hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if request_row.destination_type = 'minor_work_order' then
+    perform pg_advisory_xact_lock(hashtextextended(
+      'warehouse-minor-work-cost:' || request_row.minor_work_order_id::text, 0
+    ));
+    perform 1 from public.warehouse_minor_work_orders job
+    where job.id = request_row.minor_work_order_id for update;
+    if not found then
+      raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+        hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+    end if;
   end if;
   perform pg_advisory_xact_lock(hashtextextended(
     'warehouse-stock-out-confirm-key:' || p_idempotency_key, 0
@@ -2187,6 +2511,31 @@ begin
       confirmation_idempotency_key = p_idempotency_key,
       confirmation_payload = canonical_payload
   where id = p_request_id;
+  if request_row.destination_type = 'project' then
+    select sum(line.frozen_total_cost) into project_total
+    from public.warehouse_stock_out_lines line where line.request_id = p_request_id;
+    select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
+    from (
+      select distinct receipt.purchase_record_key as key
+      from public.warehouse_inventory_movements movement
+      join public.warehouse_batches batch on batch.id = movement.batch_id
+      join public.warehouse_receipt_lines receipt_line on receipt_line.id = batch.receipt_line_id
+      join public.warehouse_receipts receipt on receipt.id = receipt_line.receipt_id
+      where movement.source_document_type = 'warehouse_stock_out'
+        and movement.source_document_id = p_request_id::text
+    ) provenance;
+    perform private.upsert_warehouse_project_cost(
+      'WAREHOUSE-SO:' || p_request_id::text,
+      request_row.project_id, project_total, actor_id, confirmed_at_value,
+      (confirmed_at_value at time zone 'Asia/Tokyo')::date,
+      p_request_id, 'warehouse_stock_out', purchase_keys,
+      jsonb_build_array(p_request_id)
+    );
+  elsif request_row.destination_type = 'minor_work_order' then
+    perform private.post_minor_work_order_cost(
+      request_row.minor_work_order_id, actor_id, confirmed_at_value
+    );
+  end if;
   return private.warehouse_stock_out_confirmation_json(p_request_id, view_cost);
 exception when unique_violation then
   if exists (
@@ -2207,6 +2556,10 @@ revoke all on function private.warehouse_workflow_quantity(jsonb) from public, a
 revoke all on function private.warehouse_workflow_date(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_idempotency(text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_lines(jsonb) from public, anon, authenticated, service_role;
+revoke all on function private.guard_warehouse_project_cost_write() from public, anon, authenticated, service_role;
+revoke all on function private.enforce_project_cost_write_permission() from public, anon, authenticated, service_role;
+revoke all on function private.upsert_warehouse_project_cost(text,text,numeric,uuid,timestamptz,date,uuid,text,jsonb,jsonb) from public, anon, authenticated, service_role;
+revoke all on function private.post_minor_work_order_cost(uuid,uuid,timestamptz) from public, anon, authenticated, service_role;
 revoke all on function private.reject_warehouse_workflow_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_warehouse_receipt_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_warehouse_receipt_identity_update() from public, anon, authenticated, service_role;
@@ -2236,6 +2589,7 @@ revoke all on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb,te
 revoke all on function public.list_purchase_warehouse_arrivals_secure() from public, anon, authenticated, service_role;
 revoke all on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
+revoke all on function public.list_warehouse_material_cost_context_secure() from public, anon, authenticated, service_role;
 grant execute on function public.create_minor_work_order_secure(jsonb) to authenticated;
 grant execute on function public.assign_minor_work_order_to_project_secure(uuid,text) to authenticated;
 grant execute on function public.submit_warehouse_receipt_secure(text,jsonb,text) to authenticated;
@@ -2244,5 +2598,6 @@ grant execute on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb
 grant execute on function public.list_purchase_warehouse_arrivals_secure() to authenticated;
 grant execute on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) to authenticated;
 grant execute on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) to authenticated;
+grant execute on function public.list_warehouse_material_cost_context_secure() to authenticated;
 
 commit;

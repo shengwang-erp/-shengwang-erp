@@ -216,7 +216,14 @@ function sourceFixture(overrides = {}) {
       { responsibilityRecordId: 'TR1', toolId: 'T1', projectId: 'P1', compensationStatus: '未赔偿', compensationAmount: 9 },
     ]),
   }
-  return { ...values, ...overrides }
+  const merged = { ...values, ...overrides }
+  merged.profitabilityPurchaseAccrual = Object.hasOwn(
+    overrides,
+    'profitabilityPurchaseAccrual',
+  )
+    ? overrides.profitabilityPurchaseAccrual
+    : merged.purchaseAccrual
+  return merged
 }
 
 function input(overrides = {}) {
@@ -440,6 +447,34 @@ test('purchase cash is derived only from validated purchase-linked recorded paym
   assert.equal(selectedProject.purchaseOperations.data.payment.data.monthPaymentCash, 10)
   assert.equal(selectedProject.purchaseOperations.data.payable.data.currentOutstanding, 60)
   assert.equal(selectedProject.cashFlow.data.series.at(-1).purchaseOutflow, 10)
+})
+
+test('warehouse purchases stay in purchase operations and cash but leave profitability accrual', () => {
+  const base = sourceFixture()
+  const warehouseCost = {
+    costRecordId: 'WAREHOUSE-SO:11111111-1111-4111-8111-111111111111',
+    projectId: 'P1', projectName: '项目一', costType: '材料费', amount: 166.6667,
+    date: '2026-07-04', sourceType: 'warehouse',
+    sourceDocumentId: '11111111-1111-4111-8111-111111111111',
+    sourceDocumentType: 'warehouse_stock_out',
+    sourcePurchaseRecordKeys: ['PO-JULY'],
+    sourceStockOutIds: ['11111111-1111-4111-8111-111111111111'],
+  }
+  const model = buildExecutiveDashboardReadModel(input({
+    sources: sourceFixture({
+      purchaseAccrual: base.purchaseAccrual,
+      profitabilityPurchaseAccrual: ready([]),
+      projectCosts: ready([warehouseCost]),
+    }),
+  }))
+  assert.equal(model.purchaseOperations.data.occurrence.data.monthCost, 200)
+  assert.equal(model.purchaseOperations.data.payment.data.monthPaymentCash, 25)
+  assert.equal(model.cashFlow.data.series.at(-1).purchaseOutflow, 25)
+  assert.equal(model.costs.status, 'ready')
+  assert.equal(model.projectRows.status, 'ready')
+  assert.equal(model.projectRows.data.items[0].confirmedCost, 301.6667)
+  assert.equal(model.projectRows.data.items[0].estimatedProfit, 698.3333)
+  assert.equal(model.projectRows.data.items[0].pendingManualCost, 7)
 })
 
 test('purchase health scopes generic payment anomalies through active purchase relations', () => {

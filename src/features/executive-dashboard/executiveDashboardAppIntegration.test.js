@@ -92,6 +92,7 @@ const sources = {
   receipts: ready([]),
   laborWindow: ready(laborWindow),
   purchaseAccrual: ready(purchases),
+  profitabilityPurchaseAccrual: ready(purchases),
   purchasePayments: ready(payments),
   projectCosts: ready([]),
   operatingExpenses: ready([]),
@@ -154,11 +155,12 @@ test('Dashboard route passes the exact Task 8 source-state map and explicit rend
   const sourceMap = sliceBetween(
     authenticated,
     'const dashboardSourceStates = {',
-    '\n  const bridgeStatusNotice',
+    '\n  const accountingSourceStates',
   )
   const expectedKeys = [
     'projects', 'contractRevenue', 'receipts', 'laborWindow', 'purchaseAccrual',
-    'purchasePayments', 'projectCosts', 'operatingExpenses', 'vehicles',
+    'profitabilityPurchaseAccrual', 'purchasePayments', 'projectCosts',
+    'operatingExpenses', 'vehicles',
     'vehicleUsage', 'fuel', 'vehicleExpenses', 'vehicleIssues', 'attendance',
     'inventoryItems', 'stockInRecords', 'stockOutRecords', 'stockReturnRecords',
     'toolRecords', 'toolBorrowRecords', 'toolReturnRecords',
@@ -168,7 +170,8 @@ test('Dashboard route passes the exact Task 8 source-state map and explicit rend
     .map((match) => match[1])
   assert.deepEqual(actualKeys, expectedKeys)
   assert.match(sourceMap, /receipts:[\s\S]*?data:\s*projectReceipts/u)
-  assert.match(sourceMap, /purchaseAccrual:[\s\S]*?purchaseRawState/u)
+  assert.match(sourceMap, /purchaseAccrual:\s*warehouseAccountingSourceStates\.purchaseLedgerAccrual/u)
+  assert.match(sourceMap, /profitabilityPurchaseAccrual:\s*warehouseAccountingSourceStates\.purchaseAccrual/u)
   assert.match(sourceMap, /purchasePayments:[\s\S]*?purchasePaymentRawState/u)
   assert.match(sourceMap, /fuel:[\s\S]*?data:\s*fuelRecords/u)
   assert.match(sourceMap, /vehicleExpenses:[\s\S]*?data:\s*vehicleExpenseRecords/u)
@@ -244,7 +247,11 @@ test('July accrual and August cash render through the shared dashboard and month
       purchaseAccrual: true, purchasePayments: true,
     },
     vehicleAccess: true,
-    sourceStates: sources,
+    sourceStates: {
+      ...sources,
+      purchaseAccrual: sources.profitabilityPurchaseAccrual,
+      purchaseLedgerAccrual: sources.purchaseAccrual,
+    },
     projects,
     monthFilter: selectedMonth,
     onMonthFilterChange() {},

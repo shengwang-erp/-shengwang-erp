@@ -400,6 +400,11 @@ test('普通社长的实际 Home SSR 从 App 原始源投影保留未就绪状�
         data: [{ purchaseId: 'PRIVATE', totalCost: 987654 }],
         stale: false,
       },
+      purchaseLedgerAccrual: {
+        status: 'error',
+        data: [{ purchaseId: 'PRIVATE', totalCost: 987654 }],
+        stale: false,
+      },
       purchasePayments: ready([]),
       projectCosts: ready([]),
       operatingExpenses: ready([]),

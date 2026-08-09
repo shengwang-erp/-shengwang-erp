@@ -1,4 +1,10 @@
-import { buildCostAccountingReadModel } from '../cost-accounting/costAccountingDomain.js'
+import {
+  addSafeCostAccountingAmounts,
+  addSafeSignedCostAccountingAmounts,
+  buildCostAccountingReadModel,
+  isSafeCostAccountingAmount,
+  isSafeSignedCostAccountingAmount,
+} from '../cost-accounting/costAccountingDomain.js'
 import { buildRecordedCashFlow } from '../cost-accounting/recordedCashFlowDomain.js'
 import { buildPurchaseAccountingReadModel } from '../purchase-accounting/purchaseAccountingDomain.js'
 import { PROJECT_STATUS_OPTIONS } from '../projects/projectDomain.js'
@@ -11,7 +17,8 @@ const FILTER_KEYS = Object.freeze([
 ])
 const SOURCE_NAMES = Object.freeze([
   'projects', 'contractRevenue', 'receipts', 'laborWindow', 'purchaseAccrual',
-  'purchasePayments', 'projectCosts', 'operatingExpenses', 'vehicles',
+  'profitabilityPurchaseAccrual', 'purchasePayments', 'projectCosts',
+  'operatingExpenses', 'vehicles',
   'vehicleUsage', 'fuel', 'vehicleExpenses', 'vehicleIssues', 'attendance',
   'inventoryItems', 'stockInRecords', 'stockOutRecords', 'stockReturnRecords',
   'toolRecords', 'toolBorrowRecords', 'toolReturnRecords',
@@ -46,11 +53,11 @@ const TOOL_STATUS_KEYS = new Set([
   '维修中', '已报废', '报废', '丢失', '停用', '其他', '未设置',
 ])
 const COST_REQUIRED = Object.freeze([
-  'laborWindow', 'purchaseAccrual', 'projectCosts', 'operatingExpenses',
+  'laborWindow', 'profitabilityPurchaseAccrual', 'projectCosts', 'operatingExpenses',
   'fuel', 'vehicleExpenses', 'vehicleIssues',
 ])
 const FINANCIAL_REQUIRED = Object.freeze([
-  'projects', 'contractRevenue', 'laborWindow', 'purchaseAccrual',
+  'projects', 'contractRevenue', 'laborWindow', 'profitabilityPurchaseAccrual',
   'projectCosts', 'operatingExpenses', 'fuel', 'vehicleExpenses', 'vehicleIssues',
 ])
 const VEHICLE_REQUIRED = Object.freeze([
@@ -513,7 +520,12 @@ function projectPurchaseHealthAnomaly(issue) {
 }
 
 function validateMoneyRows(rows, {
-  source, amountField, allowMissingAmount = false, groupBy = () => 'all',
+  source,
+  amountField,
+  allowMissingAmount = false,
+  groupBy = () => 'all',
+  amountValidator = (value) => safeYen(value),
+  amountAdder = safeAdd,
 }) {
   const output = []
   const anomalies = []
@@ -522,7 +534,7 @@ function validateMoneyRows(rows, {
   for (const row of rows) {
     const id = recordId(row, []) || ''
     const rawAmount = row[amountField]
-    const amount = safeYen(rawAmount)
+    const amount = amountValidator(rawAmount, row)
     const missingAllowed = allowMissingAmount &&
       (rawAmount === undefined || rawAmount === null || rawAmount === '')
     if (amount === null && !missingAllowed) {
@@ -533,7 +545,7 @@ function validateMoneyRows(rows, {
     if (amount !== null) {
       const group = groupBy(row)
       const aggregate = aggregates.get(group) || 0
-      const next = safeAdd(aggregate, amount)
+      const next = amountAdder(aggregate, amount)
       if (next === null) {
         anomalies.push({ source, code: 'amount_overflow', recordId: id })
         blocking = true
@@ -563,13 +575,21 @@ function datedRows(rows, { source, dateFields, months = null }) {
 }
 
 function validateDatedMoneyRows(prepared, {
-  source, amountField, dateFields, months = null, allowMissingAmount = false,
+  source,
+  amountField,
+  dateFields,
+  months = null,
+  allowMissingAmount = false,
+  amountValidator,
+  amountAdder,
 }) {
   const dated = datedRows(prepared.rows, { source, dateFields, months })
   const money = validateMoneyRows(dated.rows, {
     source,
     amountField,
     allowMissingAmount,
+    ...(amountValidator ? { amountValidator } : {}),
+    ...(amountAdder ? { amountAdder } : {}),
     groupBy: months === null
       ? () => 'all'
       : (row) => recordMonth(row, dateFields) || '',
@@ -705,9 +725,10 @@ function sumFacts(facts, field) {
 }
 
 function comparison(current, prior) {
-  if (safeSignedYen(current) === null || safeSignedYen(prior) === null) return null
-  const change = current - prior
-  if (!Number.isSafeInteger(change)) return null
+  if (!isSafeSignedCostAccountingAmount(current) ||
+      !isSafeSignedCostAccountingAmount(prior)) return null
+  const change = addSafeSignedCostAccountingAmounts(current, prior === 0 ? 0 : -prior)
+  if (change === null) return null
   return {
     current,
     prior,
@@ -749,6 +770,7 @@ function pendingCostByProject(projectCosts, vehicleIssues) {
     const id = recordId(row, ['costRecordId'])
     if (!id || seenCosts.has(id) || isInactive(row)) continue
     seenCosts.add(id)
+    if (['warehouse', 'warehouseReversal'].includes(row.sourceType)) continue
     if (PENDING_COST_TYPES.has(row.costType)) add(row.projectId, row.amount)
   }
   const seenIssues = new Set()
@@ -774,9 +796,15 @@ function buildFinancialRows(projects, contractMap, costModel, pendingMap) {
       snapshot?.allocationStatus === 'legacy_compatibility' ||
       snapshot?.allocationReason === 'contract_revenue_schema_not_migrated'
     )
-    const confirmedCost = safeYen(costModel.projectLifetimeById?.[project.projectId]?.total)
+    const rawConfirmedCost = costModel.projectLifetimeById?.[project.projectId]?.total
+    const confirmedCost = isSafeCostAccountingAmount(rawConfirmedCost)
+      ? rawConfirmedCost
+      : null
     const profit = validAnchor && confirmedCost !== null
-      ? safeSignedYen(anchor - confirmedCost)
+      ? addSafeSignedCostAccountingAmounts(
+          anchor,
+          confirmedCost === 0 ? 0 : -confirmedCost,
+        )
       : null
     const margin = profit !== null
       ? Math.round((profit / anchor) * 1000) / 10
@@ -952,6 +980,11 @@ export function buildExecutiveDashboardReadModel(input) {
         source: 'purchaseAccrual', idFields: ['purchaseId'],
       })
     : emptyPrepared
+  const profitabilityPurchasePrepared = states.profitabilityPurchaseAccrual.status === 'ready'
+    ? prepareRows(states.profitabilityPurchaseAccrual.data, {
+        source: 'profitabilityPurchaseAccrual', idFields: ['purchaseId'],
+      })
+    : emptyPrepared
   const knownProjectIds = new Set(allProjects.map((project) => project.projectId))
   const activePurchaseIds = new Set(purchasePrepared.rows
     .map((row) => row.purchaseId)
@@ -1059,6 +1092,7 @@ export function buildExecutiveDashboardReadModel(input) {
     }),
   })
   const scopedPurchasePrepared = scopePrepared(purchasePrepared)
+  const scopedProfitabilityPurchasePrepared = scopePrepared(profitabilityPurchasePrepared)
   const paymentProjectsIntersectScope = (projectIds) =>
     Array.isArray(projectIds) && projectIds.some((projectId) => scopeIds.has(projectId))
   const scopedPaymentPrepared = {
@@ -1118,6 +1152,23 @@ export function buildExecutiveDashboardReadModel(input) {
         months: priorMonths,
       })
     : emptyValidated
+  const profitabilityPurchaseSanitized =
+    states.profitabilityPurchaseAccrual.status === 'ready'
+      ? validateDatedMoneyRows(scopedProfitabilityPurchasePrepared, {
+          source: 'profitabilityPurchaseAccrual',
+          amountField: 'totalCost',
+          dateFields: ['purchaseDate'],
+        })
+      : emptyValidated
+  const profitabilityPurchaseWindow =
+    states.profitabilityPurchaseAccrual.status === 'ready'
+      ? validateDatedMoneyRows(scopedProfitabilityPurchasePrepared, {
+          source: 'profitabilityPurchaseAccrual',
+          amountField: 'totalCost',
+          dateFields: ['purchaseDate'],
+          months: windowMonths,
+        })
+      : emptyValidated
   const paymentSanitized = states.purchasePayments.status === 'ready'
     ? validateDatedMoneyRows(scopedPaymentPrepared, {
         source: 'purchasePayments', amountField: 'jpyAmount', dateFields: ['paymentDate'],
@@ -1144,12 +1195,20 @@ export function buildExecutiveDashboardReadModel(input) {
   const projectCostSanitized = states.projectCosts.status === 'ready'
     ? validateDatedMoneyRows(scopedProjectCostPrepared, {
         source: 'projectCosts', amountField: 'amount', dateFields: ['date'],
+        amountValidator: (value, row) => ['warehouse', 'warehouseReversal'].includes(row.sourceType)
+          ? isSafeCostAccountingAmount(value) && value > 0 ? value : null
+          : safeYen(value),
+        amountAdder: addSafeCostAccountingAmounts,
       })
     : emptyValidated
   const projectCostWindow = states.projectCosts.status === 'ready'
     ? validateDatedMoneyRows(scopedProjectCostPrepared, {
         source: 'projectCosts', amountField: 'amount', dateFields: ['date'],
         months: windowMonths,
+        amountValidator: (value, row) => ['warehouse', 'warehouseReversal'].includes(row.sourceType)
+          ? isSafeCostAccountingAmount(value) && value > 0 ? value : null
+          : safeYen(value),
+        amountAdder: addSafeCostAccountingAmounts,
       })
     : emptyValidated
   const operatingSanitized = states.operatingExpenses.status === 'ready'
@@ -1241,7 +1300,7 @@ export function buildExecutiveDashboardReadModel(input) {
     )
   const laborLifetimeBlocking = states.laborWindow.status === 'ready' &&
     laborLifetimeMoneyIsBlocking(states.laborWindow.data, filteredProjects, filters)
-  const scopedPurchases = purchaseSanitized.rows
+  const scopedPurchases = profitabilityPurchaseSanitized.rows
   const scopedProjectCosts = projectCostSanitized.rows
   const scopedOperating = operatingSanitized.rows
   const scopedFuel = fuelSanitized.rows
@@ -1257,10 +1316,10 @@ export function buildExecutiveDashboardReadModel(input) {
   const dashboardCostAccess = completeCostAccess && access.profit.view
   const dashboardProfitAccess = dashboardCostAccess && contractAmountAccess
   const costSourceBlock = blockResolution(states, COST_REQUIRED)
-  const costWindowBlocking = laborWindowBlocking || purchaseWindow.blocking ||
+  const costWindowBlocking = laborWindowBlocking || profitabilityPurchaseWindow.blocking ||
     projectCostWindow.blocking || operatingWindow.blocking || fuelWindow.blocking ||
     vehicleExpenseWindow.blocking || vehicleIssueWindow.blocking
-  const financialCostBlocking = laborLifetimeBlocking || purchaseSanitized.blocking ||
+  const financialCostBlocking = laborLifetimeBlocking || profitabilityPurchaseSanitized.blocking ||
     projectCostSanitized.blocking || operatingSanitized.blocking || fuelSanitized.blocking ||
     vehicleExpenseSanitized.blocking || vehicleIssueSanitized.blocking
   let costModel = null
@@ -1408,8 +1467,10 @@ export function buildExecutiveDashboardReadModel(input) {
     } else {
       let total = 0
       for (const row of financialRows) {
-        const next = row.estimatedProfit === null ? null : total + row.estimatedProfit
-        if (!Number.isSafeInteger(next)) { total = null; break }
+        const next = row.estimatedProfit === null
+          ? null
+          : addSafeSignedCostAccountingAmounts(total, row.estimatedProfit)
+        if (next === null) { total = null; break }
         total = next
       }
       profitAggregate = total === null

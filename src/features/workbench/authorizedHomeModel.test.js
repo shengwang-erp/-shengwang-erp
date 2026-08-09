@@ -194,6 +194,7 @@ test('App financial builder preserves stale cost and purchase inputs as amount-f
       projects: staleArray,
       laborWindow: staleObject,
       purchaseAccrual: staleArray,
+      purchaseLedgerAccrual: staleArray,
       purchasePayments: staleArray,
       projectCosts: staleArray,
       operatingExpenses: staleArray,
@@ -209,6 +210,53 @@ test('App financial builder preserves stale cost and purchase inputs as amount-f
   })
   assert.equal(JSON.stringify(model).includes('880000'), false)
   assert.equal(JSON.stringify(model).includes('990000'), false)
+})
+
+test('Home publishes a safe four-decimal frozen warehouse cost without downgrading the accounting card', async () => {
+  const { buildHomeFinancialModels } = await loadAppModule()
+  const owner = activeUser(['all'], {
+    employeeId: 'SUPER_ADMIN', employeeNumber: 'SW-000', name: '本地验收社长',
+    department: '总务部', position: '社长',
+  })
+  const warehouseCost = {
+    costRecordId: 'WAREHOUSE-SO:55555555-5555-4555-8555-555555555555',
+    projectId: 'P1', projectName: '共享成本项目', costType: '材料费',
+    amount: 166.6667, date: '2026-07-09', sourceType: 'warehouse',
+    sourceDocumentId: '55555555-5555-4555-8555-555555555555',
+    sourceDocumentType: 'warehouse_stock_out', sourcePurchaseRecordKeys: [],
+    sourceStockOutIds: ['55555555-5555-4555-8555-555555555555'],
+  }
+  const financial = buildHomeFinancialModels({
+    currentUser: owner,
+    selectedMonth: '2026-07',
+    sourceStates: {
+      projects: ready([{ projectId: 'P1', projectName: '共享成本项目' }]),
+      laborWindow: ready({
+        monthly: [{
+          month: '2026-07', status: 'ready', stale: false, source: 'formal',
+          pendingCount: 0, salaryTotal: 0, projectLaborTotal: 0,
+          projectLaborById: { P1: 0 },
+        }],
+        projectLaborLifetimeById: { P1: 0 }, lifetimeStatus: 'ready',
+        lifetimeStale: false, incompleteMonths: [], staleMonths: [],
+      }),
+      purchaseAccrual: ready([]), purchaseLedgerAccrual: ready([]),
+      purchasePayments: ready([]), projectCosts: ready([warehouseCost]),
+      operatingExpenses: ready([]), fuel: ready([]),
+      vehicleExpenses: ready([]), vehicleIssues: ready([]),
+    },
+  })
+
+  assert.equal(financial.cost.status, 'ready')
+  assert.equal(financial.cost.data.companyMonthlyTotal.total, 166.6667)
+  const home = buildAuthorizedHomeModel({
+    user: owner,
+    routes: getVisibleAdminRoutes(owner).filter(({ view }) => view === 'accounting'),
+    sourceStates: { costSummary: financial.cost },
+  })
+  assert.equal(home.modules[0].sourceStatus, 'ready')
+  assert.equal(home.summary.monthlyCostTotal, 166.6667)
+  assert.equal(home.modules[0].displayValue, '¥166.667')
 })
 
 test('SW-000 Home derives counts from ready states and discloses stale or failed sources', () => {

@@ -154,6 +154,102 @@ test('legacy App cost and gross-profit helpers and tax-inclusive profit arithmet
   assert.doesNotMatch(dashboard, /purchase|vehicle|labor|cost.*reduce|grossProfit/u)
 })
 
+test('App normalization preserves authoritative warehouse accounting provenance', () => {
+  const purchaseNormalizer = sliceBetween(
+    appSource,
+    'function normalizePurchaseRecord',
+    '\nfunction normalizePurchasePaymentRecord',
+  )
+  const costNormalizer = sliceBetween(
+    appSource,
+    'function normalizeProjectCostRecord',
+    '\nfunction normalizeOperatingExpenseRecord',
+  )
+  assert.doesNotMatch(purchaseNormalizer, /warehouseTracked/u)
+  for (const field of [
+    'sourceType', 'sourceDocumentId', 'sourceDocumentType',
+    'sourcePurchaseRecordKeys', 'sourceStockOutIds',
+  ]) {
+    assert.match(costNormalizer, new RegExp(field, 'u'))
+  }
+})
+
+test('authoritative warehouse context filters only the shared cost purchase source', () => {
+  assert.ifError(loaded.error)
+  const warehouseCost = {
+    costRecordId: 'WAREHOUSE-SO:11111111-1111-4111-8111-111111111111',
+    projectId: 'P1', projectName: '共享成本项目', costType: '材料费',
+    amount: 460, date: `${month}-09`, sourceType: 'warehouse',
+    sourceDocumentId: '11111111-1111-4111-8111-111111111111',
+    sourceDocumentType: 'warehouse_stock_out',
+    sourcePurchaseRecordKeys: ['PO-WAREHOUSE'],
+    sourceStockOutIds: ['11111111-1111-4111-8111-111111111111'],
+  }
+  const sources = loaded.module.buildWarehouseAccountingSourceStates({
+    purchaseLedgerAccrual: ready([
+      { purchaseId: 'PO-WAREHOUSE', projectId: 'P1', totalCost: 1000 },
+      { purchaseId: 'PO-DIRECT', projectId: 'P1', totalCost: 25 },
+    ]),
+    projectCosts: ready([warehouseCost]),
+    warehouseContext: ready({ trackedPurchaseRecordKeys: ['PO-WAREHOUSE'] }),
+  })
+  assert.deepEqual(sources.purchaseLedgerAccrual.data.map((row) => row.purchaseId), [
+    'PO-WAREHOUSE', 'PO-DIRECT',
+  ])
+  assert.deepEqual(sources.purchaseAccrual.data.map((row) => row.purchaseId), ['PO-DIRECT'])
+  assert.equal(sources.projectCosts.data[0].sourceType, 'warehouse')
+
+  const unavailable = loaded.module.buildWarehouseAccountingSourceStates({
+    purchaseLedgerAccrual: ready([{ purchaseId: 'PO-WAREHOUSE', totalCost: 1000 }]),
+    projectCosts: ready([warehouseCost]),
+    warehouseContext: { status: 'error', data: null, stale: false },
+  })
+  assert.equal(unavailable.purchaseAccrual.status, 'error')
+  assert.equal(unavailable.purchaseAccrual.data, null)
+  assert.equal(unavailable.purchaseLedgerAccrual.status, 'ready')
+})
+
+test('warehouse context cannot cross an authenticated actor switch', () => {
+  assert.ifError(loaded.error)
+  const previous = {
+    status: 'ready',
+    data: { trackedPurchaseRecordKeys: ['PO-OLD'] },
+    stale: false,
+    actorKey: 'employee-old',
+  }
+  assert.equal(
+    loaded.module.bindWarehouseContextToActor(previous, 'employee-old').status,
+    'ready',
+  )
+  const switched = loaded.module.bindWarehouseContextToActor(previous, 'employee-new')
+  assert.equal(switched.status, 'loading')
+  assert.equal(switched.data, null)
+})
+
+test('warehouse-managed project costs render read-only in the generic project-cost list', () => {
+  assert.ifError(loaded.error)
+  const html = renderToStaticMarkup(createElement(loaded.module.ProjectCostSection, {
+    access: { view: true, create: false, update: true, delete: true },
+    projects,
+    employees: [],
+    records: [
+      {
+        costRecordId: 'WAREHOUSE-SO:11111111-1111-4111-8111-111111111111',
+        projectId: 'P1', projectName: '共享成本项目', costType: '材料费',
+        amount: 460, date: `${month}-09`, sourceType: 'warehouse',
+      },
+      {
+        costRecordId: 'MANUAL-1', projectId: 'P1', projectName: '共享成本项目',
+        costType: '外包费', amount: 20, date: `${month}-09`, sourceType: 'manual',
+      },
+    ],
+    setRecords() {},
+  }))
+  assert.equal((html.match(/>编辑<\/button>/gu) || []).length, 1)
+  assert.equal((html.match(/>删除<\/button>/gu) || []).length, 1)
+  assert.match(html, /仓库自动成本仅能通过仓库冲销更正/u)
+})
+
 test('shared cost domain keeps four manual categories and repair estimates pending', () => {
   const model = buildCostAccountingReadModel(costInput)
   assert.equal(model.companyMonthlyTotal.total, 500)
@@ -266,7 +362,7 @@ test('AuthenticatedApp builds Home shared models only after projecting exact sou
   assert.ok(summaryIndex > modelIndex)
   assert.match(
     authenticated,
-    /buildHomeFinancialModels\(\{[\s\S]*?selectedMonth:\s*currentMonthValue\(\)[\s\S]*?sourceStates:\s*dashboardSourceStates/u,
+    /buildHomeFinancialModels\(\{[\s\S]*?selectedMonth:\s*currentMonthValue\(\)[\s\S]*?sourceStates:\s*accountingSourceStates/u,
   )
   assert.match(
     authenticated,
@@ -294,11 +390,11 @@ test('monthly purchase payment facts fail closed until the accrual source is rea
     monthFilter: month,
     onMonthFilterChange() {},
   }
-  const renderAccrual = (purchaseAccrual) => renderToStaticMarkup(createElement(
+  const renderAccrual = (purchaseLedgerAccrual) => renderToStaticMarkup(createElement(
     loaded.module.MonthlySummarySection,
     {
       ...baseProps,
-      sourceStates: { ...baseProps.sourceStates, purchaseAccrual },
+      sourceStates: { ...baseProps.sourceStates, purchaseLedgerAccrual },
     },
   ))
 
@@ -319,7 +415,7 @@ test('monthly purchase payment facts fail closed until the accrual source is rea
     ...baseProps,
     sourceStates: {
       ...baseProps.sourceStates,
-      purchaseAccrual: ready(purchases),
+      purchaseLedgerAccrual: ready(purchases),
       purchasePayments: ready([{
         paymentId: 'PAY-READY', purchaseId: 'PO1', paymentDate: `${month}-12`,
         paymentDateSource: 'recorded', paymentDateLegacyInferred: false, jpyAmount: 50,
@@ -362,6 +458,7 @@ test('dashboard project rows reuse cost-domain lifetime totals and pending class
       receipts: empty,
       laborWindow: ready(laborWindow),
       purchaseAccrual: ready(purchases),
+      profitabilityPurchaseAccrual: ready(purchases),
       purchasePayments: empty,
       projectCosts: ready(manualCosts),
       operatingExpenses: ready(operating),
@@ -395,6 +492,7 @@ test('monthly summary renders only confirmed shared totals and separate pending 
     projects: ready(projects),
     laborWindow: ready(laborWindow),
     purchaseAccrual: ready(purchases),
+    purchaseLedgerAccrual: ready(purchases),
     purchasePayments: ready([]),
     projectCosts: ready(manualCosts),
     operatingExpenses: ready(operating),
@@ -427,6 +525,7 @@ test('monthly summary publishes no project-related zero while the project source
     projects: ready(projects),
     laborWindow: ready(laborWindow),
     purchaseAccrual: ready(purchases),
+    purchaseLedgerAccrual: ready(purchases),
     purchasePayments: ready([]),
     projectCosts: ready(manualCosts),
     operatingExpenses: ready(operating),

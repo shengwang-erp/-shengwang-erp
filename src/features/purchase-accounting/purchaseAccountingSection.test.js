@@ -952,6 +952,7 @@ test('monthly summary executes cross-month purchase accounting without adding pa
       projectCosts: ready(summaryProjectCosts),
       operatingExpenses: ready(summaryOperatingExpenses),
       purchaseAccrual: ready(summaryPurchases),
+      purchaseLedgerAccrual: ready(summaryPurchases),
       purchasePayments: ready(summaryPayments),
       fuel: ready(summaryFuel),
       vehicleExpenses: ready(summaryVehicleExpenses),
@@ -1013,11 +1014,11 @@ test('App wires the purchase accounting tab and payment ledger through monthly s
   )
   assert.match(
     monthlySummary,
-    /const purchaseAccounting = purchaseAccrualState\.status === 'ready'[\s\S]*?\? buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords:\s*purchaseAccrualState\.data,[\s\S]*?paymentRecords:\s*purchasePaymentState\.data \|\| \[\],[\s\S]*?paymentState:\s*purchasePaymentState[\s\S]*?month:\s*monthFilter[\s\S]*?: null/u,
+    /const purchaseAccounting = purchaseLedgerAccrualState\.status === 'ready'[\s\S]*?\? buildPurchaseAccountingReadModel\(\{[\s\S]*?purchaseRecords:\s*purchaseLedgerAccrualState\.data,[\s\S]*?paymentRecords:\s*purchasePaymentState\.data \|\| \[\],[\s\S]*?paymentState:\s*purchasePaymentState[\s\S]*?month:\s*monthFilter[\s\S]*?: null/u,
   )
   assert.match(
     monthlySummary,
-    /const purchasePaymentVisible = purchaseAccrualState\.status === 'ready' &&[\s\S]*?purchasePaymentState\.status === 'ready'/u,
+    /const purchasePaymentVisible = purchaseLedgerAccrualState\.status === 'ready' &&[\s\S]*?purchasePaymentState\.status === 'ready'/u,
   )
   assert.match(
     monthlySummary,
@@ -1149,6 +1150,7 @@ test('owner dashboard executes shared purchase rows for cross-month cash, payabl
       lifetimeStale: false, incompleteMonths: [], staleMonths: [],
     }),
     purchaseAccrual: ready(source.purchaseRecords),
+    profitabilityPurchaseAccrual: ready(source.purchaseRecords),
     purchasePayments: ready(source.purchasePaymentRecords),
     projectCosts: ready([]),
     operatingExpenses: ready([]),
@@ -1213,7 +1215,7 @@ test('AuthenticatedApp wires separate purchase accrual and payment states into t
   )
   assert.match(
     authenticatedApp,
-    /purchaseAccrual:\s*projectPersistentSource\(purchaseRawState,[\s\S]*?data:\s*purchaseRecords/u,
+    /const purchaseLedgerAccrualSource = projectPersistentSource\(purchaseRawState,[\s\S]*?data:\s*purchaseRecords/u,
   )
   assert.match(
     authenticatedApp,

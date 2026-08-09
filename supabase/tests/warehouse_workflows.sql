@@ -255,7 +255,8 @@ insert into public.warehouse_variants(
 insert into public.purchase_records(record_key, payload, status) values
   ('PO-WF-001', '{"purchaseId":"PO-WF-001","itemName":"空调铜管","quantity":6,"unit":"米","totalCost":1000}'::jsonb, 'active');
 insert into public.projects(record_key, payload, status) values
-  ('P-WF-001', '{"projectId":"P-WF-001","projectName":"正式项目"}'::jsonb, 'active');
+  ('P-WF-001', '{"projectId":"P-WF-001","projectName":"正式项目"}'::jsonb, 'active'),
+  ('P-WF-OTHER', '{"projectId":"P-WF-OTHER","projectName":"其他正式项目"}'::jsonb, 'active');
 
 create temporary table workflow_baseline as
 select
@@ -351,10 +352,15 @@ set local role authenticated;
 
 create temporary table saved_minor as
 select public.create_minor_work_order_secure(
-  '{"title":"安装一台空调","customerName":"未来社","workDate":"2026-08-09","locationText":"東京都港区","description":"小工事，不建主项目"}'
+  '{"title":"安装一台空调","customerName":"未来社","workDate":"2026-07-31","locationText":"東京都港区","description":"小工事，不建主项目"}'
 ) as payload;
 select is((select payload->>'status' from saved_minor), 'open', 'minor work order starts open');
 select is((select payload->>'assignedProjectId' from saved_minor), null, 'minor work order is not a fake project');
+select is(
+  (select payload->>'materialCost' from saved_minor),
+  null,
+  'minor work response redacts material cost without warehouse cost permission'
+);
 
 create temporary table saved_receipt as
 select public.submit_warehouse_receipt_secure(
@@ -1025,6 +1031,14 @@ select has_function(
   'public', 'confirm_warehouse_stock_out_secure', array['uuid', 'jsonb', 'text'],
   'stock-out confirmation RPC exists'
 );
+select has_function(
+  'public', 'list_warehouse_material_cost_context_secure', array[]::text[],
+  'warehouse material accounting context RPC exists'
+);
+select has_function(
+  'private', 'guard_warehouse_project_cost_write', array[]::text[],
+  'warehouse project-cost namespace guard exists'
+);
 select is(
   (
     with rpc(signature) as (
@@ -1123,6 +1137,12 @@ insert into public.permission_grants(subject_type, subject_code, permission_key)
   ('position', '仓库管理员', 'warehouse.cost.view'),
   ('position', '主任', 'warehouse.receipt.confirm'),
   ('position', '主任', 'warehouse.stock_flow.confirm')
+on conflict do nothing;
+insert into public.permission_grants(subject_type, subject_code, permission_key) values
+  ('department', '采购部', 'module.project_costs.view'),
+  ('department', '采购部', 'module.project_costs.create'),
+  ('department', '采购部', 'module.project_costs.update'),
+  ('department', '采购部', 'module.project_costs.delete')
 on conflict do nothing;
 
 insert into public.warehouse_sites(id, code, name, kind, active) values
@@ -1493,7 +1513,7 @@ select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001
 set local role authenticated;
 create temporary table task3_stock_out as
 select public.submit_warehouse_stock_out_secure(
-  '{"destinationType":"internal_use","projectId":null,"minorWorkOrderId":null,"destinationNameSnapshot":"公司内部使用","purpose":"FIFO验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '{"destinationType":"project","projectId":"P-WF-001","minorWorkOrderId":null,"destinationNameSnapshot":"正式项目","purpose":"FIFO验证","receiver":"王师傅","requestDate":"2026-08-09"}',
   '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":4}]',
   't3-submit-stock-out'
 ) as payload;
@@ -1549,6 +1569,39 @@ select is((select payload#>>'{lines,0,locationId}' from task3_confirmed_stock_ou
 select is((select payload->>'confirmationIdempotencyKey' from task3_confirmed_stock_out), 't3-confirm-stock-out', 'stock-out response binds the confirmation idempotency key');
 reset role;
 select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)
+     and status = 'active'),
+  1::bigint,
+  'formal-project confirmation posts exactly one active warehouse material cost'
+);
+select is(
+  (select (payload->>'amount')::numeric from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)),
+  460.0000::numeric,
+  'formal-project material cost equals the exact frozen FIFO total'
+);
+select is(
+  (select payload->>'sourceType' from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)),
+  'warehouse',
+  'formal-project cost carries warehouse provenance'
+);
+select is(
+  (select payload->>'sourceDocumentId' from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)),
+  (select payload->>'id' from task3_confirmed_stock_out),
+  'formal-project cost binds the exact stock-out document UUID'
+);
+select results_eq(
+  $$select jsonb_array_elements_text(payload->'sourcePurchaseRecordKeys')
+    from public.project_cost_records
+    where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)
+    order by 1$$,
+  $$values ('PO-T3-100'::text), ('PO-T3-130'::text)$$,
+  'formal-project cost provenance identifies exact consumed purchase records without fuzzy names'
+);
+select is(
   (select count(*) from public.warehouse_inventory_movements movement
    where movement.source_document_type = 'warehouse_stock_out'
      and movement.source_document_id = (select payload->>'id' from task3_confirmed_stock_out)),
@@ -1579,6 +1632,15 @@ select is(
   (select payload->>'id' from task3_confirmed_stock_out),
   'exact stock-out confirmation retry returns the original frozen result'
 );
+reset role;
+select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)),
+  1::bigint,
+  'exact confirmation retry cannot duplicate the formal-project cost'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
 select is(
   pg_temp.task1_error_hint(format(
     'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
@@ -1630,6 +1692,323 @@ select is(
   166.6667::numeric,
   'cost redaction does not remove the authoritative frozen stock-out cost'
 );
+select is(
+  (select count(*) from public.project_cost_records
+   where payload->>'sourceDocumentId' = (select payload->>'id' from task3_confirmed_redacted_stock_out)),
+  0::bigint,
+  'internal-use confirmation creates no project cost record'
+);
+
+-- Task 4: confirmed-receipt provenance, protected cost ownership and minor-work aggregation.
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000004', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_material_cost_context_secure()$$,
+  '42501', 'warehouse material cost context permission required',
+  'active employee without both accounting permissions cannot read warehouse cost context'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_material_cost_context_secure()$$,
+  '42501', 'warehouse material cost context permission required',
+  'inactive employee cannot read warehouse cost context despite department permissions'
+);
+reset role;
+select is(
+  (
+    select count(*)
+    from pg_proc procedure
+    where procedure.oid in (
+      to_regprocedure('public.assign_minor_work_order_to_project_secure(uuid,text)'),
+      to_regprocedure('public.confirm_warehouse_stock_out_secure(uuid,jsonb,text)')
+    )
+      and strpos(procedure.prosrc, 'warehouse-minor-work-cost:') > 0
+      and strpos(lower(procedure.prosrc), 'for update') > 0
+  ),
+  2::bigint,
+  'minor assignment and confirmation share the same advisory namespace and row-lock order'
+);
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select results_eq(
+  $$select jsonb_array_elements_text(
+      public.list_warehouse_material_cost_context_secure()->'trackedPurchaseRecordKeys'
+    ) order by 1$$,
+  $$values ('PO-T3-100'::text), ('PO-T3-130'::text), ('PO-T3-ROUND'::text)$$,
+  'accounting context exposes only exact purchase keys with confirmed warehouse receipts'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'update public.project_cost_records set payload=jsonb_set(payload,%L,%L::jsonb) where record_key=%L',
+    '{amount}', '999', 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)
+  )),
+  'WAREHOUSE_PROJECT_COST_IMMUTABLE',
+  'generic authenticated update cannot edit a warehouse-owned project cost'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'update public.project_cost_records set status=%L where record_key=%L',
+    'deleted', 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_stock_out)
+  )),
+  'WAREHOUSE_PROJECT_COST_IMMUTABLE',
+  'generic authenticated soft-delete cannot remove a warehouse-owned project cost'
+);
+select is(
+  pg_temp.task1_error_hint($statement$
+    insert into public.project_cost_records(record_key,payload,status)
+    values (
+      'WAREHOUSE-SO:33333333-3333-4333-8333-333333333333',
+      '{"costRecordId":"MANUAL-FORGE","projectId":"P-WF-001","costType":"外包费","amount":1,"date":"2026-08-09","sourceType":"manual"}',
+      'active'
+    )
+  $statement$),
+  'WAREHOUSE_PROJECT_COST_NAMESPACE_RESERVED',
+  'authenticated generic insert cannot reserve a warehouse deterministic key'
+);
+reset role;
+set local role service_role;
+select is(
+  pg_temp.task1_error_hint($statement$
+    insert into public.project_cost_records(record_key,payload,status)
+    values (
+      'FORGED-WAREHOUSE-COST',
+      '{"costRecordId":"FORGED-WAREHOUSE-COST","projectId":"P-WF-001","costType":"材料费","amount":1,"date":"2026-08-09","sourceType":"warehouse","sourceDocumentId":"44444444-4444-4444-8444-444444444444"}',
+      'active'
+    )
+  $statement$),
+  'WAREHOUSE_PROJECT_COST_NAMESPACE_RESERVED',
+  'service role cannot forge warehouse sourceType through a generic insert'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'delete from public.project_cost_records where record_key=%L',
+    (select record_key from public.project_cost_records
+     where payload->>'sourceDocumentType' = 'warehouse_stock_out'
+       and (payload->>'amount')::numeric = 460)
+  )),
+  'WAREHOUSE_PROJECT_COST_IMMUTABLE',
+  'service role physical delete is rejected by the invoker ownership guard'
+);
+reset role;
+
+insert into public.warehouse_batches(
+  id, variant_id, received_at, unit_cost, original_quantity
+) values (
+  'f1400000-0000-4000-8000-000000000001',
+  'd0300000-0000-4000-8000-000000000001', '2026-08-09T04:00:00Z', 130, 2
+);
+insert into public.warehouse_batch_locations(batch_id, location_id, quantity)
+values ('f1400000-0000-4000-8000-000000000001', 'e1100000-0000-4000-8000-000000000001', 2);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task4_minor_before_assignment as
+select public.submit_warehouse_stock_out_secure(
+  jsonb_build_object(
+    'destinationType', 'minor_work_order', 'projectId', null,
+    'minorWorkOrderId', (select payload->>'id' from saved_minor),
+    'destinationNameSnapshot', '未来社・安装一台空调', 'purpose', '追加材料',
+    'receiver', '王师傅', 'requestDate', '2026-08-09'
+  ),
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5}]',
+  't4-minor-before-assignment'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task4_minor_before_assignment),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId', (select payload#>>'{lines,0,id}' from task4_minor_before_assignment),
+    'confirmedQuantity', 0.5,
+    'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000001'
+  )),
+  't4-confirm-minor-before-assignment'
+);
+reset role;
+select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  0::bigint,
+  'unassigned minor-work confirmation exposes frozen cost without posting a project cost'
+);
+insert into public.permission_grants(subject_type, subject_code, permission_key)
+values ('department', '采购部', 'warehouse.cost.view')
+on conflict do nothing;
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task4_minor_assignment_response as
+select public.assign_minor_work_order_to_project_secure(
+  (select (payload->>'id')::uuid from saved_minor), 'P-WF-001'
+) as payload;
+select is(
+  (select (payload->>'materialCost')::numeric from task4_minor_assignment_response),
+  65.0000::numeric,
+  'minor work response exposes the confirmed frozen total with warehouse cost permission'
+);
+create temporary table task4_minor_cost_before_retry as
+select payload, updated_at from public.project_cost_records
+where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor);
+select public.assign_minor_work_order_to_project_secure(
+  (select (payload->>'id')::uuid from saved_minor), 'P-WF-001'
+);
+reset role;
+select is(
+  (select (payload->>'amount')::numeric from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  65.0000::numeric,
+  'minor-work assignment posts the current confirmed frozen total exactly once'
+);
+select is(
+  (select payload->>'date' from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  '2026-07-31',
+  'minor-work material cost is recognized in the authoritative work-date month'
+);
+select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  1::bigint,
+  'repeated assignment to the same project is idempotent'
+);
+select is(
+  (select row(cost.payload, cost.updated_at)
+   from public.project_cost_records cost
+   where cost.record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  (select row(snapshot.payload, snapshot.updated_at) from task4_minor_cost_before_retry snapshot),
+  'repeated same-project assignment performs zero project-cost mutation'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task4_minor_after_assignment as
+select public.submit_warehouse_stock_out_secure(
+  jsonb_build_object(
+    'destinationType', 'minor_work_order', 'projectId', null,
+    'minorWorkOrderId', (select payload->>'id' from saved_minor),
+    'destinationNameSnapshot', '未来社・安装一台空调', 'purpose', '再追加材料',
+    'receiver', '王师傅', 'requestDate', '2026-08-09'
+  ),
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5}]',
+  't4-minor-after-assignment'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task4_minor_after_assignment),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId', (select payload#>>'{lines,0,id}' from task4_minor_after_assignment),
+    'confirmedQuantity', 0.5,
+    'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000001'
+  )),
+  't4-confirm-minor-after-assignment'
+);
+reset role;
+select is(
+  (select (payload->>'amount')::numeric from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  130.0000::numeric,
+  'later confirmed issue to an assigned minor work order atomically updates its deterministic total'
+);
+select is(
+  (select payload->>'date' from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  '2026-07-31',
+  'later-month issue increases minor-work cost without shifting the original work-date month'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task4_atomic_conflict_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"project","projectId":"P-WF-OTHER","minorWorkOrderId":null,"destinationNameSnapshot":"其他正式项目","purpose":"原子回滚测试","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5}]',
+  't4-atomic-conflict-submit'
+) as payload;
+reset role;
+insert into public.project_cost_records(record_key,payload,status)
+select
+  'WAREHOUSE-SO:' || (payload->>'id'),
+  jsonb_build_object(
+    'costRecordId', 'CONFLICT', 'projectId', 'P-WF-OTHER', 'costType', '外包费',
+    'amount', 1, 'date', '2026-08-09', 'sourceType', 'manual'
+  ),
+  'active'
+from task4_atomic_conflict_out;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task4_atomic_conflict_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task4_atomic_conflict_out),
+      'confirmedQuantity', 0.5,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't4-atomic-conflict-confirm'
+  )),
+  'WAREHOUSE_PROJECT_COST_CONFLICT',
+  'project-cost conflict rejects the whole formal-project confirmation'
+);
+reset role;
+select is(
+  (select status from public.warehouse_stock_out_requests
+   where id = (select (payload->>'id')::uuid from task4_atomic_conflict_out)),
+  'pending',
+  'project-cost insert failure rolls the stock-out status back to pending'
+);
+select is(
+  (select quantity from public.warehouse_batch_locations
+   where batch_id = 'f1400000-0000-4000-8000-000000000001'
+     and location_id = 'e1100000-0000-4000-8000-000000000001'),
+  2.000::numeric,
+  'project-cost insert failure rolls the FIFO balance back exactly'
+);
+select is(
+  (select count(*) from public.warehouse_inventory_movements
+   where source_document_id = (select payload->>'id' from task4_atomic_conflict_out)),
+  0::bigint,
+  'project-cost insert failure leaves no partial stock movement'
+);
+delete from public.warehouse_batch_locations
+where batch_id = 'f1400000-0000-4000-8000-000000000001';
+delete from public.warehouse_batches
+where id = 'f1400000-0000-4000-8000-000000000001';
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.assign_minor_work_order_to_project_secure(%L,%L)',
+    (select payload->>'id' from saved_minor), 'P-WF-OTHER'
+  )),
+  'WAREHOUSE_DESTINATION_UNAVAILABLE',
+  'minor-work reassignment cannot silently move an existing warehouse cost'
+);
+reset role;
+select is(
+  (select payload->>'projectId' from public.project_cost_records
+   where record_key = 'WAREHOUSE-MWO:' || (select payload->>'id' from saved_minor)),
+  'P-WF-001',
+  'failed minor-work reassignment leaves the original project cost ownership unchanged'
+);
+select ok(
+  not has_table_privilege('service_role', 'public.project_cost_records', 'TRUNCATE'),
+  'service role cannot truncate warehouse-owned project-cost history'
+);
+set local role service_role;
+select throws_ok(
+  $$truncate table public.project_cost_records$$,
+  '42501', 'permission denied for table project_cost_records',
+  'service role truncate attempt is denied instead of bypassing row guards'
+);
+reset role;
 
 select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
 set local role service_role;
@@ -1759,6 +2138,16 @@ select is(
 update public.warehouse_receipts
 set status = 'void', rejection_reason = '确认后冲销前的历史保留测试'
 where id = (select (payload->>'id')::uuid from task3_confirmed_round);
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  (select count(*) from jsonb_array_elements_text(
+    public.list_warehouse_material_cost_context_secure()->'trackedPurchaseRecordKeys'
+  ) key where key = 'PO-T3-ROUND'),
+  1::bigint,
+  'void-after-confirmation receipt remains warehouse tracked while its batch history exists'
+);
+reset role;
 select is(
   (select confirmation_idempotency_key from public.warehouse_receipts
    where id = (select (payload->>'id')::uuid from task3_confirmed_round)),

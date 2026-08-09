@@ -5,6 +5,7 @@ import {
   buildCostAccountingReadModel,
   classifyManualProjectCosts,
 } from './costAccountingDomain.js'
+import { bridgeWarehouseMaterialCosts } from './warehouseMaterialCostBridge.js'
 
 function laborWindow(overrides = {}) {
   return {
@@ -109,6 +110,105 @@ test('manual project costs have one explicit confirmed-or-pending classification
   assert.deepEqual(classified.manualToolCosts.map((row) => row.costRecordId), ['M-T'])
   assert.deepEqual(classified.manualVehicleCosts.map((row) => row.costRecordId), ['M-V'])
   assert.deepEqual(records, original)
+})
+
+test('warehouse-issued material replaces confirmed-receipt purchase accrual without double count', () => {
+  const warehouseCosts = [{
+    costRecordId: 'WAREHOUSE-SO:11111111-1111-4111-8111-111111111111',
+    projectId: 'P1', costType: '材料费', amount: 460, date: '2026-07-09',
+    sourceType: 'warehouse',
+    sourceDocumentId: '11111111-1111-4111-8111-111111111111',
+    sourceDocumentType: 'warehouse_stock_out',
+    sourcePurchaseRecordKeys: ['PO-WAREHOUSE'],
+    sourceStockOutIds: ['11111111-1111-4111-8111-111111111111'],
+  }]
+  const bridged = bridgeWarehouseMaterialCosts({
+    purchaseRows: [{
+      purchaseId: 'PO-WAREHOUSE', purchaseDate: '2026-07-03', projectId: 'P1',
+      purchaseStatus: '正常', totalCost: 1000,
+    }],
+    projectCostRecords: warehouseCosts,
+    trackedPurchaseRecordKeys: ['PO-WAREHOUSE'],
+  })
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: bridged.purchaseRows,
+    manualProjectCosts: warehouseCosts,
+    fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    operatingExpenses: [],
+  }))
+
+  assert.equal(model.companyMonthlyTotal.purchase, 460)
+  assert.equal(model.companyMonthlyTotal.manual, 0)
+  assert.equal(model.projectLifetimeById.P1.purchase, 460)
+  assert.equal(model.companyMonthlyTotal.total, 300460)
+})
+
+test('warehouse-issued material preserves safe four-decimal frozen cost in project profit', () => {
+  const warehouseCosts = [{
+    costRecordId: 'WAREHOUSE-SO:22222222-2222-4222-8222-222222222222',
+    projectId: 'P1', costType: '材料费', amount: 166.6667, date: '2026-07-09',
+    sourceType: 'warehouse',
+    sourceDocumentId: '22222222-2222-4222-8222-222222222222',
+    sourceDocumentType: 'warehouse_stock_out',
+    sourcePurchaseRecordKeys: ['PO-WAREHOUSE-DECIMAL'],
+    sourceStockOutIds: ['22222222-2222-4222-8222-222222222222'],
+  }]
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: [],
+    manualProjectCosts: warehouseCosts,
+    fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    operatingExpenses: [],
+  }))
+
+  assert.equal(model.companyMonthlyTotal.purchase, 166.6667)
+  assert.equal(model.projectLifetimeById.P1.purchase, 166.6667)
+  assert.equal(
+    model.anomalies.some(({ source, code }) =>
+      source === 'warehouseMaterialCosts' && code === 'invalid_amount'),
+    false,
+  )
+})
+
+test('warehouse-issued four-decimal costs aggregate in fixed 1/10000 yen units', () => {
+  const costs = [
+    ['33333333-3333-4333-8333-333333333333', 0.1],
+    ['44444444-4444-4444-8444-444444444444', 0.2],
+    ['66666666-6666-4666-8666-666666666666', 1.005],
+  ].map(([id, amount]) => ({
+    costRecordId: `WAREHOUSE-SO:${id}`,
+    projectId: 'P1', costType: '材料费', amount, date: '2026-07-09',
+    sourceType: 'warehouse', sourceDocumentId: id,
+    sourceDocumentType: 'warehouse_stock_out', sourcePurchaseRecordKeys: [],
+    sourceStockOutIds: [id],
+  }))
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: [], manualProjectCosts: costs,
+    fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    operatingExpenses: [],
+  }))
+
+  assert.equal(model.companyMonthlyTotal.purchase, 1.305)
+  assert.equal(model.companyMonthlyTotal.total, 300001.305)
+  assert.equal(model.projectLifetimeById.P1.purchase, 1.305)
+})
+
+test('confirmed warehouse receipt without an issue is inventory, not current project purchase cost', () => {
+  const bridged = bridgeWarehouseMaterialCosts({
+    purchaseRows: [{
+      purchaseId: 'PO-INVENTORY', purchaseDate: '2026-07-03', projectId: 'P1',
+      purchaseStatus: '正常', totalCost: 1000,
+    }],
+    projectCostRecords: [],
+    trackedPurchaseRecordKeys: ['PO-INVENTORY'],
+  })
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: bridged.purchaseRows,
+    manualProjectCosts: [], fuelRecords: [], vehicleExpenseRecords: [],
+    vehicleIssueRecords: [], operatingExpenses: [],
+  }))
+  assert.equal(model.companyMonthlyTotal.purchase, 0)
+  assert.equal(model.projectLifetimeById.P1.purchase, 0)
+  assert.equal(model.companyMonthlyTotal.total, 300000)
 })
 
 test('manual classification snapshots isolate caller and output mutations in both directions', () => {

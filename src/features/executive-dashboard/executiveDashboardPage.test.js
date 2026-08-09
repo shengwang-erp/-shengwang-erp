@@ -273,6 +273,7 @@ function actualFullAccessDashboardModel() {
         staleMonths: [],
       }),
       purchaseAccrual: empty(),
+      profitabilityPurchaseAccrual: empty(),
       purchasePayments: empty(),
       projectCosts: empty(),
       operatingExpenses: empty(),

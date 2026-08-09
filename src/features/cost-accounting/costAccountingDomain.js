@@ -1,4 +1,9 @@
 import { monthOfDate, normalizeMonth } from '../executive-dashboard/dashboardTime.js'
+import {
+  bridgeWarehouseMaterialCosts,
+  MAX_WAREHOUSE_MATERIAL_COST,
+} from './warehouseMaterialCostBridge.js'
+import { fromFourDecimalUnits, toSignedFourDecimalUnits } from './fixedPointCurrency.js'
 
 const PENDING_MANUAL_TYPES = new Set(['人工费', '材料费', '工具费', '车辆费'])
 const CONFIRMED_MANUAL_TYPES = new Set(['外包费', '运输费', '其他费用'])
@@ -89,6 +94,55 @@ function snapshotArray(value, name) {
 function safeYen(value) {
   return typeof value === 'number' && Number.isFinite(value) &&
     Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+    ? value
+    : null
+}
+
+function fixedCostUnits(value) {
+  return toSignedFourDecimalUnits(value)
+}
+
+export function isSafeCostAccountingAmount(value) {
+  return typeof value === 'number' && value >= 0 && !Object.is(value, -0) &&
+    (Number.isSafeInteger(value) || fixedCostUnits(value) !== null)
+}
+
+export function isSafeSignedCostAccountingAmount(value) {
+  return typeof value === 'number' && !Object.is(value, -0) &&
+    (Number.isSafeInteger(value) || fixedCostUnits(value) !== null)
+}
+
+export function addSafeCostAccountingAmounts(left, right) {
+  if (!isSafeCostAccountingAmount(left) || !isSafeCostAccountingAmount(right)) return null
+  if (Number.isSafeInteger(left) && Number.isSafeInteger(right)) {
+    return right <= Number.MAX_SAFE_INTEGER - left ? left + right : null
+  }
+  const leftUnits = fixedCostUnits(left)
+  const rightUnits = fixedCostUnits(right)
+  if (leftUnits === null || rightUnits === null ||
+      rightUnits > Number.MAX_SAFE_INTEGER - leftUnits) return null
+  return fromFourDecimalUnits(leftUnits + rightUnits)
+}
+
+export function addSafeSignedCostAccountingAmounts(left, right) {
+  if (!isSafeSignedCostAccountingAmount(left) || !isSafeSignedCostAccountingAmount(right)) {
+    return null
+  }
+  if (Number.isSafeInteger(left) && Number.isSafeInteger(right)) {
+    const result = left + right
+    return Number.isSafeInteger(result) ? result : null
+  }
+  const leftUnits = fixedCostUnits(left)
+  const rightUnits = fixedCostUnits(right)
+  if (leftUnits === null || rightUnits === null) return null
+  const resultUnits = leftUnits + rightUnits
+  return Number.isSafeInteger(resultUnits) ? fromFourDecimalUnits(resultUnits) : null
+}
+
+function safeWarehouseYen(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 &&
+    value <= MAX_WAREHOUSE_MATERIAL_COST &&
+    fixedCostUnits(value) !== null
     ? value
     : null
 }
@@ -282,6 +336,17 @@ function normalizeInput(input) {
   if (incompleteMonths.some((month) => normalizeMonth(month) !== month)) {
     throw new TypeError('laborWindow.incompleteMonths are invalid')
   }
+  const purchaseRows = snapshotArray(snapshot.purchaseRows, 'purchaseRows')
+  const manualProjectCosts = snapshotArray(snapshot.manualProjectCosts, 'manualProjectCosts')
+  const warehouseCandidates = manualProjectCosts.filter((row) => (
+    row !== MALFORMED_ROW && isSafeRow(row) &&
+    ['warehouse', 'warehouseReversal'].includes(safeOwnValue(row, 'sourceType'))
+  ))
+  const bridge = bridgeWarehouseMaterialCosts({
+    purchaseRows: [],
+    projectCostRecords: warehouseCandidates,
+    trackedPurchaseRecordKeys: [],
+  })
   return {
     ...snapshot,
     months,
@@ -292,11 +357,12 @@ function normalizeInput(input) {
       incompleteMonths: [...new Set(incompleteMonths)],
       staleMonths: snapshotArray(laborWindow.staleMonths, 'laborWindow.staleMonths'),
     },
-    purchaseRows: snapshotArray(snapshot.purchaseRows, 'purchaseRows'),
+    purchaseRows,
     fuelRecords: snapshotArray(snapshot.fuelRecords, 'fuelRecords'),
     vehicleExpenseRecords: snapshotArray(snapshot.vehicleExpenseRecords, 'vehicleExpenseRecords'),
     vehicleIssueRecords: snapshotArray(snapshot.vehicleIssueRecords, 'vehicleIssueRecords'),
-    manualProjectCosts: snapshotArray(snapshot.manualProjectCosts, 'manualProjectCosts'),
+    manualProjectCosts: manualProjectCosts.filter((row) => !warehouseCandidates.includes(row)),
+    warehouseMaterialCosts: bridge.warehouseMaterialCosts,
     operatingExpenses: snapshotArray(snapshot.operatingExpenses, 'operatingExpenses'),
   }
 }
@@ -345,17 +411,17 @@ function safeProjectMap(value) {
 function sumCostParts(parts) {
   let total = 0
   for (const amount of parts) {
-    if (amount === null || amount > Number.MAX_SAFE_INTEGER - total) return null
-    total += amount
+    if (amount === null) return null
+    total = addSafeCostAccountingAmounts(total, amount)
+    if (total === null) return null
   }
   return total
 }
 
 function tryAdd(target, category, amount) {
-  if (target[category] > Number.MAX_SAFE_INTEGER - amount) {
-    return false
-  }
-  target[category] += amount
+  const total = addSafeCostAccountingAmounts(target[category], amount)
+  if (total === null) return false
+  target[category] = total
   return true
 }
 
@@ -372,10 +438,26 @@ function projectRelation(row, activeProjects, anomalies, source, recordId) {
   return projectId
 }
 
-function validateAmountAndMonth(row, amountField, dateField, anomalies, source, recordId) {
-  const amount = safeYen(safeOwnValue(row, amountField))
+function validateAmountAndMonth(
+  row,
+  amountField,
+  dateField,
+  anomalies,
+  source,
+  recordId,
+  amountValidator = safeYen,
+) {
+  const amount = amountValidator(safeOwnValue(row, amountField))
   if (amount === null) {
-    anomaly(anomalies, source, recordId, 'invalid_amount', '金额必须是有限、安全、非负整数日元。')
+    anomaly(
+      anomalies,
+      source,
+      recordId,
+      'invalid_amount',
+      source === 'warehouseMaterialCosts'
+        ? '仓库冻结成本必须是有限、安全、正数且最多四位小数。'
+        : '金额必须是有限、安全、非负整数日元。',
+    )
     return null
   }
   const month = monthOfDate(safeOwnValue(row, dateField))
@@ -510,6 +592,26 @@ export function buildCostAccountingReadModel(input) {
     if (!fact) continue
     const projectId = projectRelation(row, activeProjects, anomalies, 'purchaseRows', recordId)
     addFact({ source: 'purchaseRows', recordId, ...fact, category: 'purchase', projectId })
+  }
+
+  for (const { row, recordId } of collectActiveRows(normalized.warehouseMaterialCosts, {
+    source: 'warehouseMaterialCosts', idFields: ['costRecordId'], anomalies,
+  })) {
+    const fact = validateAmountAndMonth(
+      row,
+      'amount',
+      'date',
+      anomalies,
+      'warehouseMaterialCosts',
+      recordId,
+      safeWarehouseYen,
+    )
+    if (!fact) continue
+    const projectId = projectRelation(
+      row, activeProjects, anomalies, 'warehouseMaterialCosts', recordId,
+    )
+    if (!projectId) continue
+    addFact({ source: 'warehouseMaterialCosts', recordId, ...fact, category: 'purchase', projectId })
   }
 
   const vehicleSources = [

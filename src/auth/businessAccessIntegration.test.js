@@ -567,6 +567,13 @@ test('Accounting monthly summary blocks an inferable total when any category is 
           totalCost: 3000, purchaseStatus: '正常', openingPaidAmount: 0,
         }],
       },
+      purchaseLedgerAccrual: {
+        status: 'ready',
+        data: [{
+          purchaseId: 'PO-1', projectId: 'P-1', purchaseDate: '2026-07-01',
+          totalCost: 3000, purchaseStatus: '正常', openingPaidAmount: 0,
+        }],
+      },
     },
   }))
 
@@ -831,6 +838,8 @@ test('Dashboard executed SSR access/source matrix removes stale values synchrono
     receipts: overrides.receipts || blocked(),
     laborWindow: overrides.laborWindow || blocked(),
     purchaseAccrual: overrides.purchaseAccrual || blocked(),
+    profitabilityPurchaseAccrual: overrides.profitabilityPurchaseAccrual ||
+      overrides.purchaseAccrual || blocked(),
     purchasePayments: overrides.purchasePayments || blocked(),
     projectCosts: overrides.projectCosts || blocked(),
     operatingExpenses: overrides.operatingExpenses || blocked(),
@@ -1005,6 +1014,7 @@ test('Dashboard attendance alerts derive only from the standard attendance sourc
     receipts: forbidden(),
     laborWindow: forbidden(),
     purchaseAccrual: forbidden(),
+    profitabilityPurchaseAccrual: forbidden(),
     purchasePayments: forbidden(),
     projectCosts: forbidden(),
     operatingExpenses: forbidden(),

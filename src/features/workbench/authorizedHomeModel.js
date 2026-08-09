@@ -1,6 +1,7 @@
 import { canAccessView, getVisibleAdminRoutes } from '../../auth/businessAccess.js'
 import { getAdminRoute } from '../../navigation/adminRoutes.js'
 import { isHiddenSystemEmployee, isSuperAdmin } from '../../utils/permissions.js'
+import { isSafeCostAccountingAmount } from '../cost-accounting/costAccountingDomain.js'
 
 const authorizedHomeModels = new WeakSet()
 
@@ -121,7 +122,9 @@ function accountingPresentation(state, view) {
   const value = view === 'accounting'
     ? ownValue(ownValue(model, 'companyMonthlyTotal'), 'total')
     : ownValue(ownValue(model, 'summary'), 'monthPurchaseCost')
-  const amount = safeNonNegativeInteger(value)
+  const amount = view === 'accounting'
+    ? isSafeCostAccountingAmount(value) ? value : null
+    : safeNonNegativeInteger(value)
   return amount === null
     ? { status: 'error', displayValue: '读取失败' }
     : { status: 'ready', displayValue: formatYen(amount), badgeCount: 0, amount }
@@ -175,7 +178,10 @@ export function buildAuthorizedHomeModel({ user, routes, sourceStates } = {}) {
       displayValue: presentation.displayValue,
       sourceStatus: presentation.status,
       sourceStale: presentation.stale === true,
-      numericAmount: safeNonNegativeInteger(presentation.amount),
+      numericAmount: route.view === 'accounting' &&
+          isSafeCostAccountingAmount(presentation.amount)
+        ? presentation.amount
+        : safeNonNegativeInteger(presentation.amount),
     })
 
     if (presentation.status !== 'ready' || presentation.stale === true) {
@@ -229,7 +235,9 @@ export function buildAuthorizedHomeModel({ user, routes, sourceStates } = {}) {
     : 0
   const numericAmount = (view) => moduleByView.get(view)?.sourceStatus === 'ready' &&
       moduleByView.get(view)?.sourceStale !== true &&
-      Number.isSafeInteger(moduleByView.get(view)?.numericAmount)
+      (view === 'accounting'
+        ? isSafeCostAccountingAmount(moduleByView.get(view)?.numericAmount)
+        : Number.isSafeInteger(moduleByView.get(view)?.numericAmount))
     ? moduleByView.get(view).numericAmount
     : null
   const summary = {

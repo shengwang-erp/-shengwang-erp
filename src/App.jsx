@@ -23,10 +23,22 @@ import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import PurchaseAccountingSection from './features/purchase-accounting/PurchaseAccountingSection.jsx'
+import { createManualProjectCostPersistence } from './features/cost-accounting/projectCostPersistence.js'
 import ExecutiveDashboardPage from './features/executive-dashboard/ExecutiveDashboardPage.jsx'
 import { buildExecutiveDashboardReadModel } from './features/executive-dashboard/executiveDashboardDomain.js'
 import { buildMonthWindow } from './features/executive-dashboard/dashboardTime.js'
-import { buildCostAccountingReadModel } from './features/cost-accounting/costAccountingDomain.js'
+import {
+  buildCostAccountingReadModel,
+  isSafeCostAccountingAmount,
+} from './features/cost-accounting/costAccountingDomain.js'
+import {
+  bridgeWarehouseMaterialCosts,
+  warehouseMaterialCostBridge,
+} from './features/cost-accounting/warehouseMaterialCostBridge.js'
+import {
+  assertManualProjectCostMutable,
+  isWarehouseManagedProjectCost,
+} from './features/warehouse/warehouseAccounting.js'
 import { buildLaborCostWindow } from './features/cost-accounting/laborCostWindow.js'
 import {
   buildPurchaseAccountingReadModel,
@@ -146,6 +158,12 @@ const STORAGE_KEYS = {
 const MIGRATABLE_STORAGE_KEYS = Object.values(STORAGE_KEYS).filter(
   (storageKey) => storageKey !== STORAGE_KEYS.employees,
 )
+
+const manualProjectCostPersistence = createManualProjectCostPersistence({
+  upsertRecord,
+  softDelete,
+  storageKey: STORAGE_KEYS.projectCostRecords,
+})
 
 const statusOptions = PROJECT_STATUS_OPTIONS
 const DASHBOARD_PROJECT_STATUSES = new Set(['all', ...PROJECT_STATUS_OPTIONS])
@@ -1260,6 +1278,35 @@ function normalizeProjectCostRecord(record) {
     date: record.date || todayValue(),
     operator: record.operator || '',
     remark: record.remark || '',
+    ...(Object.hasOwn(record, 'sourceType') ? { sourceType: record.sourceType } : {}),
+    ...(Object.hasOwn(record, 'sourceDocumentId')
+      ? { sourceDocumentId: record.sourceDocumentId }
+      : {}),
+    ...(Object.hasOwn(record, 'sourceDocumentType')
+      ? { sourceDocumentType: record.sourceDocumentType }
+      : {}),
+    ...(Object.hasOwn(record, 'sourcePurchaseRecordKeys')
+      ? {
+          sourcePurchaseRecordKeys: Array.isArray(record.sourcePurchaseRecordKeys)
+            ? [...record.sourcePurchaseRecordKeys]
+            : record.sourcePurchaseRecordKeys,
+        }
+      : {}),
+    ...(Object.hasOwn(record, 'sourceStockOutIds')
+      ? {
+          sourceStockOutIds: Array.isArray(record.sourceStockOutIds)
+            ? [...record.sourceStockOutIds]
+            : record.sourceStockOutIds,
+        }
+      : {}),
+    ...(Object.hasOwn(record, 'createdAt') ? { createdAt: record.createdAt } : {}),
+    ...(Object.hasOwn(record, 'updatedAt') ? { updatedAt: record.updatedAt } : {}),
+    ...(Object.hasOwn(record, 'updatedByEmployeeId')
+      ? { updatedByEmployeeId: record.updatedByEmployeeId }
+      : {}),
+    ...(Object.hasOwn(record, 'updatedByEmployeeName')
+      ? { updatedByEmployeeName: record.updatedByEmployeeName }
+      : {}),
   }
 }
 
@@ -1335,6 +1382,66 @@ export function projectPromiseSource(rawState, options = {}) {
 
 export function projectLaborSource(rawState, options = {}) {
   return projectRawBusinessSource(rawState, options)
+}
+
+function warehouseBridgeUnavailableState(states) {
+  if (states.some((state) => state?.stale === true || state?.status === 'loading')) {
+    return Object.freeze({ status: 'loading', data: null, stale: false })
+  }
+  if (states.some((state) => state?.status === 'error')) {
+    return Object.freeze({ status: 'error', data: null, stale: false })
+  }
+  if (states.some((state) => state?.status === 'forbidden')) {
+    return Object.freeze({ status: 'forbidden', data: null, stale: false })
+  }
+  return Object.freeze({ status: 'error', data: null, stale: false })
+}
+
+export function buildWarehouseAccountingSourceStates({
+  purchaseLedgerAccrual,
+  projectCosts,
+  warehouseContext,
+}) {
+  const requiredStates = [purchaseLedgerAccrual, projectCosts, warehouseContext]
+  const ready = requiredStates.every((state) => (
+    state?.status === 'ready' && state.stale !== true && state.data !== null
+  ))
+  if (!ready || !Array.isArray(purchaseLedgerAccrual.data) ||
+      !Array.isArray(projectCosts.data)) {
+    return Object.freeze({
+      purchaseLedgerAccrual,
+      purchaseAccrual: warehouseBridgeUnavailableState(requiredStates),
+      projectCosts,
+    })
+  }
+  try {
+    const bridged = bridgeWarehouseMaterialCosts({
+      purchaseRows: purchaseLedgerAccrual.data,
+      projectCostRecords: projectCosts.data,
+      trackedPurchaseRecordKeys: warehouseContext.data.trackedPurchaseRecordKeys,
+    })
+    return Object.freeze({
+      purchaseLedgerAccrual,
+      purchaseAccrual: Object.freeze({
+        ...purchaseLedgerAccrual,
+        data: bridged.purchaseRows,
+      }),
+      projectCosts,
+    })
+  } catch {
+    return Object.freeze({
+      purchaseLedgerAccrual,
+      purchaseAccrual: Object.freeze({ status: 'error', data: null, stale: false }),
+      projectCosts,
+    })
+  }
+}
+
+export function bindWarehouseContextToActor(state, actorKey) {
+  if (typeof actorKey !== 'string' || actorKey.length === 0 || state?.actorKey !== actorKey) {
+    return Object.freeze({ status: 'loading', data: null, stale: false, actorKey })
+  }
+  return state
 }
 
 function usePersistentState(key, fallback, options = {}) {
@@ -1974,8 +2081,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
           manualProjectCosts,
           operatingExpenses,
         })
-        result.cost = Number.isSafeInteger(model.companyMonthlyTotal?.total) &&
-          model.companyMonthlyTotal.total >= 0
+        result.cost = isSafeCostAccountingAmount(model.companyMonthlyTotal?.total)
           ? { status: 'ready', data: model }
           : { status: 'error', data: null }
       } catch {
@@ -1987,7 +2093,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
   }
 
   if (purchaseAccess.summary.view) {
-    const accrualState = sourceStates?.purchaseAccrual
+    const accrualState = sourceStates?.purchaseLedgerAccrual
     const purchaseRecords = readyProjectedArray(accrualState)
     if (purchaseRecords === null) {
       result.purchase = buildUnavailableHomeFinancialState([accrualState])
@@ -2079,8 +2185,7 @@ export function buildAuthorizedHomeSummary(currentUser, sources) {
     ? sources?.financialModels?.purchase
     : null
   const monthlyCostTotal = costModelState?.status === 'ready' &&
-      Number.isSafeInteger(costModelState.data?.companyMonthlyTotal?.total) &&
-      costModelState.data.companyMonthlyTotal.total >= 0
+      isSafeCostAccountingAmount(costModelState.data?.companyMonthlyTotal?.total)
     ? costModelState.data.companyMonthlyTotal.total
     : null
   const monthlyPurchaseTotal = purchaseModelState?.status === 'ready' &&
@@ -2146,6 +2251,43 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const projectRelationReadAccess = dashboardAccess.projectSnapshot ||
     purchaseReadAccess.records || accountingReadAccess.projectCost ||
     accountingReadAccess.operatingExpense || canAccessView(currentUser, 'vehicle')
+  const warehouseContextReadAccess = purchaseReadAccess.records &&
+    accountingReadAccess.projectCost
+  const [warehouseMaterialCostContextState, setWarehouseMaterialCostContextState] = useState(
+    () => warehouseContextReadAccess
+      ? { status: 'loading', data: null, stale: false, actorKey: activeActorId }
+      : { status: 'forbidden', data: null, stale: false, actorKey: activeActorId },
+  )
+  useEffect(() => {
+    let active = true
+    if (!warehouseContextReadAccess) {
+      setWarehouseMaterialCostContextState({
+        status: 'forbidden', data: null, stale: false, actorKey: activeActorId,
+      })
+      return () => { active = false }
+    }
+    setWarehouseMaterialCostContextState({
+      status: 'loading', data: null, stale: false, actorKey: activeActorId,
+    })
+    warehouseMaterialCostBridge.loadContext().then((context) => {
+      if (!active) return
+      setWarehouseMaterialCostContextState({
+        status: 'ready', data: context, stale: false, actorKey: activeActorId,
+      })
+    }).catch((error) => {
+      if (!active) return
+      setWarehouseMaterialCostContextState({
+        status: error?.code === 'WAREHOUSE_MATERIAL_COST_ACCESS_DENIED'
+          ? 'forbidden'
+          : 'error',
+        data: null,
+        stale: false,
+        actorKey: activeActorId,
+      })
+      if (error?.code === 'WAREHOUSE_MATERIAL_COST_AUTH_INVALID') onLogout()
+    })
+    return () => { active = false }
+  }, [warehouseContextReadAccess, activeActorId, onLogout])
   const {
     count: laborAlertCount,
     stale: laborAlertStale,
@@ -2634,7 +2776,11 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const [storedProjectCostRecords, setStoredProjectCostRecords, projectCostRawState] = usePersistentState(
     STORAGE_KEYS.projectCostRecords,
     [],
-    { ...persistenceOptions, readAllowed: accountingReadAccess.projectCost },
+    {
+      ...persistenceOptions,
+      readAllowed: accountingReadAccess.projectCost,
+      cloudPersistence: 'record',
+    },
   )
   const [storedOperatingExpenseRecords, setStoredOperatingExpenseRecords, operatingExpenseRawState] = usePersistentState(
     STORAGE_KEYS.operatingExpenseRecords,
@@ -3050,13 +3196,51 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       return resolvedRecords.map((record) => normalizeSalaryRecord(record))
     })
   }
-  const setProjectCostRecords = (nextRecords) => {
+  const setProjectCostRecords = (nextRecords, updateOptions = {}) => {
     setStoredProjectCostRecords((currentRecords) => {
       const normalizedCurrent = currentRecords.map((record) => normalizeProjectCostRecord(record))
       const resolvedRecords =
         typeof nextRecords === 'function' ? nextRecords(normalizedCurrent) : nextRecords
       return resolvedRecords.map((record) => normalizeProjectCostRecord(record))
-    })
+    }, updateOptions)
+  }
+  const projectCostStateOnlyOptions = { stateOnly: true, syncLocal: true }
+  const handleSaveManualProjectCost = async (record) => {
+    const normalized = normalizeProjectCostRecord(record)
+    assertManualProjectCostMutable(normalized)
+    const previousRecords = projectCostRecords
+    setProjectCostRecords((current) => {
+      const exists = current.some((item) => item.costRecordId === normalized.costRecordId)
+      return exists
+        ? current.map((item) => item.costRecordId === normalized.costRecordId ? normalized : item)
+        : [normalized, ...current]
+    }, projectCostStateOnlyOptions)
+    if (localDemoMode) return normalized
+    try {
+      await manualProjectCostPersistence.save(normalized)
+      return normalized
+    } catch (error) {
+      setProjectCostRecords(previousRecords, projectCostStateOnlyOptions)
+      setPersistenceFailure(error)
+      throw error
+    }
+  }
+  const handleDeleteManualProjectCost = async (record) => {
+    assertManualProjectCostMutable(record)
+    const previousRecords = projectCostRecords
+    setProjectCostRecords(
+      previousRecords.filter((item) => item.costRecordId !== record.costRecordId),
+      projectCostStateOnlyOptions,
+    )
+    if (localDemoMode) return record.costRecordId
+    try {
+      await manualProjectCostPersistence.remove(record)
+      return record.costRecordId
+    } catch (error) {
+      setProjectCostRecords(previousRecords, projectCostStateOnlyOptions)
+      setPersistenceFailure(error)
+      throw error
+    }
   }
   const setOperatingExpenseRecords = (nextRecords) => {
     setStoredOperatingExpenseRecords((currentRecords) => {
@@ -3361,6 +3545,23 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     page: dashboardQuery.page,
     pageSize: dashboardQuery.pageSize,
   }
+  const purchaseLedgerAccrualSource = projectPersistentSource(purchaseRawState, {
+    readAllowed: purchaseReadAccess.records,
+    data: purchaseRecords,
+  })
+  const projectCostSource = projectPersistentSource(projectCostRawState, {
+    readAllowed: dashboardAccess.costCategories.manualSupplement ||
+      accountingAccess.monthlySummary.projectCost,
+    data: projectCostRecords,
+  })
+  const warehouseAccountingSourceStates = buildWarehouseAccountingSourceStates({
+    purchaseLedgerAccrual: purchaseLedgerAccrualSource,
+    projectCosts: projectCostSource,
+    warehouseContext: bindWarehouseContextToActor(
+      warehouseMaterialCostContextState,
+      activeActorId,
+    ),
+  })
   const dashboardSourceStates = {
     projects: projectPromiseSource(projectRawState, {
       readAllowed: projectRelationReadAccess,
@@ -3385,19 +3586,13 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         )
       ),
     }),
-    purchaseAccrual: projectPersistentSource(purchaseRawState, {
-      readAllowed: purchaseReadAccess.records,
-      data: purchaseRecords,
-    }),
+    purchaseAccrual: warehouseAccountingSourceStates.purchaseLedgerAccrual,
+    profitabilityPurchaseAccrual: warehouseAccountingSourceStates.purchaseAccrual,
     purchasePayments: projectPersistentSource(purchasePaymentRawState, {
       readAllowed: purchaseReadAccess.payments,
       data: purchasePaymentRecords,
     }),
-    projectCosts: projectPersistentSource(projectCostRawState, {
-      readAllowed: dashboardAccess.costCategories.manualSupplement ||
-        accountingAccess.monthlySummary.projectCost,
-      data: projectCostRecords,
-    }),
+    projectCosts: warehouseAccountingSourceStates.projectCosts,
     operatingExpenses: projectPersistentSource(operatingExpenseRawState, {
       readAllowed: dashboardAccess.costCategories.operatingExpense ||
         accountingAccess.monthlySummary.operatingExpense,
@@ -3464,6 +3659,11 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       data: toolResponsibilityRecords,
     }),
   }
+  const accountingSourceStates = {
+    ...dashboardSourceStates,
+    purchaseAccrual: warehouseAccountingSourceStates.purchaseAccrual,
+    purchaseLedgerAccrual: warehouseAccountingSourceStates.purchaseLedgerAccrual,
+  }
   const handleDashboardNavigate = (targetView) => {
     const requestedRoute = getAdminRoute(targetView)
     const normalizedView = requestedRoute?.normalizeTo || requestedRoute?.view
@@ -3484,7 +3684,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const homeFinancialModels = buildHomeFinancialModels({
     currentUser,
     selectedMonth: currentMonthValue(),
-    sourceStates: dashboardSourceStates,
+    sourceStates: accountingSourceStates,
   })
   const homeSourceStates = {
     projects: projectPromiseSource(projectRawState, {
@@ -3757,13 +3957,15 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       <AccountingCostPage
         access={accountingAccess}
         vehicleAccess={canAccessView(currentUser, 'vehicle')}
-        sourceStates={dashboardSourceStates}
+        sourceStates={accountingSourceStates}
         projects={projects}
         employees={employees}
         salaryRecords={salaryRecords}
         setSalaryRecords={setSalaryRecords}
         projectCostRecords={projectCostRecords}
         setProjectCostRecords={setProjectCostRecords}
+        saveManualProjectCost={handleSaveManualProjectCost}
+        deleteManualProjectCost={handleDeleteManualProjectCost}
         operatingExpenseRecords={operatingExpenseRecords}
         setOperatingExpenseRecords={setOperatingExpenseRecords}
         purchaseRecords={purchaseRecords}
@@ -3831,7 +4033,7 @@ function buildLegacyHomePresentation(currentUser, summary) {
     .map((route) => {
       let displayValue = '进入'
       if (route.view === 'accounting') {
-        displayValue = Number.isSafeInteger(safeSummary.monthlyCostTotal)
+        displayValue = isSafeCostAccountingAmount(safeSummary.monthlyCostTotal)
           ? formatYen(safeSummary.monthlyCostTotal)
           : '待核算'
       } else if (route.view === 'purchase') {
@@ -6216,6 +6418,8 @@ export function AccountingCostPage({
   setSalaryRecords,
   projectCostRecords,
   setProjectCostRecords,
+  saveManualProjectCost,
+  deleteManualProjectCost,
   operatingExpenseRecords,
   setOperatingExpenseRecords,
   purchaseRecords,
@@ -6295,6 +6499,8 @@ export function AccountingCostPage({
           employees={employees}
           records={projectCostRecords}
           setRecords={setProjectCostRecords}
+          saveRecord={saveManualProjectCost}
+          deleteRecord={deleteManualProjectCost}
           access={resolvedAccess.projectCost}
         />
       )}
@@ -6313,7 +6519,7 @@ export function AccountingCostPage({
           purchaseRecords={purchaseRecords}
           purchasePaymentRecords={purchasePaymentRecords}
           paymentState={purchasePaymentState}
-          accrualState={sourceStates.purchaseAccrual}
+          accrualState={sourceStates.purchaseLedgerAccrual}
           monthFilter={monthFilter}
           onMonthFilterChange={onMonthFilterChange}
         />
@@ -6572,7 +6778,15 @@ function SalaryRecordsSection({ access, employees, records, setRecords }) {
   )
 }
 
-function ProjectCostSection({ access, projects, employees, records, setRecords }) {
+export function ProjectCostSection({
+  access,
+  projects,
+  employees,
+  records,
+  setRecords,
+  saveRecord,
+  deleteRecord,
+}) {
   const [form, setForm] = useState(createEmptyProjectCostForm)
   const [editingId, setEditingId] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
@@ -6586,7 +6800,7 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
     setEditingId('')
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
     if ((editingId && !access.update) || (!editingId && !access.create)) return
 
@@ -6617,15 +6831,20 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
       operator: personName,
     })
 
-    if (editingId) {
-      setRecords((currentRecords) =>
-        currentRecords.map((record) => (record.costRecordId === editingId ? payload : record)),
-      )
-    } else {
-      setRecords((currentRecords) => [payload, ...currentRecords])
+    try {
+      if (typeof saveRecord === 'function') {
+        await saveRecord(payload)
+      } else if (editingId) {
+        setRecords((currentRecords) =>
+          currentRecords.map((record) => (record.costRecordId === editingId ? payload : record)),
+        )
+      } else {
+        setRecords((currentRecords) => [payload, ...currentRecords])
+      }
+      resetForm()
+    } catch {
+      return
     }
-
-    resetForm()
   }
 
   const filteredRecords = records.filter((record) => {
@@ -6641,6 +6860,11 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
       <div className="empty-state cost-note">
         采购成本已由采购管理自动归集，不得重复手工录入；需要更正时请前往采购管理。
       </div>
+      {records.some((record) => isWarehouseManagedProjectCost(record)) && (
+        <div className="empty-state cost-note">
+          仓库自动成本仅能通过仓库冲销更正
+        </div>
+      )}
       {projects.length === 0 && <EmptyState text="请先在工程项目中新增项目" />}
 
       {(access.create || (editingId && access.update)) && (
@@ -6715,8 +6939,8 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
       </div>
 
       <AccountingRecordList
-        canEdit={access.update}
-        canDelete={access.delete}
+        canEdit={(record) => access.update && !isWarehouseManagedProjectCost(record)}
+        canDelete={(record) => access.delete && !isWarehouseManagedProjectCost(record)}
         emptyText="暂无项目成本记录"
         records={filteredRecords}
         idField="costRecordId"
@@ -6729,6 +6953,11 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
           ['备注', 'remark'],
         ]}
         onEdit={(record) => {
+          try {
+            assertManualProjectCostMutable(record)
+          } catch {
+            return
+          }
           setEditingId(record.costRecordId)
           setForm({
             projectId: record.projectId,
@@ -6741,11 +6970,24 @@ function ProjectCostSection({ access, projects, employees, records, setRecords }
             remark: record.remark,
           })
         }}
-        onDelete={(record) => {
+        onDelete={async (record) => {
+          try {
+            assertManualProjectCostMutable(record)
+          } catch {
+            return
+          }
           if (window.confirm('确定删除这条项目成本记录吗？')) {
-            setRecords((currentRecords) =>
-              currentRecords.filter((item) => item.costRecordId !== record.costRecordId),
-            )
+            try {
+              if (typeof deleteRecord === 'function') {
+                await deleteRecord(record)
+              } else {
+                setRecords((currentRecords) =>
+                  currentRecords.filter((item) => item.costRecordId !== record.costRecordId),
+                )
+              }
+            } catch {
+              return
+            }
           }
         }}
       />
@@ -6978,6 +7220,9 @@ export function MonthlySummarySection({
   const purchaseAccrualState = resolveArraySource(
     'purchaseAccrual', resolvedAccess.purchaseAccrual,
   )
+  const purchaseLedgerAccrualState = resolveArraySource(
+    'purchaseLedgerAccrual', resolvedAccess.purchaseAccrual,
+  )
   const purchasePaymentState = resolveArraySource(
     'purchasePayments', resolvedAccess.purchasePayments,
   )
@@ -7064,9 +7309,9 @@ export function MonthlySummarySection({
     ? Math.round((allocatedLabor / laborSalary) * 100)
     : 0
 
-  const purchaseAccounting = purchaseAccrualState.status === 'ready'
+  const purchaseAccounting = purchaseLedgerAccrualState.status === 'ready'
     ? buildPurchaseAccountingReadModel({
-      purchaseRecords: purchaseAccrualState.data,
+      purchaseRecords: purchaseLedgerAccrualState.data,
       paymentRecords: purchasePaymentState.data || [],
       paymentState: purchasePaymentState,
       month: monthFilter,
@@ -7084,7 +7329,7 @@ export function MonthlySummarySection({
     .reduce((total, record) => total + toAmount(record.totalCost), 0)
   const unpaidPurchaseCost = purchaseAccounting?.summary.currentOutstanding
   const monthPaymentCash = purchaseAccounting?.summary.monthPaymentCash
-  const purchasePaymentVisible = purchaseAccrualState.status === 'ready' &&
+  const purchasePaymentVisible = purchaseLedgerAccrualState.status === 'ready' &&
     resolvedAccess.purchasePayments &&
     purchasePaymentState.status === 'ready' &&
     purchaseAccounting?.currentPayable.status === 'ready'
@@ -7139,7 +7384,7 @@ export function MonthlySummarySection({
             <span>项目人工分摊率</span>
           </div>
         )}
-        {projectRelationsReady && purchaseAccrualState.status === 'ready' && (
+        {projectRelationsReady && purchaseLedgerAccrualState.status === 'ready' && (
           <div className="stat-card money">
             <strong>{formatYen(totalPurchaseCost)}</strong>
             <span>本月采购确认成本</span>
@@ -7176,7 +7421,7 @@ export function MonthlySummarySection({
             <span>公司总成本</span>
           </div>
         )}
-        {projectRelationsReady && purchaseAccrualState.status === 'ready' && [
+        {projectRelationsReady && purchaseLedgerAccrualState.status === 'ready' && [
           ['中国采购', '中国采购金额'],
           ['Amazon', 'Amazon 采购金额'],
           ['Yahoo拍卖', 'Yahoo拍卖采购金额'],
@@ -7254,7 +7499,10 @@ function AccountingRecordList({
       {records.length === 0 ? (
         <EmptyState text={emptyText} />
       ) : (
-        records.map((record) => (
+        records.map((record) => {
+          const recordCanEdit = typeof canEdit === 'function' ? canEdit(record) : canEdit
+          const recordCanDelete = typeof canDelete === 'function' ? canDelete(record) : canDelete
+          return (
           <article className="record-card" key={record[idField]}>
             <div className="record-header">
               <div>
@@ -7272,13 +7520,14 @@ function AccountingRecordList({
               ))}
             </dl>
             <RecordActions
-              canEdit={canEdit}
-              canDelete={canDelete}
+              canEdit={recordCanEdit}
+              canDelete={recordCanDelete}
               onEdit={() => onEdit(record)}
               onDelete={() => onDelete(record)}
             />
           </article>
-        ))
+          )
+        })
       )}
     </div>
   )

@@ -157,16 +157,16 @@ test('financial persistence callers pass explicit access and preserve raw source
     /const laborWindowInputStates = \[salaryRawState, employeeRawState, laborRawState\]/u,
   )
   assert.match(authenticatedApp, /laborWindow:\s*projectLaborSource\(laborWindowStateRaw/u)
-  assert.match(authenticatedApp, /projectCosts:\s*projectPersistentSource\(projectCostRawState/u)
+  assert.match(authenticatedApp, /const projectCostSource = projectPersistentSource\(projectCostRawState/u)
   assert.match(
     authenticatedApp,
     /operatingExpenses:\s*projectPersistentSource\(operatingExpenseRawState/u,
   )
-  assert.match(authenticatedApp, /purchaseAccrual:\s*projectPersistentSource\(purchaseRawState/u)
+  assert.match(authenticatedApp, /const purchaseLedgerAccrualSource = projectPersistentSource\(purchaseRawState/u)
   const purchaseAccrualProjection = sliceBetween(
     authenticatedApp,
-    'purchaseAccrual: projectPersistentSource(purchaseRawState, {',
-    '\n    purchasePayments:',
+    'const purchaseLedgerAccrualSource = projectPersistentSource(purchaseRawState, {',
+    '\n  const projectCostSource',
   )
   const purchasePaymentProjection = sliceBetween(
     authenticatedApp,
@@ -176,7 +176,7 @@ test('financial persistence callers pass explicit access and preserve raw source
   assert.match(purchaseAccrualProjection, /readAllowed:\s*purchaseReadAccess\.records/u)
   assert.match(purchasePaymentProjection, /readAllowed:\s*purchaseReadAccess\.payments/u)
   assert.equal(
-    (authenticatedApp.match(/purchaseAccrual:\s*projectPersistentSource\(/gu) || []).length,
+    (authenticatedApp.match(/purchaseLedgerAccrualSource = projectPersistentSource\(/gu) || []).length,
     1,
   )
   assert.equal(
@@ -200,4 +200,19 @@ test('purchase accrual persistence is isolated behind purchaseService secure RPC
     authenticatedApp,
     /(?:getList|saveList|upsertRecord|softDelete)\(STORAGE_KEYS\.purchaseRecords/u,
   )
+})
+
+test('manual project costs use record-level persistence without replaying warehouse-owned rows', () => {
+  const authenticatedApp = sliceBetween(appSource, 'function AuthenticatedApp', '\nfunction HomePage')
+  const projectCostHook = sliceBetween(
+    authenticatedApp,
+    'const [storedProjectCostRecords, setStoredProjectCostRecords, projectCostRawState]',
+    'const [storedOperatingExpenseRecords',
+  )
+
+  assert.match(projectCostHook, /cloudPersistence:\s*'record'/u)
+  assert.match(authenticatedApp, /manualProjectCostPersistence\.save\(normalized\)/u)
+  assert.match(authenticatedApp, /manualProjectCostPersistence\.remove\(record\)/u)
+  assert.match(authenticatedApp, /projectCostStateOnlyOptions/u)
+  assert.doesNotMatch(authenticatedApp, /saveList\(STORAGE_KEYS\.projectCostRecords/u)
 })
