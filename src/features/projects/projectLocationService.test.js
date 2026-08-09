@@ -4,6 +4,8 @@ import test from 'node:test'
 import { normalizeAddress } from './projectDomain.js'
 import {
   GeocodingError,
+  createGsiAddressGeocoder,
+  createJapanAddressGeocoder,
   createNominatimGeocoder,
   createProjectLocationService,
   normalizeGeocodingAddress,
@@ -34,6 +36,123 @@ async function assertGeocodingError(action, code, message) {
 test('reuses project address normalization', () => {
   assert.strictEqual(normalizeGeocodingAddress, normalizeAddress)
   assert.equal(normalizeGeocodingAddress('  東京都\t千代田区　１－１  '), '東京都 千代田区 1-1')
+})
+
+test('GSI request preserves the normalized Japanese address and reads longitude-latitude geometry order', async () => {
+  const calls = []
+  const signal = new AbortController().signal
+  const geocoder = createGsiAddressGeocoder({
+    endpoint: 'https://gsi.example/address-search?stale=value',
+    fetchImpl: async (...args) => {
+      calls.push(args)
+      return responseWithJson([{
+        geometry: {
+          coordinates: [139.803818, 35.686592],
+          type: 'Point',
+        },
+        type: 'Feature',
+        properties: {
+          addressCode: '',
+          title: '東京都江東区森下四丁目１７番５号',
+        },
+      }])
+    },
+  })
+
+  assert.deepEqual(await geocoder.geocode('　東京都江東区森下４－１７－５ ', { signal }), {
+    latitude: 35.686592,
+    longitude: 139.803818,
+    displayName: '東京都江東区森下四丁目１７番５号',
+  })
+  assert.equal(calls.length, 1)
+  const [requestUrl, requestOptions] = calls[0]
+  assert.equal(
+    requestUrl.toString(),
+    'https://gsi.example/address-search?q=%E6%9D%B1%E4%BA%AC%E9%83%BD%E6%B1%9F%E6%9D%B1%E5%8C%BA%E6%A3%AE%E4%B8%8B4-17-5',
+  )
+  assert.deepEqual(requestOptions, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  })
+})
+
+test('Japan address geocoder keeps GSI first and uses Nominatim only when GSI has no match', async () => {
+  const calls = []
+  const fallbackResult = {
+    latitude: 35.6824664,
+    longitude: 139.765473,
+    displayName: '東京駅(改札外), 千代田区, 東京都, 日本',
+  }
+  const geocoder = createJapanAddressGeocoder({
+    primary: {
+      geocode: async (address, options) => {
+        calls.push(['gsi', address, options])
+        return null
+      },
+    },
+    fallback: {
+      geocode: async (address, options) => {
+        calls.push(['nominatim', address, options])
+        return fallbackResult
+      },
+    },
+  })
+  const signal = new AbortController().signal
+
+  assert.strictEqual(await geocoder.geocode('東京駅', { signal }), fallbackResult)
+  assert.deepEqual(calls, [
+    ['gsi', '東京駅', { signal }],
+    ['nominatim', '東京駅', { signal }],
+  ])
+})
+
+test('Japan address geocoder uses the fallback when GSI is temporarily unavailable', async () => {
+  const fallbackResult = {
+    latitude: 35.68,
+    longitude: 139.76,
+    displayName: '备用结果',
+  }
+  let fallbackCalls = 0
+  const geocoder = createJapanAddressGeocoder({
+    primary: {
+      geocode: async () => { throw new GeocodingError('GEOCODING_UNAVAILABLE', UNAVAILABLE_MESSAGE) },
+    },
+    fallback: {
+      geocode: async () => {
+        fallbackCalls += 1
+        return fallbackResult
+      },
+    },
+  })
+
+  assert.strictEqual(await geocoder.geocode('東京都江東区森下'), fallbackResult)
+  assert.equal(fallbackCalls, 1)
+})
+
+test('an aborted GSI lookup never starts the fallback provider', async () => {
+  const controller = new AbortController()
+  let fallbackCalls = 0
+  const geocoder = createJapanAddressGeocoder({
+    primary: {
+      geocode: async () => {
+        controller.abort()
+        throw new DOMException('aborted', 'AbortError')
+      },
+    },
+    fallback: {
+      geocode: async () => {
+        fallbackCalls += 1
+        return null
+      },
+    },
+  })
+
+  await assert.rejects(
+    () => geocoder.geocode('東京都江東区森下', { signal: controller.signal }),
+    (error) => error?.name === 'AbortError',
+  )
+  assert.equal(fallbackCalls, 0)
 })
 
 test('Nominatim request uses exact normalized URL values, GET headers, and signal', async () => {

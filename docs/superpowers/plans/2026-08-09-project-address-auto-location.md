@@ -15,7 +15,7 @@
 - Keep the existing “地址定位” button, map click, and draggable marker.
 - Only the latest address may update the map; manual selection cancels scheduled or in-flight lookup.
 - A failed lookup must not move or clear the existing coordinates.
-- Show the provider's best-match full address for review, but do not add a database field.
+- Use Japan GSI address search first and Nominatim only as fallback; show the best-match full address for review, but do not add a database field.
 - Do not change warehouse functions, database schema, local business data, remote data, or online deployment.
 - Add no third-party dependency.
 
@@ -26,6 +26,8 @@
 - Create `src/features/projects/projectAddressAutoLocate.js`: framework-independent cancelable debounce scheduler.
 - Create `src/features/projects/projectAddressAutoLocate.test.js`: real scheduler behavior with deterministic fake timers.
 - Modify `src/features/projects/ProjectLocationPicker.jsx`: connect address changes, explicit retry, stale-request protection, and resolved-address display.
+- Modify `src/features/projects/projectLocationService.js`: add a Japan GSI primary adapter with Nominatim fallback.
+- Modify `src/features/projects/projectLocationService.test.js`: verify GSI coordinate order, exact request shape, and fallback behavior.
 - Modify `src/features/projects/projectLocationPickerContract.test.js`: preserve the component's integration and safe-copy contract.
 - Modify `src/styles.css`: style the transient resolved-address line consistently with the current black/gold project form.
 

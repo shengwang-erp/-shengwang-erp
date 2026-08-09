@@ -38,6 +38,60 @@ function parseProviderCoordinate(value, minimum, maximum) {
     : null
 }
 
+export function createGsiAddressGeocoder({
+  fetchImpl = globalThis.fetch,
+  endpoint = 'https://msearch.gsi.go.jp/address-search/AddressSearch',
+} = {}) {
+  return {
+    async geocode(address, { signal } = {}) {
+      const normalizedAddress = normalizeGeocodingAddress(address)
+      const url = new URL(endpoint)
+      url.search = new URLSearchParams({ q: normalizedAddress }).toString()
+
+      let response
+      try {
+        response = await fetchImpl(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal,
+        })
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error
+        throw unavailableError()
+      }
+      if (!response?.ok) throw unavailableError()
+
+      let rows
+      try {
+        rows = await response.json()
+      } catch {
+        throw invalidResponseError()
+      }
+      if (!Array.isArray(rows)) throw invalidResponseError()
+      if (rows.length === 0) return null
+
+      const row = rows[0]
+      const coordinates = row?.geometry?.coordinates
+      if (!row || typeof row !== 'object' || !Array.isArray(coordinates)) {
+        throw invalidResponseError()
+      }
+      const longitude = parseProviderCoordinate(coordinates[0], -180, 180)
+      const latitude = parseProviderCoordinate(coordinates[1], -90, 90)
+      if (latitude === null || longitude === null) throw invalidResponseError()
+
+      const title = row?.properties?.title
+      return {
+        latitude,
+        longitude,
+        displayName:
+          typeof title === 'string' && title.trim()
+            ? title.trim()
+            : normalizedAddress,
+      }
+    },
+  }
+}
+
 export function createNominatimGeocoder({
   fetchImpl = globalThis.fetch,
   endpoint = 'https://nominatim.openstreetmap.org/search',
@@ -92,8 +146,25 @@ export function createNominatimGeocoder({
   }
 }
 
+export function createJapanAddressGeocoder({
+  primary = createGsiAddressGeocoder(),
+  fallback = createNominatimGeocoder(),
+} = {}) {
+  return {
+    async geocode(address, options = {}) {
+      try {
+        const result = await primary.geocode(address, options)
+        if (result !== null) return result
+      } catch (error) {
+        if (options.signal?.aborted || error?.name === 'AbortError') throw error
+      }
+      return fallback.geocode(address, options)
+    },
+  }
+}
+
 export function createProjectLocationService({
-  adapter = createNominatimGeocoder(),
+  adapter = createJapanAddressGeocoder(),
   cache = new Map(),
   now = () => Date.now(),
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
