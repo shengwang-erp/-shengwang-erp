@@ -121,6 +121,27 @@ test('list returns ordered metadata with 300-second signed URLs from the private
   assert.equal(result.every(Object.isFrozen), true)
 })
 
+test('photo listing accepts the current Supabase success metadata', async () => {
+  const { client } = createClient({
+    rpcHandler() {
+      return {
+        success: true,
+        data: [],
+        error: null,
+        count: null,
+        status: 200,
+        statusText: 'OK',
+      }
+    },
+  })
+
+  assert.deepEqual(
+    await createWarehouseMediaService(client, { configured: true })
+      .listVariantPhotos(variantId),
+    [],
+  )
+})
+
 test('upload compresses, uses a generated variant-bound path, then registers exact metadata', async () => {
   const compressed = new Blob([new Uint8Array(256)], { type: 'image/jpeg' })
   const { client, calls } = createClient({

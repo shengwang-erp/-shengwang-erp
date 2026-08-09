@@ -65,7 +65,7 @@ export function forbiddenChangedPaths(changedPaths) {
     FORBIDDEN_CHANGED_PATHS.has(file)
     || file === 'vercel.json'
     || file.startsWith('.vercel/')
-    || /^\.env(?:\.|$)/u.test(file)
+    || (file !== '.env.warehouse-preview.example' && /^\.env(?:\.|$)/u.test(file))
     || file.includes('ERP第一版备份')
   ))
 }

@@ -213,6 +213,24 @@ test('the four read methods call only their exact secure RPCs and return deep im
   assert.equal(MOVEMENT.metadata.note, '首次入库')
 })
 
+test('accepts the current Supabase success metadata on a valid RPC result', async () => {
+  const { client } = rpcClient({
+    list_warehouse_catalog_secure: {
+      success: true,
+      error: null,
+      data: { items: [], variants: [] },
+      count: null,
+      status: 200,
+      statusText: 'OK',
+    },
+  })
+
+  assert.deepEqual(
+    await createWarehouseService(client, { configured: true }).listCatalog(),
+    { items: [], variants: [] },
+  )
+})
+
 test('metadata cloning preserves dangerous JSON keys as frozen own data without prototype mutation', async () => {
   const metadata = JSON.parse(
     '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"nested":{"__proto__":"kept"}}',
@@ -1084,6 +1102,8 @@ test('catalog transport envelopes reject forged keys and malformed optional fiel
     { data: SITE, error: null, status: 200, forged: true },
     { data: SITE, error: null, status: 200, count: 'one' },
     { data: SITE, error: null, status: 200, statusText: 200 },
+    { data: SITE, error: null, status: 200, success: 'yes' },
+    { data: SITE, error: null, status: 200, success: false },
     { data: SITE, error: 'forged', status: 500 },
     { data: SITE, error: undefined, status: 200 },
   ]) {

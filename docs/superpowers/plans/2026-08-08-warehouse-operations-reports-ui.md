@@ -102,8 +102,8 @@
 - Update: `docs/superpowers/handoffs/2026-08-08-warehouse-local-acceptance.md`
 - Copy final handoff and all five plan documents to `/Users/yu/Desktop/Codex任务说明档案/2026-08-06_仓库管理安全移植/`
 
-- [ ] Configure only local Supabase URLs/keys and `VITE_WAREHOUSE_MIGRATION_PREVIEW=true`; do not use online service-role keys or online database URLs.
-- [ ] Start with `npm run dev -- --host 127.0.0.1 --port 5174` from `/Users/yu/Documents/kaobeierp/warehouse-forward-port`.
+- [x] Configure only local Supabase URLs/keys and `VITE_WAREHOUSE_MIGRATION_PREVIEW=true`; do not use online service-role keys or online database URLs.
+- [x] Start with `npm run dev -- --host 127.0.0.1 --port 5174` from `/Users/yu/Documents/kaobeierp/warehouse-forward-port`.
 - [ ] Manually verify black/gold desktop and mobile layouts, scanner cleanup, photos, labels, detailed outbound/return, confirmation queues, monthly stocktake, report printing, and Excel download.
 - [ ] Ask the user to verify the final local scenario. Record accepted items and any requested local fixes in the handoff.
 - [ ] Do not create a deployment commit, push a release branch, run `vercel`, link the project, or execute remote Supabase migration commands.

@@ -13,6 +13,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const PATH = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(jpg|png|webp)$/u
 const MIME_BY_EXTENSION = Object.freeze({ jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' })
 const RPC_RESULT_FIELDS = Object.freeze(['data', 'error', 'count', 'status', 'statusText'])
+const RPC_RESULT_FIELD_SET = new Set([...RPC_RESULT_FIELDS, 'success'])
 const STORAGE_RESULT_FIELDS = Object.freeze(['data', 'error'])
 const PHOTO_FIELDS = Object.freeze([
   'id', 'variantId', 'objectPath', 'sortOrder', 'mimeType', 'byteSize', 'createdAt',
@@ -267,19 +268,28 @@ export function createWarehouseMediaService(client, options = {}) {
     } catch (error) {
       throw normalizeSupplierError(error)
     }
-    let envelope
-    try {
-      envelope = exactObject(result, RPC_RESULT_FIELDS)
-    } catch {
-      throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
-    }
+    const descriptors = plainObject(result)
     if (
+      !descriptors ||
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string') ||
+      RPC_RESULT_FIELDS.some((field) => !Object.hasOwn(descriptors, field)) ||
+      Object.keys(descriptors).some((field) => !RPC_RESULT_FIELD_SET.has(field))
+    ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
+    const envelope = Object.fromEntries(
+      RPC_RESULT_FIELDS.map((field) => [field, descriptors[field].value]),
+    )
+    const success = Object.hasOwn(descriptors, 'success')
+      ? descriptors.success.value
+      : undefined
+    if (
+      (success !== undefined && typeof success !== 'boolean') ||
       !Number.isSafeInteger(envelope.status) ||
       typeof envelope.statusText !== 'string' ||
       (envelope.count !== null && !Number.isSafeInteger(envelope.count)) ||
       (envelope.error !== null && !plainObject(envelope.error))
     ) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
     if (envelope.error !== null) throw normalizeSupplierError(envelope.error, envelope.status)
+    if (success === false) throw fail('WAREHOUSE_PHOTO_INVALID_RESPONSE')
     return envelope.data
   }
   const bucket = () => {

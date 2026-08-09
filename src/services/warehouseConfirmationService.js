@@ -14,7 +14,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const RECORD_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u
 const DATE = /^\d{4}-\d{2}-\d{2}$/u
-const SUPPLIER_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
+const SUPPLIER_FIELDS = new Set([
+  'success', 'data', 'error', 'status', 'statusText', 'count',
+])
 const MAX_OPERATION_MOVEMENT_IDS = 20_000
 
 const ERRORS = Object.freeze({
@@ -1077,13 +1079,18 @@ export function createWarehouseConfirmationService(client, options = {}) {
     const status = Object.hasOwn(descriptors, 'status') ? descriptors.status.value : undefined
     const statusText = Object.hasOwn(descriptors, 'statusText') ? descriptors.statusText.value : undefined
     const count = Object.hasOwn(descriptors, 'count') ? descriptors.count.value : undefined
+    const success = Object.hasOwn(descriptors, 'success')
+      ? descriptors.success.value
+      : undefined
     if (
       (error !== null && !ownObject(error)) ||
+      (success !== undefined && typeof success !== 'boolean') ||
       (status !== undefined && (!Number.isSafeInteger(status) || status < 100 || status > 599)) ||
       (statusText !== undefined && statusText !== null && typeof statusText !== 'string') ||
       (count !== undefined && count !== null && (!Number.isSafeInteger(count) || count < 0))
     ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
     if (error) throw normalizeSupplierError(error, status)
+    if (success === false) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
     if (status !== undefined && (status < 200 || status >= 300)) {
       throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
     }

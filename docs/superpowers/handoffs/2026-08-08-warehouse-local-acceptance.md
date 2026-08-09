@@ -35,9 +35,10 @@ The scenario uses a transaction and rolls back its disposable data.
 | Workflow/inventory concurrency | `warehouse_workflow_concurrency.sql` — 32 / 32 PASS |
 | Forward-port pollution verifier | baseline `9774158`; 289 changed paths; 0 forbidden paths/imports/tokens; 0 byte-copied shared/adapted files — PASS |
 | Verifier unit tests | 2 / 2 PASS |
-| Full Node suite | `npm test` — 1,485 / 1,485 PASS |
+| Full Node suite | Task 4: 1,485 / 1,485 PASS; Task 5 after the live-client fixes: `npm test` — 1,488 / 1,488 PASS |
 | Production build | `npm run build` — 491 modules transformed, PASS |
 | Patch whitespace | `git diff --check` — PASS |
+| Task 5 forward-port verifier | baseline `9774158`; 291 changed paths; 0 forbidden paths/imports/tokens; 0 byte-copied shared/adapted files — PASS |
 
 The concurrency drivers were made deterministic: they now drain every asynchronous libpq result before commit/rollback and wait for the intended advisory-lock synchronization point instead of relying only on fixed sleeps. No warehouse runtime rule was weakened for those fixes.
 
@@ -45,13 +46,22 @@ The concurrency drivers were made deterministic: they now drain every asynchrono
 
 `scripts/verify-warehouse-forward-port.mjs` fails closed if the migration diff contains archived/legacy modules, deployment or environment files, forbidden old auth/persistence imports, warehouse `localStorage`, direct `App.jsx` stock-in mutation, or byte-for-byte copies of shared/adapted source modules. The final local run reported zero violations.
 
+## Task 5 local preview findings
+
+- The dedicated preview is running from the exact second-version worktree at `http://127.0.0.1:5174/`, using only the isolated local Supabase target on ports `61321` / `61322` and `VITE_WAREHOUSE_MIGRATION_PREVIEW=true`.
+- A disposable local SW-000 recovery account authenticated successfully. The page showed the second-version black/gold Home, the `仓库管理` card immediately before `我要出库`, and the local-only banner `第二版 + 仓库移植测试` inside the warehouse route.
+- Current Supabase JS adds a boolean `success` metadata field to RPC envelopes. The three strict warehouse adapters initially rejected the otherwise-valid live responses. Test-first compatibility fixes now accept only a boolean `success`, reject `success: false` when no supplier error exists, and keep all unknown/accessor/forged fields fail-closed.
+- Live authenticated local calls now pass for catalog, low-stock report, locations, balances, request context, catalog writes, and photo metadata listing. The photo success path used one temporary item/model pair with fixed test IDs; both rows were deleted immediately afterward and verified absent, so the local warehouse returned to empty.
+- Browser inspection opened all five tabs without console warnings or errors: `库存总览`, `物品档案`, `出入库作业`, `月度盘点`, and `报表打印`. Verified surfaces include model/size/SKU/price/QR fields, normal/project/shared-tool warehouses and shelf zones, warehouse-confirmed stock change copy, transfer, whole-document reversal, monthly stocktake, nine report types, print/PDF, and Excel controls.
+- Desktop black/gold integration is manually visible. Responsive CSS and mobile navigation contracts pass in the Node suite; final hands-on mobile-width acceptance remains for the user because the attached in-app tab cannot change its viewport.
+
 ## Known nonblocking limitations and pending acceptance
 
 - Vite reports an advisory large-chunk warning for the existing main bundle and lazily loaded ExcelJS export bundle. The build succeeds; ExcelJS remains behind the warehouse report export path.
 - A live `npm audit` was not performed because it would send local dependency metadata to the external npm audit endpoint, which is outside this local-only acceptance authority. The local test/build gates are unaffected.
-- The real Storage HTTP photo harness and manual browser acceptance belong to Task 5 and must run against a dedicated clean local target before the final completion gate. Its launcher/unit contracts already pass in the 1,485-test Node suite.
-- No claim of user acceptance or online-release readiness is made by this document. The next step is a local-only preview with `VITE_WAREHOUSE_MIGRATION_PREVIEW=true`.
+- The real Storage HTTP upload/delete failure-injection harness, camera QR scan, printed label output, file download contents, and non-empty outbound/return/stocktake examples still require hands-on Task 5 acceptance. Their unit, pgTAP, concurrency, and launcher contracts pass; the empty local warehouse does not manufacture business records merely to make those screens non-empty.
+- No claim of user acceptance or online-release readiness is made by this document. The dedicated local-only preview remains open for user inspection.
 
 ## Required next step
 
-Start the dedicated local preview only, verify black/gold desktop/mobile layouts, photo upload/delete, QR scan/labels, detailed outbound/return confirmation, monthly stocktake, printing and Excel download, then obtain explicit user approval. Online migration and deployment remain a separate later plan.
+Keep the dedicated local preview open for user inspection. The user must verify the visible desktop/mobile experience and hands-on photo, QR/label, outbound/return, stocktake, print, and Excel flows before explicit acceptance. Online migration and deployment remain a separate later plan.

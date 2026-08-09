@@ -9,6 +9,7 @@ import {
 test('forward-port verifier rejects deployment secrets, archived files, and legacy shared modules in the migration diff', () => {
   assert.deepEqual(forbiddenChangedPaths([
     'src/features/warehouse/WarehouseCatalog.jsx',
+    '.env.warehouse-preview.example',
     '.env.production',
     '.vercel/project.json',
     'vercel.json',

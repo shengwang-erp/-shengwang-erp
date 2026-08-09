@@ -310,6 +310,27 @@ test('request context uses the secure read RPC and enforces cost redaction', asy
   )
 })
 
+test('request context accepts the current Supabase success metadata', async () => {
+  const { createWarehouseConfirmationService } = await loadService()
+  const context = { stockOutRequests: [], returnRequests: [], minorWorkOrders: [] }
+  const { client } = rpcClient({
+    list_warehouse_request_context_secure: {
+      success: true,
+      data: context,
+      error: null,
+      count: null,
+      status: 200,
+      statusText: 'OK',
+    },
+  })
+
+  assert.deepEqual(
+    await createWarehouseConfirmationService(client, { configured: true })
+      .listRequestContext(),
+    context,
+  )
+})
+
 test('request context rejects every malformed nested row without coercion', async () => {
   const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
   const valid = () => ({

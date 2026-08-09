@@ -139,7 +139,9 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', Object.freeze({ sqlState: '23514', status: 400 })],
   ['WAREHOUSE_REPORT_FILTER_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
 ])
-const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
+const SUPPLIER_RESULT_FIELDS = new Set([
+  'success', 'data', 'error', 'status', 'statusText', 'count',
+])
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOVEMENT_TYPE_SET = new Set(Object.values(MOVEMENT_TYPES))
@@ -1260,8 +1262,12 @@ export function createWarehouseService(client, options = {}) {
       ? descriptors.statusText.value
       : undefined
     const count = Object.hasOwn(descriptors, 'count') ? descriptors.count.value : undefined
+    const success = Object.hasOwn(descriptors, 'success')
+      ? descriptors.success.value
+      : undefined
     if (
       (Object.hasOwn(descriptors, 'error') && error !== null && !ownDataDescriptors(error)) ||
+      (success !== undefined && typeof success !== 'boolean') ||
       (status !== undefined && (
         !Number.isSafeInteger(status) || status < 100 || status > 599
       )) ||
@@ -1271,6 +1277,7 @@ export function createWarehouseService(client, options = {}) {
       ))
     ) throw invalidResponse()
     if (error) throw normalizeSupplierError(error, status)
+    if (success === false) throw invalidResponse()
     return descriptors.data.value
   }
   const mutation = async (builder, rpcName, idArgument, input, validator) => {
