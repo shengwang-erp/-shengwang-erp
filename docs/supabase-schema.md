@@ -528,15 +528,28 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 - `create_project_cost_adjustment_secure(sourceKey, expectedVersion, adjustmentAmount, reason)`：要求
   `module.project_costs.update`，只追加正负四位小数调整。它先做版本快检，再以来源键取得非阻塞
   事务级 advisory lock，并在锁内重新读取版本；锁忙或旧版本统一返回
-  SQLSTATE `P0001` / `PROJECT_COST_LEDGER_VERSION_CONFLICT`，不会留下部分事件，原始来源记录永远不改。
+  SQLSTATE `P0001`，且 SQL `HINT` 为 `PROJECT_COST_LEDGER_VERSION_CONFLICT`，不会留下部分事件，
+  原始来源记录永远不改。
 - `replace_project_cost_allocations_secure(sourceKey, expectedVersion, reason, allocations)`：要求
-  `module.project_costs.update`。项目必须在用且不重复，金额为带符号四位小数，分摊合计必须与
-  当前有效金额完全相等；每次保存一份新的不可变分摊快照。
+  `module.project_costs.update`。它使用与调整完全相同的锁前版本快检、来源 try-lock 与锁内重读
+  协议；取得来源锁后按项目键稳定排序，以 `FOR SHARE` 锁定并重新验证全部目标项目。项目必须
+  在用且不重复，金额为带符号四位小数，分摊合计必须与当前有效金额完全相等；每次保存一份
+  新的不可变分摊快照。
 - `create_manual_project_cost_secure(requestId, entry)`：要求 `module.project_costs.create`。客户端
   只提交项目、类别、日期、金额、摘要、经办人与原因；项目名称、创建人和创建时间均由服务端
-  生成。完整 UUID 是幂等键，相同请求重放返回原记录，不同内容复用 UUID 会失败。
+  生成。完整 UUID 是幂等键；服务端先锁定并查询请求键，只比较规范化后的七个客户端字段，
+  因此项目之后改名或停用仍返回首次创建快照且保持单行。只有新请求才以 `FOR SHARE` 锁定并
+  重验在用项目；不同内容复用 UUID 仍失败。
 - `list_project_cost_audit_secure(filters)`：要求 `module.project_costs.view`，按项目与日期读取调整和
-  分摊历史，逐条返回变更前后金额、调整额、分摊前后快照、原因、服务端操作人和时间。
+  分摊历史，逐条返回变更前后金额、调整额、分摊前后快照、原因、服务端操作人和时间。审计与
+  账本的 `projectId` 过滤都把 `project_cost_safe_text` 的规范化结果赋回，前后空格行为一致。
+
+客户端不得根据 SQL message 解析业务状态。公开账本 RPC 的语义失败保留 SQLSTATE，同时通过
+SQL `HINT` 返回固定安全码：`PROJECT_COST_LEDGER_INPUT_INVALID`、
+`PROJECT_COST_LEDGER_SOURCE_MISSING`、`PROJECT_COST_LEDGER_VERSION_CONFLICT` 或
+`PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED`。手工请求 UUID 内容冲突的 message 仍为
+`PROJECT_COST_LEDGER_REQUEST_CONFLICT`，但 `HINT` 明确映射为既有的
+`PROJECT_COST_LEDGER_INPUT_INVALID`。
 
 财务部默认具备项目成本查看、创建和调整权限。所有金额保持 `numeric(18,4)`，审计身份和时间
 不能由浏览器传入；账本三张表仍禁止浏览器和 `service_role` 直接写入。

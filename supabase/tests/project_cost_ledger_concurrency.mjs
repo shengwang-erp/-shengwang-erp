@@ -178,6 +178,11 @@ insert into public.project_cost_records(record_key,payload,status) values
   'costRecordId','${fixture.costId}','projectId','${fixture.projectId}',
   'projectName','并发测试项目','costType','其他费用','amount',100,
   'date','2099-12-30','operator','系统测试','remark','双会话版本冲突'
+),'active'),
+('${fixture.allocationCostId}',jsonb_build_object(
+  'costRecordId','${fixture.allocationCostId}','projectId','${fixture.projectId}',
+  'projectName','并发测试项目','costType','其他费用','amount',100,
+  'date','2099-12-30','operator','系统测试','remark','双会话分摊冲突'
 ),'active');
 commit;`
 }
@@ -196,7 +201,9 @@ function fixture(target) {
     password: `Ledger-Race-${target.projectId.slice(-8)}!`,
     projectId: `LEDGER-RACE-P-${nonce}`,
     costId: `LEDGER-RACE-COST-${nonce}`,
+    allocationCostId: `LEDGER-RACE-COST-ALLOCATION-${nonce}`,
     sourceKey: `legacy-manual:LEDGER-RACE-COST-${nonce}`,
+    allocationSourceKey: `legacy-manual:LEDGER-RACE-COST-ALLOCATION-${nonce}`,
   })
 }
 
@@ -231,9 +238,33 @@ export async function runProjectCostLedgerConcurrency(argv = process.argv.slice(
   const succeeded = results.filter((result) => result.ok)
   const conflicted = results.filter((result) =>
     !result.ok && result.body?.code === 'P0001' &&
-    result.body?.message === 'PROJECT_COST_LEDGER_VERSION_CONFLICT')
+    result.body?.hint === 'PROJECT_COST_LEDGER_VERSION_CONFLICT')
   if (succeeded.length !== 1 || conflicted.length !== 1) {
     fail(`expected one success and one version conflict, received ${JSON.stringify(results)}`)
+  }
+
+  let releaseAllocation
+  const allocationBarrier = new Promise((resolve) => { releaseAllocation = resolve })
+  const allocate = (token, reason) => allocationBarrier.then(() => rpc(
+    target, token, 'replace_project_cost_allocations_secure', {
+      p_source_key: data.allocationSourceKey,
+      p_expected_version: 1,
+      p_reason: reason,
+      p_allocations: [{ projectId: data.projectId, amount: 100 }],
+    },
+  ))
+  const allocationCalls = [
+    allocate(tokenA, '并发会计甲分摊'),
+    allocate(tokenB, '并发会计乙分摊'),
+  ]
+  releaseAllocation()
+  const allocationResults = await Promise.all(allocationCalls)
+  const allocationSucceeded = allocationResults.filter((result) => result.ok)
+  const allocationConflicted = allocationResults.filter((result) =>
+    !result.ok && result.body?.code === 'P0001' &&
+    result.body?.hint === 'PROJECT_COST_LEDGER_VERSION_CONFLICT')
+  if (allocationSucceeded.length !== 1 || allocationConflicted.length !== 1) {
+    fail(`expected one allocation success and one version conflict, received ${JSON.stringify(allocationResults)}`)
   }
 
   const audit = await rpc(target, tokenA, 'list_project_cost_audit_secure', {
@@ -242,11 +273,25 @@ export async function runProjectCostLedgerConcurrency(argv = process.argv.slice(
     },
   })
   const events = audit.body?.events
-  if (!audit.ok || !Array.isArray(events) || events.length !== 1 ||
-      events[0]?.eventType !== 'adjustment' || events[0]?.sourceKey !== data.sourceKey ||
-      events[0]?.sequenceNo !== 1 || events[0]?.amountBefore !== 100 ||
-      events[0]?.amountAfter !== 110 || events[0]?.adjustmentAmount !== 10) {
+  const adjustmentEvents = Array.isArray(events)
+    ? events.filter((event) => event.sourceKey === data.sourceKey)
+    : []
+  const allocationEvents = Array.isArray(events)
+    ? events.filter((event) => event.sourceKey === data.allocationSourceKey)
+    : []
+  if (!audit.ok || adjustmentEvents.length !== 1 ||
+      adjustmentEvents[0]?.eventType !== 'adjustment' ||
+      adjustmentEvents[0]?.sequenceNo !== 1 || adjustmentEvents[0]?.amountBefore !== 100 ||
+      adjustmentEvents[0]?.amountAfter !== 110 || adjustmentEvents[0]?.adjustmentAmount !== 10) {
     fail('concurrent loser left a partial or malformed audit trail')
+  }
+  if (allocationEvents.length !== 1 || allocationEvents[0]?.eventType !== 'allocation' ||
+      allocationEvents[0]?.sequenceNo !== 1 || allocationEvents[0]?.amountBefore !== 100 ||
+      allocationEvents[0]?.amountAfter !== 100 ||
+      allocationEvents[0]?.allocationsAfter?.length !== 1 ||
+      allocationEvents[0]?.allocationsAfter?.[0]?.projectId !== data.projectId ||
+      allocationEvents[0]?.allocationsAfter?.[0]?.amount !== 100) {
+    fail('concurrent allocation loser left a partial or malformed audit trail')
   }
   const ledger = await rpc(target, tokenA, 'list_project_cost_ledger_secure', {
     p_filters: {
@@ -254,22 +299,37 @@ export async function runProjectCostLedgerConcurrency(argv = process.argv.slice(
       page: 1, pageSize: 20,
     },
   })
-  const row = ledger.body?.rows?.[0]
-  if (!ledger.ok || ledger.body?.totalRows !== 1 || row?.sourceKey !== data.sourceKey ||
+  const row = ledger.body?.rows?.find((candidate) => candidate.sourceKey === data.sourceKey)
+  const allocationRow = ledger.body?.rows?.find(
+    (candidate) => candidate.sourceKey === data.allocationSourceKey,
+  )
+  if (!ledger.ok || ledger.body?.totalRows !== 2 || row?.sourceKey !== data.sourceKey ||
       row?.originalAmount !== 100 || row?.adjustmentAmount !== 10 ||
       row?.effectiveAmount !== 110 || row?.version !== 2) {
     fail('concurrent mutation did not leave one complete ledger version')
+  }
+  if (allocationRow?.originalAmount !== 100 || allocationRow?.adjustmentAmount !== 0 ||
+      allocationRow?.effectiveAmount !== 100 || allocationRow?.version !== 2 ||
+      allocationRow?.allocations?.length !== 1 ||
+      allocationRow?.allocations?.[0]?.projectId !== data.projectId ||
+      allocationRow?.allocations?.[0]?.amount !== 100) {
+    fail('concurrent allocation did not leave one complete ledger version')
   }
   return Object.freeze({
     projectId: target.projectId,
     apiUrl: target.apiUrl,
     signInMs: [accountA.signInMs, accountB.signInMs],
-    race: results.map(({ status, elapsedMs, body }) => ({
-      status, elapsedMs, code: body?.code ?? null,
+    adjustmentRace: results.map(({ status, elapsedMs, body }) => ({
+      status, elapsedMs, code: body?.code ?? null, hint: body?.hint ?? null,
+    })),
+    allocationRace: allocationResults.map(({ status, elapsedMs, body }) => ({
+      status, elapsedMs, code: body?.code ?? null, hint: body?.hint ?? null,
     })),
     successCount: succeeded.length,
     conflictCount: conflicted.length,
-    auditEventCount: events.length,
+    allocationSuccessCount: allocationSucceeded.length,
+    allocationConflictCount: allocationConflicted.length,
+    auditEventCount: Array.isArray(events) ? events.length : 0,
   })
 }
 

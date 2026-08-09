@@ -5735,17 +5735,26 @@ commit;
 --     -> jsonb
 --
 -- Adjustment and allocation writes require module.project_costs.update and an
--- exact current version. Adjustment uses a transaction-scoped, non-blocking
--- advisory lock with a pre-lock fast check plus a post-lock version recheck;
--- lock contention and stale versions both fail with SQLSTATE P0001 and message
+-- exact current version. Both use a transaction-scoped, non-blocking advisory
+-- lock with a pre-lock fast check plus a post-lock version recheck; lock
+-- contention and stale versions both fail with SQLSTATE P0001 and SQL HINT
 -- PROJECT_COST_LEDGER_VERSION_CONFLICT without a partial event. Allocation
--- snapshots contain unique active project IDs and fixed four-decimal amounts
--- whose signed sum exactly equals the source's current effective amount.
--- Manual writes require module.project_costs.create, are idempotent by the full
--- request UUID, reject conflicting replays, and derive actor/project/time on
--- the server. Audit rows expose exact before/after values, allocation snapshots,
--- reason, server actor, and server timestamp. All four functions are closed
--- SECURITY DEFINER boundaries with an empty fixed search_path.
+-- locks target projects in stable key order with FOR SHARE and revalidates their
+-- active state after the source lock. Its snapshots contain unique project IDs
+-- and fixed four-decimal amounts whose signed sum exactly equals the source's
+-- current effective amount.
+-- Manual writes require module.project_costs.create and lock/query the full
+-- request UUID before project lookup. Exact replays compare only the normalized
+-- seven client fields and return the original actor/project/time snapshot even
+-- after the project is renamed or disabled; only new requests lock and validate
+-- the active project. Conflicting UUID reuse keeps its legacy message but maps
+-- to the documented PROJECT_COST_LEDGER_INPUT_INVALID SQL HINT.
+-- Audit rows expose exact before/after values, allocation snapshots, reason,
+-- server actor, and server timestamp. Audit and ledger projectId filters assign
+-- the same safe-text normalization result. Public semantic errors retain their
+-- SQLSTATE and publish only documented PROJECT_COST_LEDGER_* HINT codes. All
+-- four functions are closed SECURITY DEFINER boundaries with an empty fixed
+-- search_path.
 --
 -- The source union normalizes text with the ECMAScript trim character set.
 -- Invalid optional display text falls back to empty without losing the amount;

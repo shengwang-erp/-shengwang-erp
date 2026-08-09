@@ -962,7 +962,8 @@ begin
     )
   then
     raise exception using
-      errcode = '22023', message = 'invalid project cost ledger filters';
+      errcode = '22023', message = 'invalid project cost ledger filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   begin
@@ -993,33 +994,39 @@ begin
     end if;
   exception when others then
     raise exception using
-      errcode = '22023', message = 'invalid project cost ledger filters';
+      errcode = '22023', message = 'invalid project cost ledger filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end;
   if requested_page not between 1 and 1000000
     or requested_page_size not in (20, 50, 100)
   then
     raise exception using
-      errcode = '22023', message = 'invalid project cost ledger filters';
+      errcode = '22023', message = 'invalid project cost ledger filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   if p_filters ? 'projectId' then
     if pg_catalog.jsonb_typeof(p_filters->'projectId') <> 'string' then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
-    filter_project_id := p_filters->>'projectId';
+    filter_project_id := private.project_cost_safe_text(
+      p_filters->'projectId', true, 500
+    );
+    if filter_project_id is null then
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+    end if;
     if filter_project_id in ('', 'all') then filter_project_id := null; end if;
-    if filter_project_id is not null and (
-      filter_project_id <> pg_catalog.btrim(filter_project_id)
-      or pg_catalog.char_length(filter_project_id) > 500
-      or filter_project_id in ('__proto__', 'constructor', 'prototype')
-    ) then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
-    end if;
   end if;
 
   if p_filters ? 'category' then
     if pg_catalog.jsonb_typeof(p_filters->'category') <> 'string' then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
     filter_category := p_filters->>'category';
     if filter_category in ('', 'all') then filter_category := null; end if;
@@ -1027,20 +1034,26 @@ begin
       filter_category <> pg_catalog.btrim(filter_category)
       or pg_catalog.char_length(filter_category) > 100
     ) then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
   end if;
 
   if p_filters ? 'sourceModule' then
     if pg_catalog.jsonb_typeof(p_filters->'sourceModule') <> 'string' then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
     filter_source_module := p_filters->>'sourceModule';
     if filter_source_module in ('', 'all') then filter_source_module := null; end if;
     if filter_source_module is not null and filter_source_module not in (
       'purchase', 'warehouse', 'labor', 'vehicle', 'tool', 'operating', 'manual'
     ) then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
   end if;
 
@@ -1048,7 +1061,9 @@ begin
     if pg_catalog.jsonb_typeof(p_filters->'adjusted') <> 'string'
       or p_filters->>'adjusted' not in ('all', 'adjusted', 'unadjusted')
     then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
     filter_adjusted := p_filters->>'adjusted';
     if filter_adjusted = 'all' then filter_adjusted := null; end if;
@@ -1056,7 +1071,9 @@ begin
 
   if p_filters ? 'keyword' then
     if pg_catalog.jsonb_typeof(p_filters->'keyword') <> 'string' then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
     filter_keyword := p_filters->>'keyword';
     if filter_keyword = '' then filter_keyword := null; end if;
@@ -1064,7 +1081,9 @@ begin
       filter_keyword <> pg_catalog.btrim(filter_keyword)
       or pg_catalog.char_length(filter_keyword) > 200
     ) then
-      raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+      raise exception using
+        errcode = '22023', message = 'invalid project cost ledger filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
   end if;
 
@@ -1074,7 +1093,9 @@ begin
     else
       filter_date_from := private.project_cost_safe_date(p_filters->'dateFrom');
       if filter_date_from is null then
-        raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+        raise exception using
+          errcode = '22023', message = 'invalid project cost ledger filters',
+          hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
       end if;
     end if;
   end if;
@@ -1084,7 +1105,9 @@ begin
     else
       filter_date_to := private.project_cost_safe_date(p_filters->'dateTo');
       if filter_date_to is null then
-        raise exception using errcode = '22023', message = 'invalid project cost ledger filters';
+        raise exception using
+          errcode = '22023', message = 'invalid project cost ledger filters',
+          hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
       end if;
     end if;
   end if;
@@ -1092,7 +1115,8 @@ begin
     and filter_date_from > filter_date_to
   then
     raise exception using
-      errcode = '22023', message = 'invalid project cost ledger filters';
+      errcode = '22023', message = 'invalid project cost ledger filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   with facts as materialized (
@@ -1499,7 +1523,8 @@ begin
     or pg_catalog.round(p_adjustment_amount, 4) <> p_adjustment_amount
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   select employee.* into actor
@@ -1517,28 +1542,33 @@ begin
   from private.project_cost_source_state(normalized_source_key);
   if not found or source_state.project_id is null then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING',
+      hint = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
   end if;
   if source_state.current_version <> p_expected_version then
     raise exception using
-      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
   end if;
 
   if not pg_catalog.pg_try_advisory_xact_lock(
     pg_catalog.hashtextextended(normalized_source_key, 0)
   ) then
     raise exception using
-      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
   end if;
   select * into source_state
   from private.project_cost_source_state(normalized_source_key);
   if not found or source_state.project_id is null then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING',
+      hint = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
   end if;
   if source_state.current_version <> p_expected_version then
     raise exception using
-      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
   end if;
 
   amount_after := source_state.effective_amount + p_adjustment_amount;
@@ -1549,7 +1579,8 @@ begin
     or pg_catalog.round(amount_after, 4) <> amount_after
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   insert into public.project_cost_adjustment_events(
@@ -1627,7 +1658,8 @@ begin
     )
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   if (select pg_catalog.count(*)
@@ -1638,24 +1670,8 @@ begin
      from pg_catalog.jsonb_array_elements(p_allocations) item(value))
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
-  end if;
-
-  if exists (
-    select 1
-    from pg_catalog.jsonb_array_elements(p_allocations) item(value)
-    where not exists (
-      select 1
-      from public.projects project
-      where project.record_key = private.project_cost_safe_text(
-          item.value->'projectId', false, 500
-        )
-        and project.status = 'active'
-        and not private.project_cost_payload_cancelled(project.payload)
-    )
-  ) then
-    raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
@@ -1680,23 +1696,67 @@ begin
     raise exception using errcode = '42501', message = 'active employee required';
   end if;
 
-  perform pg_catalog.pg_advisory_xact_lock(
-    pg_catalog.hashtextextended(normalized_source_key, 0)
-  );
   select * into source_state
   from private.project_cost_source_state(normalized_source_key);
   if not found or source_state.project_id is null then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING',
+      hint = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
   end if;
   if source_state.current_version <> p_expected_version then
     raise exception using
-      errcode = '40001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+
+  if not pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtextextended(normalized_source_key, 0)
+  ) then
+    raise exception using
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+  select * into source_state
+  from private.project_cost_source_state(normalized_source_key);
+  if not found or source_state.project_id is null then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING',
+      hint = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+  end if;
+  if source_state.current_version <> p_expected_version then
+    raise exception using
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      hint = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
   end if;
   if allocation_total <> source_state.effective_amount then
     raise exception using
       errcode = '22023',
-      message = 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED';
+      message = 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED',
+      hint = 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED';
+  end if;
+
+  perform project.record_key
+  from public.projects project
+  where project.record_key in (
+    select item.value->>'projectId'
+    from pg_catalog.jsonb_array_elements(normalized_allocations) item(value)
+  )
+  order by project.record_key
+  for share;
+  if exists (
+    select 1
+    from pg_catalog.jsonb_array_elements(normalized_allocations) item(value)
+    where not exists (
+      select 1
+      from public.projects project
+      where project.record_key = item.value->>'projectId'
+        and project.status = 'active'
+        and not private.project_cost_payload_cancelled(project.payload)
+    )
+  ) then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   insert into public.project_cost_allocation_events(
@@ -1758,7 +1818,8 @@ begin
     ]::text[]
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   project_id_value := private.project_cost_safe_text(
@@ -1788,21 +1849,9 @@ begin
     or reason_value is null
   then
     raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
-
-  select project.* into project_row
-  from public.projects project
-  where project.record_key = project_id_value
-    and project.status = 'active'
-    and not private.project_cost_payload_cancelled(project.payload);
-  if not found then
-    raise exception using
-      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
-  end if;
-  project_name_value := coalesce(private.project_cost_safe_text(
-    project_row.payload->'projectName', true, 500
-  ), '');
 
   select employee.* into actor
   from public.employee_profiles employee
@@ -1824,7 +1873,6 @@ begin
   where entry.source_key = source_key_value;
   if found then
     if existing.project_id <> project_id_value
-      or existing.project_name <> project_name_value
       or existing.category <> category_value
       or existing.cost_date <> cost_date_value
       or existing.original_amount <> amount_value
@@ -1833,7 +1881,8 @@ begin
       or existing.reason <> reason_value
     then
       raise exception using
-        errcode = '22023', message = 'PROJECT_COST_LEDGER_REQUEST_CONFLICT';
+        errcode = '22023', message = 'PROJECT_COST_LEDGER_REQUEST_CONFLICT',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
     return pg_catalog.jsonb_build_object(
       'sourceKey', existing.source_key,
@@ -1848,6 +1897,23 @@ begin
       'createdAt', existing.created_at
     );
   end if;
+
+  select project.* into project_row
+  from public.projects project
+  where project.record_key = project_id_value
+  order by project.record_key
+  for share;
+  if not found
+    or project_row.status <> 'active'
+    or private.project_cost_payload_cancelled(project_row.payload)
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+  project_name_value := coalesce(private.project_cost_safe_text(
+    project_row.payload->'projectName', true, 500
+  ), '');
 
   insert into public.project_cost_manual_entries(
     source_key, project_id, project_name, category, cost_date,
@@ -1908,23 +1974,25 @@ begin
     )
   then
     raise exception using
-      errcode = '22023', message = 'invalid project cost audit filters';
+      errcode = '22023', message = 'invalid project cost audit filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   if p_filters ? 'projectId' then
     if pg_catalog.jsonb_typeof(p_filters->'projectId') <> 'string' then
       raise exception using
-        errcode = '22023', message = 'invalid project cost audit filters';
+        errcode = '22023', message = 'invalid project cost audit filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
-    filter_project_id := p_filters->>'projectId';
-    if filter_project_id in ('', 'all') then filter_project_id := null; end if;
-    if filter_project_id is not null and private.project_cost_safe_text(
-        p_filters->'projectId', false, 500
-      ) is null
-    then
+    filter_project_id := private.project_cost_safe_text(
+      p_filters->'projectId', true, 500
+    );
+    if filter_project_id is null then
       raise exception using
-        errcode = '22023', message = 'invalid project cost audit filters';
+        errcode = '22023', message = 'invalid project cost audit filters',
+        hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
     end if;
+    if filter_project_id in ('', 'all') then filter_project_id := null; end if;
   end if;
   if p_filters ? 'dateFrom' then
     if pg_catalog.jsonb_typeof(p_filters->'dateFrom') = 'string'
@@ -1935,7 +2003,8 @@ begin
       filter_date_from := private.project_cost_safe_date(p_filters->'dateFrom');
       if filter_date_from is null then
         raise exception using
-          errcode = '22023', message = 'invalid project cost audit filters';
+          errcode = '22023', message = 'invalid project cost audit filters',
+          hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
       end if;
     end if;
   end if;
@@ -1948,7 +2017,8 @@ begin
       filter_date_to := private.project_cost_safe_date(p_filters->'dateTo');
       if filter_date_to is null then
         raise exception using
-          errcode = '22023', message = 'invalid project cost audit filters';
+          errcode = '22023', message = 'invalid project cost audit filters',
+          hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
       end if;
     end if;
   end if;
@@ -1956,7 +2026,8 @@ begin
     and filter_date_from > filter_date_to
   then
     raise exception using
-      errcode = '22023', message = 'invalid project cost audit filters';
+      errcode = '22023', message = 'invalid project cost audit filters',
+      hint = 'PROJECT_COST_LEDGER_INPUT_INVALID';
   end if;
 
   with facts as materialized (

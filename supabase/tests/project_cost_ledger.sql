@@ -10,6 +10,40 @@ create extension if not exists dblink with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 select no_plan();
 
+create function pg_temp.project_cost_error_hint(command text)
+returns text
+language plpgsql
+as $$
+declare
+  captured_hint text;
+begin
+  execute command;
+  return null;
+exception when others then
+  get stacked diagnostics captured_hint = pg_exception_hint;
+  return captured_hint;
+end;
+$$;
+
+create function pg_temp.project_cost_try_json(command text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  result jsonb;
+  captured_hint text;
+begin
+  execute command into result;
+  return result;
+exception when others then
+  get stacked diagnostics captured_hint = pg_exception_hint;
+  return pg_catalog.jsonb_build_object(
+    'error', sqlerrm,
+    'hint', captured_hint
+  );
+end;
+$$;
+
 select has_table('public'::name, 'project_cost_manual_entries'::name);
 select has_table('public'::name, 'project_cost_adjustment_events'::name);
 select has_table('public'::name, 'project_cost_allocation_events'::name);
@@ -79,6 +113,27 @@ select alike(
   ),
   '%pg_try_advisory_xact_lock%',
   'adjustment mutation rejects a busy source lock without blocking'
+);
+select alike(
+  pg_catalog.pg_get_functiondef(
+    'public.replace_project_cost_allocations_secure(text,bigint,text,jsonb)'::regprocedure
+  ),
+  '%pg_try_advisory_xact_lock%',
+  'allocation mutation rejects a busy source lock without blocking'
+);
+select alike(
+  pg_catalog.pg_get_functiondef(
+    'public.replace_project_cost_allocations_secure(text,bigint,text,jsonb)'::regprocedure
+  ),
+  '%for share%',
+  'allocation mutation locks active target projects after the source lock'
+);
+select alike(
+  pg_catalog.pg_get_functiondef(
+    'public.create_manual_project_cost_secure(uuid,jsonb)'::regprocedure
+  ),
+  '%for share%',
+  'new manual entries lock and revalidate their target project'
 );
 
 select ok(
@@ -1341,7 +1396,31 @@ select throws_ok(
   'P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
   'a busy source lock fails immediately with the documented version conflict'
 );
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    1, 1.0000, '锁忙安全提示'
+  )$$),
+  'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+  'busy adjustment errors publish the documented safe hint'
+);
+\if :{?skip_allocation_busy}
+\else
+set local statement_timeout = '500ms';
+select throws_ok(
+  $$select public.replace_project_cost_allocations_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    1, '锁忙分摊重试',
+    '[{"projectId":"LEDGER-P-A","amount":200.0000}]'
+  )$$,
+  'P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+  'a busy allocation source lock fails immediately with the same conflict'
+);
+set local statement_timeout = 0;
+\endif
 reset role;
+\if :{?skip_allocation_busy}
+\else
 select is(
   (select pg_catalog.count(*)
    from public.project_cost_adjustment_events
@@ -1350,6 +1429,15 @@ select is(
   0::bigint,
   'a busy source lock leaves no partial adjustment event'
 );
+select is(
+  (select pg_catalog.count(*)
+   from public.project_cost_allocation_events
+   where source_key =
+     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'),
+  0::bigint,
+  'a busy source lock leaves no partial allocation event'
+);
+\endif
 select dblink_exec('task3_busy_source', 'rollback');
 select dblink_disconnect('task3_busy_source');
 
@@ -1388,6 +1476,21 @@ select throws_ok(
   '22023', 'PROJECT_COST_LEDGER_INPUT_INVALID',
   'blank adjustment reasons fail closed'
 );
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    3, 1.0000, '   '
+  )$$),
+  'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'adjustment input failures publish the documented safe hint'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:missing', 1, 1.0000, '不存在来源'
+  )$$),
+  'PROJECT_COST_LEDGER_SOURCE_MISSING',
+  'missing-source failures publish the documented safe hint'
+);
 select lives_ok(
   $$select public.replace_project_cost_allocations_secure(
     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
@@ -1410,6 +1513,18 @@ select throws_ok(
   )$$,
   '22023', 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED',
   'allocation snapshots must exactly equal the current effective amount'
+);
+select is(
+  pg_temp.project_cost_error_hint($$select public.replace_project_cost_allocations_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    4, '不平衡安全提示',
+    '[
+      {"projectId":"LEDGER-P-A","amount":75.0000},
+      {"projectId":"LEDGER-P-B","amount":149.9999}
+    ]'
+  )$$),
+  'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED',
+  'unbalanced allocation errors publish the documented safe hint'
 );
 select throws_ok(
   $$select public.replace_project_cost_allocations_secure(
@@ -1457,6 +1572,19 @@ select throws_ok(
   '22023', 'PROJECT_COST_LEDGER_REQUEST_CONFLICT',
   'a reused manual request id with different content is rejected'
 );
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000001',
+    '{
+      "projectId":"LEDGER-P-B","category":"其他费用",
+      "date":"2026-08-08","amount":-12.3455,
+      "description":"供应商折扣冲回","operator":"成本会计",
+      "reason":"补录已确认折扣"
+    }'
+  )$$),
+  'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'manual request conflicts map to the documented input-invalid hint'
+);
 select throws_ok(
   $$select public.create_manual_project_cost_secure(
     'a9700000-0000-4000-8000-000000000002',
@@ -1479,6 +1607,25 @@ create temporary table task3_audit_snapshot as
 select public.list_project_cost_audit_secure(
   '{"projectId":"LEDGER-P-B","dateFrom":"2026-08-02","dateTo":"2026-08-02"}'
 ) payload;
+create temporary table task3_audit_spaced_snapshot as
+select public.list_project_cost_audit_secure(
+  '{"projectId":"  LEDGER-P-B  ","dateFrom":"2026-08-02","dateTo":"2026-08-02"}'
+) payload;
+create temporary table task3_ledger_project_exact as
+select public.list_project_cost_ledger_secure(
+  '{"projectId":"LEDGER-P-B","pageSize":100}'
+) payload;
+create temporary table task3_ledger_project_spaced as
+select pg_temp.project_cost_try_json($$select public.list_project_cost_ledger_secure(
+  '{"projectId":"  LEDGER-P-B  ","pageSize":100}'
+)$$) payload;
+select is(
+  pg_temp.project_cost_error_hint($$select public.list_project_cost_audit_secure(
+    '{"projectId":17}'
+  )$$),
+  'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'audit filter failures publish the documented safe hint'
+);
 reset role;
 
 select ok(
@@ -1543,6 +1690,71 @@ select ok(
       )
    from task3_audit_snapshot),
   'audit read uses matching project/date filters and exact server-authored fields'
+);
+select is(
+  (select payload->'events' from task3_audit_spaced_snapshot),
+  (select payload->'events' from task3_audit_snapshot),
+  'audit project filtering normalizes surrounding whitespace like the ledger'
+);
+select is(
+  (select payload->'rows' from task3_ledger_project_spaced),
+  (select payload->'rows' from task3_ledger_project_exact),
+  'ledger and audit project filters share safe-text whitespace normalization'
+);
+
+insert into public.projects(record_key, payload, status) values (
+  'LEDGER-P-MANUAL-REPLAY',
+  '{"projectId":"LEDGER-P-MANUAL-REPLAY","projectName":"幂等原项目"}',
+  'active'
+);
+select set_config(
+  'request.jwt.claim.sub',
+  'a9100000-0000-4000-8000-000000000001', true
+);
+set local role authenticated;
+create temporary table task3_manual_replay_before as
+select public.create_manual_project_cost_secure(
+  'a9700000-0000-4000-8000-000000000003',
+  '{
+    "projectId":"LEDGER-P-MANUAL-REPLAY","category":"其他费用",
+    "date":"2099-12-29","amount":8.0000,
+    "description":"幂等项目快照","operator":"成本会计",
+    "reason":"首次记账"
+  }'
+) payload;
+reset role;
+set local session_replication_role = replica;
+update public.projects
+set payload = '{
+      "projectId":"LEDGER-P-MANUAL-REPLAY",
+      "projectName":"已改名且停用"
+    }'::jsonb,
+    status = 'void'
+where record_key = 'LEDGER-P-MANUAL-REPLAY';
+set local session_replication_role = origin;
+set local role authenticated;
+create temporary table task3_manual_replay_after as
+select pg_temp.project_cost_try_json($$select public.create_manual_project_cost_secure(
+  'a9700000-0000-4000-8000-000000000003',
+  '{
+    "projectId":"LEDGER-P-MANUAL-REPLAY","category":"其他费用",
+    "date":"2099-12-29","amount":8.0000,
+    "description":"幂等项目快照","operator":"成本会计",
+    "reason":"首次记账"
+  }'
+)$$) payload;
+reset role;
+select is(
+  (select payload from task3_manual_replay_after),
+  (select payload from task3_manual_replay_before),
+  'manual replay returns the original snapshot after project rename and deactivation'
+);
+select ok(
+  (select pg_catalog.count(*) = 1
+      and pg_catalog.min(project_name) = '幂等原项目'
+   from public.project_cost_manual_entries
+   where source_key = 'manual:a9700000-0000-4000-8000-000000000003'),
+  'manual replay remains one immutable row with the original project snapshot'
 );
 
 select throws_ok(
