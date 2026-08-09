@@ -87,14 +87,20 @@ test('local source facts exclude inactive rows and warehouse-confirmed purchase 
     { purchaseId: 'PO-VOID', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10, purchaseStatus: 'void' },
     { purchaseId: 'PO-DELETED', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10, deleted: true },
     { purchaseId: 'PO-WAREHOUSE', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10 },
+    { purchaseId: 'PO-INTERNAL', recordKey: 'PR-RECORD-KEY', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10 },
+    { purchaseId: 'PO-ALIAS', purchaseRecordKey: 'PR-ALIAS', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10 },
+    { purchaseId: 'PO-UNTRUSTED', purchaseDate: '2026-08-01', projectId: 'P1', totalCost: 10 },
   )
   sources.warehouseCosts.push(
-    { costRecordId: 'SO-WAREHOUSE', date: '2026-08-02', projectId: 'P1', amount: 10, sourcePurchaseRecordKeys: ['PO-WAREHOUSE'] },
+    { costRecordId: 'SO-WAREHOUSE', date: '2026-08-02', projectId: 'P1', amount: 10, sourceType: 'warehouse', sourcePurchaseRecordKeys: ['PO-WAREHOUSE'] },
+    { costRecordId: 'SO-RECORD-KEY', date: '2026-08-02', projectId: 'P1', amount: 10, sourceType: 'warehouse', sourcePurchaseRecordKeys: ['PR-RECORD-KEY'] },
+    { costRecordId: 'SO-ALIAS', date: '2026-08-02', projectId: 'P1', amount: 10, sourceType: 'warehouseReversal', sourcePurchaseRecordKeys: ['PR-ALIAS'] },
+    { costRecordId: 'SO-UNTRUSTED', date: '2026-08-02', projectId: 'P1', amount: 10, sourcePurchaseRecordKeys: ['PO-UNTRUSTED'] },
     { costRecordId: 'SO-CANCELLED', date: '2026-08-02', projectId: 'P1', amount: 10, status: 'cancelled' },
   )
   const facts = buildLocalSourceFacts(sources)
-  assert.deepEqual(facts.filter(({ sourceModule }) => sourceModule === 'purchase').map(({ sourceDocumentId }) => sourceDocumentId), ['PO-1'])
-  assert.deepEqual(facts.filter(({ sourceModule }) => sourceModule === 'warehouse').map(({ sourceDocumentId }) => sourceDocumentId), ['SO-1', 'SO-WAREHOUSE'])
+  assert.deepEqual(facts.filter(({ sourceModule }) => sourceModule === 'purchase').map(({ sourceDocumentId }) => sourceDocumentId), ['PO-1', 'PO-UNTRUSTED'])
+  assert.deepEqual(facts.filter(({ sourceModule }) => sourceModule === 'warehouse').map(({ sourceDocumentId }) => sourceDocumentId), ['SO-1', 'SO-WAREHOUSE', 'SO-RECORD-KEY', 'SO-ALIAS', 'SO-UNTRUSTED'])
 })
 
 test('rejects row allocations that do not exactly equal the effective amount', () => {

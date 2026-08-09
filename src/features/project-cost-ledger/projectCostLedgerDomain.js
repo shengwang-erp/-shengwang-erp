@@ -33,6 +33,7 @@ const INACTIVE_STATUSES = new Set([
 const CONFIRMED_WAREHOUSE_STATUSES = new Set([
   'confirmed', 'ready', 'approved', 'completed', '已确认', '已完成',
 ])
+const WAREHOUSE_COST_SOURCE_TYPES = new Set(['warehouse', 'warehouseReversal'])
 const DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
 
 function isPlainObject(value) {
@@ -262,8 +263,10 @@ function safeSourcePurchaseKeys(row) {
   return keys
 }
 
-function confirmedWarehouseRow(row) {
-  for (const field of ['batchStatus', 'confirmationStatus', 'confirmedStatus']) {
+function confirmedWarehousePurchaseLinks(row) {
+  if (WAREHOUSE_COST_SOURCE_TYPES.has(row.sourceType)) return true
+  if (row.confirmed === true || row.isConfirmed === true) return true
+  for (const field of ['status', 'batchStatus', 'confirmationStatus', 'confirmedStatus']) {
     if (!Object.hasOwn(row, field)) continue
     const status = row[field]
     return typeof status === 'string' && (
@@ -271,7 +274,15 @@ function confirmedWarehouseRow(row) {
       CONFIRMED_WAREHOUSE_STATUSES.has(status.toLowerCase())
     )
   }
-  return row.confirmed !== false && row.isConfirmed !== false
+  return false
+}
+
+function purchaseStableKeys(row) {
+  return ['recordKey', 'purchaseRecordKey', 'purchaseId', 'id'].filter((field) => {
+    const value = row[field]
+    return typeof value === 'string' && value.length > 0 && value.trim() === value &&
+      !POLLUTION_KEYS.has(value)
+  }).map((field) => row[field])
 }
 
 function localFact(module, row, config) {
@@ -309,18 +320,18 @@ export function buildLocalSourceFacts(input) {
   ]))
   const warehouseConfig = LOCAL_SOURCE_CONFIG.find(([, key]) => key === 'warehouseCosts')[2]
   const warehouseRows = localRows.warehouseCosts.filter(
-    (row) => !inactiveLocalRow(row) && confirmedWarehouseRow(row) &&
+    (row) => !inactiveLocalRow(row) &&
       localFact('warehouse', row, warehouseConfig) !== null,
   )
   const warehousePurchaseKeys = new Set(
-    warehouseRows.flatMap((row) => safeSourcePurchaseKeys(row)),
+    warehouseRows.filter(confirmedWarehousePurchaseLinks).flatMap((row) => safeSourcePurchaseKeys(row)),
   )
   const facts = []
   for (const [module, key, config] of LOCAL_SOURCE_CONFIG) {
     const rows = key === 'warehouseCosts' ? warehouseRows : localRows[key]
     for (const row of rows) {
       if (inactiveLocalRow(row) || (key === 'purchaseRows' &&
-          warehousePurchaseKeys.has(localValue(row, config.ids)))) continue
+          purchaseStableKeys(row).some((stableKey) => warehousePurchaseKeys.has(stableKey)))) continue
       const fact = localFact(module, row, config)
       if (fact) facts.push(fact)
     }
