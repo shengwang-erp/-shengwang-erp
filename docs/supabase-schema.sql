@@ -5718,9 +5718,14 @@ commit;
 -- exact normalizeLedgerSnapshot() JSON shape. Both the public RPC and private
 -- source helper are SECURITY DEFINER with an empty fixed search_path.
 --
--- The source union validates and normalizes Task 1 text fields before they can
--- reach a ready DTO. Warehouse purchase de-duplication is derived only from the
--- same strictly validated WAREHOUSE-SO/MWO/SR/WR facts (identity, type,
--- costRecordId, UUID provenance arrays, project/date/amount). Summary totals and
--- category totals fail with SQLSTATE 22003 outside +/-900719925474.0991, and
+-- The source union normalizes text with the ECMAScript trim character set.
+-- Invalid optional display text falls back to empty without losing the amount;
+-- invalid required identity/category text is excluded from rows and surfaced by
+-- a safe incompleteSources key. Warehouse purchase de-duplication is derived
+-- only from the same strictly validated WAREHOUSE-SO/MWO/SR/WR facts (identity,
+-- type, costRecordId, UUID provenance arrays, project/date/amount).
+-- A valid zero-value MWO still contributes authoritative purchase keys, while
+-- warehouse row emission filters the zero amount.
+-- Summary and category totals fail with SQLSTATE 22003 outside
+-- +/-900719925474.0991, and
 -- pagination numbers must be mathematically integral before integer conversion.

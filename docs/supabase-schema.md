@@ -474,8 +474,11 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 `vehicle-expense:`、`vehicle-issue:`、`tool-responsibility:`、`operating:`、
 `legacy-manual:`、`manual:`。新手工表保存的 `source_key` 本身就是完整的
 `manual:<uuid>` 稳定键，来源 helper 不再二次拼接前缀。外层删除/作废和业务取消记录不进入
-事实集；项目 ID、日期、金额或文本合同无效的 JSON 记录也不会被错误转换为零金额。输出文本
-统一 trim，必填文本拒绝空值，可空文本允许空串，并拒绝污染保留字与超过字段上限的内容。
+事实集；日期或金额无效的 JSON 记录不会被错误转换为零金额。输出文本按 ECMAScript
+`String.prototype.trim()` 的空白集合统一去除首尾字符。无效的项目名称、摘要和经办人等可空
+展示字段安全回退为空串且保留金额事实；来源身份、项目 ID 或类别等必填文本无效时不输出不安全
+明细行，而以安全来源标识进入 `incompleteSources`，防止成本静默消失。污染保留字和超过字段
+上限的内容同样按必填/可空语义处理。
 采购付款、到货和发票状态不影响项目直采确认；
 车辆维修不等待处理完成。工具丢失按工具原值计入项目毛成本，其他责任类型按维修费计入，
 员工赔偿是独立回收事实，不冲减项目毛费用。
@@ -485,7 +488,8 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 （及整单冲销 `WAREHOUSE-WR`）身份与来源类型、`costRecordId`、单据 UUID、有效项目/日期/
 金额、`sourceStockOutIds`，以及成员全部为非空唯一字符串的
 `sourcePurchaseRecordKeys`；畸形候选不会压掉合法直采。已由仓库冻结批次成本归集的采购不会再
-走直采分支。人工仅使用
+走直采分支。合法 `WAREHOUSE-MWO` 允许金额为零，以便全额退回后仍贡献防重复权威采购键；
+零金额只在仓库事实输出层过滤，因此既不生成零值账本行，也不会让对应直采重新计费。人工仅使用
 `attendance_day_resolutions.accounting_status in ('confirmed', 'month_locked')` 的已平衡
 `attendance_project_allocations`。
 
@@ -509,8 +513,8 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 项目分摊逐行输出，在分页前计算总行数、类别汇总、总金额和调整总额，并按日期倒序、来源键、
 分摊项目排序。`totalAmount`、`adjustmentTotal` 和每个类别小计都限制在 Task 1 四位小数
 安全单位范围 `±900719925474.0991`，越界统一以 `22003` 失败，绝不返回前端无法安全解析的
-`ready` DTO。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；完整读取时
-`incompleteSources` 为空。公有 RPC 和私有来源 helper 都是固定空 `search_path` 的
+`ready` DTO。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；只有来源身份、类别
+和分摊都完整时 `incompleteSources` 才为空。公有 RPC 和私有来源 helper 都是固定空 `search_path` 的
 `SECURITY DEFINER`，私有 helper 对客户端角色无执行权。
 
 ## 权限与安全

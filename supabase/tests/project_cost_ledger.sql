@@ -143,6 +143,11 @@ insert into public.purchase_records(record_key, payload, status) values
     "itemName":"小工单材料","totalCost":40,"projectId":"LEDGER-P-A",
     "projectName":"甲项目","purchasePurpose":"工程直用","purchaseStatus":"正常"
   }', 'active'),
+  ('LEDGER-PO-MWO-ZERO', '{
+    "purchaseId":"LEDGER-PO-MWO-ZERO","purchaseDate":"2026-08-01",
+    "itemName":"全额退回小工单材料","totalCost":60,"projectId":"LEDGER-P-A",
+    "projectName":"甲项目","purchasePurpose":"工程直用","purchaseStatus":"正常"
+  }', 'active'),
   ('LEDGER-PO-MIXED-KEYS', '{
     "purchaseId":"LEDGER-PO-MIXED-KEYS","purchaseDate":"2026-08-01",
     "itemName":"混合键直采","totalCost":1,"projectId":"LEDGER-P-A",
@@ -219,6 +224,16 @@ insert into public.project_cost_records(record_key, payload, status) values
     "sourceDocumentType":"warehouse_minor_work_order",
     "sourcePurchaseRecordKeys":["LEDGER-PO-MWO"],
     "sourceStockOutIds":["a9300000-0000-4000-8000-000000000013"]
+  }', 'active'),
+  ('WAREHOUSE-MWO:a9300000-0000-4000-8000-000000000005', '{
+    "costRecordId":"WAREHOUSE-MWO:a9300000-0000-4000-8000-000000000005",
+    "projectId":"LEDGER-P-A","projectName":"甲项目","costType":"材料费",
+    "amount":0,"date":"2026-08-02","operator":"仓管员",
+    "remark":"小工单领料全额退回","sourceType":"warehouse",
+    "sourceDocumentId":"a9300000-0000-4000-8000-000000000005",
+    "sourceDocumentType":"warehouse_minor_work_order",
+    "sourcePurchaseRecordKeys":["LEDGER-PO-MWO-ZERO"],
+    "sourceStockOutIds":["a9300000-0000-4000-8000-000000000015"]
   }', 'active'),
   ('WAREHOUSE-SR:a9300000-0000-4000-8000-000000000004', '{
     "costRecordId":"WAREHOUSE-SR:a9300000-0000-4000-8000-000000000004",
@@ -492,6 +507,16 @@ select is(
     where row_value->>'sourceKey' = 'purchase:LEDGER-PO-WAREHOUSE'),
   0::bigint,
   'warehouse-tracked direct purchase is excluded'
+);
+select is(
+  (select count(*) from ledger_snapshot,
+    lateral jsonb_array_elements(payload->'rows') row_value
+    where row_value->>'sourceKey' in (
+      'purchase:LEDGER-PO-MWO-ZERO',
+      'warehouse:WAREHOUSE-MWO:a9300000-0000-4000-8000-000000000005'
+    )),
+  0::bigint,
+  'zero-value MWO de-duplicates its purchase without emitting a zero ledger row'
 );
 select is(
   (select count(*) from ledger_snapshot,
@@ -888,25 +913,158 @@ reset role;
 
 select is(
   (select (payload->>'totalRows')::integer from text_contract_snapshot),
-  1,
-  'malformed supplier text is isolated before a ready DTO is returned'
+  7,
+  'invalid optional display text never removes an otherwise valid cost fact'
 );
 select is(
-  (select array_agg(row_value->>'sourceKey')
+  (select (payload->>'totalAmount')::numeric from text_contract_snapshot),
+  90::numeric,
+  'invalid optional display text preserves every supplier amount'
+);
+select is(
+  (select array_agg(row_value->>'sourceKey' order by row_value->>'sourceKey')
    from text_contract_snapshot,
    lateral pg_catalog.jsonb_array_elements(payload->'rows') row_value),
-  array['purchase:LEDGER-PO-TEXT-OPTIONAL-WHITESPACE']::text[],
-  'only the valid optional-whitespace supplier fact remains'
+  array[
+    'purchase:LEDGER-PO-TEXT-DESCRIPTION',
+    'purchase:LEDGER-PO-TEXT-LONG-DESCRIPTION',
+    'purchase:LEDGER-PO-TEXT-LONG-PROJECT',
+    'purchase:LEDGER-PO-TEXT-OPERATOR',
+    'purchase:LEDGER-PO-TEXT-OPTIONAL-WHITESPACE',
+    'purchase:LEDGER-PO-TEXT-PROJECT',
+    'purchase:LEDGER-PO-TEXT-WRONG-TYPE'
+  ]::text[],
+  'all facts with only malformed optional text remain visible'
 );
 select ok(
-  (select pg_catalog.count(*) = 1
-      and pg_catalog.bool_and(row_value->>'projectName' = ''
-        and row_value->>'description' = ''
-        and row_value->>'operator' = '')
+  (select pg_catalog.count(*) = 7
+      and pg_catalog.bool_and(
+        (row_value->>'sourceKey' not in (
+          'purchase:LEDGER-PO-TEXT-DESCRIPTION',
+          'purchase:LEDGER-PO-TEXT-LONG-DESCRIPTION',
+          'purchase:LEDGER-PO-TEXT-WRONG-TYPE',
+          'purchase:LEDGER-PO-TEXT-OPTIONAL-WHITESPACE'
+        ) or row_value->>'description' = '')
+        and (row_value->>'sourceKey' not in (
+          'purchase:LEDGER-PO-TEXT-LONG-PROJECT',
+          'purchase:LEDGER-PO-TEXT-PROJECT',
+          'purchase:LEDGER-PO-TEXT-OPTIONAL-WHITESPACE'
+        ) or row_value->>'projectName' = '')
+        and (row_value->>'sourceKey' not in (
+          'purchase:LEDGER-PO-TEXT-OPERATOR',
+          'purchase:LEDGER-PO-TEXT-OPTIONAL-WHITESPACE'
+        ) or row_value->>'operator' = '')
+      )
    from text_contract_snapshot,
    lateral pg_catalog.jsonb_array_elements(payload->'rows') row_value),
-  'optional pure-whitespace fields normalize to Task 1 empty strings'
+  'invalid optional text safely falls back without changing fact cardinality'
 );
+select is(
+  (select pg_catalog.jsonb_array_length(payload->'incompleteSources')
+   from text_contract_snapshot),
+  4,
+  'every fact with invalid required identity or category is marked incomplete'
+);
+select ok(
+  (select payload->'incompleteSources' @> '[
+      "purchase:constructor",
+      "purchase:",
+      "legacy-manual:LEDGER-TEXT-CATEGORY"
+    ]'::jsonb
+    and exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(payload->'incompleteSources') item(value)
+      where item.value #>> '{}' like 'invalid:purchase:%'
+    )
+    and not exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(payload->'incompleteSources') item(value)
+      cross join lateral (
+        select item.value #>> '{}' text_value,
+          E' \t\n\r\f' || pg_catalog.chr(11)
+            || U&'\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF'
+            trim_characters
+      ) parsed
+      where pg_catalog.jsonb_typeof(item.value) <> 'string'
+        or parsed.text_value = ''
+        or parsed.text_value <> pg_catalog.btrim(
+          parsed.text_value, parsed.trim_characters
+        )
+        or parsed.text_value in ('__proto__', 'constructor', 'prototype')
+    )
+   from text_contract_snapshot),
+  'incomplete source identities remain safe for the Task 1 normalizer'
+);
+
+insert into public.purchase_records(record_key, payload, status) values
+  ('LEDGER-PO-ECMA-TRIM', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-PO-ECMA-TRIM', 'purchaseDate', '2099-02-03',
+    'itemName', E'\t\r\n' || U&'\00A0\3000' || 'ECMA文本'
+      || U&'\3000\00A0' || E'\n\r\t',
+    'totalCost', 3, 'projectId', 'LEDGER-P-A',
+    'projectName', E'\t' || U&'\00A0\3000' || '甲项目'
+      || U&'\3000\00A0' || E'\r\n',
+    'employeeName', E'\r\n' || U&'\00A0\3000' || '经办人'
+      || U&'\3000\00A0' || E'\t',
+    'purchaseStatus', '正常'
+  ), 'active'),
+  ('LEDGER-PO-ECMA-EMPTY', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-PO-ECMA-EMPTY', 'purchaseDate', '2099-02-03',
+    'itemName', E'\t\r\n' || U&'\00A0\3000', 'totalCost', 4,
+    'projectId', 'LEDGER-P-A',
+    'projectName', U&'\3000\00A0' || E'\r\n\t',
+    'employeeName', E'\t\n' || U&'\00A0\3000',
+    'purchaseStatus', '正常'
+  ), 'active');
+
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table ecma_trim_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-02-03","dateTo":"2099-02-03","pageSize":20}'
+) payload;
+reset role;
+
+select ok(
+  (select row_value->>'projectName' = '甲项目'
+      and row_value->>'description' = 'ECMA文本'
+      and row_value->>'operator' = '经办人'
+   from ecma_trim_snapshot,
+   lateral pg_catalog.jsonb_array_elements(payload->'rows') row_value
+   where row_value->>'sourceKey' = 'purchase:LEDGER-PO-ECMA-TRIM'),
+  'RPC text uses ECMAScript-compatible trim for Task 1 normalizer input'
+);
+select ok(
+  (select row_value->>'projectName' = ''
+      and row_value->>'description' = ''
+      and row_value->>'operator' = ''
+   from ecma_trim_snapshot,
+   lateral pg_catalog.jsonb_array_elements(payload->'rows') row_value
+   where row_value->>'sourceKey' = 'purchase:LEDGER-PO-ECMA-EMPTY'),
+  'ECMAScript-only whitespace normalizes to Task 1 empty strings'
+);
+
+insert into public.project_cost_records(record_key, payload, status) values (
+  'LEDGER-LEGACY-CATEGORY-DEFAULT', pg_catalog.jsonb_build_object(
+    'costRecordId', 'LEDGER-LEGACY-CATEGORY-DEFAULT',
+    'projectId', 'LEDGER-P-A', 'projectName', '甲项目',
+    'amount', 5, 'date', '2099-02-04', 'remark', '缺省类别旧成本'
+  ), 'active'
+);
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select ok(
+  (select row_value->>'category' = '其他费用'
+      and (row_value->>'effectiveAmount')::numeric = 5
+   from (select public.list_project_cost_ledger_secure(
+     '{"dateFrom":"2099-02-04","dateTo":"2099-02-04","pageSize":20}'
+   ) response) snapshot
+   cross join lateral pg_catalog.jsonb_array_elements(
+     snapshot.response->'rows'
+   ) row_value),
+  'missing legacy cost type retains the established other-expense default'
+);
+reset role;
 
 insert into public.projects(record_key, payload, status) values (
   'LEDGER-P-TEXT-BAD',
