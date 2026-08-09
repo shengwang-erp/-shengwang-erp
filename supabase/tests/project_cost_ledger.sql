@@ -1143,6 +1143,64 @@ select ok(
   'legacy cost with malformed projectId is marked incomplete'
 );
 
+insert into public.purchase_records(record_key, payload, status) values
+  ('LEDGER-ROUND4-PO-WAREHOUSE', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-ROUND4-PO-WAREHOUSE',
+    'purchaseDate', '2099-02-06', 'itemName', '正常仓库备货',
+    'totalCost', 201, 'purchasePurpose', '仓库备货', 'projectId', '',
+    'purchaseStatus', '正常'
+  ), 'active'),
+  ('LEDGER-ROUND4-PO-COMPANY', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-ROUND4-PO-COMPANY',
+    'purchaseDate', '2099-02-06', 'itemName', '正常公司自用',
+    'totalCost', 202, 'purchasePurpose', '公司自用',
+    'purchaseStatus', '正常'
+  ), 'active'),
+  ('LEDGER-ROUND4-PO-MALFORMED', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-ROUND4-PO-MALFORMED',
+    'purchaseDate', '2099-02-06', 'itemName', '保留字项目采购',
+    'totalCost', 203, 'purchasePurpose', '仓库备货',
+    'projectId', 'constructor', 'purchaseStatus', '正常'
+  ), 'active'),
+  ('LEDGER-ROUND4-PO-PROJECT-MISSING', pg_catalog.jsonb_build_object(
+    'purchaseId', 'LEDGER-ROUND4-PO-PROJECT-MISSING',
+    'purchaseDate', '2099-02-06', 'itemName', '项目使用缺项目',
+    'totalCost', 204, 'purchasePurpose', '项目使用',
+    'purchaseStatus', '正常'
+  ), 'active');
+
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table round4_purchase_scope_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-02-06","dateTo":"2099-02-06","pageSize":20}'
+) payload;
+reset role;
+
+select ok(
+  (select (payload->>'totalRows')::integer = 0
+      and (payload->>'totalAmount')::numeric = 0
+      and payload->'rows' = '[]'::jsonb
+   from round4_purchase_scope_snapshot),
+  'non-project and incomplete purchases never enter rows or summaries'
+);
+select ok(
+  (select payload->'incompleteSources' @> '[
+    "purchase:LEDGER-ROUND4-PO-MALFORMED",
+    "purchase:LEDGER-ROUND4-PO-PROJECT-MISSING"
+  ]'::jsonb
+   from round4_purchase_scope_snapshot),
+  'only malformed or explicitly project-bound purchases are incomplete'
+);
+select ok(
+  (select not payload->'incompleteSources' ?| array[
+      'purchase:LEDGER-ROUND4-PO-WAREHOUSE',
+      'purchase:LEDGER-ROUND4-PO-COMPANY'
+    ]
+   from round4_purchase_scope_snapshot),
+  'legitimate non-project purchases remain outside the project ledger response'
+);
+
 insert into public.projects(record_key, payload, status) values (
   'LEDGER-P-TEXT-BAD',
   '{"projectId":"LEDGER-P-TEXT-BAD","projectName":"constructor"}',

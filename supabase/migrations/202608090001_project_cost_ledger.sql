@@ -497,6 +497,18 @@ as $$
     ) parsed
     where purchase.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(purchase.payload)
+      and (
+        purchase.payload->>'purchasePurpose' = '项目使用'
+        or pg_catalog.jsonb_typeof(
+          purchase.payload->'projectId'
+        ) not in ('null', 'string')
+        or (
+          pg_catalog.jsonb_typeof(
+            purchase.payload->'projectId'
+          ) = 'string'
+          and purchase.payload->>'projectId' <> ''
+        )
+      )
       and parsed.cost_date is not null
       and parsed.amount_value is not null
       and parsed.amount_value > 0

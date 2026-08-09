@@ -5724,7 +5724,12 @@ commit;
 -- a safe incompleteSources key. Malformed required purchase project IDs, tool
 -- issue types/project IDs, and legacy source types/project IDs reach this same
 -- invalid-source path after amount/date candidate validation instead of being
--- filtered before the source union. Warehouse purchase de-duplication is derived
+-- filtered before the source union. Purchase candidates enter the union only
+-- when purchasePurpose is 项目使用, projectId is explicitly non-empty, or an
+-- explicitly supplied projectId has a non-string type. Legitimate non-project
+-- purchases with a missing/empty projectId are absent from rows, summaries, and
+-- incompleteSources; project-use purchases missing projectId and malformed
+-- explicit projectIds remain incomplete. Warehouse purchase de-duplication is derived
 -- only from the same strictly validated WAREHOUSE-SO/MWO/SR/WR facts (identity,
 -- type, costRecordId, UUID provenance arrays, project/date/amount).
 -- A valid zero-value MWO still contributes authoritative purchase keys, while
