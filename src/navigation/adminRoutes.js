@@ -64,13 +64,23 @@ export const ADMIN_ROUTES = Object.freeze([
     normalizeTo: null,
   }),
   freezeRoute({
+    view: 'warehouse',
+    label: '仓库管理',
+    iconText: '仓',
+    moduleName: '仓库库存',
+    desktop: true,
+    mobileTab: false,
+    menuOrder: 6,
+    normalizeTo: null,
+  }),
+  freezeRoute({
     view: 'stockOut',
     label: '我要出库',
     iconText: '出',
     moduleName: '仓库库存',
     desktop: true,
     mobileTab: false,
-    menuOrder: 6,
+    menuOrder: 7,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -80,7 +90,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: '仓库库存',
     desktop: true,
     mobileTab: false,
-    menuOrder: 7,
+    menuOrder: 8,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -90,7 +100,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: '采购管理',
     desktop: true,
     mobileTab: false,
-    menuOrder: 8,
+    menuOrder: 9,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -100,7 +110,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: '车辆管理',
     desktop: true,
     mobileTab: false,
-    menuOrder: 9,
+    menuOrder: 10,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -110,7 +120,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: '工具管理',
     desktop: true,
     mobileTab: false,
-    menuOrder: 10,
+    menuOrder: 11,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -120,7 +130,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: null,
     desktop: true,
     mobileTab: false,
-    menuOrder: 11,
+    menuOrder: 12,
     normalizeTo: null,
   }),
   freezeRoute({
@@ -130,7 +140,7 @@ export const ADMIN_ROUTES = Object.freeze([
     moduleName: '系统设置',
     desktop: true,
     mobileTab: false,
-    menuOrder: 12,
+    menuOrder: 13,
     normalizeTo: null,
   }),
   freezeRoute({

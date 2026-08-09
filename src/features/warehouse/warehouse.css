@@ -1,3 +1,182 @@
+.warehouse-management-page {
+  display: grid;
+  gap: 18px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.warehouse-management-page .warehouse-preview-banner {
+  padding: 10px 14px;
+  border: 1px solid var(--erp-accent-gold);
+  border-radius: 10px;
+  color: var(--erp-bg-canvas);
+  font-weight: 800;
+  text-align: center;
+  background: var(--erp-accent-gold);
+}
+
+.warehouse-management-page .warehouse-management-header,
+.warehouse-management-page .warehouse-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-management-header p,
+.warehouse-management-page .warehouse-section-heading p {
+  margin: 0;
+  color: var(--erp-accent-gold);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.warehouse-management-page .warehouse-management-header h1,
+.warehouse-management-page .warehouse-section-heading h2 { margin: 4px 0; }
+.warehouse-management-page .warehouse-management-header span,
+.warehouse-management-page .warehouse-section-heading > span { color: var(--erp-text-secondary); }
+.warehouse-management-page .warehouse-management-header-actions,
+.warehouse-management-page .warehouse-operation-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+
+.warehouse-management-page button {
+  min-height: 44px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 10px;
+  padding: 9px 14px;
+  color: var(--erp-text-primary);
+  background: var(--erp-accent-gold-soft);
+  cursor: pointer;
+}
+
+.warehouse-management-page button:disabled { cursor: not-allowed; opacity: 0.55; }
+.warehouse-management-page :focus-visible { outline: 2px solid var(--erp-focus-ring); outline-offset: 2px; }
+
+.warehouse-management-page .warehouse-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 14px;
+  background: var(--erp-bg-surface);
+}
+
+.warehouse-management-page .warehouse-tabs button { background: transparent; }
+.warehouse-management-page .warehouse-tabs button.is-active {
+  border-color: var(--erp-accent-gold);
+  color: var(--erp-accent-gold);
+  background: var(--erp-bg-hover);
+}
+
+.warehouse-management-page .warehouse-overview,
+.warehouse-management-page .warehouse-operations { display: grid; gap: 18px; }
+.warehouse-management-page .warehouse-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.warehouse-management-page .warehouse-summary-grid article,
+.warehouse-management-page .warehouse-location-overview,
+.warehouse-management-page .warehouse-operation-card {
+  padding: 18px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 14px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+.warehouse-management-page .warehouse-summary-grid article { display: grid; gap: 7px; }
+.warehouse-management-page .warehouse-summary-grid article > span,
+.warehouse-management-page .warehouse-summary-grid small,
+.warehouse-management-page .warehouse-operation-card small { color: var(--erp-text-secondary); }
+.warehouse-management-page .warehouse-summary-grid strong { color: var(--erp-accent-gold); font-size: 1.8rem; }
+.warehouse-management-page .warehouse-summary-grid .is-warning { border-color: var(--erp-accent-gold); }
+.warehouse-management-page .warehouse-location-grid,
+.warehouse-management-page .warehouse-operation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.warehouse-management-page .warehouse-location-grid article {
+  padding: 14px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-location-grid article > div { display: flex; justify-content: space-between; gap: 10px; }
+.warehouse-management-page .warehouse-location-grid .is-shared-tool { border-color: var(--erp-accent-gold); }
+.warehouse-management-page .warehouse-location-grid .is-shared-tool span { color: var(--erp-accent-gold); }
+.warehouse-management-page .warehouse-shared-tool-note,
+.warehouse-management-page .warehouse-operation-warning { color: var(--erp-text-secondary); }
+
+.warehouse-management-page .warehouse-operation-card { display: grid; gap: 13px; align-content: start; }
+.warehouse-management-page .warehouse-operation-card h3 { margin: 0; }
+.warehouse-management-page .warehouse-receipt-confirmations { grid-column: 1 / -1; }
+.warehouse-management-page .warehouse-receipt-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 11px;
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-receipt-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+  gap: 12px;
+  align-items: end;
+}
+.warehouse-management-page .warehouse-operation-field { display: grid; gap: 6px; color: var(--erp-text-secondary); }
+.warehouse-management-page .warehouse-operation-field input,
+.warehouse-management-page .warehouse-operation-field select,
+.warehouse-management-page .warehouse-operation-field textarea,
+.warehouse-management-page .warehouse-operation-table-wrap input,
+.warehouse-management-page .warehouse-operation-table-wrap select {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 9px;
+  padding: 9px 11px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-operation-field textarea { min-height: 78px; resize: vertical; }
+.warehouse-management-page .warehouse-operation-message {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--erp-accent-gold);
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-operation-message.is-error { border-color: #b85042; }
+.warehouse-management-page .warehouse-operation-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+}
+.warehouse-management-page .warehouse-operation-table-wrap table { width: 100%; min-width: 980px; border-collapse: collapse; }
+.warehouse-management-page .warehouse-operation-table-wrap th,
+.warehouse-management-page .warehouse-operation-table-wrap td { padding: 10px; text-align: left; vertical-align: top; }
+.warehouse-management-page .warehouse-operation-table-wrap th { color: var(--erp-text-secondary); background: var(--erp-bg-elevated); }
+.warehouse-management-page .warehouse-operation-table-wrap td { border-top: 1px solid var(--erp-border-subtle); }
+.warehouse-management-page .warehouse-empty { color: var(--erp-text-secondary); }
+
+@media (max-width: 760px) {
+  .warehouse-management-page .warehouse-management-header,
+  .warehouse-management-page .warehouse-section-heading { align-items: stretch; flex-direction: column; padding: 16px; }
+  .warehouse-management-page .warehouse-tabs { display: flex; overflow-x: auto; }
+  .warehouse-management-page .warehouse-tabs button { flex: 0 0 auto; }
+  .warehouse-management-page .warehouse-operation-grid { grid-template-columns: minmax(0, 1fr); }
+  .warehouse-management-page .warehouse-receipt-line { grid-template-columns: minmax(0, 1fr); }
+}
+
 .warehouse-management-page .warehouse-catalog {
   display: grid;
   gap: 20px;

@@ -90,6 +90,7 @@ test('zero-permission users get only active-only routes and module routes requir
   }
 
   const inventoryUser = activeUser(['module.inventory.view'])
+  assert.equal(canAccessView(inventoryUser, 'warehouse'), true)
   assert.equal(canAccessView(inventoryUser, 'stockOut'), false)
   assert.equal(canAccessView(inventoryUser, 'stockReturn'), false)
   const requester = activeUser(['module.inventory.view', 'warehouse.stock_flow.request'])
@@ -131,12 +132,12 @@ test('direct project revenue access keeps the fixed project-financial whitelist'
 
 test('active SW-000 is fully authorized while effective all still respects identity whitelists', () => {
   const sw000 = activeUser([], { employeeNumber: 'SW-000' })
-  assert.equal(getVisibleAdminRoutes(sw000).length, 13)
+  assert.equal(getVisibleAdminRoutes(sw000).length, 14)
   assert.equal(canAccessView(sw000, 'contractRevenue'), true)
   assert.equal(getDashboardAccess(sw000).profit.view, true)
 
   const transitionalAll = activeUser(['all'])
-  assert.equal(getVisibleAdminRoutes(transitionalAll).length, 13)
+  assert.equal(getVisibleAdminRoutes(transitionalAll).length, 14)
   assert.equal(canAccessView(transitionalAll, 'contractRevenue'), false)
   assert.equal(getDashboardAccess(transitionalAll).contracts.amounts, false)
   assert.equal(getDashboardAccess(transitionalAll).profit.view, false)

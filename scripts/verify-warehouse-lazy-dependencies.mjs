@@ -17,6 +17,7 @@ const REQUIRED_OWNED_REPORT_CALLSITES = Object.freeze({
 })
 const WAREHOUSE_CATALOG_ROOT = 'src/features/warehouse/WarehouseCatalog.jsx'
 const WAREHOUSE_REPORTS_ROOT = 'src/features/warehouse/WarehouseReports.jsx'
+const WAREHOUSE_PAGE_ROOT = 'src/features/warehouse/WarehouseManagementPage.jsx'
 const SOURCE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',
   '.ts', '.tsx', '.mts', '.cts',
@@ -329,6 +330,12 @@ async function main() {
         if (target) localImportGraph.get(relativeFilename).add(target)
       }
       if (node.type === 'CallExpression' && node.callee?.type === 'Import') {
+        const localTarget = resolveLocalSource(
+          relativeFilename,
+          node.arguments?.[0]?.value,
+          relativeSources,
+        )
+        if (localTarget) localImportGraph.get(relativeFilename).add(localTarget)
         const dependency = dependencyForSpecifier(node.arguments?.[0]?.value)
         const expectedFilename = {
           ...REQUIRED_OWNED_QR_CALLSITES,
@@ -455,6 +462,18 @@ async function main() {
     if (!reportReachable.has(filename)) {
       violations.push(
         `${WAREHOUSE_REPORTS_ROOT}: ${filename} must be reachable through the static local import graph`,
+      )
+    }
+  }
+
+  const pageReachable = reachableSources(localImportGraph, WAREHOUSE_PAGE_ROOT)
+  for (const filename of [
+    ...Object.values(REQUIRED_OWNED_QR_CALLSITES),
+    ...Object.values(REQUIRED_OWNED_REPORT_CALLSITES),
+  ]) {
+    if (!pageReachable.has(filename)) {
+      violations.push(
+        `${WAREHOUSE_PAGE_ROOT}: ${filename} must be reachable through the production local import graph`,
       )
     }
   }

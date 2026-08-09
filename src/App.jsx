@@ -94,6 +94,7 @@ import {
   resolvePurchaseArrivalStatus,
 } from './features/warehouse/purchaseWarehouseBridge.js'
 
+const WarehouseManagementPage = lazy(() => import('./features/warehouse/WarehouseManagementPage.jsx'))
 const WarehouseRequestPage = lazy(() => import('./features/warehouse/WarehouseRequestPage.jsx'))
 import {
   classifyBusinessSourceError,
@@ -2241,9 +2242,12 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const purchaseAccess = getPurchaseAccess(currentUser)
   const dashboardAccess = getDashboardAccess(currentUser)
   const warehouseAccess = getWarehouseAccess(currentUser)
-  const warehouseRequestService = useMemo(() => createWarehouseService(supabase, {
-    configured: Boolean(supabase), viewCost: warehouseAccess.viewCost,
-  }), [warehouseAccess.viewCost])
+  const warehouseService = useMemo(() => createWarehouseService(supabase, {
+    configured: Boolean(supabase),
+    viewCost: warehouseAccess.viewCost,
+    manageCatalog: warehouseAccess.manageCatalog,
+    exportReports: warehouseAccess.exportReports,
+  }), [warehouseAccess.exportReports, warehouseAccess.manageCatalog, warehouseAccess.viewCost])
   const warehouseConfirmationService = useMemo(() => createWarehouseConfirmationService(
     supabase,
     { configured: Boolean(supabase), viewCost: warehouseAccess.viewCost },
@@ -2252,6 +2256,38 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     supabase,
     { configured: Boolean(supabase) },
   ), [])
+  const [warehouseHomeState, setWarehouseHomeState] = useState(() => ({
+    status: warehouseAccess.page ? 'loading' : 'forbidden',
+    data: null,
+    stale: false,
+  }))
+  useEffect(() => {
+    if (!warehouseAccess.page) {
+      setWarehouseHomeState({ status: 'forbidden', data: null, stale: false })
+      return undefined
+    }
+    let active = true
+    setWarehouseHomeState({ status: 'loading', data: null, stale: false })
+    Promise.all([
+      warehouseService.listCatalog(),
+      warehouseService.listReport('low_stock', { page: 1, pageSize: 500 }),
+    ]).then(([catalog, lowStock]) => {
+      if (!active) return
+      setWarehouseHomeState({
+        status: 'ready',
+        data: {
+          totalSku: catalog.variants.filter((variant) => variant.active !== false).length,
+          lowStockSku: lowStock.rows.length,
+        },
+        stale: false,
+      })
+    }).catch((error) => {
+      if (!active) return
+      if (error?.authInvalid) onLogout()
+      setWarehouseHomeState({ status: 'error', data: null, stale: false })
+    })
+    return () => { active = false }
+  }, [onLogout, warehouseAccess.page, warehouseService])
   const accountingReadAccess = {
     salary: accountingAccess.salary.view || dashboardAccess.labor.amounts,
     projectCost: accountingAccess.projectCost.view || dashboardAccess.costCategories.manualSupplement,
@@ -3733,6 +3769,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       readAllowed: canAccessView(currentUser, 'toolBorrow'),
       data: normalizedToolBorrowRecords,
     }),
+    warehouseSummary: warehouseHomeState,
     costSummary: homeFinancialModels.cost,
     purchaseSummary: homeFinancialModels.purchase,
   }
@@ -4017,6 +4054,24 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     )
   }
 
+  if (authorizedView === 'warehouse') {
+    return renderInDesktopShell(
+      <Suspense fallback={<main className="warehouse-management-page"><p>正在载入仓库管理…</p></main>}>
+        <WarehouseManagementPage
+          access={warehouseAccess}
+          currentUser={currentUser}
+          companyName="生旺株式会社"
+          warehouseService={warehouseService}
+          warehouseConfirmationService={warehouseConfirmationService}
+          warehouseMediaService={warehouseRequestMediaService}
+          onNavigate={handlePersonnelAwareNavigate}
+          onBack={() => handlePersonnelAwareNavigate('home')}
+          onAuthInvalid={onLogout}
+        />
+      </Suspense>
+    )
+  }
+
   if (authorizedView === 'stockOut' || authorizedView === 'stockReturn') {
     if (!warehouseAccess.requestStockFlow && !warehouseAccess.confirmStockFlow) return null
     return renderInDesktopShell(
@@ -4027,7 +4082,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
           currentUser={currentUser}
           onBack={() => handlePersonnelAwareNavigate('home')}
           onAuthInvalid={onLogout}
-          warehouseService={warehouseRequestService}
+          warehouseService={warehouseService}
           confirmationService={warehouseConfirmationService}
           warehouseMediaService={warehouseRequestMediaService}
           viewCost={warehouseAccess.viewCost}

@@ -41,7 +41,8 @@ export const WAREHOUSE_REPORTS = Object.freeze([
     column('数量', 'quantity', { numeric: true }), column('单位', 'unit'), ...costColumns,
   ]),
   report('receipts', '采购入库报表', ['dateFrom', 'dateTo', 'warehouseId', 'locationId', 'category', 'variantId', 'status', 'keyword'], [
-    column('日期', 'date'), column('入库单号', 'receiptId'), column('采购单号', 'purchaseRecordKey'),
+    column('日期', 'date'), column('入库单号', 'receiptId'), column('入库明细号', 'receiptLineId'),
+    column('采购单号', 'purchaseRecordKey'),
     ...stockIdentityColumns, ...locationColumns,
     column('数量', 'quantity', { numeric: true }), column('单位', 'unit'),
     column('状态', 'status'), column('经办人', 'operator'), column('原因', 'reason'), ...costColumns,

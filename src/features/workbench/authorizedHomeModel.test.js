@@ -305,9 +305,10 @@ test('SW-000 Home derives counts from ready states and discloses stale or failed
     pausedProjects: 1,
     monthlyPurchaseTotal: 300,
     monthlyCostTotal: 500,
-    moduleCounts: {
+      moduleCounts: {
       projects: 2,
       employees: 1,
+      warehouse: 0,
       stockOut: 1,
       stockReturn: 0,
       labor: 2,
@@ -324,6 +325,22 @@ test('SW-000 Home derives counts from ready states and discloses stale or failed
     sourceStates: {},
   })
   assert.equal(missingModel.modules[0].sourceStatus, 'loading')
+})
+
+test('inventory Home card shows only total SKU and low-stock count from its authorized projection', () => {
+  const user = activeUser(['module.inventory.view'])
+  const model = buildAuthorizedHomeModel({
+    user,
+    routes: getVisibleAdminRoutes(user),
+    sourceStates: {
+      warehouseSummary: ready({ totalSku: 18, lowStockSku: 3 }),
+    },
+  })
+
+  assert.deepEqual(model.modules.map(({ view }) => view), ['warehouse', 'todayAttendance'])
+  assert.equal(model.modules[0].displayValue, '18 SKU · 低库存 3')
+  assert.equal(model.modules[0].badgeCount, 3)
+  assert.equal(JSON.stringify(model).includes('unitCost'), false)
 })
 
 test('injected routes are canonicalized and authorization is checked before state access', () => {

@@ -56,6 +56,10 @@ async function createFixture(source, filename = 'entry.js') {
     path.join(ownedDirectory, 'WarehouseReports.jsx'),
     "import './warehouseExport.js'\nexport default function WarehouseReports() { return null }\n",
   )
+  await writeFile(
+    path.join(ownedDirectory, 'WarehouseManagementPage.jsx'),
+    "import('./WarehouseCatalog.jsx')\nimport('./WarehouseReports.jsx')\nexport default function WarehouseManagementPage() { return null }\n",
+  )
   return root
 }
 
@@ -69,6 +73,7 @@ async function createOwnedFixture(files) {
     'WarehouseCatalog.jsx': "import './WarehouseQrScanner.jsx'\nimport './WarehouseLabelSheet.jsx'\nexport default function WarehouseCatalog() { return null }\n",
     'warehouseExport.js': "export const loadExcel = () => import('exceljs')\n",
     'WarehouseReports.jsx': "import './warehouseExport.js'\nexport default function WarehouseReports() { return null }\n",
+    'WarehouseManagementPage.jsx': "import('./WarehouseCatalog.jsx')\nimport('./WarehouseReports.jsx')\nexport default function WarehouseManagementPage() { return null }\n",
     ...files,
   }
   for (const [filename, source] of Object.entries(ownedFiles)) {

@@ -201,7 +201,7 @@ const REPORT_ROW_FIELDS = Object.freeze({
     'warehouseName', 'locationId', 'shelfCode', 'shelfName', 'quantity', 'unitCost', 'totalCost',
   ]),
   receipts: Object.freeze([
-    'receiptId', 'purchaseRecordKey', 'date', 'variantId', 'itemName', 'category', 'model',
+    'receiptId', 'receiptLineId', 'purchaseRecordKey', 'date', 'variantId', 'itemName', 'category', 'model',
     'size', 'sku', 'unit', 'warehouseId', 'warehouseName', 'locationId', 'shelfCode',
     'shelfName', 'quantity', 'status', 'operator', 'reason', 'unitCost', 'totalCost',
   ]),
@@ -242,7 +242,7 @@ const REPORT_ROW_FIELDS = Object.freeze({
   ]),
 })
 const REPORT_UUID_FIELDS = new Set([
-  'itemId', 'variantId', 'receiptId', 'issueId', 'returnId', 'originalIssueId',
+  'itemId', 'variantId', 'receiptId', 'receiptLineId', 'issueId', 'returnId', 'originalIssueId',
   'transferId', 'stocktakeId', 'movementId', 'warehouseId', 'locationId',
   'sourceWarehouseId', 'sourceLocationId', 'destinationWarehouseId', 'destinationLocationId',
 ])

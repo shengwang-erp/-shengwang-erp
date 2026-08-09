@@ -675,6 +675,30 @@ test('warehouse reports use only the secure server-filtered RPC and return immut
   assert.equal(Object.isFrozen(result.rows[0]), true)
 })
 
+test('pending receipt reports retain the exact line identity required for warehouse confirmation', async () => {
+  const report = {
+    reportType: 'receipts', page: 1, pageSize: 100, export: false,
+    generatedAt: '2026-08-09T01:02:03Z',
+    rows: [{
+      receiptId: IDS.receipt, receiptLineId: IDS.stockOutLine,
+      purchaseRecordKey: 'PURCHASE-1', date: '2026-08-09T01:02:03Z',
+      variantId: IDS.variant, itemName: '铜管', category: '空调材料',
+      model: 'R410A', size: '6mm', sku: 'CU-6MM', unit: '米',
+      warehouseId: null, warehouseName: null, locationId: null,
+      shelfCode: null, shelfName: null, quantity: 12.5, status: 'pending',
+      operator: '采购员', reason: '', unitCost: null, totalCost: null,
+    }],
+  }
+  const { client } = rpcClient({
+    list_warehouse_report_secure: { data: report, error: null, status: 200 },
+  })
+  const result = await createWarehouseService(client, { configured: true })
+    .listReport('receipts', { status: 'pending' })
+
+  assert.equal(result.rows[0].receiptLineId, IDS.stockOutLine)
+  assert.equal(Object.isFrozen(result.rows[0]), true)
+})
+
 test('warehouse report filters and export authority fail closed before RPC', async () => {
   const { client, calls } = rpcClient()
   const service = createWarehouseService(client, { configured: true })

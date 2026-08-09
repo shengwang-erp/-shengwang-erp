@@ -92,7 +92,7 @@ const desktopShellModule = await loadDesktopShell()
 test('today attendance remains in the centralized desktop routes and Home cards', () => {
   const menuViews = ADMIN_ROUTES.filter(({ desktop }) => desktop).map(({ view }) => view)
 
-  assert.equal(menuViews.length, 13)
+  assert.equal(menuViews.length, 14)
   assert.deepEqual(menuViews.filter((view) => view === 'todayAttendance'), ['todayAttendance'])
   assert.equal(menuViews.includes('toolReturn'), false)
   assert.equal(menuViews.indexOf('todayAttendance'), menuViews.indexOf('toolBorrow') + 1)
@@ -205,7 +205,7 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   assert.doesNotMatch(openingTag, /\bprojects\s*=/u)
   assert.equal(
     (authenticatedApp.match(/return renderInDesktopShell\(/gu) || []).length,
-    17,
+    18,
   )
 })
 

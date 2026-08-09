@@ -736,6 +736,10 @@ select ok(
    ]) report_type),
   'all nine warehouse report types return server-filtered row arrays'
 );
+select ok(
+  (public.list_warehouse_report_secure('receipts','{"pageSize":1}',false)#>'{rows,0}') ? 'receiptLineId',
+  'receipt report retains the server line identity needed for warehouse confirmation'
+);
 select is(
   (public.list_warehouse_report_secure('current_stock',jsonb_build_object(
     'warehouseId','c1000000-0000-4000-8000-000000000001',

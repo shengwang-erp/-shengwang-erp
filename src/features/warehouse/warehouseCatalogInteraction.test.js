@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { act, createElement } from 'react'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
 import { installWarehouseReactDom, TestEvent } from './warehouseReactDomTestUtils.js'
@@ -39,11 +39,13 @@ async function loadCatalogModule() {
     root: process.cwd(), configFile: false, logLevel: 'silent', appType: 'custom',
     server: { middlewareMode: true },
   })
-  try { return await server.ssrLoadModule('/src/features/warehouse/WarehouseCatalog.jsx') }
-  finally { await server.close() }
+  const module = await server.ssrLoadModule('/src/features/warehouse/WarehouseCatalog.jsx')
+  return { module, server }
 }
 
-const catalogModule = await loadCatalogModule()
+const loadedCatalog = await loadCatalogModule()
+const catalogModule = loadedCatalog.module
+after(() => loadedCatalog.server.close())
 
 function deferred() {
   let resolve
@@ -87,6 +89,15 @@ async function click(element) {
 
 async function submit(element) {
   await act(async () => { element.dispatchEvent(new TestEvent('submit')) })
+}
+
+async function waitForElement(root, predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const found = elements(root, predicate)[0]
+    if (found) return found
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+  }
+  throw new Error('expected lazy warehouse element did not render')
 }
 
 function renderProps(overrides = {}) {
@@ -157,8 +168,10 @@ test('search, item and variant selection, scan resolution, and current-variant l
     assert.equal(byClass(container, 'warehouse-label-print-sheet__code').textContent, 'SWERP:VARIANT:variant-a2')
 
     await click(byText(container, 'BUTTON', '扫描二维码'))
-    await act(async () => {})
-    const manual = elements(container, (element) => element.getAttribute('id') === 'warehouse-qr-manual-input')[0]
+    const manual = await waitForElement(
+      container,
+      (element) => element.getAttribute('id') === 'warehouse-qr-manual-input',
+    )
     await change(manual, 'M-CODE')
     await submit(elements(container, (element) => element.nodeName === 'FORM' && element.textContent.includes('手动输入二维码'))[0])
     await act(async () => {})
@@ -181,8 +194,10 @@ test('an in-flight manual scan survives an unrelated signed-photo completion rer
   try {
     await act(async () => { root.render(createElement(catalogModule.default, renderProps({ warehouseService, warehouseMediaService, initialPhotosByVariant: null }))) })
     await click(byText(container, 'BUTTON', '扫描二维码'))
-    await act(async () => {})
-    const manual = elements(container, (element) => element.getAttribute('id') === 'warehouse-qr-manual-input')[0]
+    const manual = await waitForElement(
+      container,
+      (element) => element.getAttribute('id') === 'warehouse-qr-manual-input',
+    )
     await change(manual, 'DEFERRED-CODE')
     await submit(elements(container, (element) => element.nodeName === 'FORM' && element.textContent.includes('手动输入二维码'))[0])
     await act(async () => {})
@@ -205,6 +220,8 @@ test('manager mutations send exact service payloads, reject empty numbers, updat
   const container = dom.createContainer()
   const root = createRoot(container)
   const calls = []
+  let changed = 0
+  let toolBorrowMutations = 0
   let failItem = false
   const warehouseService = {
     async saveItem(payload) {
@@ -215,9 +232,12 @@ test('manager mutations send exact service payloads, reject empty numbers, updat
     async saveVariant(payload) { calls.push(['variant', payload]); return { ...CATALOG.variants[0], ...payload, systemQr: CATALOG.variants[0].systemQr } },
     async saveSite(payload) { calls.push(['site', payload]); return { ...LOCATIONS.sites[0], ...payload } },
     async saveLocation(payload) { calls.push(['location', payload]); return { ...LOCATIONS.locations[0], ...payload } },
+    async saveToolBorrow() { toolBorrowMutations += 1 },
   }
   try {
-    await act(async () => { root.render(createElement(catalogModule.default, renderProps({ warehouseService, manageCatalog: true }))) })
+    await act(async () => { root.render(createElement(catalogModule.default, renderProps({
+      warehouseService, manageCatalog: true, onChanged: async () => { changed += 1 },
+    }))) })
     await change(field(form(container, '物品资料'), '物品名称'), '新铜管')
     await submit(form(container, '物品资料'))
     assert.deepEqual(calls[0], ['item', { id: 'item-a', name: '新铜管', category: '空调', brand: 'A厂', description: '冷媒管', active: true }])
@@ -240,6 +260,8 @@ test('manager mutations send exact service payloads, reject empty numbers, updat
     await submit(form(container, '货架区资料'))
     assert.deepEqual(calls.find(([kind]) => kind === 'site'), ['site', { id: 'site-a', code: 'MAIN', name: '本社仓', kind: 'normal', active: true }])
     assert.deepEqual(calls.find(([kind]) => kind === 'location'), ['location', { id: 'shelf-a', warehouseId: 'site-a', shelfCode: 'A-01', shelfName: '一号架', active: true }])
+    assert.equal(toolBorrowMutations, 0)
+    assert.equal(changed, 4)
 
     await click(elements(container, (element) => element.getAttribute('aria-label') === '编辑仓库 A项目现场仓')[0])
     assert.equal(field(form(container, '仓库资料'), '仓库名称').value, 'A项目现场仓')

@@ -271,8 +271,8 @@ test('desktop shell renders an accessible badge only for positive labor alerts',
   assert.match(staleMenu, /title="人工记录：3 条待处理（数据可能已过期）"/u)
 })
 
-test('shell integration keeps the thirteen-route menu contract and avoids CSS mutation', () => {
-  assert.equal(ADMIN_ROUTES.filter(({ desktop }) => desktop).length, 13)
+test('shell integration keeps the fourteen-route menu contract and avoids CSS mutation', () => {
+  assert.equal(ADMIN_ROUTES.filter(({ desktop }) => desktop).length, 14)
   assert.match(shellSource, /getVisibleAdminRoutes\(currentUser\)/u)
   assert.doesNotMatch(shellSource, /desktopMenuItems/u)
   assert.match(shellSource, /laborAlertCount\s*=\s*0/u)

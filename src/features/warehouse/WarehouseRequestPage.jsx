@@ -1,12 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import './warehouse.css'
-import WarehouseQrScanner from './WarehouseQrScanner.jsx'
 import {
   addScaledUnits,
   parseQuantityUnits,
   quantityUnitsToNumber,
 } from './warehouseDecimal.js'
+
+const WarehouseQrScanner = lazy(() => import('./WarehouseQrScanner.jsx'))
 
 const EMPTY_CATALOG = Object.freeze({ items: Object.freeze([]), variants: Object.freeze([]) })
 const EMPTY_LOCATIONS = Object.freeze({ sites: Object.freeze([]), locations: Object.freeze([]) })
@@ -453,7 +454,7 @@ export default function WarehouseRequestPage({
           </article>
         ))}</div>
       </section>)}
-      {canRequest && <WarehouseQrScanner open={scannerOpen} warehouseService={warehouseService} onClose={() => setScannerOpen(false)} onResolved={(resolved) => { setVariantId(resolved.id); setQuery(resolved.sku); setScannerOpen(false) }} />}
+      {canRequest && scannerOpen && <Suspense fallback={<p role="status">正在载入扫码器…</p>}><WarehouseQrScanner open warehouseService={warehouseService} onClose={() => setScannerOpen(false)} onResolved={(resolved) => { setVariantId(resolved.id); setQuery(resolved.sku); setScannerOpen(false) }} /></Suspense>}
     </main>
   )
 }

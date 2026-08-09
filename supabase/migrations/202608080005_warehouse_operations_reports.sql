@@ -1746,7 +1746,8 @@ begin
     union all
     select 'receipts',
       jsonb_build_object(
-        'receiptId',receipt.id,'purchaseRecordKey',receipt.purchase_record_key,
+        'receiptId',receipt.id,'receiptLineId',line.id,
+        'purchaseRecordKey',receipt.purchase_record_key,
         'date',coalesce(receipt.confirmed_at,receipt.submitted_at),
         'variantId',variant.id,'itemName',item.name,'category',item.category,
         'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,

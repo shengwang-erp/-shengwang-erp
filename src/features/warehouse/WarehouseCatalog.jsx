@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import './warehouse.css'
 import WarehouseLabelSheet from './WarehouseLabelSheet.jsx'
-import WarehouseQrScanner from './WarehouseQrScanner.jsx'
 import { matchesWarehouseCatalogSearch } from './warehouseCatalog.js'
+
+const WarehouseQrScanner = lazy(() => import('./WarehouseQrScanner.jsx'))
 
 const EMPTY_CATALOG = Object.freeze({ items: Object.freeze([]), variants: Object.freeze([]) })
 const EMPTY_LOCATIONS = Object.freeze({ sites: Object.freeze([]), locations: Object.freeze([]) })
@@ -88,6 +89,7 @@ export default function WarehouseCatalog({
   viewCost = false,
   companyName = '',
   createId = randomId,
+  onChanged,
 }) {
   const [catalog, setCatalog] = useState(initialCatalog ?? EMPTY_CATALOG)
   const [locationData, setLocationData] = useState(initialLocations ?? EMPTY_LOCATIONS)
@@ -278,6 +280,7 @@ export default function WarehouseCatalog({
         setVariantForm(variantDraft({}, saved.id))
         setLabelVariant(null)
       }
+      await onChanged?.()
       setMessage('物品已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
@@ -316,6 +319,7 @@ export default function WarehouseCatalog({
       replaceVariant(saved)
       setSelectedVariantId(saved.id)
       setVariantForm(variantDraft(saved, saved.itemId))
+      await onChanged?.()
       setMessage('型号已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
@@ -330,6 +334,7 @@ export default function WarehouseCatalog({
           : [...current.sites, saved],
       }))
       setSiteForm(siteDraft(saved))
+      await onChanged?.()
       setMessage('仓库已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
@@ -344,6 +349,7 @@ export default function WarehouseCatalog({
           : [...current.locations, saved],
       }))
       setShelfForm(locationDraft(saved, saved.warehouseId))
+      await onChanged?.()
       setMessage('货架区已保存')
     } catch (error) { setMessage(errorMessage(error)) }
   }
@@ -491,7 +497,7 @@ export default function WarehouseCatalog({
         {canManageCatalog && <div className="warehouse-catalog-site-forms"><form className="warehouse-catalog-form" onSubmit={submitSite}><h3>仓库资料</h3><div className="warehouse-catalog-form-grid"><Field label="仓库编码"><input required value={siteForm.code} onChange={(event) => setSiteForm({ ...siteForm, code: event.target.value })} /></Field><Field label="仓库名称"><input required value={siteForm.name} onChange={(event) => setSiteForm({ ...siteForm, name: event.target.value })} /></Field><Field label="仓库类型"><select value={siteForm.kind} onChange={(event) => setSiteForm({ ...siteForm, kind: event.target.value })}><option value="normal">普通仓库</option><option value="project_site">项目现场仓</option><option value="shared_tool">共享工具仓</option></select></Field><Field label="启用状态"><input type="checkbox" checked={siteForm.active} onChange={(event) => setSiteForm({ ...siteForm, active: event.target.checked })} /></Field></div><button type="submit">保存仓库</button></form>
           <form className="warehouse-catalog-form" onSubmit={submitShelf}><h3>货架区资料</h3><div className="warehouse-catalog-form-grid"><Field label="所属仓库"><select required value={shelfForm.warehouseId} onChange={(event) => setShelfForm({ ...shelfForm, warehouseId: event.target.value })}>{locationData.sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></Field><Field label="货架编码"><input required value={shelfForm.shelfCode} onChange={(event) => setShelfForm({ ...shelfForm, shelfCode: event.target.value })} /></Field><Field label="货架名称"><input required value={shelfForm.shelfName} onChange={(event) => setShelfForm({ ...shelfForm, shelfName: event.target.value })} /></Field><Field label="启用状态"><input type="checkbox" checked={shelfForm.active} onChange={(event) => setShelfForm({ ...shelfForm, active: event.target.checked })} /></Field></div><button type="submit">保存货架区</button></form></div>}
       </section>
-      <WarehouseQrScanner open={scannerOpen} warehouseService={warehouseService} onResolved={scannerResolved} onClose={() => setScannerOpen(false)} />
+      {scannerOpen && <Suspense fallback={<p role="status">正在载入扫码器…</p>}><WarehouseQrScanner open warehouseService={warehouseService} onResolved={scannerResolved} onClose={() => setScannerOpen(false)} /></Suspense>}
       {label && <WarehouseLabelSheet label={label} />}
     </section>
   )

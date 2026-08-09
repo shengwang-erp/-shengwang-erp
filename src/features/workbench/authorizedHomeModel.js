@@ -8,6 +8,7 @@ const authorizedHomeModels = new WeakSet()
 const SOURCE_BY_VIEW = Object.freeze({
   projects: 'projects',
   employees: 'employees',
+  warehouse: 'warehouseSummary',
   stockOut: 'stockOutRecords',
   stockReturn: 'stockReturnRecords',
   labor: 'attendance',
@@ -116,6 +117,23 @@ function recordPresentation(state) {
   return { status: 'ready', displayValue: String(rows.length), badgeCount: rows.length, rows }
 }
 
+function warehousePresentation(state) {
+  const data = objectStateData(state)
+  if (data === null) return unavailablePresentation(state)
+  const totalSku = safeNonNegativeInteger(ownValue(data, 'totalSku'))
+  const lowStockSku = safeNonNegativeInteger(ownValue(data, 'lowStockSku'))
+  if (totalSku === null || lowStockSku === null || lowStockSku > totalSku) {
+    return { status: 'error', displayValue: '读取失败' }
+  }
+  return {
+    status: 'ready',
+    displayValue: `${totalSku} SKU · 低库存 ${lowStockSku}`,
+    badgeCount: lowStockSku,
+    totalSku,
+    lowStockSku,
+  }
+}
+
 function accountingPresentation(state, view) {
   const model = objectStateData(state)
   if (model === null) return unavailablePresentation(state)
@@ -133,6 +151,7 @@ function accountingPresentation(state, view) {
 function presentationFor(view, state) {
   if (view === 'projects') return projectPresentation(state)
   if (view === 'employees') return employeePresentation(state)
+  if (view === 'warehouse') return warehousePresentation(state)
   if (view === 'accounting' || view === 'purchase') {
     return accountingPresentation(state, view)
   }
@@ -252,6 +271,7 @@ export function buildAuthorizedHomeModel({ user, routes, sourceStates } = {}) {
     moduleCounts: {
       projects: moduleCount('projects'),
       employees: moduleCount('employees'),
+      warehouse: moduleCount('warehouse'),
       stockOut: moduleCount('stockOut'),
       stockReturn: moduleCount('stockReturn'),
       labor: moduleCount('labor'),

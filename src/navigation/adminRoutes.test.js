@@ -15,6 +15,7 @@ const expectedDesktopRoutes = [
   ['employees', '人员管理', '人', '人员管理'],
   ['accounting', '会计成本', '财', '会计成本'],
   ['labor', '人工记录', '工', '人工记录'],
+  ['warehouse', '仓库管理', '仓', '仓库库存'],
   ['stockOut', '我要出库', '出', '仓库库存'],
   ['stockReturn', '我要退回', '退', '仓库库存'],
   ['purchase', '采购管理', '采', '采购管理'],
@@ -77,8 +78,8 @@ const expectedChildAndMobileRoutes = [
 ]
 
 test('the immutable route table has the exact desktop metadata and order', () => {
-  assert.deepEqual(ADMIN_ROUTES.slice(0, 13), expectedDesktopRoutes)
-  assert.deepEqual(ADMIN_ROUTES.slice(13), expectedChildAndMobileRoutes)
+  assert.deepEqual(ADMIN_ROUTES.slice(0, 14), expectedDesktopRoutes)
+  assert.deepEqual(ADMIN_ROUTES.slice(14), expectedChildAndMobileRoutes)
   assert.equal(new Set(ADMIN_ROUTES.map(({ view }) => view)).size, ADMIN_ROUTES.length)
 
   for (const route of ADMIN_ROUTES) {
