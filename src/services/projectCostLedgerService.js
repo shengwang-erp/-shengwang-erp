@@ -267,10 +267,8 @@ function normalizeAuditResponse(value) {
       if (allocationsBefore !== null || allocationsAfter !== null || moneyUnits(amountBefore) + moneyUnits(adjustmentAmount) !== moneyUnits(amountAfter)) throw unavailableError()
     } else {
       if (allocationsBefore === null || allocationsAfter === null || adjustmentAmount !== 0 || amountBefore !== amountAfter) throw unavailableError()
-      for (const allocations of [allocationsBefore, allocationsAfter]) {
-        const total = allocations.reduce((sum, allocation) => sum + moneyUnits(allocation.amount), 0n)
-        if (total !== moneyUnits(amountBefore)) throw unavailableError()
-      }
+      const currentTotal = allocationsAfter.reduce((sum, allocation) => sum + moneyUnits(allocation.amount), 0n)
+      if (currentTotal !== moneyUnits(amountBefore)) throw unavailableError()
     }
     return {
       eventType: event.eventType, sourceKey: text(event.sourceKey, 600, { input: false }), sequenceNo: positiveInteger(event.sequenceNo, { input: false }),
@@ -282,15 +280,19 @@ function normalizeAuditResponse(value) {
 }
 
 function safeRemoteError(error, responseStatus) {
-  const codeValue = ownDataValue(error, 'code')
-  const code = typeof codeValue === 'string' && codeValue.length <= 32 ? codeValue.toUpperCase() : ''
-  const ownStatus = ownDataValue(error, 'status')
-  const status = responseStatus ?? ownStatus
-  if (status === 401 || status === '401' || ['PGRST301', 'JWT_EXPIRED'].includes(code)) {
-    return projectCostLedgerError('AUTH_SESSION_INVALID', { authInvalid: true })
+  try {
+    const codeValue = ownDataValue(error, 'code')
+    const code = typeof codeValue === 'string' && codeValue.length <= 32 ? codeValue.toUpperCase() : ''
+    const ownStatus = ownDataValue(error, 'status')
+    const status = responseStatus ?? ownStatus
+    if (status === 401 || status === '401' || ['PGRST301', 'JWT_EXPIRED'].includes(code)) {
+      return projectCostLedgerError('AUTH_SESSION_INVALID', { authInvalid: true })
+    }
+    const hint = ownDataValue(error, 'hint')
+    if (typeof hint === 'string' && TRUSTED_HINTS.get(hint) === code) return projectCostLedgerError(hint)
+  } catch {
+    return unavailableError()
   }
-  const hint = ownDataValue(error, 'hint')
-  if (typeof hint === 'string' && TRUSTED_HINTS.get(hint) === code) return projectCostLedgerError(hint)
   return unavailableError()
 }
 
@@ -303,8 +305,14 @@ function responseParts(value) {
   return { data: data.value, error: error.value, status: status?.value }
 }
 
+function normalizeListResponse(value) {
+  const snapshot = normalizeLedgerSnapshot(value)
+  validInstant(snapshot.generatedAt)
+  return snapshot
+}
+
 export const projectCostLedgerResponseNormalizers = Object.freeze({
-  list: normalizeLedgerSnapshot,
+  list: normalizeListResponse,
   listAudit: normalizeAuditResponse,
   adjust: normalizeAdjustmentResponse,
   replaceAllocations: normalizeAllocationResponse,
@@ -313,10 +321,12 @@ export const projectCostLedgerResponseNormalizers = Object.freeze({
 
 export function createProjectCostLedgerService(client, { configured } = {}) {
   async function rpc(name, params, normalize) {
-    if (configured !== true || !client || typeof client.rpc !== 'function') throw unavailableError()
+    if (configured !== true || !client) throw unavailableError()
     let raw
     try {
-      raw = await client.rpc(name, params)
+      const rpcMethod = client.rpc
+      if (typeof rpcMethod !== 'function') throw unavailableError()
+      raw = await Reflect.apply(rpcMethod, client, [name, params])
     } catch (error) {
       throw safeRemoteError(error)
     }

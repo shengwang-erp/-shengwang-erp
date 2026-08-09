@@ -100,6 +100,21 @@ test('demo audit lists immutable adjustment and allocation history using documen
   assert.equal(Object.isFrozen(audit.events[0]), true)
 })
 
+test('demo accepts reallocation after an adjustment changed the prior allocation snapshot amount', async () => {
+  const { service } = createDemo()
+  await service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '初次分摊', allocations: [{ projectId: 'P1', amount: 200 }] })
+  await service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 2, adjustmentAmount: 100, reason: '增加成本' })
+  await service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 3, reason: '调整后重新分摊', allocations: [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }] })
+  const snapshot = await service.list({ page: 1, pageSize: 20 })
+  assert.deepEqual(snapshot.rows.filter(({ sourceKey }) => sourceKey === 'warehouse:SO-1').map(({ projectId, effectiveAmount }) => ({ projectId, effectiveAmount })), [
+    { projectId: 'P1', effectiveAmount: 100 }, { projectId: 'P2', effectiveAmount: 200 },
+  ])
+  const audit = await service.listAudit({})
+  const reallocation = audit.events.at(-1)
+  assert.deepEqual(reallocation.allocationsBefore, [{ projectId: 'P1', amount: 200 }])
+  assert.deepEqual(reallocation.allocationsAfter, [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }])
+})
+
 test('demo rejects unbalanced allocations and missing sources without appending events', async () => {
   const { service, eventStore } = createDemo()
   await assert.rejects(service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '错误分摊', allocations: [{ projectId: 'P1', amount: 199 }] }), (error) => error.code === 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED')

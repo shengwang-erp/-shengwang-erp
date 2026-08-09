@@ -106,6 +106,23 @@ test('listAudit accepts only documented filters and rejects hostile supplier res
   assert.deepEqual(calls[0], ['list_project_cost_audit_secure', { p_filters: { projectId: 'P1', dateFrom: '2026-08-01', dateTo: '2026-08-10' } }])
 })
 
+test('audit accepts an old allocation snapshot followed by adjustment and current reallocation', async () => {
+  const response = {
+    status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z',
+    events: [{
+      eventType: 'allocation', sourceKey: 'warehouse:SO-1', sequenceNo: 3,
+      amountBefore: 300, amountAfter: 300, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P1', amount: 200 }],
+      allocationsAfter: [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }],
+      reason: '调整后重新分摊', actorName: '会计', createdAt: '2026-08-10T01:00:00.000Z',
+    }],
+  }
+  const { client } = clientReturning({ data: response, error: null, status: 200 })
+  const result = await createProjectCostLedgerService(client, { configured: true }).listAudit({})
+  assert.equal(result.events[0].allocationsBefore[0].amount, 200)
+  assert.equal(result.events[0].allocationsAfter[1].amount, 200)
+})
+
 test('only documented own SQL hints map to safe errors and supplier details never escape', async () => {
   const cases = [
     ['22023', 'PROJECT_COST_LEDGER_INPUT_INVALID'],
@@ -170,6 +187,26 @@ test('a thrown decorated public service error is reconstructed and cannot leak i
   })
 })
 
+test('hostile thrown proxies and client property traps always collapse to the generic safe error', async () => {
+  const traps = [
+    { getOwnPropertyDescriptor() { throw new Error('private descriptor SQL') } },
+    { ownKeys() { throw new Error('private ownKeys SQL') } },
+    { get() { throw new Error('private get SQL') } },
+  ]
+  for (const handler of traps) {
+    const hostile = new Proxy({}, handler)
+    const service = createProjectCostLedgerService({ async rpc() { throw hostile } }, { configured: true })
+    await assert.rejects(service.list({}), genericWithoutPrivateDetails)
+  }
+  const hostileClient = new Proxy({}, { get() { throw new Error('private client getter SQL') } })
+  await assert.rejects(createProjectCostLedgerService(hostileClient, { configured: true }).list({}), genericWithoutPrivateDetails)
+})
+
+test('list applies strict ISO validation after the Task 1 snapshot normalizer', async () => {
+  const { client } = clientReturning({ data: { ...LEDGER_RESPONSE, generatedAt: '1' }, error: null, status: 200 })
+  await assert.rejects(createProjectCostLedgerService(client, { configured: true }).list({}), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+})
+
 test('audit responses enforce event arithmetic, allocation shape and strict ISO instants', async () => {
   const validAdjustment = {
     eventType: 'adjustment', sourceKey: 'warehouse:SO-1', sequenceNo: 1,
@@ -202,4 +239,10 @@ test('successful mutation responses must correlate to the normalized request', a
 
 function errorCode(code) {
   return (error) => error instanceof ProjectCostLedgerServiceError && error.code === code
+}
+
+function genericWithoutPrivateDetails(error) {
+  return error instanceof ProjectCostLedgerServiceError &&
+    error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE' &&
+    !/private|descriptor|ownKeys|getter|SQL/i.test(`${error.message} ${JSON.stringify(error)}`)
 }
