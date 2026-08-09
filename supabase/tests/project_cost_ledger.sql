@@ -1,6 +1,12 @@
 begin;
 
+\if :{?project_cost_dblink}
+\else
+\set project_cost_dblink 'host=host.docker.internal port=54322 dbname=postgres user=postgres password=postgres'
+\endif
+
 create extension if not exists pgtap with schema extensions;
+create extension if not exists dblink with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 select no_plan();
 
@@ -9,9 +15,70 @@ select has_table('public'::name, 'project_cost_adjustment_events'::name);
 select has_table('public'::name, 'project_cost_allocation_events'::name);
 select has_function('private', 'private_project_cost_source_facts', array[]::text[]);
 select has_function('public', 'list_project_cost_ledger_secure', array['jsonb']);
+select has_function(
+  'public', 'create_project_cost_adjustment_secure',
+  array['text', 'bigint', 'numeric', 'text']
+);
+select has_function(
+  'public', 'replace_project_cost_allocations_secure',
+  array['text', 'bigint', 'text', 'jsonb']
+);
+select has_function(
+  'public', 'create_manual_project_cost_secure', array['uuid', 'jsonb']
+);
+select has_function(
+  'public', 'list_project_cost_audit_secure', array['jsonb']
+);
 select function_privs_are(
   'public', 'list_project_cost_ledger_secure', array['jsonb'],
   'authenticated', array['EXECUTE']
+);
+
+select ok(
+  not exists (
+    select 1
+    from (values
+      ('create_project_cost_adjustment_secure(text,bigint,numeric,text)'::text, 'v'::text),
+      ('replace_project_cost_allocations_secure(text,bigint,text,jsonb)', 'v'),
+      ('create_manual_project_cost_secure(uuid,jsonb)', 'v'),
+      ('list_project_cost_audit_secure(jsonb)', 's')
+    ) expected(signature, volatility)
+    left join lateral (
+      select procedure.*
+      from pg_catalog.pg_proc procedure
+      where procedure.oid = pg_catalog.to_regprocedure(
+        'public.' || expected.signature
+      )
+    ) procedure on true
+    where procedure.oid is null
+      or not procedure.prosecdef
+      or procedure.provolatile::text <> expected.volatility
+      or procedure.proconfig <> array['search_path=""']::text[]
+      or not pg_catalog.has_function_privilege(
+        'authenticated', procedure.oid, 'EXECUTE'
+      )
+      or not pg_catalog.has_function_privilege(
+        'service_role', procedure.oid, 'EXECUTE'
+      )
+      or pg_catalog.has_function_privilege('anon', procedure.oid, 'EXECUTE')
+      or exists (
+        select 1
+        from pg_catalog.aclexplode(coalesce(
+          procedure.proacl,
+          pg_catalog.acldefault('f', procedure.proowner)
+        )) privilege
+        where privilege.grantee = 0
+          and privilege.privilege_type = 'EXECUTE'
+      )
+  ),
+  'all mutation and audit RPCs have fixed security-definer boundaries'
+);
+select alike(
+  pg_catalog.pg_get_functiondef(
+    'public.create_project_cost_adjustment_secure(text,bigint,numeric,text)'::regprocedure
+  ),
+  '%pg_try_advisory_xact_lock%',
+  'adjustment mutation rejects a busy source lock without blocking'
 );
 
 select ok(
@@ -118,6 +185,8 @@ insert into public.permission_grants(
   subject_type, subject_code, permission_key
 ) values
   ('department', '财务部', 'module.project_costs.view'),
+  ('department', '财务部', 'module.project_costs.create'),
+  ('department', '财务部', 'module.project_costs.update'),
   ('department', '设计部', 'module.project_costs.view')
 on conflict do nothing;
 
@@ -1237,6 +1306,261 @@ select is(
   'allocation project-name metadata also honors the Task 1 text contract'
 );
 reset role;
+
+-- Task 3 mutation contract. These checks intentionally exercise the public
+-- SECURITY DEFINER boundary rather than inserting event rows directly.
+select dblink_connect(
+  'task3_busy_source',
+  :'project_cost_dblink'
+);
+select dblink_exec('task3_busy_source', 'begin');
+select is(
+  (select acquired
+   from dblink(
+     'task3_busy_source',
+     pg_catalog.format(
+       'select pg_catalog.pg_try_advisory_xact_lock(%s)',
+       pg_catalog.hashtextextended(
+         'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001', 0
+       )
+     )
+   ) as held(acquired boolean)),
+  true,
+  'a separate database session holds the source transaction lock'
+);
+select set_config(
+  'request.jwt.claim.sub',
+  'a9100000-0000-4000-8000-000000000001', true
+);
+set local role authenticated;
+select throws_ok(
+  $$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    1, 1.0000, '锁忙重试'
+  )$$,
+  'P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+  'a busy source lock fails immediately with the documented version conflict'
+);
+reset role;
+select is(
+  (select pg_catalog.count(*)
+   from public.project_cost_adjustment_events
+   where source_key =
+     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'),
+  0::bigint,
+  'a busy source lock leaves no partial adjustment event'
+);
+select dblink_exec('task3_busy_source', 'rollback');
+select dblink_disconnect('task3_busy_source');
+
+select set_config(
+  'request.jwt.claim.sub',
+  'a9100000-0000-4000-8000-000000000001', true
+);
+set local role authenticated;
+select lives_ok(
+  $$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    1, 50.0000, '发票差额调整'
+  )$$,
+  'positive accounting adjustment is accepted at the current ledger version'
+);
+select lives_ok(
+  $$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    2, -25.0000, '复核后冲减'
+  )$$,
+  'negative accounting adjustment is appended without changing the source fact'
+);
+select throws_ok(
+  $$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    2, 1.0000, '过期页面提交'
+  )$$,
+  'P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+  'stale adjustment versions fail with the documented conflict and no write'
+);
+select throws_ok(
+  $$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    3, 1.0000, '   '
+  )$$,
+  '22023', 'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'blank adjustment reasons fail closed'
+);
+select lives_ok(
+  $$select public.replace_project_cost_allocations_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    3, '按工程比例拆分',
+    '[
+      {"projectId":"LEDGER-P-A","amount":75.0000},
+      {"projectId":"LEDGER-P-B","amount":150.0000}
+    ]'
+  )$$,
+  'two-project split accepts percentage-derived fixed four-decimal amounts'
+);
+select throws_ok(
+  $$select public.replace_project_cost_allocations_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    4, '不平衡拆分',
+    '[
+      {"projectId":"LEDGER-P-A","amount":75.0000},
+      {"projectId":"LEDGER-P-B","amount":149.9999}
+    ]'
+  )$$,
+  '22023', 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED',
+  'allocation snapshots must exactly equal the current effective amount'
+);
+select throws_ok(
+  $$select public.replace_project_cost_allocations_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    4, '无效项目拆分',
+    '[{"projectId":"LEDGER-P-MISSING","amount":225.0000}]'
+  )$$,
+  '22023', 'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'only active projects can be new allocation targets'
+);
+select lives_ok(
+  $$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000001',
+    '{
+      "projectId":"LEDGER-P-B","category":"其他费用",
+      "date":"2026-08-08","amount":-12.3456,
+      "description":"供应商折扣冲回","operator":"成本会计",
+      "reason":"补录已确认折扣"
+    }'
+  )$$,
+  'signed negative manual project cost is accepted with all required fields'
+);
+select lives_ok(
+  $$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000001',
+    '{
+      "projectId":"LEDGER-P-B","category":"其他费用",
+      "date":"2026-08-08","amount":-12.3456,
+      "description":"供应商折扣冲回","operator":"成本会计",
+      "reason":"补录已确认折扣"
+    }'
+  )$$,
+  'an identical manual request id replay is idempotent'
+);
+select throws_ok(
+  $$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000001',
+    '{
+      "projectId":"LEDGER-P-B","category":"其他费用",
+      "date":"2026-08-08","amount":-12.3455,
+      "description":"供应商折扣冲回","operator":"成本会计",
+      "reason":"补录已确认折扣"
+    }'
+  )$$,
+  '22023', 'PROJECT_COST_LEDGER_REQUEST_CONFLICT',
+  'a reused manual request id with different content is rejected'
+);
+select throws_ok(
+  $$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000002',
+    '{
+      "projectId":"LEDGER-P-B","category":"其他费用",
+      "date":"2026-08-08","amount":1,
+      "description":"含多余字段","operator":"成本会计",
+      "reason":"输入验证","actorName":"伪造会计"
+    }'
+  )$$,
+  '22023', 'PROJECT_COST_LEDGER_INPUT_INVALID',
+  'manual entry rejects unknown fields and client-authored audit identity'
+);
+
+create temporary table task3_ledger_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2026-08-01","dateTo":"2026-08-08","pageSize":100}'
+) payload;
+create temporary table task3_audit_snapshot as
+select public.list_project_cost_audit_secure(
+  '{"projectId":"LEDGER-P-B","dateFrom":"2026-08-02","dateTo":"2026-08-02"}'
+) payload;
+reset role;
+
+select ok(
+  (select pg_catalog.sum((row_value->>'originalAmount')::numeric) = 200.0000
+      and pg_catalog.sum((row_value->>'adjustmentAmount')::numeric) = 25.0000
+      and pg_catalog.sum((row_value->>'effectiveAmount')::numeric) = 225.0000
+      and pg_catalog.count(*) = 2
+      and pg_catalog.bool_and((row_value->>'version')::bigint = 4)
+   from task3_ledger_snapshot,
+   lateral pg_catalog.jsonb_array_elements(payload->'rows') row_value
+   where row_value->>'sourceKey' =
+     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'),
+  'source amount stays immutable while the latest adjustment and split are immediate'
+);
+select is(
+  (select pg_catalog.count(*)
+   from public.project_cost_adjustment_events
+   where source_key =
+     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'),
+  2::bigint,
+  'the stale adjustment leaves no partial audit event'
+);
+select is(
+  (select pg_catalog.count(*)
+   from public.project_cost_manual_entries
+   where source_key = 'manual:a9700000-0000-4000-8000-000000000001'),
+  1::bigint,
+  'manual request replay creates exactly one immutable source fact'
+);
+select ok(
+  (select entry.original_amount = -12.3456
+      and entry.project_name = '乙项目'
+      and entry.created_by_name = '成本会计'
+      and entry.reason = '补录已确认折扣'
+   from public.project_cost_manual_entries entry
+   where entry.source_key = 'manual:a9700000-0000-4000-8000-000000000001'),
+  'manual creation derives project and actor snapshots while retaining the reason'
+);
+select ok(
+  (select payload->>'status' = 'ready'
+      and pg_catalog.jsonb_array_length(payload->'events') = 3
+      and not exists (
+        select 1
+        from pg_catalog.jsonb_array_elements(payload->'events') event_value
+        where event_value->>'sourceKey' <>
+          'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'
+          or event_value->>'actorName' <> '成本会计'
+          or event_value->>'createdAt' is null
+          or event_value <> pg_catalog.jsonb_build_object(
+            'eventType', event_value->'eventType',
+            'sourceKey', event_value->'sourceKey',
+            'sequenceNo', event_value->'sequenceNo',
+            'amountBefore', event_value->'amountBefore',
+            'amountAfter', event_value->'amountAfter',
+            'adjustmentAmount', event_value->'adjustmentAmount',
+            'allocationsBefore', event_value->'allocationsBefore',
+            'allocationsAfter', event_value->'allocationsAfter',
+            'reason', event_value->'reason',
+            'actorName', event_value->'actorName',
+            'createdAt', event_value->'createdAt'
+          )
+      )
+   from task3_audit_snapshot),
+  'audit read uses matching project/date filters and exact server-authored fields'
+);
+
+select throws_ok(
+  $$update public.project_cost_adjustment_events
+      set reason = '篡改' where sequence_no = 1$$,
+  '55000', 'project cost ledger facts are append-only',
+  'even the table owner cannot update an adjustment event'
+);
+select throws_ok(
+  $$delete from public.project_cost_allocation_events where sequence_no = 3$$,
+  '55000', 'project cost ledger facts are append-only',
+  'even the table owner cannot delete an allocation event'
+);
+select throws_ok(
+  $$truncate table public.project_cost_manual_entries$$,
+  '55000', 'project cost ledger facts are append-only',
+  'even the table owner cannot truncate manual source facts'
+);
 
 select * from finish();
 rollback;

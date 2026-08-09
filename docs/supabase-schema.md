@@ -503,7 +503,7 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 
 | 表 | 用途与关键字段 |
 | --- | --- |
-| `project_cost_manual_entries` | 不可变完整 `manual:<uuid>` `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人与服务端创建人/时间 |
+| `project_cost_manual_entries` | 不可变完整 `manual:<uuid>` `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人、必填原因与服务端创建人/时间 |
 | `project_cost_adjustment_events` | `source_key + sequence_no` 唯一，调整前/调整额/调整后、原因、服务端操作人/时间 |
 | `project_cost_allocation_events` | `source_key + sequence_no` 唯一，金额快照、项目分摊 JSON、原因、服务端操作人/时间 |
 
@@ -522,6 +522,24 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 `ready` DTO。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；只有来源身份、类别
 和分摊都完整时 `incompleteSources` 才为空。公有 RPC 和私有来源 helper 都是固定空 `search_path` 的
 `SECURITY DEFINER`，私有 helper 对客户端角色无执行权。
+
+账本写入只允许通过四个固定空 `search_path` 的 `SECURITY DEFINER` RPC：
+
+- `create_project_cost_adjustment_secure(sourceKey, expectedVersion, adjustmentAmount, reason)`：要求
+  `module.project_costs.update`，只追加正负四位小数调整。它先做版本快检，再以来源键取得非阻塞
+  事务级 advisory lock，并在锁内重新读取版本；锁忙或旧版本统一返回
+  SQLSTATE `P0001` / `PROJECT_COST_LEDGER_VERSION_CONFLICT`，不会留下部分事件，原始来源记录永远不改。
+- `replace_project_cost_allocations_secure(sourceKey, expectedVersion, reason, allocations)`：要求
+  `module.project_costs.update`。项目必须在用且不重复，金额为带符号四位小数，分摊合计必须与
+  当前有效金额完全相等；每次保存一份新的不可变分摊快照。
+- `create_manual_project_cost_secure(requestId, entry)`：要求 `module.project_costs.create`。客户端
+  只提交项目、类别、日期、金额、摘要、经办人与原因；项目名称、创建人和创建时间均由服务端
+  生成。完整 UUID 是幂等键，相同请求重放返回原记录，不同内容复用 UUID 会失败。
+- `list_project_cost_audit_secure(filters)`：要求 `module.project_costs.view`，按项目与日期读取调整和
+  分摊历史，逐条返回变更前后金额、调整额、分摊前后快照、原因、服务端操作人和时间。
+
+财务部默认具备项目成本查看、创建和调整权限。所有金额保持 `numeric(18,4)`，审计身份和时间
+不能由浏览器传入；账本三张表仍禁止浏览器和 `service_role` 直接写入。
 
 ## 权限与安全
 

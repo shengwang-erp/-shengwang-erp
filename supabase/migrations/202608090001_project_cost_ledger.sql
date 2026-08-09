@@ -14,6 +14,7 @@ create table public.project_cost_manual_entries (
   original_amount numeric(18,4) not null,
   description text not null default '',
   operator text not null default '',
+  reason text not null default '历史直接录入',
   created_by_employee_profile_id uuid not null
     references public.employee_profiles(id) on delete restrict,
   created_by_name text not null,
@@ -41,6 +42,7 @@ create table public.project_cost_manual_entries (
   constraint project_cost_manual_entries_text_check check (
     description = btrim(description) and char_length(description) <= 2000
     and operator = btrim(operator) and char_length(operator) <= 500
+    and reason = btrim(reason) and char_length(reason) between 1 and 2000
     and created_by_name = btrim(created_by_name)
     and char_length(created_by_name) between 1 and 500
   )
@@ -1398,6 +1400,667 @@ begin
 end;
 $$;
 
+create or replace function private.project_cost_source_state(p_source_key text)
+returns table (
+  source_key text,
+  project_id text,
+  cost_date date,
+  original_amount numeric(18,4),
+  effective_amount numeric(18,4),
+  current_version bigint,
+  allocations jsonb
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    fact.source_key,
+    fact.project_id,
+    fact.cost_date,
+    fact.original_amount,
+    coalesce(adjustment.amount_after, fact.original_amount)::numeric(18,4),
+    greatest(
+      coalesce(adjustment.sequence_no, 0),
+      coalesce(allocation.sequence_no, 0)
+    ) + 1,
+    coalesce(
+      allocation.allocations,
+      pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'projectId', fact.project_id,
+        'amount', coalesce(
+          adjustment.amount_after, fact.original_amount
+        )::numeric(18,4)
+      ))
+    )
+  from private.private_project_cost_source_facts() fact
+  left join lateral (
+    select event.sequence_no, event.amount_after
+    from public.project_cost_adjustment_events event
+    where event.source_key = fact.source_key
+    order by event.sequence_no desc
+    limit 1
+  ) adjustment on true
+  left join lateral (
+    select event.sequence_no, event.allocations
+    from public.project_cost_allocation_events event
+    where event.source_key = fact.source_key
+    order by event.sequence_no desc
+    limit 1
+  ) allocation on true
+  where fact.source_key = p_source_key;
+$$;
+
+create or replace function public.create_project_cost_adjustment_secure(
+  p_source_key text,
+  p_expected_version bigint,
+  p_adjustment_amount numeric,
+  p_reason text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  source_state record;
+  normalized_source_key text;
+  normalized_reason text;
+  amount_after numeric;
+begin
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+  if not public.has_current_permission('module.project_costs.update') then
+    raise exception using
+      errcode = '42501',
+      message = 'project cost ledger update permission required';
+  end if;
+
+  normalized_source_key := private.project_cost_safe_text(
+    pg_catalog.to_jsonb(p_source_key), false, 600
+  );
+  normalized_reason := private.project_cost_safe_text(
+    pg_catalog.to_jsonb(p_reason), false, 2000
+  );
+  if normalized_source_key is null
+    or normalized_reason is null
+    or p_expected_version is null
+    or p_expected_version < 1
+    or p_adjustment_amount is null
+    or p_adjustment_amount in (
+      'NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric
+    )
+    or p_adjustment_amount = 0
+    or pg_catalog.abs(p_adjustment_amount) > 900719925474.0991
+    or pg_catalog.round(p_adjustment_amount, 4) <> p_adjustment_amount
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  select employee.* into actor
+  from public.employee_profiles employee
+  where employee.auth_user_id = auth.uid()
+    and employee.employment_status = '在职'
+    and employee.account_status = 'active'
+    and not employee.must_change_password
+    and employee.deleted_at is null;
+  if not found then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+
+  select * into source_state
+  from private.project_cost_source_state(normalized_source_key);
+  if not found or source_state.project_id is null then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+  end if;
+  if source_state.current_version <> p_expected_version then
+    raise exception using
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+
+  if not pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtextextended(normalized_source_key, 0)
+  ) then
+    raise exception using
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+  select * into source_state
+  from private.project_cost_source_state(normalized_source_key);
+  if not found or source_state.project_id is null then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+  end if;
+  if source_state.current_version <> p_expected_version then
+    raise exception using
+      errcode = 'P0001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+
+  amount_after := source_state.effective_amount + p_adjustment_amount;
+  if amount_after in (
+      'NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric
+    )
+    or pg_catalog.abs(amount_after) > 900719925474.0991
+    or pg_catalog.round(amount_after, 4) <> amount_after
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  insert into public.project_cost_adjustment_events(
+    source_key, sequence_no, amount_before, adjustment_amount, amount_after,
+    reason, actor_employee_profile_id, actor_name, created_at
+  ) values (
+    normalized_source_key, source_state.current_version,
+    source_state.effective_amount, p_adjustment_amount::numeric(18,4),
+    amount_after::numeric(18,4), normalized_reason, actor.id, actor.name,
+    pg_catalog.statement_timestamp()
+  );
+
+  return pg_catalog.jsonb_build_object(
+    'sourceKey', normalized_source_key,
+    'version', source_state.current_version + 1,
+    'effectiveAmount', amount_after::numeric(18,4)
+  );
+end;
+$$;
+
+create or replace function public.replace_project_cost_allocations_secure(
+  p_source_key text,
+  p_expected_version bigint,
+  p_reason text,
+  p_allocations jsonb
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  source_state record;
+  normalized_source_key text;
+  normalized_reason text;
+  normalized_allocations jsonb;
+  allocation_total numeric;
+begin
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+  if not public.has_current_permission('module.project_costs.update') then
+    raise exception using
+      errcode = '42501',
+      message = 'project cost ledger update permission required';
+  end if;
+
+  normalized_source_key := private.project_cost_safe_text(
+    pg_catalog.to_jsonb(p_source_key), false, 600
+  );
+  normalized_reason := private.project_cost_safe_text(
+    pg_catalog.to_jsonb(p_reason), false, 2000
+  );
+  if normalized_source_key is null
+    or normalized_reason is null
+    or p_expected_version is null
+    or p_expected_version < 1
+    or pg_catalog.jsonb_typeof(p_allocations) is distinct from 'array'
+    or pg_catalog.jsonb_array_length(p_allocations) not between 1 and 100
+    or exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(p_allocations) item(value)
+      where pg_catalog.jsonb_typeof(item.value) is distinct from 'object'
+        or (select pg_catalog.count(*)
+            from pg_catalog.jsonb_object_keys(item.value)) <> 2
+        or not item.value ? 'projectId'
+        or not item.value ? 'amount'
+        or private.project_cost_safe_text(
+          item.value->'projectId', false, 500
+        ) is null
+        or private.project_cost_safe_amount(item.value->'amount') is null
+        or private.project_cost_safe_amount(item.value->'amount') = 0
+    )
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  if (select pg_catalog.count(*)
+      from pg_catalog.jsonb_array_elements(p_allocations)) <>
+    (select pg_catalog.count(distinct private.project_cost_safe_text(
+        item.value->'projectId', false, 500
+      ))
+     from pg_catalog.jsonb_array_elements(p_allocations) item(value))
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_array_elements(p_allocations) item(value)
+    where not exists (
+      select 1
+      from public.projects project
+      where project.record_key = private.project_cost_safe_text(
+          item.value->'projectId', false, 500
+        )
+        and project.status = 'active'
+        and not private.project_cost_payload_cancelled(project.payload)
+    )
+  ) then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+      'projectId', private.project_cost_safe_text(
+        item.value->'projectId', false, 500
+      ),
+      'amount', private.project_cost_safe_amount(item.value->'amount')::numeric(18,4)
+    ) order by item.ordinality),
+    pg_catalog.sum(private.project_cost_safe_amount(item.value->'amount'))
+    into normalized_allocations, allocation_total
+  from pg_catalog.jsonb_array_elements(p_allocations)
+    with ordinality item(value, ordinality);
+
+  select employee.* into actor
+  from public.employee_profiles employee
+  where employee.auth_user_id = auth.uid()
+    and employee.employment_status = '在职'
+    and employee.account_status = 'active'
+    and not employee.must_change_password
+    and employee.deleted_at is null;
+  if not found then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(normalized_source_key, 0)
+  );
+  select * into source_state
+  from private.project_cost_source_state(normalized_source_key);
+  if not found or source_state.project_id is null then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_SOURCE_MISSING';
+  end if;
+  if source_state.current_version <> p_expected_version then
+    raise exception using
+      errcode = '40001', message = 'PROJECT_COST_LEDGER_VERSION_CONFLICT';
+  end if;
+  if allocation_total <> source_state.effective_amount then
+    raise exception using
+      errcode = '22023',
+      message = 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED';
+  end if;
+
+  insert into public.project_cost_allocation_events(
+    source_key, sequence_no, amount_snapshot, allocations, reason,
+    actor_employee_profile_id, actor_name, created_at
+  ) values (
+    normalized_source_key, source_state.current_version,
+    source_state.effective_amount, normalized_allocations, normalized_reason,
+    actor.id, actor.name, pg_catalog.statement_timestamp()
+  );
+
+  return pg_catalog.jsonb_build_object(
+    'sourceKey', normalized_source_key,
+    'version', source_state.current_version + 1,
+    'allocations', normalized_allocations
+  );
+end;
+$$;
+
+create or replace function public.create_manual_project_cost_secure(
+  p_request_id uuid,
+  p_entry jsonb
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  existing public.project_cost_manual_entries%rowtype;
+  project_row public.projects%rowtype;
+  source_key_value text;
+  project_id_value text;
+  project_name_value text;
+  category_value text;
+  cost_date_value date;
+  amount_value numeric;
+  description_value text;
+  operator_value text;
+  reason_value text;
+begin
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+  if not public.has_current_permission('module.project_costs.create') then
+    raise exception using
+      errcode = '42501',
+      message = 'project cost ledger create permission required';
+  end if;
+
+  if p_request_id is null
+    or pg_catalog.jsonb_typeof(p_entry) is distinct from 'object'
+    or (select pg_catalog.count(*)
+        from pg_catalog.jsonb_object_keys(p_entry)) <> 7
+    or not p_entry ?& array[
+      'projectId', 'category', 'date', 'amount', 'description', 'operator', 'reason'
+    ]::text[]
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  project_id_value := private.project_cost_safe_text(
+    p_entry->'projectId', false, 500
+  );
+  category_value := private.project_cost_safe_text(
+    p_entry->'category', false, 100
+  );
+  cost_date_value := private.project_cost_safe_date(p_entry->'date');
+  amount_value := private.project_cost_safe_amount(p_entry->'amount');
+  description_value := private.project_cost_safe_text(
+    p_entry->'description', false, 2000
+  );
+  operator_value := private.project_cost_safe_text(
+    p_entry->'operator', false, 500
+  );
+  reason_value := private.project_cost_safe_text(
+    p_entry->'reason', false, 2000
+  );
+  if project_id_value is null
+    or category_value is null
+    or cost_date_value is null
+    or amount_value is null
+    or amount_value = 0
+    or description_value is null
+    or operator_value is null
+    or reason_value is null
+  then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+
+  select project.* into project_row
+  from public.projects project
+  where project.record_key = project_id_value
+    and project.status = 'active'
+    and not private.project_cost_payload_cancelled(project.payload);
+  if not found then
+    raise exception using
+      errcode = '22023', message = 'PROJECT_COST_LEDGER_INPUT_INVALID';
+  end if;
+  project_name_value := coalesce(private.project_cost_safe_text(
+    project_row.payload->'projectName', true, 500
+  ), '');
+
+  select employee.* into actor
+  from public.employee_profiles employee
+  where employee.auth_user_id = auth.uid()
+    and employee.employment_status = '在职'
+    and employee.account_status = 'active'
+    and not employee.must_change_password
+    and employee.deleted_at is null;
+  if not found then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+
+  source_key_value := 'manual:' || p_request_id::text;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(source_key_value, 0)
+  );
+  select entry.* into existing
+  from public.project_cost_manual_entries entry
+  where entry.source_key = source_key_value;
+  if found then
+    if existing.project_id <> project_id_value
+      or existing.project_name <> project_name_value
+      or existing.category <> category_value
+      or existing.cost_date <> cost_date_value
+      or existing.original_amount <> amount_value
+      or existing.description <> description_value
+      or existing.operator <> operator_value
+      or existing.reason <> reason_value
+    then
+      raise exception using
+        errcode = '22023', message = 'PROJECT_COST_LEDGER_REQUEST_CONFLICT';
+    end if;
+    return pg_catalog.jsonb_build_object(
+      'sourceKey', existing.source_key,
+      'projectId', existing.project_id,
+      'category', existing.category,
+      'date', pg_catalog.to_char(existing.cost_date, 'YYYY-MM-DD'),
+      'amount', existing.original_amount,
+      'description', existing.description,
+      'operator', existing.operator,
+      'reason', existing.reason,
+      'actorName', existing.created_by_name,
+      'createdAt', existing.created_at
+    );
+  end if;
+
+  insert into public.project_cost_manual_entries(
+    source_key, project_id, project_name, category, cost_date,
+    original_amount, description, operator, reason,
+    created_by_employee_profile_id, created_by_name, created_at
+  ) values (
+    source_key_value, project_id_value, project_name_value, category_value,
+    cost_date_value, amount_value::numeric(18,4), description_value,
+    operator_value, reason_value, actor.id, actor.name,
+    pg_catalog.statement_timestamp()
+  ) returning * into existing;
+
+  return pg_catalog.jsonb_build_object(
+    'sourceKey', existing.source_key,
+    'projectId', existing.project_id,
+    'category', existing.category,
+    'date', pg_catalog.to_char(existing.cost_date, 'YYYY-MM-DD'),
+    'amount', existing.original_amount,
+    'description', existing.description,
+    'operator', existing.operator,
+    'reason', existing.reason,
+    'actorName', existing.created_by_name,
+    'createdAt', existing.created_at
+  );
+end;
+$$;
+
+create or replace function public.list_project_cost_audit_secure(
+  p_filters jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  allowed_keys constant text[] := array[
+    'projectId', 'dateFrom', 'dateTo'
+  ]::text[];
+  filter_project_id text;
+  filter_date_from date;
+  filter_date_to date;
+  response jsonb;
+begin
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+  if not public.has_current_permission('module.project_costs.view') then
+    raise exception using
+      errcode = '42501', message = 'project cost ledger view permission required';
+  end if;
+  if p_filters is null
+    or pg_catalog.jsonb_typeof(p_filters) <> 'object'
+    or exists (
+      select 1 from pg_catalog.jsonb_object_keys(p_filters) supplied(key)
+      where supplied.key <> all(allowed_keys)
+    )
+  then
+    raise exception using
+      errcode = '22023', message = 'invalid project cost audit filters';
+  end if;
+
+  if p_filters ? 'projectId' then
+    if pg_catalog.jsonb_typeof(p_filters->'projectId') <> 'string' then
+      raise exception using
+        errcode = '22023', message = 'invalid project cost audit filters';
+    end if;
+    filter_project_id := p_filters->>'projectId';
+    if filter_project_id in ('', 'all') then filter_project_id := null; end if;
+    if filter_project_id is not null and private.project_cost_safe_text(
+        p_filters->'projectId', false, 500
+      ) is null
+    then
+      raise exception using
+        errcode = '22023', message = 'invalid project cost audit filters';
+    end if;
+  end if;
+  if p_filters ? 'dateFrom' then
+    if pg_catalog.jsonb_typeof(p_filters->'dateFrom') = 'string'
+      and p_filters->>'dateFrom' = ''
+    then
+      filter_date_from := null;
+    else
+      filter_date_from := private.project_cost_safe_date(p_filters->'dateFrom');
+      if filter_date_from is null then
+        raise exception using
+          errcode = '22023', message = 'invalid project cost audit filters';
+      end if;
+    end if;
+  end if;
+  if p_filters ? 'dateTo' then
+    if pg_catalog.jsonb_typeof(p_filters->'dateTo') = 'string'
+      and p_filters->>'dateTo' = ''
+    then
+      filter_date_to := null;
+    else
+      filter_date_to := private.project_cost_safe_date(p_filters->'dateTo');
+      if filter_date_to is null then
+        raise exception using
+          errcode = '22023', message = 'invalid project cost audit filters';
+      end if;
+    end if;
+  end if;
+  if filter_date_from is not null and filter_date_to is not null
+    and filter_date_from > filter_date_to
+  then
+    raise exception using
+      errcode = '22023', message = 'invalid project cost audit filters';
+  end if;
+
+  with facts as materialized (
+    select * from private.private_project_cost_source_facts()
+  ), current_allocations as (
+    select fact.source_key, fact.project_id,
+      coalesce(allocation.allocations, pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object(
+          'projectId', fact.project_id,
+          'amount', coalesce(adjustment.amount_after, fact.original_amount)
+        )
+      )) allocations
+    from facts fact
+    left join lateral (
+      select event.amount_after
+      from public.project_cost_adjustment_events event
+      where event.source_key = fact.source_key
+      order by event.sequence_no desc limit 1
+    ) adjustment on true
+    left join lateral (
+      select event.allocations
+      from public.project_cost_allocation_events event
+      where event.source_key = fact.source_key
+      order by event.sequence_no desc limit 1
+    ) allocation on true
+  ), audit_events as (
+    select
+      'adjustment'::text event_type,
+      adjustment.source_key,
+      adjustment.sequence_no,
+      adjustment.amount_before,
+      adjustment.amount_after,
+      adjustment.adjustment_amount,
+      null::jsonb allocations_before,
+      null::jsonb allocations_after,
+      adjustment.reason,
+      adjustment.actor_name,
+      adjustment.created_at,
+      fact.cost_date
+    from public.project_cost_adjustment_events adjustment
+    join facts fact using (source_key)
+    union all
+    select
+      'allocation'::text,
+      allocation.source_key,
+      allocation.sequence_no,
+      allocation.amount_snapshot,
+      allocation.amount_snapshot,
+      0::numeric,
+      coalesce((
+        select previous.allocations
+        from public.project_cost_allocation_events previous
+        where previous.source_key = allocation.source_key
+          and previous.sequence_no < allocation.sequence_no
+        order by previous.sequence_no desc limit 1
+      ), pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'projectId', fact.project_id,
+        'amount', allocation.amount_snapshot
+      ))),
+      allocation.allocations,
+      allocation.reason,
+      allocation.actor_name,
+      allocation.created_at,
+      fact.cost_date
+    from public.project_cost_allocation_events allocation
+    join facts fact using (source_key)
+  ), filtered as (
+    select event.*
+    from audit_events event
+    join current_allocations current using (source_key)
+    where (filter_date_from is null or event.cost_date >= filter_date_from)
+      and (filter_date_to is null or event.cost_date <= filter_date_to)
+      and (filter_project_id is null or exists (
+        select 1
+        from pg_catalog.jsonb_array_elements(current.allocations) item(value)
+        where item.value->>'projectId' = filter_project_id
+      ))
+  )
+  select pg_catalog.jsonb_build_object(
+    'status', 'ready',
+    'generatedAt', pg_catalog.statement_timestamp(),
+    'events', coalesce(pg_catalog.jsonb_agg(
+      pg_catalog.jsonb_build_object(
+        'eventType', event.event_type,
+        'sourceKey', event.source_key,
+        'sequenceNo', event.sequence_no,
+        'amountBefore', event.amount_before,
+        'amountAfter', event.amount_after,
+        'adjustmentAmount', event.adjustment_amount,
+        'allocationsBefore', event.allocations_before,
+        'allocationsAfter', event.allocations_after,
+        'reason', event.reason,
+        'actorName', event.actor_name,
+        'createdAt', event.created_at
+      ) order by event.created_at, event.source_key,
+        event.sequence_no, event.event_type
+    ), '[]'::jsonb)
+  ) into response
+  from filtered event;
+
+  return response;
+end;
+$$;
+
 revoke all on function private.reject_project_cost_ledger_mutation()
   from public, anon, authenticated, service_role;
 revoke all on function private.project_cost_safe_amount(jsonb)
@@ -1414,9 +2077,31 @@ revoke all on function private.project_cost_payload_cancelled(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function private.private_project_cost_source_facts()
   from public, anon, authenticated, service_role;
+revoke all on function private.project_cost_source_state(text)
+  from public, anon, authenticated, service_role;
 revoke all on function public.list_project_cost_ledger_secure(jsonb)
   from public, anon, authenticated, service_role;
+revoke all on function public.create_project_cost_adjustment_secure(
+  text, bigint, numeric, text
+) from public, anon, authenticated, service_role;
+revoke all on function public.replace_project_cost_allocations_secure(
+  text, bigint, text, jsonb
+) from public, anon, authenticated, service_role;
+revoke all on function public.create_manual_project_cost_secure(uuid, jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.list_project_cost_audit_secure(jsonb)
+  from public, anon, authenticated, service_role;
 grant execute on function public.list_project_cost_ledger_secure(jsonb)
+  to authenticated, service_role;
+grant execute on function public.create_project_cost_adjustment_secure(
+  text, bigint, numeric, text
+) to authenticated, service_role;
+grant execute on function public.replace_project_cost_allocations_secure(
+  text, bigint, text, jsonb
+) to authenticated, service_role;
+grant execute on function public.create_manual_project_cost_secure(uuid, jsonb)
+  to authenticated, service_role;
+grant execute on function public.list_project_cost_audit_secure(jsonb)
   to authenticated, service_role;
 
 commit;

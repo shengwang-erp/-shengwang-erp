@@ -5687,8 +5687,8 @@ commit;
 --   public.project_cost_manual_entries
 --     id uuid primary key; immutable full manual:<uuid> source_key;
 --     project/category/date;
---     signed original_amount numeric(18,4); description/operator/creator and
---     a server timestamp.
+--     signed original_amount numeric(18,4); description/operator/creator,
+--     required reason, and a server timestamp.
 --
 --   public.project_cost_adjustment_events
 --     source_key + sequence_no unique; amount_before, adjustment_amount and
@@ -5717,6 +5717,35 @@ commit;
 -- per final project allocation, summarizes before pagination, and returns the
 -- exact normalizeLedgerSnapshot() JSON shape. Both the public RPC and private
 -- source helper are SECURITY DEFINER with an empty fixed search_path.
+--
+-- Authenticated/service-role mutations and audit reads are:
+--
+--   public.create_project_cost_adjustment_secure(
+--     p_source_key text, p_expected_version bigint,
+--     p_adjustment_amount numeric, p_reason text
+--   ) -> jsonb
+--   public.replace_project_cost_allocations_secure(
+--     p_source_key text, p_expected_version bigint,
+--     p_reason text, p_allocations jsonb
+--   ) -> jsonb
+--   public.create_manual_project_cost_secure(
+--     p_request_id uuid, p_entry jsonb
+--   ) -> jsonb
+--   public.list_project_cost_audit_secure(p_filters jsonb default '{}')
+--     -> jsonb
+--
+-- Adjustment and allocation writes require module.project_costs.update and an
+-- exact current version. Adjustment uses a transaction-scoped, non-blocking
+-- advisory lock with a pre-lock fast check plus a post-lock version recheck;
+-- lock contention and stale versions both fail with SQLSTATE P0001 and message
+-- PROJECT_COST_LEDGER_VERSION_CONFLICT without a partial event. Allocation
+-- snapshots contain unique active project IDs and fixed four-decimal amounts
+-- whose signed sum exactly equals the source's current effective amount.
+-- Manual writes require module.project_costs.create, are idempotent by the full
+-- request UUID, reject conflicting replays, and derive actor/project/time on
+-- the server. Audit rows expose exact before/after values, allocation snapshots,
+-- reason, server actor, and server timestamp. All four functions are closed
+-- SECURITY DEFINER boundaries with an empty fixed search_path.
 --
 -- The source union normalizes text with the ECMAScript trim character set.
 -- Invalid optional display text falls back to empty without losing the amount;
