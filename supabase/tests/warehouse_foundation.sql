@@ -60,6 +60,7 @@ insert into task4_expected_constraints(table_name, constraint_name, constraint_t
   ('warehouse_batches', 'warehouse_batches_original_quantity_check', 'c'),
   ('warehouse_batches', 'warehouse_batches_id_variant_unique', 'u'),
   ('warehouse_batches', 'warehouse_batches_variant_fk', 'f'),
+  ('warehouse_batches', 'warehouse_batches_receipt_line_variant_fk', 'f'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_pkey', 'p'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_quantity_check', 'c'),
   ('warehouse_batch_locations', 'warehouse_batch_locations_batch_fk', 'f'),
@@ -406,7 +407,7 @@ select lives_ok(
     ) values (
       '94000000-0000-4000-8000-000000000001',
       '93000000-0000-4000-8000-000000000001',
-      '94000000-0000-4000-8000-000000000011',
+      null,
       '2026-08-08T00:00:00Z', 120.5000, 10.000
     )$$,
   'a valid FIFO batch is accepted'

@@ -51,6 +51,8 @@ create table public.warehouse_receipts (
   rejection_reason text,
   idempotency_key text not null,
   submission_payload jsonb not null default '{}'::jsonb,
+  confirmation_idempotency_key text,
+  confirmation_payload jsonb,
   constraint warehouse_receipts_status_check check (
     status in ('pending', 'confirmed', 'rejected', 'void')
   ),
@@ -79,6 +81,18 @@ create table public.warehouse_receipts (
   constraint warehouse_receipts_idempotency_unique unique (idempotency_key)
   ,constraint warehouse_receipts_submission_payload_check check (
     jsonb_typeof(submission_payload) = 'object'
+  ),
+  constraint warehouse_receipts_confirmation_pair_check check (
+    (confirmation_idempotency_key is null) = (confirmation_payload is null)
+    and (confirmation_idempotency_key is null or status in ('confirmed', 'void'))
+    and (
+      confirmation_idempotency_key is null
+      or (
+        confirmation_idempotency_key = btrim(confirmation_idempotency_key)
+        and confirmation_idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
+        and jsonb_typeof(confirmation_payload) = 'object'
+      )
+    )
   )
 );
 
@@ -132,6 +146,8 @@ create table public.warehouse_stock_out_requests (
   confirmed_at timestamptz,
   rejection_reason text,
   idempotency_key text not null,
+  confirmation_idempotency_key text,
+  confirmation_payload jsonb,
   constraint warehouse_stock_out_status_check check (
     status in ('pending', 'confirmed', 'rejected', 'void')
   ),
@@ -173,7 +189,19 @@ create table public.warehouse_stock_out_requests (
     references public.employee_profiles(id) on delete restrict,
   constraint warehouse_stock_out_confirmer_fk foreign key (confirmed_by_employee_profile_id)
     references public.employee_profiles(id) on delete restrict,
-  constraint warehouse_stock_out_idempotency_unique unique (idempotency_key)
+  constraint warehouse_stock_out_idempotency_unique unique (idempotency_key),
+  constraint warehouse_stock_out_confirmation_pair_check check (
+    (confirmation_idempotency_key is null) = (confirmation_payload is null)
+    and (confirmation_idempotency_key is null or status in ('confirmed', 'void'))
+    and (
+      confirmation_idempotency_key is null
+      or (
+        confirmation_idempotency_key = btrim(confirmation_idempotency_key)
+        and confirmation_idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
+        and jsonb_typeof(confirmation_payload) = 'object'
+      )
+    )
+  )
 );
 
 create table public.warehouse_stock_out_lines (
@@ -250,6 +278,22 @@ create table public.warehouse_return_requests (
   constraint warehouse_return_idempotency_unique unique (idempotency_key),
   constraint warehouse_return_id_original_unique unique (id, original_stock_out_id)
 );
+
+alter table public.warehouse_receipt_lines
+  add constraint warehouse_receipt_lines_id_variant_unique unique (id, variant_id);
+alter table public.warehouse_batches
+  add constraint warehouse_batches_receipt_line_variant_fk
+  foreign key (receipt_line_id, variant_id)
+  references public.warehouse_receipt_lines(id, variant_id) on delete restrict;
+create unique index warehouse_batches_receipt_line_unique
+  on public.warehouse_batches(receipt_line_id)
+  where receipt_line_id is not null;
+create unique index warehouse_receipts_confirmation_idempotency_unique
+  on public.warehouse_receipts(confirmation_idempotency_key)
+  where confirmation_idempotency_key is not null;
+create unique index warehouse_stock_out_confirmation_idempotency_unique
+  on public.warehouse_stock_out_requests(confirmation_idempotency_key)
+  where confirmation_idempotency_key is not null;
 
 create table public.warehouse_return_lines (
   id uuid primary key default gen_random_uuid(),
@@ -408,6 +452,39 @@ for each row execute function private.guard_warehouse_receipt_identity_update();
 create trigger guard_warehouse_receipt_line_identity_update
 before update on public.warehouse_receipt_lines
 for each row execute function private.guard_warehouse_receipt_identity_update();
+
+create or replace function private.guard_warehouse_confirmation_identity_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  if old.confirmation_idempotency_key is not null and row(
+    old.confirmation_idempotency_key, old.confirmation_payload
+  ) is distinct from row(
+    new.confirmation_idempotency_key, new.confirmation_payload
+  ) then
+    raise exception using errcode = '55000',
+      message = 'warehouse confirmation identity is immutable',
+      hint = 'WAREHOUSE_CONFIRMATION_IDENTITY_IMMUTABLE';
+  end if;
+  if new.confirmation_idempotency_key is not null
+    and new.status not in ('confirmed', 'void')
+  then
+    raise exception using errcode = '23514',
+      message = 'warehouse confirmation identity requires confirmed state';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger guard_warehouse_receipt_confirmation_identity_update
+before update on public.warehouse_receipts
+for each row execute function private.guard_warehouse_confirmation_identity_update();
+create trigger guard_warehouse_stock_out_confirmation_identity_update
+before update on public.warehouse_stock_out_requests
+for each row execute function private.guard_warehouse_confirmation_identity_update();
 
 create or replace function private.assert_warehouse_receipt_document_state(p_receipt_id uuid)
 returns void
@@ -729,7 +806,7 @@ begin
     raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
       hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
   end;
-  if result <= 0 or result > 999999999999999.999 or result <> trunc(result, 3)
+  if result <= 0 or result > 9007199254740.990 or result <> trunc(result, 3)
     or result in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
   then
     raise exception using errcode = '22023', message = 'warehouse workflow input invalid',
@@ -1429,6 +1506,701 @@ begin
 end;
 $$;
 
+create or replace function private.warehouse_confirmation_quantity(
+  p_value jsonb,
+  p_field text
+)
+returns numeric
+language plpgsql
+immutable
+set search_path = pg_catalog
+as $$
+declare result numeric;
+begin
+  if jsonb_typeof(p_value->p_field) is distinct from 'number' then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  begin
+    result := (p_value->>p_field)::numeric;
+  exception when invalid_text_representation or numeric_value_out_of_range then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end;
+  if result <= 0 or result > 9007199254740.990 or result <> trunc(result, 3)
+    or result in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+  then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  return result::numeric(18,3);
+end;
+$$;
+
+create or replace function private.warehouse_purchase_unit_cost(p_payload jsonb)
+returns numeric
+language plpgsql
+immutable
+set search_path = pg_catalog
+as $$
+declare
+  ordered_quantity numeric;
+  total_cost numeric;
+  unit_cost numeric;
+begin
+  if jsonb_typeof(p_payload->'quantity') is distinct from 'number'
+    or jsonb_typeof(p_payload->'totalCost') is distinct from 'number'
+    or (p_payload->>'quantity') !~ '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+    or (p_payload->>'totalCost') !~ '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+  then
+    raise exception using errcode = '22023', message = 'purchase cost invalid for warehouse receipt',
+      hint = 'WAREHOUSE_PURCHASE_COST_INVALID';
+  end if;
+  begin
+    ordered_quantity := (p_payload->>'quantity')::numeric;
+    total_cost := (p_payload->>'totalCost')::numeric;
+    if ordered_quantity <= 0 or ordered_quantity > 999999999999999.999
+      or total_cost < 0
+      or ordered_quantity in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+      or total_cost in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+    then
+      raise numeric_value_out_of_range;
+    end if;
+    unit_cost := round(total_cost / ordered_quantity, 4);
+    if unit_cost > 900719925474.0991 then raise numeric_value_out_of_range; end if;
+    return unit_cost::numeric(18,4);
+  exception when invalid_text_representation or numeric_value_out_of_range or division_by_zero then
+    raise exception using errcode = '22023', message = 'purchase cost invalid for warehouse receipt',
+      hint = 'WAREHOUSE_PURCHASE_COST_INVALID';
+  end;
+end;
+$$;
+
+create or replace function private.warehouse_receipt_confirmation_json(
+  p_id uuid,
+  p_view_cost boolean
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'id', receipt.id, 'purchaseRecordKey', receipt.purchase_record_key,
+    'status', receipt.status,
+    'submittedByEmployeeProfileId', receipt.submitted_by_employee_profile_id,
+    'submittedAt', receipt.submitted_at,
+    'confirmedByEmployeeProfileId', receipt.confirmed_by_employee_profile_id,
+    'confirmedAt', receipt.confirmed_at, 'rejectionReason', receipt.rejection_reason,
+    'idempotencyKey', receipt.idempotency_key,
+    'confirmationIdempotencyKey', receipt.confirmation_idempotency_key,
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', line.id, 'receiptId', line.receipt_id, 'variantId', line.variant_id,
+        'requestedQuantity', line.requested_quantity,
+        'confirmedQuantity', line.confirmed_quantity,
+        'warehouseId', line.warehouse_id, 'locationId', line.location_id,
+        'unitCost', case when p_view_cost then line.unit_cost else null end
+      ) order by line.id)
+      from public.warehouse_receipt_lines line where line.receipt_id = receipt.id
+    ), '[]'::jsonb)
+  ) from public.warehouse_receipts receipt where receipt.id = p_id
+$$;
+
+create or replace function private.warehouse_stock_out_confirmation_json(
+  p_id uuid,
+  p_view_cost boolean
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'id', request.id, 'destinationType', request.destination_type,
+    'projectId', request.project_id, 'minorWorkOrderId', request.minor_work_order_id,
+    'destinationNameSnapshot', request.destination_name_snapshot,
+    'purpose', request.purpose, 'receiver', request.receiver,
+    'requestDate', request.request_date, 'status', request.status,
+    'submittedByEmployeeProfileId', request.submitted_by_employee_profile_id,
+    'submittedAt', request.submitted_at,
+    'confirmedByEmployeeProfileId', request.confirmed_by_employee_profile_id,
+    'confirmedAt', request.confirmed_at, 'rejectionReason', request.rejection_reason,
+    'idempotencyKey', request.idempotency_key,
+    'confirmationIdempotencyKey', request.confirmation_idempotency_key,
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', line.id, 'requestId', line.request_id, 'variantId', line.variant_id,
+        'requestedQuantity', line.requested_quantity,
+        'confirmedQuantity', line.confirmed_quantity,
+        'warehouseId', confirmation.value->>'warehouseId',
+        'locationId', confirmation.value->>'locationId',
+        'frozenTotalCost', case when p_view_cost then line.frozen_total_cost else null end
+      ) order by line.id)
+      from public.warehouse_stock_out_lines line
+      join lateral jsonb_array_elements(request.confirmation_payload->'lines') confirmation(value)
+        on confirmation.value->>'stockOutLineId' = line.id::text
+      where line.request_id = request.id
+    ), '[]'::jsonb)
+  ) from public.warehouse_stock_out_requests request where request.id = p_id
+$$;
+
+create or replace function public.confirm_warehouse_receipt_secure(
+  p_receipt_id uuid,
+  p_lines jsonb,
+  p_idempotency_key text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  receipt_row public.warehouse_receipts%rowtype;
+  purchase_row public.purchase_records%rowtype;
+  supplied_line jsonb;
+  canonical_payload jsonb;
+  resource_id uuid;
+  locked_row record;
+  receipt_line public.warehouse_receipt_lines%rowtype;
+  batch_id uuid;
+  ordered_quantity numeric(18,3);
+  other_committed numeric(18,3);
+  confirmed_total numeric(18,3);
+  authoritative_unit_cost numeric(18,4);
+  confirmed_at_value timestamptz;
+  view_cost boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.receipt.confirm');
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  if p_receipt_id is null then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  perform private.warehouse_workflow_lines(p_lines);
+  perform private.warehouse_workflow_idempotency(p_idempotency_key);
+  for supplied_line in select value from jsonb_array_elements(p_lines) loop
+    if not private.warehouse_catalog_payload_keys_exact(
+      supplied_line,
+      array['receiptLineId','confirmedQuantity','warehouseId','locationId']
+    ) then
+      raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+        hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+    end if;
+    perform private.warehouse_workflow_uuid(supplied_line, 'receiptLineId');
+    perform private.warehouse_confirmation_quantity(supplied_line, 'confirmedQuantity');
+    perform private.warehouse_workflow_uuid(supplied_line, 'warehouseId');
+    perform private.warehouse_workflow_uuid(supplied_line, 'locationId');
+  end loop;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(distinct value->>'receiptLineId') from jsonb_array_elements(p_lines)
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  canonical_payload := jsonb_build_object(
+    'receiptId', p_receipt_id,
+    'lines', (
+      select jsonb_agg(jsonb_build_object(
+        'receiptLineId', private.warehouse_workflow_uuid(value, 'receiptLineId'),
+        'confirmedQuantity', private.warehouse_confirmation_quantity(value, 'confirmedQuantity'),
+        'warehouseId', private.warehouse_workflow_uuid(value, 'warehouseId'),
+        'locationId', private.warehouse_workflow_uuid(value, 'locationId')
+      ) order by value->>'receiptLineId')
+      from jsonb_array_elements(p_lines)
+    )
+  );
+
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-receipt-confirm-document:' || p_receipt_id::text, 0
+  ));
+  select receipt.* into receipt_row
+  from public.warehouse_receipts receipt
+  where receipt.id = p_receipt_id
+  for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse receipt unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-receipt-confirm-key:' || p_idempotency_key, 0
+  ));
+  if receipt_row.status in ('confirmed', 'void')
+    and receipt_row.confirmation_idempotency_key is not null
+  then
+    if receipt_row.confirmation_idempotency_key = p_idempotency_key
+      and receipt_row.confirmation_payload = canonical_payload
+    then
+      return private.warehouse_receipt_confirmation_json(p_receipt_id, view_cost);
+    elsif receipt_row.confirmation_idempotency_key = p_idempotency_key then
+      raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+        hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+    end if;
+    raise exception using errcode = '55000', message = 'warehouse document already confirmed',
+      hint = 'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED';
+  elsif receipt_row.status <> 'pending' then
+    raise exception using errcode = '55000', message = 'warehouse receipt unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if exists (
+    select 1 from public.warehouse_receipts other
+    where other.confirmation_idempotency_key = p_idempotency_key
+      and other.id <> p_receipt_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(*) from public.warehouse_receipt_lines line
+    where line.receipt_id = p_receipt_id
+  ) or exists (
+    select 1 from jsonb_array_elements(p_lines) entry
+    left join public.warehouse_receipt_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'receiptLineId')
+     and line.receipt_id = p_receipt_id
+    where line.id is null
+       or line.requested_quantity > 9007199254740.990
+       or private.warehouse_confirmation_quantity(entry.value, 'confirmedQuantity')
+          > line.requested_quantity
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+
+  select purchase.* into purchase_row
+  from public.purchase_records purchase
+  where purchase.record_key = receipt_row.purchase_record_key
+  for update;
+  if not found or purchase_row.status <> 'active' then
+    raise exception using errcode = '22023', message = 'purchase cost invalid for warehouse receipt',
+      hint = 'WAREHOUSE_PURCHASE_COST_INVALID';
+  end if;
+  perform private.lock_purchase_record_key(receipt_row.purchase_record_key);
+  authoritative_unit_cost := private.warehouse_purchase_unit_cost(purchase_row.payload);
+  ordered_quantity := (purchase_row.payload->>'quantity')::numeric(18,3);
+  select coalesce(sum(case
+    when receipt.status = 'pending' then line.requested_quantity
+    when receipt.status = 'confirmed' then line.confirmed_quantity
+    else 0
+  end), 0)::numeric(18,3)
+  into other_committed
+  from public.warehouse_receipts receipt
+  join public.warehouse_receipt_lines line on line.receipt_id = receipt.id
+  where receipt.purchase_record_key = receipt_row.purchase_record_key
+    and receipt.id <> p_receipt_id;
+  select sum(private.warehouse_confirmation_quantity(value, 'confirmedQuantity'))::numeric(18,3)
+  into confirmed_total from jsonb_array_elements(p_lines);
+  if confirmed_total > ordered_quantity - other_committed then
+    raise exception using errcode = '23514', message = 'purchase confirmation exceeds remainder',
+      hint = 'WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED';
+  end if;
+
+  for resource_id in
+    select distinct private.warehouse_workflow_uuid(value, 'locationId')
+    from jsonb_array_elements(p_lines) order by 1
+  loop perform private.lock_warehouse_location_resource(resource_id); end loop;
+  for resource_id in
+    select distinct line.variant_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_receipt_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'receiptLineId')
+    order by 1
+  loop perform private.lock_warehouse_variant_resource(resource_id); end loop;
+
+  if exists (
+    select 1 from jsonb_array_elements(p_lines) entry
+    join public.warehouse_receipt_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'receiptLineId')
+    left join public.warehouse_locations location
+      on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+     and location.warehouse_id = private.warehouse_workflow_uuid(entry.value, 'warehouseId')
+    left join public.warehouse_sites site on site.id = location.warehouse_id
+    left join public.warehouse_variants variant on variant.id = line.variant_id
+    left join public.warehouse_items item on item.id = variant.item_id
+    where location.id is null or not location.active
+       or site.id is null or not site.active
+       or variant.id is null or not variant.active
+       or item.id is null or not item.active
+  ) then
+    if exists (
+      select 1 from jsonb_array_elements(p_lines) entry
+      join public.warehouse_locations location
+        on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+      where location.warehouse_id <>
+        private.warehouse_workflow_uuid(entry.value, 'warehouseId')
+    ) then
+      raise exception using errcode = '23503', message = 'warehouse location mismatch',
+        hint = 'WAREHOUSE_LOCATION_MISMATCH';
+    end if;
+    raise exception using errcode = '55000', message = 'active warehouse resources required',
+      hint = 'WAREHOUSE_RESOURCE_INACTIVE';
+  end if;
+  for locked_row in
+    select location.id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_locations location
+      on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+    order by location.id for key share of location
+  loop null; end loop;
+  for locked_row in
+    select variant.id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_receipt_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'receiptLineId')
+    join public.warehouse_variants variant on variant.id = line.variant_id
+    order by variant.id for key share of variant
+  loop null; end loop;
+
+  confirmed_at_value := clock_timestamp();
+  update public.warehouse_receipt_lines line
+  set confirmed_quantity = private.warehouse_confirmation_quantity(entry.value, 'confirmedQuantity'),
+      warehouse_id = private.warehouse_workflow_uuid(entry.value, 'warehouseId'),
+      location_id = private.warehouse_workflow_uuid(entry.value, 'locationId'),
+      unit_cost = authoritative_unit_cost
+  from jsonb_array_elements(p_lines) entry
+  where line.id = private.warehouse_workflow_uuid(entry.value, 'receiptLineId')
+    and line.receipt_id = p_receipt_id;
+
+  for receipt_line in
+    select line.* from public.warehouse_receipt_lines line
+    where line.receipt_id = p_receipt_id order by line.id
+  loop
+    insert into public.warehouse_batches(
+      variant_id, receipt_line_id, received_at, unit_cost, original_quantity
+    ) values (
+      receipt_line.variant_id, receipt_line.id, confirmed_at_value,
+      receipt_line.unit_cost, receipt_line.confirmed_quantity
+    ) returning id into batch_id;
+    insert into public.warehouse_batch_locations(batch_id, location_id, quantity)
+    values (batch_id, receipt_line.location_id, receipt_line.confirmed_quantity);
+    insert into public.warehouse_inventory_movements(
+      movement_type, variant_id, batch_id, warehouse_id, location_id,
+      quantity_delta, unit_cost, source_document_type, source_document_id,
+      idempotency_key, operator_employee_profile_id, occurred_at, metadata
+    ) values (
+      '采购入库', receipt_line.variant_id, batch_id, receipt_line.warehouse_id,
+      receipt_line.location_id, receipt_line.confirmed_quantity, receipt_line.unit_cost,
+      'warehouse_receipt', p_receipt_id::text,
+      'receipt-confirm:' || p_receipt_id::text || ':' || receipt_line.id::text,
+      actor_id, confirmed_at_value,
+      jsonb_build_object(
+        'receiptLineId', receipt_line.id,
+        'purchaseRecordKey', receipt_row.purchase_record_key
+      )
+    );
+  end loop;
+  update public.warehouse_receipts
+  set status = 'confirmed', confirmed_by_employee_profile_id = actor_id,
+      confirmed_at = confirmed_at_value,
+      confirmation_idempotency_key = p_idempotency_key,
+      confirmation_payload = canonical_payload
+  where id = p_receipt_id;
+  return private.warehouse_receipt_confirmation_json(p_receipt_id, view_cost);
+exception when unique_violation then
+  if exists (
+    select 1 from public.warehouse_receipts receipt
+    where receipt.confirmation_idempotency_key = p_idempotency_key
+      and receipt.id <> p_receipt_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  raise;
+end;
+$$;
+
+create or replace function public.confirm_warehouse_stock_out_secure(
+  p_request_id uuid,
+  p_lines jsonb,
+  p_idempotency_key text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  request_row public.warehouse_stock_out_requests%rowtype;
+  supplied_line jsonb;
+  canonical_payload jsonb;
+  resource_id uuid;
+  locked_row record;
+  requested_line record;
+  allocation record;
+  remaining_quantity numeric(18,3);
+  consumed_quantity numeric(18,3);
+  total_cost numeric;
+  confirmed_at_value timestamptz;
+  view_cost boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  if p_request_id is null then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  perform private.warehouse_workflow_lines(p_lines);
+  perform private.warehouse_workflow_idempotency(p_idempotency_key);
+  for supplied_line in select value from jsonb_array_elements(p_lines) loop
+    if not private.warehouse_catalog_payload_keys_exact(
+      supplied_line,
+      array['stockOutLineId','confirmedQuantity','warehouseId','locationId']
+    ) then
+      raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+        hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+    end if;
+    perform private.warehouse_workflow_uuid(supplied_line, 'stockOutLineId');
+    perform private.warehouse_confirmation_quantity(supplied_line, 'confirmedQuantity');
+    perform private.warehouse_workflow_uuid(supplied_line, 'warehouseId');
+    perform private.warehouse_workflow_uuid(supplied_line, 'locationId');
+  end loop;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(distinct value->>'stockOutLineId') from jsonb_array_elements(p_lines)
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  canonical_payload := jsonb_build_object(
+    'requestId', p_request_id,
+    'lines', (
+      select jsonb_agg(jsonb_build_object(
+        'stockOutLineId', private.warehouse_workflow_uuid(value, 'stockOutLineId'),
+        'confirmedQuantity', private.warehouse_confirmation_quantity(value, 'confirmedQuantity'),
+        'warehouseId', private.warehouse_workflow_uuid(value, 'warehouseId'),
+        'locationId', private.warehouse_workflow_uuid(value, 'locationId')
+      ) order by value->>'stockOutLineId')
+      from jsonb_array_elements(p_lines)
+    )
+  );
+
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-stock-out-confirm-document:' || p_request_id::text, 0
+  ));
+  select request.* into request_row
+  from public.warehouse_stock_out_requests request
+  where request.id = p_request_id
+  for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse stock-out unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-stock-out-confirm-key:' || p_idempotency_key, 0
+  ));
+  if request_row.status in ('confirmed', 'void')
+    and request_row.confirmation_idempotency_key is not null
+  then
+    if request_row.confirmation_idempotency_key = p_idempotency_key
+      and request_row.confirmation_payload = canonical_payload
+    then
+      return private.warehouse_stock_out_confirmation_json(p_request_id, view_cost);
+    elsif request_row.confirmation_idempotency_key = p_idempotency_key then
+      raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+        hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+    end if;
+    raise exception using errcode = '55000', message = 'warehouse document already confirmed',
+      hint = 'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED';
+  elsif request_row.status <> 'pending' then
+    raise exception using errcode = '55000', message = 'warehouse stock-out unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if exists (
+    select 1 from public.warehouse_stock_out_requests other
+    where other.confirmation_idempotency_key = p_idempotency_key
+      and other.id <> p_request_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(*) from public.warehouse_stock_out_lines line
+    where line.request_id = p_request_id
+  ) or exists (
+    select 1 from jsonb_array_elements(p_lines) entry
+    left join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+     and line.request_id = p_request_id
+    where line.id is null
+       or line.requested_quantity > 9007199254740.990
+       or private.warehouse_confirmation_quantity(entry.value, 'confirmedQuantity')
+          > line.requested_quantity
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+
+  for resource_id in
+    select distinct private.warehouse_workflow_uuid(value, 'locationId')
+    from jsonb_array_elements(p_lines) order by 1
+  loop perform private.lock_warehouse_location_resource(resource_id); end loop;
+  for resource_id in
+    select distinct line.variant_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+    order by 1
+  loop perform private.lock_warehouse_variant_resource(resource_id); end loop;
+
+  if exists (
+    select 1 from jsonb_array_elements(p_lines) entry
+    join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+    left join public.warehouse_locations location
+      on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+     and location.warehouse_id = private.warehouse_workflow_uuid(entry.value, 'warehouseId')
+    left join public.warehouse_sites site on site.id = location.warehouse_id
+    left join public.warehouse_variants variant on variant.id = line.variant_id
+    left join public.warehouse_items item on item.id = variant.item_id
+    where location.id is null or not location.active
+       or site.id is null or not site.active
+       or variant.id is null or not variant.active
+       or item.id is null or not item.active
+  ) then
+    if exists (
+      select 1 from jsonb_array_elements(p_lines) entry
+      join public.warehouse_locations location
+        on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+      where location.warehouse_id <>
+        private.warehouse_workflow_uuid(entry.value, 'warehouseId')
+    ) then
+      raise exception using errcode = '23503', message = 'warehouse location mismatch',
+        hint = 'WAREHOUSE_LOCATION_MISMATCH';
+    end if;
+    raise exception using errcode = '55000', message = 'active warehouse resources required',
+      hint = 'WAREHOUSE_RESOURCE_INACTIVE';
+  end if;
+  for locked_row in
+    select location.id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_locations location
+      on location.id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+    order by location.id for key share of location
+  loop null; end loop;
+  for locked_row in
+    select variant.id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+    join public.warehouse_variants variant on variant.id = line.variant_id
+    order by variant.id for key share of variant
+  loop null; end loop;
+
+  for locked_row in
+    select balance.batch_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+    join public.warehouse_batches batch on batch.variant_id = line.variant_id
+    join public.warehouse_batch_locations balance
+      on balance.batch_id = batch.id
+     and balance.location_id = private.warehouse_workflow_uuid(entry.value, 'locationId')
+    where balance.quantity > 0
+    order by batch.received_at, batch.id
+    for update of balance
+  loop null; end loop;
+
+  confirmed_at_value := clock_timestamp();
+  for requested_line in
+    select line.id, line.variant_id, entry.value as payload
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_stock_out_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
+     and line.request_id = p_request_id
+    order by line.id
+  loop
+    remaining_quantity := private.warehouse_confirmation_quantity(
+      requested_line.payload, 'confirmedQuantity'
+    );
+    total_cost := 0;
+    for allocation in
+      select batch.id as batch_id, batch.unit_cost, balance.quantity
+      from public.warehouse_batches batch
+      join public.warehouse_batch_locations balance on balance.batch_id = batch.id
+      where batch.variant_id = requested_line.variant_id
+        and balance.location_id = private.warehouse_workflow_uuid(
+          requested_line.payload, 'locationId'
+        )
+        and balance.quantity > 0
+      order by batch.received_at, batch.id
+    loop
+      exit when remaining_quantity = 0;
+      consumed_quantity := least(remaining_quantity, allocation.quantity)::numeric(18,3);
+      if allocation.unit_cost > 900719925474.0991
+        or total_cost + consumed_quantity * allocation.unit_cost > 900719925474.0991
+      then
+        raise exception using errcode = '22023',
+          message = 'purchase cost invalid for warehouse receipt',
+          hint = 'WAREHOUSE_PURCHASE_COST_INVALID';
+      end if;
+      update public.warehouse_batch_locations
+      set quantity = quantity - consumed_quantity
+      where batch_id = allocation.batch_id
+        and location_id = private.warehouse_workflow_uuid(
+          requested_line.payload, 'locationId'
+        );
+      insert into public.warehouse_inventory_movements(
+        movement_type, variant_id, batch_id, warehouse_id, location_id,
+        quantity_delta, unit_cost, source_document_type, source_document_id,
+        idempotency_key, project_id, destination_type, destination_id,
+        destination_name, operator_employee_profile_id, occurred_at, metadata
+      ) values (
+        '项目出库', requested_line.variant_id, allocation.batch_id,
+        private.warehouse_workflow_uuid(requested_line.payload, 'warehouseId'),
+        private.warehouse_workflow_uuid(requested_line.payload, 'locationId'),
+        -consumed_quantity, allocation.unit_cost,
+        'warehouse_stock_out', p_request_id::text,
+        'stock-out-confirm:' || p_request_id::text || ':' ||
+          requested_line.id::text || ':' || allocation.batch_id::text,
+        request_row.project_id, request_row.destination_type,
+        case
+          when request_row.destination_type = 'project' then request_row.project_id
+          when request_row.destination_type = 'minor_work_order'
+            then request_row.minor_work_order_id::text
+          else null
+        end,
+        request_row.destination_name_snapshot, actor_id, confirmed_at_value,
+        jsonb_build_object('stockOutLineId', requested_line.id)
+      );
+      total_cost := total_cost + consumed_quantity * allocation.unit_cost;
+      remaining_quantity := remaining_quantity - consumed_quantity;
+    end loop;
+    if remaining_quantity > 0 then
+      raise exception using errcode = '23514', message = 'warehouse stock insufficient',
+        hint = 'WAREHOUSE_INSUFFICIENT_STOCK';
+    end if;
+    update public.warehouse_stock_out_lines
+    set confirmed_quantity = private.warehouse_confirmation_quantity(
+          requested_line.payload, 'confirmedQuantity'
+        ),
+        frozen_total_cost = round(total_cost, 4)::numeric(18,4)
+    where id = requested_line.id and request_id = p_request_id;
+  end loop;
+  update public.warehouse_stock_out_requests
+  set status = 'confirmed', confirmed_by_employee_profile_id = actor_id,
+      confirmed_at = confirmed_at_value,
+      confirmation_idempotency_key = p_idempotency_key,
+      confirmation_payload = canonical_payload
+  where id = p_request_id;
+  return private.warehouse_stock_out_confirmation_json(p_request_id, view_cost);
+exception when unique_violation then
+  if exists (
+    select 1 from public.warehouse_stock_out_requests request
+    where request.confirmation_idempotency_key = p_idempotency_key
+      and request.id <> p_request_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  raise;
+end;
+$$;
+
 revoke all on function private.warehouse_workflow_text(jsonb,text,integer,boolean) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_uuid(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_quantity(jsonb) from public, anon, authenticated, service_role;
@@ -1438,6 +2210,7 @@ revoke all on function private.warehouse_workflow_lines(jsonb) from public, anon
 revoke all on function private.reject_warehouse_workflow_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_warehouse_receipt_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_warehouse_receipt_identity_update() from public, anon, authenticated, service_role;
+revoke all on function private.guard_warehouse_confirmation_identity_update() from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_receipt_document_state(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_stock_out_document_state(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.assert_warehouse_return_document_state(uuid) from public, anon, authenticated, service_role;
@@ -1450,6 +2223,10 @@ revoke all on function private.warehouse_receipt_json(uuid) from public, anon, a
 revoke all on function private.warehouse_receipt_submission_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_stock_out_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_return_json(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_confirmation_quantity(jsonb,text) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_purchase_unit_cost(jsonb) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_receipt_confirmation_json(uuid,boolean) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_stock_out_confirmation_json(uuid,boolean) from public, anon, authenticated, service_role;
 
 revoke all on function public.create_minor_work_order_secure(jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.assign_minor_work_order_to_project_secure(uuid,text) from public, anon, authenticated, service_role;
@@ -1457,11 +2234,15 @@ revoke all on function public.submit_warehouse_receipt_secure(text,jsonb,text) f
 revoke all on function public.submit_warehouse_stock_out_secure(jsonb,jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function public.list_purchase_warehouse_arrivals_secure() from public, anon, authenticated, service_role;
+revoke all on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
+revoke all on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
 grant execute on function public.create_minor_work_order_secure(jsonb) to authenticated;
 grant execute on function public.assign_minor_work_order_to_project_secure(uuid,text) to authenticated;
 grant execute on function public.submit_warehouse_receipt_secure(text,jsonb,text) to authenticated;
 grant execute on function public.submit_warehouse_stock_out_secure(jsonb,jsonb,text) to authenticated;
 grant execute on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb,text) to authenticated;
 grant execute on function public.list_purchase_warehouse_arrivals_secure() to authenticated;
+grant execute on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) to authenticated;
+grant execute on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) to authenticated;
 
 commit;

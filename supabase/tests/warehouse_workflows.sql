@@ -1016,5 +1016,823 @@ select throws_ok(
   'return line cannot reference a stock-out line from another header'
 );
 
+-- Task 3: confirmations are server-authoritative, atomic and FIFO costed.
+select has_function(
+  'public', 'confirm_warehouse_receipt_secure', array['uuid', 'jsonb', 'text'],
+  'receipt confirmation RPC exists'
+);
+select has_function(
+  'public', 'confirm_warehouse_stock_out_secure', array['uuid', 'jsonb', 'text'],
+  'stock-out confirmation RPC exists'
+);
+select is(
+  (
+    with rpc(signature) as (
+      values
+        (to_regprocedure('public.confirm_warehouse_receipt_secure(uuid,jsonb,text)')),
+        (to_regprocedure('public.confirm_warehouse_stock_out_secure(uuid,jsonb,text)'))
+    )
+    select count(*)::integer
+    from rpc
+    left join pg_proc procedure on procedure.oid = rpc.signature
+    where rpc.signature is null
+       or not procedure.prosecdef
+       or procedure.provolatile <> 'v'
+       or procedure.proconfig is null
+       or not procedure.proconfig @> array['search_path=pg_catalog, public, private']
+       or not has_function_privilege('authenticated', rpc.signature, 'EXECUTE')
+       or has_function_privilege('anon', rpc.signature, 'EXECUTE')
+       or has_function_privilege('service_role', rpc.signature, 'EXECUTE')
+  ),
+  0,
+  'confirmation RPCs are volatile fixed-path SECURITY DEFINER and authenticated-only'
+);
+select col_is_null(
+  'public', 'warehouse_receipts', 'confirmation_idempotency_key',
+  'receipt confirmation idempotency is absent until confirmation'
+);
+select col_is_null(
+  'public', 'warehouse_stock_out_requests', 'confirmation_idempotency_key',
+  'stock-out confirmation idempotency is absent until confirmation'
+);
+select fk_ok(
+  'public', 'warehouse_batches', array['receipt_line_id', 'variant_id'],
+  'public', 'warehouse_receipt_lines', array['id', 'variant_id'],
+  'a receipt batch must reference a real receipt line with the same variant'
+);
+select is(
+  (
+    select count(*)
+    from pg_index index_row
+    where index_row.indrelid = 'public.warehouse_batches'::regclass
+      and index_row.indisunique
+      and index_row.indpred is not null
+      and pg_get_indexdef(index_row.indexrelid) ~ '\(receipt_line_id\)'
+  ),
+  1::bigint,
+  'one confirmed receipt line can create at most one batch'
+);
+select is(
+  private.warehouse_confirmation_quantity(
+    '{"confirmedQuantity":9007199254740.990}'::jsonb,
+    'confirmedQuantity'
+  ),
+  9007199254740.990::numeric,
+  'confirmation quantity accepts the exact browser-safe three-decimal maximum'
+);
+select throws_ok(
+  $$select private.warehouse_confirmation_quantity(
+    '{"confirmedQuantity":9007199254740.991}'::jsonb,
+    'confirmedQuantity'
+  )$$,
+  '22023', 'warehouse confirmation input invalid',
+  'confirmation quantity rejects the first value above the browser-safe maximum'
+);
+select is(
+  private.warehouse_purchase_unit_cost(
+    '{"quantity":1,"totalCost":900719925474.0991}'::jsonb
+  ),
+  900719925474.0991::numeric,
+  'purchase unit cost accepts the exact browser-safe four-decimal maximum'
+);
+select throws_ok(
+  $$select private.warehouse_purchase_unit_cost(
+    '{"quantity":1,"totalCost":900719925474.0992}'::jsonb
+  )$$,
+  '22023', 'purchase cost invalid for warehouse receipt',
+  'purchase unit cost rejects the first value above the browser-safe maximum'
+);
+
+insert into auth.users(
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values
+  ('00000000-0000-0000-0000-000000000000', 'e1500000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'workflow-confirmer@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'e1500000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'workflow-inactive-confirmer@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'e1500000-0000-4000-8000-000000000003', 'authenticated', 'authenticated', 'workflow-confirm-only@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
+insert into public.employee_profiles(
+  id, employee_number, auth_user_id, name, department, position,
+  employment_status, account_status, must_change_password
+) values
+  ('e1600000-0000-4000-8000-000000000001', 'SW-9881', 'e1500000-0000-4000-8000-000000000001', '仓库负责人', '仓库管理部', '仓库管理员', '在职', 'active', false),
+  ('e1600000-0000-4000-8000-000000000002', 'SW-9882', 'e1500000-0000-4000-8000-000000000002', '停用仓库负责人', '仓库管理部', '仓库管理员', '在职', 'disabled', false),
+  ('e1600000-0000-4000-8000-000000000003', 'SW-9883', 'e1500000-0000-4000-8000-000000000003', '仅确认无价格', '工程部', '主任', '在职', 'active', false);
+insert into public.permission_grants(subject_type, subject_code, permission_key) values
+  ('position', '仓库管理员', 'warehouse.receipt.confirm'),
+  ('position', '仓库管理员', 'warehouse.stock_flow.confirm'),
+  ('position', '仓库管理员', 'warehouse.cost.view'),
+  ('position', '主任', 'warehouse.receipt.confirm'),
+  ('position', '主任', 'warehouse.stock_flow.confirm')
+on conflict do nothing;
+
+insert into public.warehouse_sites(id, code, name, kind, active) values
+  ('e1000000-0000-4000-8000-000000000001', 'T3-SECOND', 'Task3第二仓', 'normal', true);
+insert into public.warehouse_locations(id, warehouse_id, shelf_code, shelf_name, active) values
+  ('e1100000-0000-4000-8000-000000000001', 'd0000000-0000-4000-8000-000000000001', 'T3-A', 'Task3主仓货架', true),
+  ('e1100000-0000-4000-8000-000000000002', 'e1000000-0000-4000-8000-000000000001', 'T3-B', 'Task3第二仓货架', true);
+insert into public.warehouse_items(id, name, category, brand, description, active) values
+  ('e1200000-0000-4000-8000-000000000001', 'Task3安全数值边界物品', '', '', '', true);
+insert into public.warehouse_variants(
+  id, item_id, sku, model, size, material, unit, minimum_stock,
+  default_purchase_price, system_qr, active
+) values (
+  'e1300000-0000-4000-8000-000000000001',
+  'e1200000-0000-4000-8000-000000000001', 'T3-SAFE-BOUNDARY', '', '', '', '个',
+  0, 0, 'SWERP:VARIANT:e1300000-0000-4000-8000-000000000001', true
+);
+insert into public.warehouse_batches(
+  id, variant_id, received_at, unit_cost, original_quantity
+) values
+  ('e1400000-0000-4000-8000-000000000001',
+   'e1300000-0000-4000-8000-000000000001',
+   '2026-08-09T00:00:00Z', 1, 1),
+  ('e1400000-0000-4000-8000-000000000002',
+   'e1300000-0000-4000-8000-000000000001',
+   '2026-08-09T01:00:00Z', 900719925474.0991, 1);
+insert into public.warehouse_batch_locations(batch_id, location_id, quantity) values
+  ('e1400000-0000-4000-8000-000000000001',
+   'e1100000-0000-4000-8000-000000000002', 1),
+  ('e1400000-0000-4000-8000-000000000002',
+   'e1100000-0000-4000-8000-000000000002', 1);
+insert into public.purchase_records(record_key, payload, status) values
+  ('PO-T3-100', '{"purchaseId":"PO-T3-100","itemName":"空调铜管","quantity":2,"unit":"米","totalCost":200}', 'active'),
+  ('PO-T3-130', '{"purchaseId":"PO-T3-130","itemName":"空调铜管","quantity":3,"unit":"米","totalCost":390}', 'active'),
+  ('PO-T3-ROUND', '{"purchaseId":"PO-T3-ROUND","itemName":"空调铜管","quantity":6,"unit":"米","totalCost":1000}', 'active'),
+  ('PO-T3-BAD-COST', '{"purchaseId":"PO-T3-BAD-COST","itemName":"空调铜管","quantity":1,"unit":"米","totalCost":-1}', 'active'),
+  ('PO-T3-UNSAFE-COST', '{"purchaseId":"PO-T3-UNSAFE-COST","itemName":"边界物品","quantity":1,"unit":"个","totalCost":900719925474.0992}', 'active'),
+  ('PO-T3-OVERSIZE-Q', '{"purchaseId":"PO-T3-OVERSIZE-Q","itemName":"边界物品","quantity":1,"unit":"个","totalCost":1}', 'active');
+insert into public.warehouse_receipts(
+  id, purchase_record_key, submitted_by_employee_profile_id, idempotency_key,
+  submission_payload
+) values (
+  'e1700000-0000-4000-8000-000000000001', 'PO-T3-OVERSIZE-Q',
+  'e1600000-0000-4000-8000-000000000001', 't3-submit-oversize-requested', '{}'
+);
+insert into public.warehouse_receipt_lines(
+  id, receipt_id, variant_id, requested_quantity
+) values (
+  'e1710000-0000-4000-8000-000000000001',
+  'e1700000-0000-4000-8000-000000000001',
+  'e1300000-0000-4000-8000-000000000001', 9007199254740.991
+);
+insert into public.warehouse_stock_out_requests(
+  id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
+  submitted_by_employee_profile_id, idempotency_key
+) values (
+  'e1800000-0000-4000-8000-000000000001', 'internal_use', '公司内部使用',
+  '历史超量测试', '王师傅', '2026-08-09',
+  'e1600000-0000-4000-8000-000000000001', 't3-submit-stock-oversize-requested'
+);
+insert into public.warehouse_stock_out_lines(
+  id, request_id, variant_id, requested_quantity
+) values (
+  'e1810000-0000-4000-8000-000000000001',
+  'e1800000-0000-4000-8000-000000000001',
+  'e1300000-0000-4000-8000-000000000001', 9007199254740.991
+);
+
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_receipt_100 as
+select public.submit_warehouse_receipt_secure(
+  'PO-T3-100',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":2,"warehouseId":null,"locationId":null}]',
+  't3-submit-receipt-100'
+) as payload;
+create temporary table task3_receipt_130 as
+select public.submit_warehouse_receipt_secure(
+  'PO-T3-130',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":3,"warehouseId":null,"locationId":null}]',
+  't3-submit-receipt-130'
+) as payload;
+create temporary table task3_receipt_round as
+select public.submit_warehouse_receipt_secure(
+  'PO-T3-ROUND',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  't3-submit-receipt-round'
+) as payload;
+create temporary table task3_receipt_bad_cost as
+select public.submit_warehouse_receipt_secure(
+  'PO-T3-BAD-COST',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  't3-submit-receipt-bad-cost'
+) as payload;
+create temporary table task3_receipt_unsafe_cost as
+select public.submit_warehouse_receipt_secure(
+  'PO-T3-UNSAFE-COST',
+  '[{"variantId":"e1300000-0000-4000-8000-000000000001","requestedQuantity":1,"warehouseId":null,"locationId":null}]',
+  't3-submit-receipt-unsafe-cost'
+) as payload;
+select is(
+  (select count(*) from public.warehouse_batches
+   where receipt_line_id = (select (payload#>>'{lines,0,id}')::uuid from task3_receipt_100)),
+  0::bigint,
+  'pending purchase arrival creates no inventory batch before warehouse confirmation'
+);
+select is(
+  (select count(*) from public.warehouse_inventory_movements
+   where source_document_id = (select payload->>'id' from task3_receipt_100)),
+  0::bigint,
+  'pending purchase arrival creates no inventory movement before warehouse confirmation'
+);
+select throws_ok(
+  format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-requester'
+  ),
+  '42501', 'warehouse permission required',
+  'receipt requester cannot confirm without the independent confirm permission'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select throws_ok(
+  format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-inactive'
+  ),
+  '42501', 'active employee required',
+  'inactive warehouse manager cannot confirm a receipt'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_bad_cost),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_bad_cost),
+      'confirmedQuantity', 1,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-bad-cost'
+  )),
+  'WAREHOUSE_PURCHASE_COST_INVALID',
+  'receipt confirmation rejects a negative purchase total cost without posting stock'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_unsafe_cost),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_unsafe_cost),
+      'confirmedQuantity', 1,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-receipt-unsafe-cost'
+  )),
+  'WAREHOUSE_PURCHASE_COST_INVALID',
+  'receipt confirmation rejects a unit cost above the browser-safe maximum'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    'e1700000-0000-4000-8000-000000000001',
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', 'e1710000-0000-4000-8000-000000000001',
+      'confirmedQuantity', 1,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-receipt-oversize-requested'
+  )),
+  'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+  'confirmation rejects a preexisting pending requested quantity above the browser-safe maximum'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    'e1800000-0000-4000-8000-000000000001',
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', 'e1810000-0000-4000-8000-000000000001',
+      'confirmedQuantity', 1,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-stock-oversize-requested'
+  )),
+  'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+  'stock-out confirmation rejects a preexisting requested quantity above the browser-safe maximum'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001',
+      'unitCost', 1
+    )),
+    't3-confirm-receipt-forged-cost'
+  )),
+  'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+  'browser cannot supply receipt unit cost to confirmation'
+);
+
+create temporary table task3_confirmed_100 as
+select public.confirm_warehouse_receipt_secure(
+  (select (payload->>'id')::uuid from task3_receipt_100),
+  jsonb_build_array(jsonb_build_object(
+    'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+    'confirmedQuantity', 2,
+    'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000001'
+  )),
+  't3-confirm-receipt-100'
+) as payload;
+create temporary table task3_confirmed_130 as
+select public.confirm_warehouse_receipt_secure(
+  (select (payload->>'id')::uuid from task3_receipt_130),
+  jsonb_build_array(jsonb_build_object(
+    'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_130),
+    'confirmedQuantity', 3,
+    'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000001'
+  )),
+  't3-confirm-receipt-130'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+create temporary table task3_confirmed_round as
+select public.confirm_warehouse_receipt_secure(
+  (select (payload->>'id')::uuid from task3_receipt_round),
+  jsonb_build_array(jsonb_build_object(
+    'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_round),
+    'confirmedQuantity', 1,
+    'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000002'
+  )),
+  't3-confirm-receipt-round'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is((select payload->>'status' from task3_confirmed_100), 'confirmed', 'warehouse receipt confirmation is terminal');
+select is((select (payload#>>'{lines,0,unitCost}')::numeric from task3_confirmed_100), 100.0000::numeric, 'first receipt freezes purchase unit cost at 100');
+select is((select (payload#>>'{lines,0,unitCost}')::numeric from task3_confirmed_130), 130.0000::numeric, 'second receipt freezes purchase unit cost at 130');
+select is((select payload#>>'{lines,0,unitCost}' from task3_confirmed_round), null, 'confirm-only employee receives a cost-redacted receipt response');
+reset role;
+select is(
+  (select unit_cost from public.warehouse_receipt_lines
+   where id = (select (payload#>>'{lines,0,id}')::uuid from task3_confirmed_round)),
+  166.6667::numeric,
+  'purchase total divided by ordered quantity rounds to numeric(18,4) in authoritative storage'
+);
+select is(
+  (select count(*) from public.warehouse_batches
+   where receipt_line_id = (select (payload#>>'{lines,0,id}')::uuid from task3_confirmed_100)),
+  1::bigint,
+  'confirmed receipt line creates exactly one immutable cost batch'
+);
+select is(
+  (select quantity from public.warehouse_batch_locations balance
+   join public.warehouse_batches batch on batch.id = balance.batch_id
+   where batch.receipt_line_id = (select (payload#>>'{lines,0,id}')::uuid from task3_confirmed_100)),
+  2.000::numeric,
+  'receipt confirmation posts the authoritative quantity to the selected shelf'
+);
+select is(
+  (select count(*) from public.warehouse_inventory_movements movement
+   where movement.source_document_type = 'warehouse_receipt'
+     and movement.source_document_id = (select payload->>'id' from task3_confirmed_100)
+     and movement.quantity_delta = 2 and movement.unit_cost = 100),
+  1::bigint,
+  'receipt confirmation appends one server-attributed stock-in movement'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.confirm_warehouse_receipt_secure(
+    (select (payload->>'id')::uuid from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-100'
+  )->>'id',
+  (select payload->>'id' from task3_confirmed_100),
+  'exact receipt confirmation retry returns the authoritative original document'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 1,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-100'
+  )),
+  'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT',
+  'same receipt confirmation key with different canonical content conflicts'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_100),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_100),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-receipt-second-key'
+  )),
+  'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED',
+  'a confirmed receipt cannot post a second time under another key'
+);
+reset role;
+
+select throws_ok(
+  format(
+    'insert into public.warehouse_batches(variant_id,receipt_line_id,received_at,unit_cost,original_quantity) values (%L,%L,statement_timestamp(),100,1)',
+    'd0300000-0000-4000-8000-000000000001',
+    (select payload#>>'{lines,0,id}' from task3_receipt_100)
+  ),
+  '23505', null,
+  'database uniqueness prevents a second batch for one receipt line'
+);
+select throws_ok(
+  format(
+    'insert into public.warehouse_batches(variant_id,receipt_line_id,received_at,unit_cost,original_quantity) values (%L,%L,statement_timestamp(),100,1)',
+    'd0300000-0000-4000-8000-000000000003',
+    (select payload#>>'{lines,0,id}' from task3_receipt_bad_cost)
+  ),
+  '23503', null,
+  'database FK prevents a receipt batch from using a different line variant'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_stock_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"internal_use","projectId":null,"minorWorkOrderId":null,"destinationNameSnapshot":"公司内部使用","purpose":"FIFO验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":4}]',
+  't3-submit-stock-out'
+) as payload;
+select throws_ok(
+  format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 4,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-requester'
+  ),
+  '42501', 'warehouse permission required',
+  'stock requester cannot confirm without independent stock-flow confirm permission'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 4,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-location-mismatch'
+  )),
+  'WAREHOUSE_LOCATION_MISMATCH',
+  'stock-out rejects a shelf paired with the wrong warehouse'
+);
+create temporary table task3_confirmed_stock_out as
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task3_stock_out),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+    'confirmedQuantity', 4,
+    'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000001'
+  )),
+  't3-confirm-stock-out'
+) as payload;
+select is((select payload->>'status' from task3_confirmed_stock_out), 'confirmed', 'FIFO stock-out confirmation is terminal');
+select is((select (payload#>>'{lines,0,frozenTotalCost}')::numeric from task3_confirmed_stock_out), 460.0000::numeric, 'FIFO issue spans ¥100 and ¥130 batches and freezes total ¥460');
+select is((select payload#>>'{lines,0,warehouseId}' from task3_confirmed_stock_out), 'd0000000-0000-4000-8000-000000000001', 'stock-out confirmation response binds the authoritative source warehouse');
+select is((select payload#>>'{lines,0,locationId}' from task3_confirmed_stock_out), 'e1100000-0000-4000-8000-000000000001', 'stock-out confirmation response binds the authoritative source shelf');
+select is((select payload->>'confirmationIdempotencyKey' from task3_confirmed_stock_out), 't3-confirm-stock-out', 'stock-out response binds the confirmation idempotency key');
+reset role;
+select is(
+  (select count(*) from public.warehouse_inventory_movements movement
+   where movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = (select payload->>'id' from task3_confirmed_stock_out)),
+  2::bigint,
+  'FIFO spanning issue writes one immutable movement per consumed batch'
+);
+select is(
+  (select coalesce(sum(-movement.quantity_delta * movement.unit_cost), 0)
+   from public.warehouse_inventory_movements movement
+   where movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = (select payload->>'id' from task3_confirmed_stock_out)),
+  460.0000::numeric,
+  'FIFO movement quantities and frozen batch prices reconcile to the line total'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.confirm_warehouse_stock_out_secure(
+    (select (payload->>'id')::uuid from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 4,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-out'
+  )->>'id',
+  (select payload->>'id' from task3_confirmed_stock_out),
+  'exact stock-out confirmation retry returns the original frozen result'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 3,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-out'
+  )),
+  'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT',
+  'same stock-out confirmation key with different payload conflicts'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_cost_redacted_stock_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"internal_use","projectId":null,"minorWorkOrderId":null,"destinationNameSnapshot":"公司内部使用","purpose":"脱敏验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":1}]',
+  't3-submit-stock-redacted'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+create temporary table task3_confirmed_redacted_stock_out as
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task3_cost_redacted_stock_out),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_cost_redacted_stock_out),
+    'confirmedQuantity', 1,
+    'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000002'
+  )),
+  't3-confirm-stock-redacted'
+) as payload;
+select is(
+  (select payload#>>'{lines,0,frozenTotalCost}' from task3_confirmed_redacted_stock_out),
+  null,
+  'confirm-only employee receives a cost-redacted stock-out response'
+);
+reset role;
+select is(
+  (select frozen_total_cost from public.warehouse_stock_out_lines
+   where id = (select (payload#>>'{lines,0,id}')::uuid from task3_confirmed_redacted_stock_out)),
+  166.6667::numeric,
+  'cost redaction does not remove the authoritative frozen stock-out cost'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role service_role;
+update public.purchase_records
+set payload = jsonb_set(payload, '{totalCost}', '9999'::jsonb)
+where record_key in ('PO-T3-100', 'PO-T3-130');
+update public.warehouse_variants set default_purchase_price = 999
+where id = 'd0300000-0000-4000-8000-000000000001';
+reset role;
+select is(
+  (select frozen_total_cost from public.warehouse_stock_out_lines
+   where id = (select (payload#>>'{lines,0,id}')::uuid from task3_confirmed_stock_out)),
+  460.0000::numeric,
+  'later purchase and catalog price edits do not change historical FIFO cost'
+);
+select is(
+  (select sum(-quantity_delta * unit_cost) from public.warehouse_inventory_movements
+   where source_document_type = 'warehouse_stock_out'
+     and source_document_id = (select payload->>'id' from task3_confirmed_stock_out)),
+  460.0000::numeric,
+  'immutable historical movement cost remains frozen after price edits'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_unsafe_total_stock_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"internal_use","projectId":null,"minorWorkOrderId":null,"destinationNameSnapshot":"公司内部使用","purpose":"安全金额上限验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"e1300000-0000-4000-8000-000000000001","requestedQuantity":2}]',
+  't3-submit-stock-unsafe-total'
+) as payload;
+create temporary table task3_short_stock_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"internal_use","projectId":null,"minorWorkOrderId":null,"destinationNameSnapshot":"公司内部使用","purpose":"不足验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":2}]',
+  't3-submit-stock-short'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_unsafe_total_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_unsafe_total_stock_out),
+      'confirmedQuantity', 2,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-stock-unsafe-total'
+  )),
+  'WAREHOUSE_PURCHASE_COST_INVALID',
+  'FIFO confirmation rejects a frozen total above the browser-safe maximum'
+);
+reset role;
+select is(
+  (select status from public.warehouse_stock_out_requests
+   where id = (select (payload->>'id')::uuid from task3_unsafe_total_stock_out)),
+  'pending',
+  'unsafe frozen-total rejection leaves the stock-out request pending'
+);
+select results_eq(
+  $$select batch_id, quantity
+    from public.warehouse_batch_locations
+    where batch_id in (
+      'e1400000-0000-4000-8000-000000000001',
+      'e1400000-0000-4000-8000-000000000002'
+    ) and location_id = 'e1100000-0000-4000-8000-000000000002'
+    order by batch_id$$,
+  $$values
+    ('e1400000-0000-4000-8000-000000000001'::uuid, 1.000::numeric),
+    ('e1400000-0000-4000-8000-000000000002'::uuid, 1.000::numeric)$$,
+  'second-batch cost overflow rolls back the first FIFO balance write too'
+);
+select is(
+  (select count(*) from public.warehouse_inventory_movements
+   where source_document_id = (select payload->>'id' from task3_unsafe_total_stock_out)),
+  0::bigint,
+  'unsafe frozen-total rejection appends no movement'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_short_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_short_stock_out),
+      'confirmedQuantity', 2,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-short'
+  )),
+  'WAREHOUSE_INSUFFICIENT_STOCK',
+  'insufficient selected-location stock rolls back the whole confirmation'
+);
+reset role;
+select is(
+  (select status from public.warehouse_stock_out_requests
+   where id = (select (payload->>'id')::uuid from task3_short_stock_out)),
+  'pending',
+  'failed insufficient-stock confirmation leaves request pending'
+);
+select is(
+  (select count(*) from public.warehouse_inventory_movements
+   where source_document_id = (select payload->>'id' from task3_short_stock_out)),
+  0::bigint,
+  'failed insufficient-stock confirmation leaves no partial movement'
+);
+select is(
+  (select confirmation_idempotency_key from public.warehouse_receipts
+   where id = (select (payload->>'id')::uuid from retry_void_before)),
+  null,
+  'void-before-confirmation receipt carries no confirmation identity'
+);
+select is(
+  pg_temp.task1_deferred_error(format(
+    'update public.warehouse_receipts set confirmation_idempotency_key=%L, confirmation_payload=%L::jsonb where id=%L',
+    'forged-pending-confirmation', '{"receiptId":"d7100000-0000-4000-8000-000000000002","lines":[]}',
+    'd7100000-0000-4000-8000-000000000002'
+  )),
+  '23514',
+  'pending receipt cannot carry a forged confirmation identity'
+);
+update public.warehouse_receipts
+set status = 'void', rejection_reason = '确认后冲销前的历史保留测试'
+where id = (select (payload->>'id')::uuid from task3_confirmed_round);
+select is(
+  (select confirmation_idempotency_key from public.warehouse_receipts
+   where id = (select (payload->>'id')::uuid from task3_confirmed_round)),
+  't3-confirm-receipt-round',
+  'void-after-confirmation retains its immutable confirmation identity for reversal history'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select is(
+  public.confirm_warehouse_receipt_secure(
+    (select (payload->>'id')::uuid from task3_receipt_round),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_round),
+      'confirmedQuantity', 1,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-receipt-round'
+  )->>'status',
+  'void',
+  'exact receipt confirmation retry returns the current authoritative void document'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_receipt_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_receipt_round),
+    jsonb_build_array(jsonb_build_object(
+      'receiptLineId', (select payload#>>'{lines,0,id}' from task3_receipt_round),
+      'confirmedQuantity', 0.5,
+      'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000002'
+    )),
+    't3-confirm-receipt-round'
+  )),
+  'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT',
+  'void receipt retains same-key different-payload conflict protection'
+);
+reset role;
+
+update public.warehouse_stock_out_requests
+set status = 'void', rejection_reason = '确认后冲销前的历史保留测试'
+where id = (select (payload->>'id')::uuid from task3_confirmed_stock_out);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.confirm_warehouse_stock_out_secure(
+    (select (payload->>'id')::uuid from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 4,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-out'
+  )->>'status',
+  'void',
+  'exact stock-out confirmation retry returns the current authoritative void document'
+);
+select is(
+  pg_temp.task1_error_hint(format(
+    'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
+    (select payload->>'id' from task3_stock_out),
+    jsonb_build_array(jsonb_build_object(
+      'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_stock_out),
+      'confirmedQuantity', 4,
+      'warehouseId', 'd0000000-0000-4000-8000-000000000001',
+      'locationId', 'e1100000-0000-4000-8000-000000000001'
+    )),
+    't3-confirm-stock-out-new-key'
+  )),
+  'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED',
+  'void stock-out cannot be reconfirmed under a new key'
+);
+reset role;
+
 select * from finish();
 rollback;
