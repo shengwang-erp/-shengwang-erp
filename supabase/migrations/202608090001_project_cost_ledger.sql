@@ -20,8 +20,7 @@ create table public.project_cost_manual_entries (
   created_at timestamptz not null default statement_timestamp(),
   constraint project_cost_manual_entries_source_key_check check (
     source_key = btrim(source_key)
-    and char_length(source_key) between 1 and 500
-    and source_key not in ('__proto__', 'constructor', 'prototype')
+    and source_key ~ '^manual:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
   constraint project_cost_manual_entries_project_name_check check (
     project_name = btrim(project_name) and char_length(project_name) <= 500
@@ -229,6 +228,78 @@ exception when others then
 end;
 $$;
 
+create or replace function private.project_cost_checked_summary(p_value numeric)
+returns numeric
+language plpgsql
+immutable
+security definer
+set search_path = ''
+as $$
+begin
+  if p_value is null
+    or p_value in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+    or pg_catalog.abs(p_value) > 900719925474.0991
+    or pg_catalog.round(p_value, 4) <> p_value
+  then
+    raise exception using
+      errcode = '22003',
+      message = 'project cost ledger summary exceeds Task 1 safe units';
+  end if;
+  return p_value::numeric(18,4);
+end;
+$$;
+
+create or replace function private.project_cost_safe_text(
+  p_value jsonb,
+  p_allow_empty boolean,
+  p_max_length integer
+)
+returns text
+language plpgsql
+immutable
+security definer
+set search_path = ''
+as $$
+declare
+  parsed text;
+begin
+  if pg_catalog.jsonb_typeof(p_value) is distinct from 'string'
+    or p_allow_empty is null
+    or p_max_length not between 1 and 2000
+  then
+    return null;
+  end if;
+  parsed := pg_catalog.btrim(p_value #>> '{}');
+  if (not p_allow_empty and parsed = '')
+    or pg_catalog.char_length(parsed) > p_max_length
+    or parsed in ('__proto__', 'constructor', 'prototype')
+  then
+    return null;
+  end if;
+  return parsed;
+end;
+$$;
+
+create or replace function private.project_cost_text_fields_valid(
+  p_payload jsonb,
+  p_fields text[]
+)
+returns boolean
+language sql
+immutable
+security definer
+set search_path = ''
+as $$
+  select p_payload is not null
+    and pg_catalog.jsonb_typeof(p_payload) = 'object'
+    and not exists (
+      select 1
+      from pg_catalog.unnest(p_fields) supplied(field_name)
+      where p_payload ? supplied.field_name
+        and pg_catalog.jsonb_typeof(p_payload->supplied.field_name) <> 'string'
+    );
+$$;
+
 create or replace function private.project_cost_payload_cancelled(p_payload jsonb)
 returns boolean
 language sql
@@ -270,34 +341,125 @@ stable
 security definer
 set search_path = ''
 as $$
-  with authoritative_warehouse_purchase_keys as (
-    select distinct linked_key.value #>> '{}' purchase_record_key
-    from public.project_cost_records warehouse_cost
-    cross join lateral pg_catalog.jsonb_array_elements(case
-      when pg_catalog.jsonb_typeof(
-        warehouse_cost.payload->'sourcePurchaseRecordKeys'
-      ) = 'array'
-        then warehouse_cost.payload->'sourcePurchaseRecordKeys'
-      else '[]'::jsonb
-    end) linked_key(value)
-    cross join lateral (
-      select private.project_cost_safe_amount(
-        warehouse_cost.payload->'amount'
-      ) amount_value
-    ) parsed
-    where warehouse_cost.status not in ('deleted', 'void')
-      and warehouse_cost.payload->>'sourceType' in (
-        'warehouse', 'warehouseReversal'
+  with warehouse_fact_candidates as (
+    select cost.record_key, cost.payload,
+      private.project_cost_safe_amount(cost.payload->'amount') amount_value,
+      private.project_cost_safe_date(cost.payload->'date') cost_date
+    from public.project_cost_records cost
+    where cost.status = 'active'
+      and not private.project_cost_payload_cancelled(cost.payload)
+  ), validated_warehouse_facts as materialized (
+    select candidate.record_key, candidate.payload,
+      candidate.amount_value, candidate.cost_date
+    from warehouse_fact_candidates candidate
+    where candidate.record_key ~ '^WAREHOUSE-(SO|MWO|SR|WR):[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      and pg_catalog.jsonb_typeof(candidate.payload->'costRecordId') = 'string'
+      and candidate.payload->>'costRecordId' = candidate.record_key
+      and pg_catalog.jsonb_typeof(candidate.payload->'projectId') = 'string'
+      and candidate.payload->>'projectId'
+        = pg_catalog.btrim(candidate.payload->>'projectId')
+      and pg_catalog.char_length(candidate.payload->>'projectId') between 1 and 500
+      and candidate.payload->>'projectId' not in (
+        '__proto__', 'constructor', 'prototype'
       )
+      and exists (
+        select 1 from public.projects project
+        where project.record_key = candidate.payload->>'projectId'
+      )
+      and candidate.payload->>'costType' = '材料费'
+      and private.project_cost_text_fields_valid(candidate.payload, array[
+        'projectName', 'remark', 'operator'
+      ]::text[])
+      and candidate.cost_date is not null
+      and candidate.amount_value is not null
+      and candidate.amount_value <> 0
       and pg_catalog.jsonb_typeof(
-        warehouse_cost.payload->'sourcePurchaseRecordKeys'
+        candidate.payload->'sourcePurchaseRecordKeys'
       ) = 'array'
-      and pg_catalog.jsonb_typeof(linked_key.value) = 'string'
-      and linked_key.value #>> '{}' = pg_catalog.btrim(linked_key.value #>> '{}')
-      and linked_key.value #>> '{}' <> ''
-      and parsed.amount_value is not null
-      and parsed.amount_value <> 0
-      and not private.project_cost_payload_cancelled(warehouse_cost.payload)
+      and not exists (
+        select 1
+        from pg_catalog.jsonb_array_elements(
+          candidate.payload->'sourcePurchaseRecordKeys'
+        ) purchase_key(value)
+        where pg_catalog.jsonb_typeof(purchase_key.value) <> 'string'
+          or purchase_key.value #>> '{}' <> pg_catalog.btrim(purchase_key.value #>> '{}')
+          or pg_catalog.char_length(purchase_key.value #>> '{}') not between 1 and 500
+          or purchase_key.value #>> '{}' in (
+            '__proto__', 'constructor', 'prototype'
+          )
+      )
+      and (
+        select pg_catalog.count(distinct purchase_key.value #>> '{}')
+        from pg_catalog.jsonb_array_elements(
+          candidate.payload->'sourcePurchaseRecordKeys'
+        ) purchase_key(value)
+      ) = pg_catalog.jsonb_array_length(
+        candidate.payload->'sourcePurchaseRecordKeys'
+      )
+      and pg_catalog.jsonb_typeof(candidate.payload->'sourceStockOutIds') = 'array'
+      and not exists (
+        select 1
+        from pg_catalog.jsonb_array_elements(
+          candidate.payload->'sourceStockOutIds'
+        ) stock_out_id(value)
+        where pg_catalog.jsonb_typeof(stock_out_id.value) <> 'string'
+          or stock_out_id.value #>> '{}' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      )
+      and (
+        select pg_catalog.count(distinct stock_out_id.value #>> '{}')
+        from pg_catalog.jsonb_array_elements(
+          candidate.payload->'sourceStockOutIds'
+        ) stock_out_id(value)
+      ) = pg_catalog.jsonb_array_length(candidate.payload->'sourceStockOutIds')
+      and (
+        (
+          candidate.record_key like 'WAREHOUSE-SO:%'
+          and candidate.payload->>'sourceType' = 'warehouse'
+          and candidate.payload->>'sourceDocumentType' = 'warehouse_stock_out'
+          and candidate.amount_value > 0
+          and candidate.payload->>'sourceDocumentId'
+            = pg_catalog.split_part(candidate.record_key, ':', 2)
+          and candidate.payload->'sourceStockOutIds'
+            = pg_catalog.jsonb_build_array(candidate.payload->>'sourceDocumentId')
+        ) or (
+          candidate.record_key like 'WAREHOUSE-MWO:%'
+          and candidate.payload->>'sourceType' = 'warehouse'
+          and candidate.payload->>'sourceDocumentType' = 'warehouse_minor_work_order'
+          and candidate.amount_value > 0
+          and candidate.payload->>'sourceDocumentId'
+            = pg_catalog.split_part(candidate.record_key, ':', 2)
+          and pg_catalog.jsonb_array_length(
+            candidate.payload->'sourceStockOutIds'
+          ) > 0
+        ) or (
+          candidate.record_key like 'WAREHOUSE-SR:%'
+          and candidate.payload->>'sourceType' = 'warehouseReversal'
+          and candidate.payload->>'sourceDocumentType' = 'warehouse_return'
+          and candidate.amount_value < 0
+          and candidate.payload->>'sourceDocumentId'
+            = pg_catalog.split_part(candidate.record_key, ':', 2)
+          and pg_catalog.jsonb_array_length(
+            candidate.payload->'sourceStockOutIds'
+          ) = 1
+        ) or (
+          candidate.record_key like 'WAREHOUSE-WR:%'
+          and candidate.payload->>'sourceType' = 'warehouseReversal'
+          and candidate.payload->>'sourceDocumentType'
+            = 'warehouse_operation_reversal'
+          and candidate.payload->>'sourceDocumentId'
+            = pg_catalog.split_part(candidate.record_key, ':', 2)
+          and candidate.payload->'sourcePurchaseRecordKeys' = '[]'::jsonb
+          and pg_catalog.jsonb_array_length(
+            candidate.payload->'sourceStockOutIds'
+          ) between 0 and 1
+        )
+      )
+  ), authoritative_warehouse_purchase_keys as (
+    select distinct linked_key.value #>> '{}' purchase_record_key
+    from validated_warehouse_facts warehouse_cost
+    cross join lateral pg_catalog.jsonb_array_elements(
+      warehouse_cost.payload->'sourcePurchaseRecordKeys'
+    ) linked_key(value)
   ), purchase_facts as (
     select
       'purchase:' || purchase.record_key,
@@ -321,6 +483,9 @@ as $$
     ) parsed
     where purchase.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(purchase.payload)
+      and private.project_cost_text_fields_valid(purchase.payload, array[
+        'projectName', 'itemName', 'remark', 'employeeName'
+      ]::text[])
       and pg_catalog.jsonb_typeof(purchase.payload->'projectId') = 'string'
       and purchase.payload->>'projectId' = pg_catalog.btrim(purchase.payload->>'projectId')
       and pg_catalog.char_length(purchase.payload->>'projectId') between 1 and 500
@@ -354,24 +519,10 @@ as $$
       coalesce(cost.payload->>'remark', ''),
       parsed.amount_value::numeric(18,4),
       coalesce(cost.payload->>'operator', '')
-    from public.project_cost_records cost
+    from validated_warehouse_facts cost
     cross join lateral (
-      select
-        private.project_cost_safe_amount(cost.payload->'amount') amount_value,
-        private.project_cost_safe_date(cost.payload->'date') cost_date
+      select cost.amount_value, cost.cost_date
     ) parsed
-    where cost.status not in ('deleted', 'void')
-      and cost.payload->>'sourceType' in ('warehouse', 'warehouseReversal')
-      and pg_catalog.jsonb_typeof(
-        cost.payload->'sourcePurchaseRecordKeys'
-      ) = 'array'
-      and not private.project_cost_payload_cancelled(cost.payload)
-      and pg_catalog.jsonb_typeof(cost.payload->'projectId') = 'string'
-      and cost.payload->>'projectId' = pg_catalog.btrim(cost.payload->>'projectId')
-      and pg_catalog.char_length(cost.payload->>'projectId') between 1 and 500
-      and parsed.cost_date is not null
-      and parsed.amount_value is not null
-      and parsed.amount_value <> 0
   ), labor_facts as (
     select
       'labor:' || allocation.allocation_id::text,
@@ -421,6 +572,9 @@ as $$
     ) parsed
     where fuel.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(fuel.payload)
+      and private.project_cost_text_fields_valid(fuel.payload, array[
+        'projectName', 'remark', 'vehicleName', 'employeeName'
+      ]::text[])
       and fuel.payload->'allocateToProject' = 'true'::jsonb
       and pg_catalog.jsonb_typeof(fuel.payload->'projectId') = 'string'
       and fuel.payload->>'projectId' = pg_catalog.btrim(fuel.payload->>'projectId')
@@ -451,6 +605,9 @@ as $$
     ) parsed
     where expense.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(expense.payload)
+      and private.project_cost_text_fields_valid(expense.payload, array[
+        'projectName', 'remark', 'expenseType', 'employeeName'
+      ]::text[])
       and expense.payload->'allocateToProject' = 'true'::jsonb
       and pg_catalog.jsonb_typeof(expense.payload->'projectId') = 'string'
       and expense.payload->>'projectId' = pg_catalog.btrim(expense.payload->>'projectId')
@@ -481,6 +638,9 @@ as $$
     ) parsed
     where issue.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(issue.payload)
+      and private.project_cost_text_fields_valid(issue.payload, array[
+        'projectName', 'issueDescription', 'remark', 'employeeName'
+      ]::text[])
       and issue.payload->'allocateToProject' = 'true'::jsonb
       and pg_catalog.jsonb_typeof(issue.payload->'projectId') = 'string'
       and issue.payload->>'projectId' = pg_catalog.btrim(issue.payload->>'projectId')
@@ -518,6 +678,10 @@ as $$
     ) parsed
     where responsibility.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(responsibility.payload)
+      and private.project_cost_text_fields_valid(responsibility.payload, array[
+        'projectName', 'issueDescription', 'toolName',
+        'handlerEmployeeName', 'issueType'
+      ]::text[])
       and pg_catalog.jsonb_typeof(responsibility.payload->'projectId') = 'string'
       and responsibility.payload->>'projectId'
         = pg_catalog.btrim(responsibility.payload->>'projectId')
@@ -552,6 +716,9 @@ as $$
     ) parsed
     where expense.status not in ('deleted', 'void')
       and not private.project_cost_payload_cancelled(expense.payload)
+      and private.project_cost_text_fields_valid(expense.payload, array[
+        'projectName', 'remark', 'expenseType', 'operator', 'employeeName'
+      ]::text[])
       and expense.payload->'allocateToProject' = 'true'::jsonb
       and pg_catalog.jsonb_typeof(expense.payload->'projectId') = 'string'
       and expense.payload->>'projectId' = pg_catalog.btrim(expense.payload->>'projectId')
@@ -581,6 +748,9 @@ as $$
         private.project_cost_safe_date(cost.payload->'date') cost_date
     ) parsed
     where cost.status not in ('deleted', 'void')
+      and private.project_cost_text_fields_valid(cost.payload, array[
+        'projectName', 'costType', 'remark', 'operator', 'sourceType'
+      ]::text[])
       and coalesce(cost.payload->>'sourceType', '') not in (
         'warehouse', 'warehouseReversal'
       )
@@ -593,7 +763,7 @@ as $$
       and parsed.amount_value <> 0
   ), manual_facts as (
     select
-      'manual:' || manual.source_key,
+      manual.source_key,
       'manual'::text,
       'manual_project_cost'::text,
       manual.source_key,
@@ -605,17 +775,67 @@ as $$
       manual.original_amount,
       manual.operator
     from public.project_cost_manual_entries manual
+  ), raw_facts(
+    source_key, source_module, source_document_type, source_document_id,
+    project_id, project_name, category, cost_date, description,
+    original_amount, operator
+  ) as (
+    select * from purchase_facts
+    union all select * from warehouse_facts
+    union all select * from labor_facts
+    union all select * from fuel_facts
+    union all select * from vehicle_expense_facts
+    union all select * from vehicle_issue_facts
+    union all select * from tool_facts
+    union all select * from operating_facts
+    union all select * from legacy_manual_facts
+    union all select * from manual_facts
   )
-  select * from purchase_facts
-  union all select * from warehouse_facts
-  union all select * from labor_facts
-  union all select * from fuel_facts
-  union all select * from vehicle_expense_facts
-  union all select * from vehicle_issue_facts
-  union all select * from tool_facts
-  union all select * from operating_facts
-  union all select * from legacy_manual_facts
-  union all select * from manual_facts;
+  select normalized.source_key, normalized.source_module,
+    normalized.source_document_type, normalized.source_document_id,
+    normalized.project_id, normalized.project_name, normalized.category,
+    raw.cost_date, normalized.description, raw.original_amount,
+    normalized.operator
+  from raw_facts raw
+  cross join lateral (
+    select
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.source_key), false, 600
+      ) source_key,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.source_module), false, 100
+      ) source_module,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.source_document_type), false, 100
+      ) source_document_type,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.source_document_id), false, 600
+      ) source_document_id,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.project_id), false, 500
+      ) project_id,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.project_name), true, 500
+      ) project_name,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.category), false, 100
+      ) category,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.description), true, 2000
+      ) description,
+      private.project_cost_safe_text(
+        pg_catalog.to_jsonb(raw.operator), true, 500
+      ) operator
+  ) normalized
+  where normalized.source_key is not null
+    and normalized.source_module is not null
+    and normalized.source_document_type is not null
+    and normalized.source_document_id is not null
+    and normalized.project_id is not null
+    and normalized.project_name is not null
+    and normalized.category is not null
+    and normalized.description is not null
+    and normalized.operator is not null;
 $$;
 
 create or replace function public.list_project_cost_ledger_secure(
@@ -641,6 +861,8 @@ declare
   filter_keyword text;
   requested_page integer := 1;
   requested_page_size integer := 20;
+  requested_page_value numeric := 1;
+  requested_page_size_value numeric := 20;
   response jsonb;
 begin
   if not public.is_current_employee_active() then
@@ -668,13 +890,26 @@ begin
       if pg_catalog.jsonb_typeof(p_filters->'page') <> 'number' then
         raise data_exception;
       end if;
-      requested_page := (p_filters->>'page')::integer;
+      requested_page_value := (p_filters->>'page')::numeric;
+      if requested_page_value <> pg_catalog.trunc(requested_page_value)
+        or requested_page_value not between 1 and 1000000
+      then
+        raise data_exception;
+      end if;
+      requested_page := requested_page_value::integer;
     end if;
     if p_filters ? 'pageSize' then
       if pg_catalog.jsonb_typeof(p_filters->'pageSize') <> 'number' then
         raise data_exception;
       end if;
-      requested_page_size := (p_filters->>'pageSize')::integer;
+      requested_page_size_value := (p_filters->>'pageSize')::numeric;
+      if requested_page_size_value
+          <> pg_catalog.trunc(requested_page_size_value)
+        or requested_page_size_value not in (20, 50, 100)
+      then
+        raise data_exception;
+      end if;
+      requested_page_size := requested_page_size_value::integer;
     end if;
   exception when others then
     raise exception using
@@ -943,9 +1178,12 @@ begin
       pg_catalog.btrim(case
         when allocation_project_id = allocated.project_id
           then allocated.project_name
-        when pg_catalog.jsonb_typeof(project.payload->'projectName') = 'string'
-          then coalesce(project.payload->>'projectName', '')
-        else ''
+        else coalesce(
+          private.project_cost_safe_text(
+            project.payload->'projectName', true, 500
+          ),
+          ''
+        )
       end) project_name,
       pg_catalog.btrim(category) category,
       cost_date,
@@ -985,9 +1223,13 @@ begin
       ) > 0)
   ), summary as (
     select pg_catalog.count(*)::integer total_rows,
-      coalesce(pg_catalog.sum(effective_amount), 0)::numeric(18,4)
+      private.project_cost_checked_summary(
+        coalesce(pg_catalog.sum(effective_amount), 0)
+      )
         total_amount,
-      coalesce(pg_catalog.sum(adjustment_amount), 0)::numeric(18,4)
+      private.project_cost_checked_summary(
+        coalesce(pg_catalog.sum(adjustment_amount), 0)
+      )
         adjustment_total
     from filtered
   ), category_totals as (
@@ -998,7 +1240,10 @@ begin
       ) order by grouped.category_order, grouped.category
     ), '[]'::jsonb) value
     from (
-      select category, pg_catalog.sum(effective_amount)::numeric(18,4) amount,
+      select category,
+        private.project_cost_checked_summary(
+          pg_catalog.sum(effective_amount)
+        ) amount,
         case category
           when '人工费' then 1 when '材料费' then 2 when '车辆费' then 3
           when '工具费' then 4 when '外包费' then 5 when '运输费' then 6
@@ -1070,6 +1315,12 @@ revoke all on function private.reject_project_cost_ledger_mutation()
 revoke all on function private.project_cost_safe_amount(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function private.project_cost_safe_date(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function private.project_cost_checked_summary(numeric)
+  from public, anon, authenticated, service_role;
+revoke all on function private.project_cost_safe_text(jsonb, boolean, integer)
+  from public, anon, authenticated, service_role;
+revoke all on function private.project_cost_text_fields_valid(jsonb, text[])
   from public, anon, authenticated, service_role;
 revoke all on function private.project_cost_payload_cancelled(jsonb)
   from public, anon, authenticated, service_role;

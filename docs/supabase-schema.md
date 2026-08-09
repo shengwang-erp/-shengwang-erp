@@ -472,13 +472,20 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 
 来源键使用固定前缀：`purchase:`、`warehouse:`、`labor:`、`vehicle-fuel:`、
 `vehicle-expense:`、`vehicle-issue:`、`tool-responsibility:`、`operating:`、
-`legacy-manual:`、`manual:`。外层删除/作废和业务取消记录不进入事实集；项目 ID、日期或金额
-无效的 JSON 记录也不会被错误转换为零金额。采购付款、到货和发票状态不影响项目直采确认；
+`legacy-manual:`、`manual:`。新手工表保存的 `source_key` 本身就是完整的
+`manual:<uuid>` 稳定键，来源 helper 不再二次拼接前缀。外层删除/作废和业务取消记录不进入
+事实集；项目 ID、日期、金额或文本合同无效的 JSON 记录也不会被错误转换为零金额。输出文本
+统一 trim，必填文本拒绝空值，可空文本允许空串，并拒绝污染保留字与超过字段上限的内容。
+采购付款、到货和发票状态不影响项目直采确认；
 车辆维修不等待处理完成。工具丢失按工具原值计入项目毛成本，其他责任类型按维修费计入，
 员工赔偿是独立回收事实，不冲减项目毛费用。
 
-仓库生成的 `project_cost_records.payload.sourcePurchaseRecordKeys` 是防重复权威集合：已由
-仓库冻结批次成本归集的采购不会再走直采分支。人工仅使用
+仓库生成的 `project_cost_records.payload.sourcePurchaseRecordKeys` 是防重复权威集合，但只有
+通过完整仓库事实验证的记录才能贡献权威采购键。验证覆盖正式 `WAREHOUSE-SO/MWO/SR`
+（及整单冲销 `WAREHOUSE-WR`）身份与来源类型、`costRecordId`、单据 UUID、有效项目/日期/
+金额、`sourceStockOutIds`，以及成员全部为非空唯一字符串的
+`sourcePurchaseRecordKeys`；畸形候选不会压掉合法直采。已由仓库冻结批次成本归集的采购不会再
+走直采分支。人工仅使用
 `attendance_day_resolutions.accounting_status in ('confirmed', 'month_locked')` 的已平衡
 `attendance_project_allocations`。
 
@@ -486,7 +493,7 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 
 | 表 | 用途与关键字段 |
 | --- | --- |
-| `project_cost_manual_entries` | 不可变 `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人与服务端创建人/时间 |
+| `project_cost_manual_entries` | 不可变完整 `manual:<uuid>` `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人与服务端创建人/时间 |
 | `project_cost_adjustment_events` | `source_key + sequence_no` 唯一，调整前/调整额/调整后、原因、服务端操作人/时间 |
 | `project_cost_allocation_events` | `source_key + sequence_no` 唯一，金额快照、项目分摊 JSON、原因、服务端操作人/时间 |
 
@@ -497,9 +504,12 @@ localStorage、旧页面缓存或角色名称恢复工资和项目金额。
 `list_project_cost_ledger_secure(p_filters jsonb default '{}'::jsonb)`。RPC 要求有效员工和
 `module.project_costs.view`，不要求采购、仓库、车辆、工具或经营费用模块权限；它接受的字段
 仅为 `projectId`、`dateFrom`、`dateTo`、`category`、`sourceModule`、`adjusted`、`keyword`、
-`page`、`pageSize`，页尺寸只能为 20、50、100。RPC 应用每个来源最新的调整和分摊，按最终
+`page`、`pageSize`；分页数字必须在转换前等于自身截断值，页尺寸只能为 20、50、100，
+`1.5`/`20.1` 等小数会失败关闭。RPC 应用每个来源最新的调整和分摊，按最终
 项目分摊逐行输出，在分页前计算总行数、类别汇总、总金额和调整总额，并按日期倒序、来源键、
-分摊项目排序。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；完整读取时
+分摊项目排序。`totalAmount`、`adjustmentTotal` 和每个类别小计都限制在 Task 1 四位小数
+安全单位范围 `±900719925474.0991`，越界统一以 `22003` 失败，绝不返回前端无法安全解析的
+`ready` DTO。返回对象字段与前端 `normalizeLedgerSnapshot()` 完全一致；完整读取时
 `incompleteSources` 为空。公有 RPC 和私有来源 helper 都是固定空 `search_path` 的
 `SECURITY DEFINER`，私有 helper 对客户端角色无执行权。
 

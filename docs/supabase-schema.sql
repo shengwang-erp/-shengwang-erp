@@ -5685,7 +5685,8 @@ commit;
 -- pretending to be the ordered migration bootstrap:
 --
 --   public.project_cost_manual_entries
---     id uuid primary key; immutable source_key; project/category/date;
+--     id uuid primary key; immutable full manual:<uuid> source_key;
+--     project/category/date;
 --     signed original_amount numeric(18,4); description/operator/creator and
 --     a server timestamp.
 --
@@ -5716,3 +5717,10 @@ commit;
 -- per final project allocation, summarizes before pagination, and returns the
 -- exact normalizeLedgerSnapshot() JSON shape. Both the public RPC and private
 -- source helper are SECURITY DEFINER with an empty fixed search_path.
+--
+-- The source union validates and normalizes Task 1 text fields before they can
+-- reach a ready DTO. Warehouse purchase de-duplication is derived only from the
+-- same strictly validated WAREHOUSE-SO/MWO/SR/WR facts (identity, type,
+-- costRecordId, UUID provenance arrays, project/date/amount). Summary totals and
+-- category totals fail with SQLSTATE 22003 outside +/-900719925474.0991, and
+-- pagination numbers must be mathematically integral before integer conversion.
