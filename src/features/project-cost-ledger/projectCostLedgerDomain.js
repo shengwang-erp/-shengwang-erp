@@ -266,15 +266,14 @@ function safeSourcePurchaseKeys(row) {
 function confirmedWarehousePurchaseLinks(row) {
   if (WAREHOUSE_COST_SOURCE_TYPES.has(row.sourceType)) return true
   if (row.confirmed === true || row.isConfirmed === true) return true
-  for (const field of ['status', 'batchStatus', 'confirmationStatus', 'confirmedStatus']) {
-    if (!Object.hasOwn(row, field)) continue
+  return ['status', 'batchStatus', 'confirmationStatus', 'confirmedStatus'].some((field) => {
+    if (!Object.hasOwn(row, field)) return false
     const status = row[field]
     return typeof status === 'string' && (
       CONFIRMED_WAREHOUSE_STATUSES.has(status) ||
       CONFIRMED_WAREHOUSE_STATUSES.has(status.toLowerCase())
     )
-  }
-  return false
+  })
 }
 
 function purchaseStableKeys(row) {
