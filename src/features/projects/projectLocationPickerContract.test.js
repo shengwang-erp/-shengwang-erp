@@ -4,12 +4,18 @@ import test from 'node:test'
 
 const source = await readFile(new URL('./ProjectLocationPicker.jsx', import.meta.url), 'utf8').catch(() => '')
 
-test('picker is manual, short-lived, attributed, adjustable, and stale-safe', () => {
+test('picker is automatic with manual fallbacks, short-lived, attributed, adjustable, and stale-safe', () => {
   assert.match(source, /import L from ['"]leaflet['"]/)
   assert.match(source, /import ['"]leaflet\/dist\/leaflet\.css['"]/)
   assert.match(source, /L\.map\(containerRef\.current\)/)
   assert.match(source, /https:\/\/cyberjapandata\.gsi\.go\.jp\/xyz\/std\/\{z\}\/\{x\}\/\{y\}\.png/)
   assert.match(source, /地址定位/)
+  assert.match(source, /createProjectAddressAutoLocateScheduler/)
+  assert.match(source, /normalizeGeocodingAddress\(address\)/)
+  assert.match(source, /autoLocateSchedulerRef\.current\.schedule/)
+  assert.match(source, /autoLocateSchedulerRef\.current\.cancel/)
+  assert.match(source, /识别地址：/)
+  assert.match(source, /result\.displayName/)
   assert.match(source, /https:\/\/maps\.gsi\.go\.jp\/help\/howtouse\.html/)
   assert.match(source, /https:\/\/www\.openstreetmap\.org\/copyright/)
   assert.match(source, /OpenStreetMap contributors/)

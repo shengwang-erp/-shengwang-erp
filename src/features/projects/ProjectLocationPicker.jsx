@@ -5,7 +5,11 @@ import markerIconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png'
 import 'leaflet/dist/leaflet.css'
 
-import { GeocodingError } from './projectLocationService.js'
+import { createProjectAddressAutoLocateScheduler } from './projectAddressAutoLocate.js'
+import {
+  GeocodingError,
+  normalizeGeocodingAddress,
+} from './projectLocationService.js'
 
 const DEFAULT_MAP_CENTER = Object.freeze([36.2048, 138.2529])
 const DEFAULT_MAP_ZOOM = 5
@@ -67,6 +71,7 @@ export default function ProjectLocationPicker({
   const circleRef = useRef(null)
   const updateMapSelectionRef = useRef(null)
   const abortControllerRef = useRef(null)
+  const autoLocateSchedulerRef = useRef(null)
   const requestIdRef = useRef(0)
   const latestLocateInputRef = useRef({ address, latitude, longitude })
   const mountedRef = useRef(false)
@@ -77,6 +82,11 @@ export default function ProjectLocationPicker({
   const initialSelectionRef = useRef(toCoordinatePair(latitude, longitude))
   const [locating, setLocating] = useState(false)
   const [locateError, setLocateError] = useState('')
+  const [resolvedDisplayName, setResolvedDisplayName] = useState('')
+
+  if (autoLocateSchedulerRef.current === null) {
+    autoLocateSchedulerRef.current = createProjectAddressAutoLocateScheduler()
+  }
 
   locationConfirmedCallbackRef.current = locationConfirmedCallback
   latestLocateInputRef.current = { address, latitude, longitude }
@@ -84,6 +94,7 @@ export default function ProjectLocationPicker({
   void onRadiusChange
 
   const cancelPendingLocate = useCallback(() => {
+    autoLocateSchedulerRef.current.cancel()
     const controller = abortControllerRef.current
     if (!controller) return
 
@@ -123,6 +134,7 @@ export default function ProjectLocationPicker({
 
     cancelPendingLocate()
     setLocateError('')
+    setResolvedDisplayName('')
     confirmCoordinates(selection.latitude, selection.longitude)
   }, [cancelPendingLocate, confirmCoordinates])
 
@@ -134,6 +146,7 @@ export default function ProjectLocationPicker({
 
     cancelPendingLocate()
     setLocateError('')
+    setResolvedDisplayName('')
     confirmCoordinates(selection.latitude, selection.longitude)
   }, [cancelPendingLocate, confirmCoordinates])
 
@@ -197,6 +210,7 @@ export default function ProjectLocationPicker({
 
     return () => {
       mountedRef.current = false
+      autoLocateSchedulerRef.current.cancel()
       requestIdRef.current += 1
       const controller = abortControllerRef.current
       abortControllerRef.current = null
@@ -233,13 +247,6 @@ export default function ProjectLocationPicker({
   }, [attendanceRadiusMeters, handleMarkerDragEnd, latitude, longitude, updateMapSelection])
 
   useEffect(() => {
-    if (Object.is(previousAddressRef.current, address)) return
-    previousAddressRef.current = address
-    cancelPendingLocate()
-    setLocateError('')
-  }, [address, cancelPendingLocate])
-
-  useEffect(() => {
     const previous = previousCoordinatesRef.current
     if (Object.is(previous.latitude, latitude) && Object.is(previous.longitude, longitude)) return
 
@@ -247,7 +254,8 @@ export default function ProjectLocationPicker({
     cancelPendingLocate()
   }, [cancelPendingLocate, latitude, longitude])
 
-  const handleLocate = async () => {
+  const handleLocate = useCallback(async () => {
+    autoLocateSchedulerRef.current.cancel()
     const requestInput = { address, latitude, longitude }
     abortControllerRef.current?.abort()
     const controller = new AbortController()
@@ -257,6 +265,7 @@ export default function ProjectLocationPicker({
 
     setLocating(true)
     setLocateError('')
+    setResolvedDisplayName('')
 
     try {
       const result = await locateAddress(address, { signal: controller.signal })
@@ -282,6 +291,10 @@ export default function ProjectLocationPicker({
         return
       }
 
+      const displayName = typeof result?.displayName === 'string'
+        ? result.displayName.trim()
+        : ''
+      setResolvedDisplayName(displayName)
       confirmCoordinates(selection.latitude, selection.longitude, { center: true })
     } catch (error) {
       if (
@@ -303,7 +316,26 @@ export default function ProjectLocationPicker({
         setLocating(false)
       }
     }
-  }
+  }, [
+    address,
+    confirmed,
+    confirmCoordinates,
+    isLocateInputCurrent,
+    latitude,
+    locateAddress,
+    longitude,
+  ])
+
+  useEffect(() => {
+    if (Object.is(previousAddressRef.current, address)) return
+    previousAddressRef.current = address
+    cancelPendingLocate()
+    setLocateError('')
+    setResolvedDisplayName('')
+    if (normalizeGeocodingAddress(address)) {
+      autoLocateSchedulerRef.current.schedule(() => handleLocate())
+    }
+  }, [address, cancelPendingLocate, handleLocate])
 
   return (
     <section className="project-location-picker" aria-label="施工位置选择">
@@ -338,6 +370,11 @@ export default function ProjectLocationPicker({
       <p className="project-location-coordinates">
         纬度：{latitude ?? '未选择'}｜经度：{longitude ?? '未选择'}
       </p>
+      {resolvedDisplayName ? (
+        <p className="project-location-resolved-address" role="status">
+          识别地址：{resolvedDisplayName}
+        </p>
+      ) : null}
       {locateError ? (
         <p className="project-location-error" role="alert">
           {locateError}

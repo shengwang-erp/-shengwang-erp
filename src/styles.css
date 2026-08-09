@@ -4536,7 +4536,8 @@ body {
 
 .project-location-status,
 .project-location-error,
-.project-location-coordinates {
+.project-location-coordinates,
+.project-location-resolved-address {
   padding: 9px 11px;
   border-radius: 7px;
   font-size: 13px;
@@ -4566,6 +4567,13 @@ body {
   background: #ffffff;
   border: 1px solid #dfe6ef;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.project-location-resolved-address {
+  color: #6f5728;
+  background: #fffaf0;
+  border: 1px solid #ead7aa;
   overflow-wrap: anywhere;
 }
 
