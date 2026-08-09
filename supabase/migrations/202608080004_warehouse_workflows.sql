@@ -50,9 +50,9 @@ create table public.warehouse_receipts (
   confirmed_at timestamptz,
   rejection_reason text,
   idempotency_key text not null,
-  submission_payload jsonb not null default '{}'::jsonb,
   confirmation_idempotency_key text,
   confirmation_payload jsonb,
+  submission_payload jsonb not null default '{}'::jsonb,
   constraint warehouse_receipts_status_check check (
     status in ('pending', 'confirmed', 'rejected', 'void')
   ),
@@ -146,6 +146,7 @@ create table public.warehouse_stock_out_requests (
   confirmed_at timestamptz,
   rejection_reason text,
   idempotency_key text not null,
+  submission_payload jsonb not null,
   confirmation_idempotency_key text,
   confirmation_payload jsonb,
   constraint warehouse_stock_out_status_check check (
@@ -168,6 +169,9 @@ create table public.warehouse_stock_out_requests (
   constraint warehouse_stock_out_idempotency_check check (
     idempotency_key = btrim(idempotency_key)
     and idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
+  ),
+  constraint warehouse_stock_out_submission_payload_check check (
+    jsonb_typeof(submission_payload) = 'object'
   ),
   constraint warehouse_stock_out_rejection_check check (
     rejection_reason is null
@@ -192,7 +196,7 @@ create table public.warehouse_stock_out_requests (
   constraint warehouse_stock_out_idempotency_unique unique (idempotency_key),
   constraint warehouse_stock_out_confirmation_pair_check check (
     (confirmation_idempotency_key is null) = (confirmation_payload is null)
-    and (confirmation_idempotency_key is null or status in ('confirmed', 'void'))
+    and (confirmation_idempotency_key is null or status in ('confirmed', 'rejected', 'void'))
     and (
       confirmation_idempotency_key is null
       or (
@@ -246,6 +250,9 @@ create table public.warehouse_return_requests (
   confirmed_at timestamptz,
   rejection_reason text,
   idempotency_key text not null,
+  submission_payload jsonb not null,
+  confirmation_idempotency_key text,
+  confirmation_payload jsonb,
   constraint warehouse_return_status_check check (
     status in ('pending', 'confirmed', 'rejected', 'void')
   ),
@@ -256,6 +263,9 @@ create table public.warehouse_return_requests (
   constraint warehouse_return_idempotency_check check (
     idempotency_key = btrim(idempotency_key)
     and idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
+  ),
+  constraint warehouse_return_submission_payload_check check (
+    jsonb_typeof(submission_payload) = 'object'
   ),
   constraint warehouse_return_rejection_check check (
     rejection_reason is null
@@ -276,7 +286,19 @@ create table public.warehouse_return_requests (
   constraint warehouse_return_confirmer_fk foreign key (confirmed_by_employee_profile_id)
     references public.employee_profiles(id) on delete restrict,
   constraint warehouse_return_idempotency_unique unique (idempotency_key),
-  constraint warehouse_return_id_original_unique unique (id, original_stock_out_id)
+  constraint warehouse_return_id_original_unique unique (id, original_stock_out_id),
+  constraint warehouse_return_confirmation_pair_check check (
+    (confirmation_idempotency_key is null) = (confirmation_payload is null)
+    and (confirmation_idempotency_key is null or status in ('confirmed', 'rejected', 'void'))
+    and (
+      confirmation_idempotency_key is null
+      or (
+        confirmation_idempotency_key = btrim(confirmation_idempotency_key)
+        and confirmation_idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'
+        and jsonb_typeof(confirmation_payload) = 'object'
+      )
+    )
+  )
 );
 
 alter table public.warehouse_receipt_lines
@@ -293,6 +315,9 @@ create unique index warehouse_receipts_confirmation_idempotency_unique
   where confirmation_idempotency_key is not null;
 create unique index warehouse_stock_out_confirmation_idempotency_unique
   on public.warehouse_stock_out_requests(confirmation_idempotency_key)
+  where confirmation_idempotency_key is not null;
+create unique index warehouse_return_confirmation_idempotency_unique
+  on public.warehouse_return_requests(confirmation_idempotency_key)
   where confirmation_idempotency_key is not null;
 
 create table public.warehouse_return_lines (
@@ -542,6 +567,21 @@ security definer
 set search_path = pg_catalog
 as $$
 begin
+  if row(
+    old.submitted_by_employee_profile_id, old.submitted_at,
+    old.idempotency_key, old.submission_payload
+  ) is distinct from row(
+    new.submitted_by_employee_profile_id, new.submitted_at,
+    new.idempotency_key, new.submission_payload
+  ) then
+    if tg_table_name = 'warehouse_receipts' then
+      raise exception using errcode = '55000',
+        message = 'warehouse receipt identity is immutable',
+        hint = 'WAREHOUSE_RECEIPT_IDENTITY_IMMUTABLE';
+    end if;
+    raise exception using errcode = '55000',
+      message = 'warehouse submission identity is immutable';
+  end if;
   if old.confirmation_idempotency_key is not null and row(
     old.confirmation_idempotency_key, old.confirmation_payload
   ) is distinct from row(
@@ -552,7 +592,7 @@ begin
       hint = 'WAREHOUSE_CONFIRMATION_IDENTITY_IMMUTABLE';
   end if;
   if new.confirmation_idempotency_key is not null
-    and new.status not in ('confirmed', 'void')
+    and new.status not in ('confirmed', 'rejected', 'void')
   then
     raise exception using errcode = '23514',
       message = 'warehouse confirmation identity requires confirmed state';
@@ -566,6 +606,9 @@ before update on public.warehouse_receipts
 for each row execute function private.guard_warehouse_confirmation_identity_update();
 create trigger guard_warehouse_stock_out_confirmation_identity_update
 before update on public.warehouse_stock_out_requests
+for each row execute function private.guard_warehouse_confirmation_identity_update();
+create trigger guard_warehouse_return_confirmation_identity_update
+before update on public.warehouse_return_requests
 for each row execute function private.guard_warehouse_confirmation_identity_update();
 
 create or replace function private.assert_warehouse_receipt_document_state(p_receipt_id uuid)
@@ -997,12 +1040,25 @@ as $$
     'description', job.description, 'status', job.status,
     'assignedProjectId', job.assigned_project_id,
     'materialCost', case when public.has_current_permission('warehouse.cost.view') then (
-      select coalesce(sum(line.frozen_total_cost), 0)
-      from public.warehouse_stock_out_requests request
-      join public.warehouse_stock_out_lines line on line.request_id = request.id
-      where request.minor_work_order_id = job.id
-        and request.destination_type = 'minor_work_order'
-        and request.status = 'confirmed'
+      select
+        coalesce((
+          select sum(line.frozen_total_cost)
+          from public.warehouse_stock_out_requests request
+          join public.warehouse_stock_out_lines line on line.request_id = request.id
+          where request.minor_work_order_id = job.id
+            and request.destination_type = 'minor_work_order'
+            and request.status = 'confirmed'
+        ), 0) - coalesce((
+          select sum(return_line.frozen_total_cost)
+          from public.warehouse_return_requests return_request
+          join public.warehouse_return_lines return_line
+            on return_line.return_id = return_request.id
+          join public.warehouse_stock_out_requests original_request
+            on original_request.id = return_request.original_stock_out_id
+          where original_request.minor_work_order_id = job.id
+            and original_request.destination_type = 'minor_work_order'
+            and return_request.status in ('confirmed', 'void')
+        ), 0)
     ) else null end,
     'createdByEmployeeProfileId', job.created_by_employee_profile_id,
     'createdAt', job.created_at, 'updatedAt', job.updated_at
@@ -1020,7 +1076,8 @@ create or replace function private.upsert_warehouse_project_cost(
   p_source_document_id uuid,
   p_source_document_type text,
   p_source_purchase_record_keys jsonb,
-  p_source_stock_out_ids jsonb
+  p_source_stock_out_ids jsonb,
+  p_allow_inactive_project boolean
 )
 returns void
 language plpgsql
@@ -1039,8 +1096,12 @@ begin
     or p_project_id is null or p_actor_id is null or p_occurred_at is null
     or p_cost_date is null
     or p_source_document_id is null
+    or p_allow_inactive_project is null
     or p_source_document_type not in ('warehouse_stock_out', 'warehouse_minor_work_order')
-    or p_amount is null or p_amount <= 0 or p_amount > 900719925474.0991
+    or p_amount is null
+    or (p_source_document_type = 'warehouse_stock_out' and p_amount <= 0)
+    or (p_source_document_type = 'warehouse_minor_work_order' and p_amount < 0)
+    or p_amount > 900719925474.0991
     or p_amount in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
     or jsonb_typeof(p_source_purchase_record_keys) is distinct from 'array'
     or jsonb_typeof(p_source_stock_out_ids) is distinct from 'array'
@@ -1050,7 +1111,8 @@ begin
   end if;
   select * into actor from public.employee_profiles where id = p_actor_id;
   select * into project from public.projects
-  where record_key = p_project_id and status = 'active';
+  where record_key = p_project_id
+    and (status = 'active' or p_allow_inactive_project);
   if actor.id is null or project.id is null then
     raise exception using errcode = '55000', message = 'warehouse destination unavailable',
       hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
@@ -1088,10 +1150,6 @@ begin
       or (
         p_source_document_type = 'warehouse_stock_out'
         and existing.payload is distinct from next_payload
-      )
-      or (
-        p_source_document_type = 'warehouse_minor_work_order'
-        and (existing.payload->>'amount')::numeric > p_amount
       )
     then
       raise exception using errcode = '23505', message = 'warehouse project cost conflict',
@@ -1136,7 +1194,8 @@ $$;
 create or replace function private.post_minor_work_order_cost(
   p_minor_work_order_id uuid,
   p_actor_id uuid,
-  p_occurred_at timestamptz
+  p_occurred_at timestamptz,
+  p_allow_inactive_project boolean
 )
 returns void
 language plpgsql
@@ -1146,6 +1205,8 @@ set search_path = pg_catalog, public, private
 as $$
 declare
   job public.warehouse_minor_work_orders%rowtype;
+  gross_stock_out_cost numeric;
+  confirmed_return_cost numeric;
   total_cost numeric;
   purchase_keys jsonb;
   stock_out_ids jsonb;
@@ -1158,13 +1219,31 @@ begin
   if not found or job.assigned_project_id is null then return; end if;
   select coalesce(sum(line.frozen_total_cost), 0),
     coalesce(jsonb_agg(distinct request.id order by request.id), '[]'::jsonb)
-  into total_cost, stock_out_ids
+  into gross_stock_out_cost, stock_out_ids
   from public.warehouse_stock_out_requests request
   join public.warehouse_stock_out_lines line on line.request_id = request.id
   where request.minor_work_order_id = p_minor_work_order_id
     and request.destination_type = 'minor_work_order'
     and request.status = 'confirmed';
-  if total_cost = 0 then return; end if;
+  select coalesce(sum(return_line.frozen_total_cost), 0)
+  into confirmed_return_cost
+  from public.warehouse_return_requests return_request
+  join public.warehouse_return_lines return_line
+    on return_line.return_id = return_request.id
+  join public.warehouse_stock_out_requests original_request
+    on original_request.id = return_request.original_stock_out_id
+  where original_request.minor_work_order_id = p_minor_work_order_id
+    and original_request.destination_type = 'minor_work_order'
+    and return_request.status in ('confirmed', 'void');
+  total_cost := gross_stock_out_cost - confirmed_return_cost;
+  if total_cost < 0 then
+    raise exception using errcode = '23514', message = 'warehouse minor-work net cost invalid',
+      hint = 'WAREHOUSE_RETURN_QUANTITY_EXCEEDED';
+  end if;
+  if total_cost = 0 and not exists (
+    select 1 from public.project_cost_records
+    where record_key = 'WAREHOUSE-MWO:' || p_minor_work_order_id::text
+  ) then return; end if;
   select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
   from (
     select distinct receipt.purchase_record_key as key
@@ -1181,7 +1260,87 @@ begin
   perform private.upsert_warehouse_project_cost(
     'WAREHOUSE-MWO:' || p_minor_work_order_id::text,
     job.assigned_project_id, total_cost, p_actor_id, p_occurred_at, job.work_date,
-    p_minor_work_order_id, 'warehouse_minor_work_order', purchase_keys, stock_out_ids
+    p_minor_work_order_id, 'warehouse_minor_work_order', purchase_keys, stock_out_ids,
+    p_allow_inactive_project
+  );
+end;
+$$;
+
+create or replace function private.insert_warehouse_return_project_cost(
+  p_return_id uuid,
+  p_project_id text,
+  p_amount numeric,
+  p_actor_id uuid,
+  p_occurred_at timestamptz,
+  p_original_stock_out_id uuid,
+  p_purchase_keys jsonb
+)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  project public.projects%rowtype;
+  v_record_key text := 'WAREHOUSE-SR:' || p_return_id::text;
+  next_payload jsonb;
+  existing_payload jsonb;
+begin
+  if p_return_id is null or p_project_id is null or p_actor_id is null
+    or p_occurred_at is null or p_original_stock_out_id is null
+    or p_amount is null or p_amount >= 0 or p_amount < -900719925474.0991
+    or p_amount in ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+    or jsonb_typeof(p_purchase_keys) is distinct from 'array'
+  then
+    raise exception using errcode = '22023', message = 'warehouse return project cost invalid',
+      hint = 'WAREHOUSE_PROJECT_COST_INVALID';
+  end if;
+  select * into actor from public.employee_profiles where id = p_actor_id;
+  select * into project from public.projects
+  where record_key = p_project_id;
+  if actor.id is null or project.id is null then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  next_payload := jsonb_build_object(
+    'costRecordId', v_record_key,
+    'projectId', p_project_id,
+    'projectName', coalesce(project.payload->>'projectName', p_project_id),
+    'employeeId', actor.employee_number,
+    'employeeName', actor.name,
+    'costType', '材料费',
+    'amount', round(p_amount, 4),
+    'date', (p_occurred_at at time zone 'Asia/Tokyo')::date,
+    'operator', actor.name,
+    'remark', '仓库退回按原批次成本冲回',
+    'sourceType', 'warehouseReversal',
+    'sourceDocumentId', p_return_id,
+    'sourceDocumentType', 'warehouse_return',
+    'sourcePurchaseRecordKeys', p_purchase_keys,
+    'sourceStockOutIds', jsonb_build_array(p_original_stock_out_id),
+    'createdAt', p_occurred_at,
+    'updatedAt', p_occurred_at,
+    'updatedByEmployeeId', actor.employee_number,
+    'updatedByEmployeeName', actor.name
+  );
+  select payload into existing_payload from public.project_cost_records
+  where project_cost_records.record_key = v_record_key for update;
+  if found then
+    if existing_payload is distinct from next_payload then
+      raise exception using errcode = '23505', message = 'warehouse project cost conflict',
+        hint = 'WAREHOUSE_PROJECT_COST_CONFLICT';
+    end if;
+    return;
+  end if;
+  insert into public.project_cost_records(
+    record_key, payload, status, created_at, updated_at,
+    created_by_employee_id, created_by_employee_name,
+    updated_by_employee_id, updated_by_employee_name
+  ) values (
+    v_record_key, next_payload, 'active', p_occurred_at, p_occurred_at,
+    actor.employee_number, actor.name, actor.employee_number, actor.name
   );
 end;
 $$;
@@ -1272,7 +1431,7 @@ as $$
   ) from public.warehouse_receipts receipt where receipt.id = p_id
 $$;
 
-create or replace function private.warehouse_stock_out_json(p_id uuid)
+create or replace function private.warehouse_stock_out_json(p_id uuid, p_view_cost boolean)
 returns jsonb
 language sql
 stable
@@ -1294,14 +1453,14 @@ as $$
         'id', line.id, 'requestId', line.request_id, 'variantId', line.variant_id,
         'requestedQuantity', line.requested_quantity,
         'confirmedQuantity', line.confirmed_quantity,
-        'frozenTotalCost', line.frozen_total_cost
+        'frozenTotalCost', case when p_view_cost then line.frozen_total_cost else null end
       ) order by line.id)
       from public.warehouse_stock_out_lines line where line.request_id = request.id
     ), '[]'::jsonb)
   ) from public.warehouse_stock_out_requests request where request.id = p_id
 $$;
 
-create or replace function private.warehouse_return_json(p_id uuid)
+create or replace function private.warehouse_return_json(p_id uuid, p_view_cost boolean)
 returns jsonb
 language sql
 stable
@@ -1322,7 +1481,7 @@ as $$
         'originalStockOutLineId', line.original_stock_out_line_id,
         'requestedQuantity', line.requested_quantity,
         'confirmedQuantity', line.confirmed_quantity,
-        'frozenTotalCost', line.frozen_total_cost
+        'frozenTotalCost', case when p_view_cost then line.frozen_total_cost else null end
       ) order by line.id)
       from public.warehouse_return_lines line where line.return_id = request.id
     ), '[]'::jsonb)
@@ -1407,7 +1566,7 @@ begin
       hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   perform private.post_minor_work_order_cost(
-    p_minor_work_order_id, actor_id, clock_timestamp()
+    p_minor_work_order_id, actor_id, clock_timestamp(), false
   );
   return private.warehouse_minor_work_order_json(saved_id);
 end;
@@ -1491,7 +1650,8 @@ begin
   from public.warehouse_receipts receipt
   where receipt.idempotency_key = p_idempotency_key;
   if found then
-    if existing_receipt.purchase_record_key = p_purchase_record_key
+    if existing_receipt.submitted_by_employee_profile_id = actor_id
+      and existing_receipt.purchase_record_key = p_purchase_record_key
       and existing_receipt.submission_payload = canonical_payload
     then
       return private.warehouse_receipt_submission_json(existing_receipt.id);
@@ -1652,11 +1812,15 @@ set search_path = pg_catalog, public, private
 as $$
 declare
   actor_id uuid; saved_id uuid; line jsonb; resource_id uuid;
+  existing_request public.warehouse_stock_out_requests%rowtype;
+  canonical_payload jsonb;
+  view_cost boolean;
   destination_type_value text; project_id_value text; minor_id_value uuid;
   snapshot_value text; derived_snapshot text;
 begin
   select employee_profile_id into actor_id
   from private.assert_warehouse_permission('warehouse.stock_flow.request');
+  view_cost := public.has_current_permission('warehouse.cost.view');
   perform private.warehouse_workflow_lines(p_lines);
   perform private.warehouse_workflow_idempotency(p_idempotency_key);
   if not private.warehouse_catalog_payload_keys_exact(
@@ -1671,22 +1835,12 @@ begin
   if p_request->'minorWorkOrderId' <> 'null'::jsonb then
     minor_id_value := private.warehouse_workflow_uuid(p_request, 'minorWorkOrderId');
   end if;
-  if destination_type_value = 'project' and project_id_value is not null and minor_id_value is null then
-    select private.normalize_warehouse_catalog_text(project.payload->>'projectName')
-      into derived_snapshot from public.projects project
-      where project.record_key = project_id_value and project.status = 'active';
-  elsif destination_type_value = 'minor_work_order' and project_id_value is null and minor_id_value is not null then
-    select job.customer_name || '・' || job.title into derived_snapshot
-      from public.warehouse_minor_work_orders job
-      where job.id = minor_id_value and job.status in ('open', 'assigned');
-  elsif destination_type_value = 'internal_use' and project_id_value is null and minor_id_value is null then
-    derived_snapshot := snapshot_value;
-  else
+  if not (
+    (destination_type_value = 'project' and project_id_value is not null and minor_id_value is null)
+    or (destination_type_value = 'minor_work_order' and project_id_value is null and minor_id_value is not null)
+    or (destination_type_value = 'internal_use' and project_id_value is null and minor_id_value is null)
+  ) then
     raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID';
-  end if;
-  if derived_snapshot is null or snapshot_value <> derived_snapshot then
-    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
-      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
   perform private.warehouse_workflow_text(p_request, 'purpose', 1000, true);
   perform private.warehouse_workflow_text(p_request, 'receiver', 300, true);
@@ -1700,6 +1854,54 @@ begin
   if (select count(*) from jsonb_array_elements(p_lines)) <> (
     select count(distinct value->>'variantId') from jsonb_array_elements(p_lines)
   ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
+
+  select jsonb_build_object(
+    'request', jsonb_build_object(
+      'destinationType', destination_type_value,
+      'projectId', project_id_value,
+      'minorWorkOrderId', minor_id_value,
+      'destinationNameSnapshot', snapshot_value,
+      'purpose', private.warehouse_workflow_text(p_request, 'purpose', 1000, true),
+      'receiver', private.warehouse_workflow_text(p_request, 'receiver', 300, true),
+      'requestDate', private.warehouse_workflow_date(p_request, 'requestDate')
+    ),
+    'lines', jsonb_agg(jsonb_build_object(
+      'variantId', private.warehouse_workflow_uuid(value, 'variantId'),
+      'requestedQuantity', private.warehouse_workflow_quantity(value)
+    ) order by value->>'variantId')
+  ) into canonical_payload
+  from jsonb_array_elements(p_lines);
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-stock-out-submit-idempotency:' || p_idempotency_key, 0
+  ));
+  select request.* into existing_request
+  from public.warehouse_stock_out_requests request
+  where request.idempotency_key = p_idempotency_key;
+  if found then
+    if existing_request.submitted_by_employee_profile_id = actor_id
+      and existing_request.submission_payload = canonical_payload
+    then
+      return private.warehouse_stock_out_json(existing_request.id, view_cost);
+    end if;
+    raise exception using errcode = '23505', message = 'warehouse workflow idempotency conflict',
+      hint = 'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT';
+  end if;
+
+  if destination_type_value = 'project' then
+    select private.normalize_warehouse_catalog_text(project.payload->>'projectName')
+      into derived_snapshot from public.projects project
+      where project.record_key = project_id_value and project.status = 'active';
+  elsif destination_type_value = 'minor_work_order' then
+    select job.customer_name || '・' || job.title into derived_snapshot
+      from public.warehouse_minor_work_orders job
+      where job.id = minor_id_value and job.status in ('open', 'assigned');
+  else
+    derived_snapshot := snapshot_value;
+  end if;
+  if derived_snapshot is null or snapshot_value <> derived_snapshot then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
 
   for resource_id in
     select distinct private.warehouse_workflow_uuid(value, 'variantId')
@@ -1716,19 +1918,21 @@ begin
 
   insert into public.warehouse_stock_out_requests(
     destination_type, project_id, minor_work_order_id, destination_name_snapshot,
-    purpose, receiver, request_date, submitted_by_employee_profile_id, idempotency_key
+    purpose, receiver, request_date, submitted_by_employee_profile_id, idempotency_key,
+    submission_payload
   ) values (
     destination_type_value, project_id_value, minor_id_value, snapshot_value,
     private.warehouse_workflow_text(p_request, 'purpose', 1000, true),
     private.warehouse_workflow_text(p_request, 'receiver', 300, true),
-    private.warehouse_workflow_date(p_request, 'requestDate'), actor_id, p_idempotency_key
+    private.warehouse_workflow_date(p_request, 'requestDate'), actor_id, p_idempotency_key,
+    canonical_payload
   ) returning id into saved_id;
   insert into public.warehouse_stock_out_lines(
     request_id, variant_id, requested_quantity
   ) select saved_id, private.warehouse_workflow_uuid(value, 'variantId'),
     private.warehouse_workflow_quantity(value)
     from jsonb_array_elements(p_lines);
-  return private.warehouse_stock_out_json(saved_id);
+  return private.warehouse_stock_out_json(saved_id, view_cost);
 end;
 $$;
 
@@ -1744,22 +1948,20 @@ volatile
 security definer
 set search_path = pg_catalog, public, private
 as $$
-declare actor_id uuid; saved_id uuid; line jsonb; resource_id uuid;
+declare
+  actor_id uuid; saved_id uuid; line jsonb; resource_id uuid;
+  existing_return public.warehouse_return_requests%rowtype;
+  canonical_payload jsonb;
+  view_cost boolean;
 begin
   select employee_profile_id into actor_id
   from private.assert_warehouse_permission('warehouse.stock_flow.request');
+  view_cost := public.has_current_permission('warehouse.cost.view');
   perform private.warehouse_workflow_lines(p_lines);
   perform private.warehouse_workflow_idempotency(p_idempotency_key);
   if p_original_stock_out_id is null or not private.warehouse_catalog_payload_keys_exact(
     p_request, array['reason','receiver','requestDate']
   ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
-  if not exists (
-    select 1 from public.warehouse_stock_out_requests request
-    where request.id = p_original_stock_out_id and request.status = 'confirmed'
-  ) then
-    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
-      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
-  end if;
   perform private.warehouse_workflow_text(p_request, 'reason', 1000, true);
   perform private.warehouse_workflow_text(p_request, 'receiver', 300, true);
   perform private.warehouse_workflow_date(p_request, 'requestDate');
@@ -1772,7 +1974,45 @@ begin
   end loop;
   if (select count(*) from jsonb_array_elements(p_lines)) <> (
     select count(distinct value->>'originalStockOutLineId') from jsonb_array_elements(p_lines)
-  ) or exists (
+  ) then raise exception using errcode = '22023', message = 'warehouse workflow input invalid', hint = 'WAREHOUSE_WORKFLOW_INPUT_INVALID'; end if;
+
+  select jsonb_build_object(
+    'originalStockOutId', p_original_stock_out_id,
+    'request', jsonb_build_object(
+      'reason', private.warehouse_workflow_text(p_request, 'reason', 1000, true),
+      'receiver', private.warehouse_workflow_text(p_request, 'receiver', 300, true),
+      'requestDate', private.warehouse_workflow_date(p_request, 'requestDate')
+    ),
+    'lines', jsonb_agg(jsonb_build_object(
+      'originalStockOutLineId', private.warehouse_workflow_uuid(value, 'originalStockOutLineId'),
+      'requestedQuantity', private.warehouse_workflow_quantity(value)
+    ) order by value->>'originalStockOutLineId')
+  ) into canonical_payload
+  from jsonb_array_elements(p_lines);
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-return-submit-idempotency:' || p_idempotency_key, 0
+  ));
+  select request.* into existing_return
+  from public.warehouse_return_requests request
+  where request.idempotency_key = p_idempotency_key;
+  if found then
+    if existing_return.submitted_by_employee_profile_id = actor_id
+      and existing_return.submission_payload = canonical_payload
+    then
+      return private.warehouse_return_json(existing_return.id, view_cost);
+    end if;
+    raise exception using errcode = '23505', message = 'warehouse workflow idempotency conflict',
+      hint = 'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT';
+  end if;
+
+  if not exists (
+    select 1 from public.warehouse_stock_out_requests request
+    where request.id = p_original_stock_out_id and request.status = 'confirmed'
+  ) then
+    raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if exists (
     select 1 from jsonb_array_elements(p_lines) entry
     left join public.warehouse_stock_out_lines line
       on line.id = private.warehouse_workflow_uuid(entry.value, 'originalStockOutLineId')
@@ -1799,12 +2039,13 @@ begin
 
   insert into public.warehouse_return_requests(
     original_stock_out_id, reason, receiver, request_date,
-    submitted_by_employee_profile_id, idempotency_key
+    submitted_by_employee_profile_id, idempotency_key, submission_payload
   ) values (
     p_original_stock_out_id,
     private.warehouse_workflow_text(p_request, 'reason', 1000, true),
     private.warehouse_workflow_text(p_request, 'receiver', 300, true),
-    private.warehouse_workflow_date(p_request, 'requestDate'), actor_id, p_idempotency_key
+    private.warehouse_workflow_date(p_request, 'requestDate'), actor_id, p_idempotency_key,
+    canonical_payload
   ) returning id into saved_id;
   insert into public.warehouse_return_lines(
     return_id, original_stock_out_id, original_stock_out_line_id, requested_quantity
@@ -1813,7 +2054,7 @@ begin
     private.warehouse_workflow_uuid(value, 'originalStockOutLineId'),
     private.warehouse_workflow_quantity(value)
     from jsonb_array_elements(p_lines);
-  return private.warehouse_return_json(saved_id);
+  return private.warehouse_return_json(saved_id, view_cost);
 end;
 $$;
 
@@ -1954,6 +2195,51 @@ as $$
       where line.request_id = request.id
     ), '[]'::jsonb)
   ) from public.warehouse_stock_out_requests request where request.id = p_id
+$$;
+
+create or replace function private.warehouse_return_confirmation_json(
+  p_id uuid,
+  p_view_cost boolean
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'id', request.id,
+    'originalStockOutId', request.original_stock_out_id,
+    'destinationType', original.destination_type,
+    'projectId', original.project_id,
+    'minorWorkOrderId', original.minor_work_order_id,
+    'destinationNameSnapshot', original.destination_name_snapshot,
+    'reason', request.reason, 'receiver', request.receiver,
+    'requestDate', request.request_date, 'status', request.status,
+    'submittedByEmployeeProfileId', request.submitted_by_employee_profile_id,
+    'submittedAt', request.submitted_at,
+    'confirmedByEmployeeProfileId', request.confirmed_by_employee_profile_id,
+    'confirmedAt', request.confirmed_at, 'rejectionReason', request.rejection_reason,
+    'idempotencyKey', request.idempotency_key,
+    'confirmationIdempotencyKey', request.confirmation_idempotency_key,
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', line.id, 'returnId', line.return_id,
+        'originalStockOutLineId', line.original_stock_out_line_id,
+        'variantId', original_line.variant_id,
+        'requestedQuantity', line.requested_quantity,
+        'confirmedQuantity', line.confirmed_quantity,
+        'frozenTotalCost', case when p_view_cost then line.frozen_total_cost else null end
+      ) order by line.id)
+      from public.warehouse_return_lines line
+      join public.warehouse_stock_out_lines original_line
+        on original_line.id = line.original_stock_out_line_id
+      where line.return_id = request.id
+    ), '[]'::jsonb)
+  )
+  from public.warehouse_return_requests request
+  join public.warehouse_stock_out_requests original
+    on original.id = request.original_stock_out_id
+  where request.id = p_id
 $$;
 
 create or replace function public.confirm_warehouse_receipt_secure(
@@ -2303,17 +2589,6 @@ begin
     raise exception using errcode = '55000', message = 'warehouse stock-out unavailable',
       hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
   end if;
-  if request_row.destination_type = 'minor_work_order' then
-    perform pg_advisory_xact_lock(hashtextextended(
-      'warehouse-minor-work-cost:' || request_row.minor_work_order_id::text, 0
-    ));
-    perform 1 from public.warehouse_minor_work_orders job
-    where job.id = request_row.minor_work_order_id for update;
-    if not found then
-      raise exception using errcode = '55000', message = 'warehouse destination unavailable',
-        hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
-    end if;
-  end if;
   perform pg_advisory_xact_lock(hashtextextended(
     'warehouse-stock-out-confirm-key:' || p_idempotency_key, 0
   ));
@@ -2370,6 +2645,18 @@ begin
       on line.id = private.warehouse_workflow_uuid(entry.value, 'stockOutLineId')
     order by 1
   loop perform private.lock_warehouse_variant_resource(resource_id); end loop;
+
+  if request_row.destination_type = 'minor_work_order' then
+    perform pg_advisory_xact_lock(hashtextextended(
+      'warehouse-minor-work-cost:' || request_row.minor_work_order_id::text, 0
+    ));
+    perform 1 from public.warehouse_minor_work_orders job
+    where job.id = request_row.minor_work_order_id for update;
+    if not found then
+      raise exception using errcode = '55000', message = 'warehouse destination unavailable',
+        hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+    end if;
+  end if;
 
   if exists (
     select 1 from jsonb_array_elements(p_lines) entry
@@ -2514,26 +2801,28 @@ begin
   if request_row.destination_type = 'project' then
     select sum(line.frozen_total_cost) into project_total
     from public.warehouse_stock_out_lines line where line.request_id = p_request_id;
-    select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
-    from (
-      select distinct receipt.purchase_record_key as key
-      from public.warehouse_inventory_movements movement
-      join public.warehouse_batches batch on batch.id = movement.batch_id
-      join public.warehouse_receipt_lines receipt_line on receipt_line.id = batch.receipt_line_id
-      join public.warehouse_receipts receipt on receipt.id = receipt_line.receipt_id
-      where movement.source_document_type = 'warehouse_stock_out'
-        and movement.source_document_id = p_request_id::text
-    ) provenance;
-    perform private.upsert_warehouse_project_cost(
-      'WAREHOUSE-SO:' || p_request_id::text,
-      request_row.project_id, project_total, actor_id, confirmed_at_value,
-      (confirmed_at_value at time zone 'Asia/Tokyo')::date,
-      p_request_id, 'warehouse_stock_out', purchase_keys,
-      jsonb_build_array(p_request_id)
-    );
+    if project_total > 0 then
+      select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
+      from (
+        select distinct receipt.purchase_record_key as key
+        from public.warehouse_inventory_movements movement
+        join public.warehouse_batches batch on batch.id = movement.batch_id
+        join public.warehouse_receipt_lines receipt_line on receipt_line.id = batch.receipt_line_id
+        join public.warehouse_receipts receipt on receipt.id = receipt_line.receipt_id
+        where movement.source_document_type = 'warehouse_stock_out'
+          and movement.source_document_id = p_request_id::text
+      ) provenance;
+      perform private.upsert_warehouse_project_cost(
+        'WAREHOUSE-SO:' || p_request_id::text,
+        request_row.project_id, project_total, actor_id, confirmed_at_value,
+        (confirmed_at_value at time zone 'Asia/Tokyo')::date,
+        p_request_id, 'warehouse_stock_out', purchase_keys,
+        jsonb_build_array(p_request_id), false
+      );
+    end if;
   elsif request_row.destination_type = 'minor_work_order' then
     perform private.post_minor_work_order_cost(
-      request_row.minor_work_order_id, actor_id, confirmed_at_value
+      request_row.minor_work_order_id, actor_id, confirmed_at_value, false
     );
   end if;
   return private.warehouse_stock_out_confirmation_json(p_request_id, view_cost);
@@ -2550,6 +2839,631 @@ exception when unique_violation then
 end;
 $$;
 
+create or replace function public.confirm_warehouse_return_secure(
+  p_return_id uuid,
+  p_lines jsonb,
+  p_idempotency_key text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  return_row public.warehouse_return_requests%rowtype;
+  original_row public.warehouse_stock_out_requests%rowtype;
+  supplied_line jsonb;
+  canonical_payload jsonb;
+  line_row record;
+  movement_row record;
+  v_requested_quantity numeric(18,3);
+  movement_available numeric(18,3);
+  returned_quantity numeric(18,3);
+  allocated_quantity numeric(18,3);
+  remaining_quantity numeric(18,3);
+  total_cost numeric;
+  line_frozen_total numeric(18,4);
+  return_total numeric := 0;
+  confirmed_at_value timestamptz;
+  view_cost boolean;
+  cost_project_id text;
+  purchase_keys jsonb;
+  resource_id uuid;
+  locked_row record;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  if p_return_id is null then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  perform private.warehouse_workflow_lines(p_lines);
+  perform private.warehouse_workflow_idempotency(p_idempotency_key);
+  for supplied_line in select value from jsonb_array_elements(p_lines) loop
+    if not private.warehouse_catalog_payload_keys_exact(
+      supplied_line, array['returnLineId','confirmedQuantity']
+    ) then
+      raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+        hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+    end if;
+    perform private.warehouse_workflow_uuid(supplied_line, 'returnLineId');
+    perform private.warehouse_confirmation_quantity(supplied_line, 'confirmedQuantity');
+  end loop;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(distinct value->>'returnLineId') from jsonb_array_elements(p_lines)
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  canonical_payload := jsonb_build_object(
+    'returnId', p_return_id,
+    'lines', (
+      select jsonb_agg(jsonb_build_object(
+        'returnLineId', private.warehouse_workflow_uuid(value, 'returnLineId'),
+        'confirmedQuantity', private.warehouse_confirmation_quantity(value, 'confirmedQuantity')
+      ) order by value->>'returnLineId')
+      from jsonb_array_elements(p_lines)
+    )
+  );
+
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-return-confirm-document:' || p_return_id::text, 0
+  ));
+  select * into return_row from public.warehouse_return_requests
+  where id = p_return_id for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse return unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-return-confirm-key:' || p_idempotency_key, 0
+  ));
+  if return_row.status in ('confirmed', 'void')
+    and return_row.confirmation_idempotency_key is not null
+  then
+    if return_row.confirmation_idempotency_key = p_idempotency_key
+      and return_row.confirmation_payload = canonical_payload
+    then
+      return private.warehouse_return_confirmation_json(p_return_id, view_cost);
+    elsif return_row.confirmation_idempotency_key = p_idempotency_key then
+      raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+        hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+    end if;
+    raise exception using errcode = '55000', message = 'warehouse document already confirmed',
+      hint = 'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED';
+  elsif return_row.status <> 'pending' then
+    raise exception using errcode = '55000', message = 'warehouse return unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if exists (
+    select 1 from public.warehouse_return_requests other
+    where other.confirmation_idempotency_key = p_idempotency_key
+      and other.id <> p_return_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+
+  select * into original_row from public.warehouse_stock_out_requests
+  where id = return_row.original_stock_out_id for update;
+  if not found or original_row.status <> 'confirmed' then
+    raise exception using errcode = '55000', message = 'warehouse original stock-out unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  if (select count(*) from jsonb_array_elements(p_lines)) <> (
+    select count(*) from public.warehouse_return_lines line where line.return_id = p_return_id
+  ) or exists (
+    select 1 from jsonb_array_elements(p_lines) entry
+    left join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    left join public.warehouse_stock_out_lines original_line
+      on original_line.id = line.original_stock_out_line_id
+     and original_line.request_id = return_row.original_stock_out_id
+    where line.id is null or original_line.id is null
+       or private.warehouse_confirmation_quantity(entry.value, 'confirmedQuantity')
+          > line.requested_quantity
+  ) then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+
+  for resource_id in
+    select distinct movement.location_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    join public.warehouse_inventory_movements movement
+      on movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = return_row.original_stock_out_id::text
+     and movement.metadata->>'stockOutLineId' = line.original_stock_out_line_id::text
+    order by movement.location_id
+  loop perform private.lock_warehouse_location_resource(resource_id); end loop;
+  for resource_id in
+    select distinct original_line.variant_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    join public.warehouse_stock_out_lines original_line
+      on original_line.id = line.original_stock_out_line_id
+    order by original_line.variant_id
+  loop perform private.lock_warehouse_variant_resource(resource_id); end loop;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    join public.warehouse_stock_out_lines original_line
+      on original_line.id = line.original_stock_out_line_id
+    join public.warehouse_variants variant on variant.id = original_line.variant_id
+    join public.warehouse_items item on item.id = variant.item_id
+    join public.warehouse_inventory_movements movement
+      on movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = return_row.original_stock_out_id::text
+     and movement.metadata->>'stockOutLineId' = line.original_stock_out_line_id::text
+    join public.warehouse_locations location on location.id = movement.location_id
+    join public.warehouse_sites site on site.id = location.warehouse_id
+    where not location.active or not site.active or not variant.active or not item.active
+  ) then
+    raise exception using errcode = '55000', message = 'active warehouse resources required',
+      hint = 'WAREHOUSE_RESOURCE_INACTIVE';
+  end if;
+  for locked_row in
+    select balance.batch_id, balance.location_id
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    join public.warehouse_inventory_movements movement
+      on movement.source_document_type = 'warehouse_stock_out'
+     and movement.source_document_id = return_row.original_stock_out_id::text
+     and movement.metadata->>'stockOutLineId' = line.original_stock_out_line_id::text
+    join public.warehouse_batch_locations balance
+      on balance.batch_id = movement.batch_id
+     and balance.location_id = movement.location_id
+    order by balance.batch_id, balance.location_id
+    for update of balance
+  loop null; end loop;
+
+  confirmed_at_value := clock_timestamp();
+  for line_row in
+    select line.id, line.original_stock_out_line_id, original_line.variant_id,
+      entry.value as payload
+    from jsonb_array_elements(p_lines) entry
+    join public.warehouse_return_lines line
+      on line.id = private.warehouse_workflow_uuid(entry.value, 'returnLineId')
+     and line.return_id = p_return_id
+    join public.warehouse_stock_out_lines original_line
+      on original_line.id = line.original_stock_out_line_id
+    order by line.id
+  loop
+    v_requested_quantity := private.warehouse_confirmation_quantity(
+      line_row.payload, 'confirmedQuantity'
+    );
+    select coalesce(sum(confirmed_line.confirmed_quantity), 0)
+    into returned_quantity
+    from public.warehouse_return_lines confirmed_line
+    join public.warehouse_return_requests confirmed_request
+      on confirmed_request.id = confirmed_line.return_id
+    where confirmed_line.original_stock_out_line_id = line_row.original_stock_out_line_id
+      and confirmed_request.status in ('confirmed', 'void')
+      and confirmed_line.return_id <> p_return_id;
+    if v_requested_quantity > (
+      select original_line.confirmed_quantity - returned_quantity
+      from public.warehouse_stock_out_lines original_line
+      where original_line.id = line_row.original_stock_out_line_id
+    ) then
+      raise exception using errcode = '23514', message = 'warehouse return quantity exceeded',
+        hint = 'WAREHOUSE_RETURN_QUANTITY_EXCEEDED';
+    end if;
+
+    remaining_quantity := v_requested_quantity;
+    total_cost := 0;
+    for movement_row in
+      select movement.*,
+        greatest(0, -movement.quantity_delta - coalesce((
+          select sum(return_movement.quantity_delta)
+          from public.warehouse_inventory_movements return_movement
+          where return_movement.source_document_type = 'warehouse_return'
+            and return_movement.metadata->>'originalMovementId' = movement.id::text
+        ), 0))::numeric(18,3) as available_quantity
+      from public.warehouse_inventory_movements movement
+      join public.warehouse_batches original_batch on original_batch.id = movement.batch_id
+      where movement.source_document_type = 'warehouse_stock_out'
+        and movement.source_document_id = return_row.original_stock_out_id::text
+        and movement.metadata->>'stockOutLineId' = line_row.original_stock_out_line_id::text
+        and movement.quantity_delta < 0
+      order by original_batch.received_at, original_batch.id, movement.id
+    loop
+      exit when remaining_quantity = 0;
+      movement_available := movement_row.available_quantity;
+      if movement_available <= 0 then continue; end if;
+      allocated_quantity := least(remaining_quantity, movement_available)::numeric(18,3);
+      update public.warehouse_batch_locations
+      set quantity = quantity + allocated_quantity
+      where batch_id = movement_row.batch_id and location_id = movement_row.location_id;
+      if not found then
+        raise exception using errcode = '55000', message = 'warehouse original location unavailable',
+          hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+      end if;
+      insert into public.warehouse_inventory_movements(
+        movement_type, variant_id, batch_id, warehouse_id, location_id,
+        quantity_delta, unit_cost, source_document_type, source_document_id,
+        idempotency_key, project_id, destination_type, destination_id,
+        destination_name, operator_employee_profile_id, occurred_at, metadata
+      ) values (
+        '项目退回', movement_row.variant_id, movement_row.batch_id,
+        movement_row.warehouse_id, movement_row.location_id,
+        allocated_quantity, movement_row.unit_cost,
+        'warehouse_return', p_return_id::text,
+        'return-confirm:' || p_return_id::text || ':' || line_row.id::text || ':' || movement_row.id::text,
+        movement_row.project_id, movement_row.destination_type,
+        movement_row.destination_id, movement_row.destination_name,
+        actor_id, confirmed_at_value,
+        jsonb_build_object(
+          'returnLineId', line_row.id,
+          'stockOutLineId', line_row.original_stock_out_line_id,
+          'originalMovementId', movement_row.id
+        )
+      );
+      total_cost := total_cost + allocated_quantity * movement_row.unit_cost;
+      remaining_quantity := remaining_quantity - allocated_quantity;
+    end loop;
+    if remaining_quantity > 0 then
+      raise exception using errcode = '23514', message = 'warehouse return quantity exceeded',
+        hint = 'WAREHOUSE_RETURN_QUANTITY_EXCEEDED';
+    end if;
+    update public.warehouse_return_lines
+    set confirmed_quantity = v_requested_quantity,
+        frozen_total_cost = round(total_cost, 4)::numeric(18,4)
+    where id = line_row.id and return_id = p_return_id
+    returning frozen_total_cost into line_frozen_total;
+    return_total := return_total + line_frozen_total;
+  end loop;
+
+  update public.warehouse_return_requests
+  set status = 'confirmed', confirmed_by_employee_profile_id = actor_id,
+      confirmed_at = confirmed_at_value,
+      confirmation_idempotency_key = p_idempotency_key,
+      confirmation_payload = canonical_payload
+  where id = p_return_id;
+
+  if original_row.destination_type = 'project' and return_total > 0 then
+    cost_project_id := original_row.project_id;
+    select coalesce(jsonb_agg(key order by key), '[]'::jsonb) into purchase_keys
+    from (
+      select distinct receipt.purchase_record_key as key
+      from public.warehouse_inventory_movements movement
+      join public.warehouse_batches batch on batch.id = movement.batch_id
+      join public.warehouse_receipt_lines receipt_line on receipt_line.id = batch.receipt_line_id
+      join public.warehouse_receipts receipt on receipt.id = receipt_line.receipt_id
+      where movement.source_document_type = 'warehouse_return'
+        and movement.source_document_id = p_return_id::text
+    ) provenance;
+    perform private.insert_warehouse_return_project_cost(
+      p_return_id, cost_project_id, -round(return_total, 4), actor_id,
+      confirmed_at_value, return_row.original_stock_out_id, purchase_keys
+    );
+  elsif original_row.destination_type = 'minor_work_order' then
+    perform private.post_minor_work_order_cost(
+      original_row.minor_work_order_id, actor_id, confirmed_at_value, true
+    );
+  end if;
+  return private.warehouse_return_confirmation_json(p_return_id, view_cost);
+exception when unique_violation then
+  if exists (
+    select 1 from public.warehouse_return_requests request
+    where request.confirmation_idempotency_key = p_idempotency_key
+      and request.id <> p_return_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  raise;
+end;
+$$;
+
+create or replace function public.reject_warehouse_stock_out_secure(
+  p_request_id uuid,
+  p_reason text,
+  p_idempotency_key text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  request_row public.warehouse_stock_out_requests%rowtype;
+  normalized_reason text;
+  canonical_payload jsonb;
+  rejected_at_value timestamptz;
+  view_cost boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  if p_request_id is null then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  normalized_reason := private.warehouse_workflow_text(
+    jsonb_build_object('reason', p_reason), 'reason', 1000, true
+  );
+  perform private.warehouse_workflow_idempotency(p_idempotency_key);
+  canonical_payload := jsonb_build_object(
+    'requestId', p_request_id, 'outcome', 'rejected', 'reason', normalized_reason
+  );
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-stock-out-confirm-document:' || p_request_id::text, 0
+  ));
+  select request.* into request_row
+  from public.warehouse_stock_out_requests request
+  where request.id = p_request_id
+  for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse stock-out unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-stock-out-confirm-key:' || p_idempotency_key, 0
+  ));
+  if request_row.status = 'rejected'
+    and request_row.confirmation_idempotency_key = p_idempotency_key
+    and request_row.confirmation_payload = canonical_payload
+  then
+    return private.warehouse_stock_out_json(p_request_id, view_cost)
+      || jsonb_build_object('confirmationIdempotencyKey', p_idempotency_key);
+  elsif request_row.status <> 'pending' then
+    if request_row.confirmation_idempotency_key = p_idempotency_key then
+      raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+        hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+    end if;
+    raise exception using errcode = '55000', message = 'warehouse document already confirmed',
+      hint = 'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED';
+  end if;
+  if exists (
+    select 1 from public.warehouse_stock_out_requests other
+    where other.confirmation_idempotency_key = p_idempotency_key
+      and other.id <> p_request_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  rejected_at_value := clock_timestamp();
+  update public.warehouse_stock_out_requests
+  set status = 'rejected', confirmed_by_employee_profile_id = actor_id,
+      confirmed_at = rejected_at_value, rejection_reason = normalized_reason,
+      confirmation_idempotency_key = p_idempotency_key,
+      confirmation_payload = canonical_payload
+  where id = p_request_id;
+  return private.warehouse_stock_out_json(p_request_id, view_cost)
+    || jsonb_build_object('confirmationIdempotencyKey', p_idempotency_key);
+end;
+$$;
+
+create or replace function public.reject_warehouse_return_secure(
+  p_return_id uuid,
+  p_reason text,
+  p_idempotency_key text
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  return_row public.warehouse_return_requests%rowtype;
+  normalized_reason text;
+  canonical_payload jsonb;
+  rejected_at_value timestamptz;
+  view_cost boolean;
+begin
+  select employee_profile_id into actor_id
+  from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  if p_return_id is null then
+    raise exception using errcode = '22023', message = 'warehouse confirmation input invalid',
+      hint = 'WAREHOUSE_CONFIRMATION_INPUT_INVALID';
+  end if;
+  normalized_reason := private.warehouse_workflow_text(
+    jsonb_build_object('reason', p_reason), 'reason', 1000, true
+  );
+  perform private.warehouse_workflow_idempotency(p_idempotency_key);
+  canonical_payload := jsonb_build_object(
+    'returnId', p_return_id, 'outcome', 'rejected', 'reason', normalized_reason
+  );
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-return-confirm-document:' || p_return_id::text, 0
+  ));
+  select request.* into return_row
+  from public.warehouse_return_requests request
+  where request.id = p_return_id
+  for update;
+  if not found then
+    raise exception using errcode = '55000', message = 'warehouse return unavailable',
+      hint = 'WAREHOUSE_DESTINATION_UNAVAILABLE';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    'warehouse-return-confirm-key:' || p_idempotency_key, 0
+  ));
+  if return_row.status = 'rejected'
+    and return_row.confirmation_idempotency_key = p_idempotency_key
+    and return_row.confirmation_payload = canonical_payload
+  then
+    return private.warehouse_return_json(p_return_id, view_cost)
+      || jsonb_build_object('confirmationIdempotencyKey', p_idempotency_key);
+  elsif return_row.status <> 'pending' then
+    if return_row.confirmation_idempotency_key = p_idempotency_key then
+      raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+        hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+    end if;
+    raise exception using errcode = '55000', message = 'warehouse document already confirmed',
+      hint = 'WAREHOUSE_DOCUMENT_ALREADY_CONFIRMED';
+  end if;
+  if exists (
+    select 1 from public.warehouse_return_requests other
+    where other.confirmation_idempotency_key = p_idempotency_key
+      and other.id <> p_return_id
+  ) then
+    raise exception using errcode = '23505', message = 'warehouse confirmation idempotency conflict',
+      hint = 'WAREHOUSE_CONFIRMATION_IDEMPOTENCY_CONFLICT';
+  end if;
+  rejected_at_value := clock_timestamp();
+  update public.warehouse_return_requests
+  set status = 'rejected', confirmed_by_employee_profile_id = actor_id,
+      confirmed_at = rejected_at_value, rejection_reason = normalized_reason,
+      confirmation_idempotency_key = p_idempotency_key,
+      confirmation_payload = canonical_payload
+  where id = p_return_id;
+  return private.warehouse_return_json(p_return_id, view_cost)
+    || jsonb_build_object('confirmationIdempotencyKey', p_idempotency_key);
+end;
+$$;
+
+create or replace function public.list_warehouse_request_context_secure()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor_id uuid;
+  can_request boolean;
+  can_confirm boolean;
+  view_cost boolean;
+begin
+  can_confirm := public.has_current_permission('warehouse.stock_flow.confirm');
+  can_request := public.has_current_permission('warehouse.stock_flow.request');
+  if can_confirm then
+    select employee_profile_id into actor_id
+    from private.assert_warehouse_permission('warehouse.stock_flow.confirm');
+  elsif can_request then
+    select employee_profile_id into actor_id
+    from private.assert_warehouse_permission('warehouse.stock_flow.request');
+  else
+    perform private.assert_warehouse_permission('warehouse.stock_flow.request');
+  end if;
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  return jsonb_build_object(
+    'stockOutRequests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', request.id,
+        'destinationType', request.destination_type,
+        'projectId', request.project_id,
+        'minorWorkOrderId', request.minor_work_order_id,
+        'destinationNameSnapshot', request.destination_name_snapshot,
+        'purpose', request.purpose,
+        'receiver', request.receiver,
+        'requestDate', request.request_date,
+        'status', request.status,
+        'submittedByEmployeeProfileId', request.submitted_by_employee_profile_id,
+        'submittedAt', request.submitted_at,
+        'confirmedByEmployeeProfileId', request.confirmed_by_employee_profile_id,
+        'confirmedAt', request.confirmed_at,
+        'rejectionReason', request.rejection_reason,
+        'lines', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'id', line.id,
+            'requestId', line.request_id,
+            'variantId', line.variant_id,
+            'requestedQuantity', line.requested_quantity,
+            'confirmedQuantity', line.confirmed_quantity,
+            'remainingReturnable', case when request.status = 'confirmed' then greatest(
+              0, line.confirmed_quantity - coalesce((
+                select sum(return_line.confirmed_quantity)
+                from public.warehouse_return_lines return_line
+                join public.warehouse_return_requests return_request
+                  on return_request.id = return_line.return_id
+                where return_line.original_stock_out_line_id = line.id
+                  and return_request.status in ('confirmed', 'void')
+              ), 0)
+            ) else 0 end,
+            'frozenTotalCost', case when view_cost then line.frozen_total_cost else null end
+          ) order by line.id)
+          from public.warehouse_stock_out_lines line where line.request_id = request.id
+        ), '[]'::jsonb)
+      ) order by (request.status = 'pending') desc, request.submitted_at desc, request.id)
+      from (
+        select candidate.*
+        from public.warehouse_stock_out_requests candidate
+        where can_confirm or candidate.submitted_by_employee_profile_id = actor_id
+        order by (candidate.status = 'pending') desc,
+          candidate.submitted_at desc, candidate.id
+        limit 1000
+      ) request
+    ), '[]'::jsonb),
+    'returnRequests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', request.id,
+        'originalStockOutId', request.original_stock_out_id,
+        'destinationType', original.destination_type,
+        'projectId', original.project_id,
+        'minorWorkOrderId', original.minor_work_order_id,
+        'destinationNameSnapshot', original.destination_name_snapshot,
+        'reason', request.reason,
+        'receiver', request.receiver,
+        'requestDate', request.request_date,
+        'status', request.status,
+        'submittedByEmployeeProfileId', request.submitted_by_employee_profile_id,
+        'submittedAt', request.submitted_at,
+        'confirmedByEmployeeProfileId', request.confirmed_by_employee_profile_id,
+        'confirmedAt', request.confirmed_at,
+        'rejectionReason', request.rejection_reason,
+        'lines', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'id', line.id,
+            'returnId', line.return_id,
+            'originalStockOutLineId', line.original_stock_out_line_id,
+            'variantId', original_line.variant_id,
+            'requestedQuantity', line.requested_quantity,
+            'confirmedQuantity', line.confirmed_quantity,
+            'frozenTotalCost', case when view_cost then line.frozen_total_cost else null end
+          ) order by line.id)
+          from public.warehouse_return_lines line
+          join public.warehouse_stock_out_lines original_line
+            on original_line.id = line.original_stock_out_line_id
+          where line.return_id = request.id
+        ), '[]'::jsonb)
+      ) order by (request.status = 'pending') desc, request.submitted_at desc, request.id)
+      from (
+        select candidate.*
+        from public.warehouse_return_requests candidate
+        where can_confirm or candidate.submitted_by_employee_profile_id = actor_id
+        order by (candidate.status = 'pending') desc,
+          candidate.submitted_at desc, candidate.id
+        limit 1000
+      ) request
+      join public.warehouse_stock_out_requests original
+        on original.id = request.original_stock_out_id
+    ), '[]'::jsonb),
+    'minorWorkOrders', coalesce((
+      select jsonb_agg(private.warehouse_minor_work_order_json(job.id)
+        order by job.work_date desc, job.id)
+      from (
+        select candidate.id, candidate.work_date
+        from public.warehouse_minor_work_orders candidate
+        where can_request and candidate.status in ('open', 'assigned')
+        order by candidate.work_date desc, candidate.id
+        limit 1000
+      ) job
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
 revoke all on function private.warehouse_workflow_text(jsonb,text,integer,boolean) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_uuid(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_workflow_quantity(jsonb) from public, anon, authenticated, service_role;
@@ -2558,8 +3472,9 @@ revoke all on function private.warehouse_workflow_idempotency(text) from public,
 revoke all on function private.warehouse_workflow_lines(jsonb) from public, anon, authenticated, service_role;
 revoke all on function private.guard_warehouse_project_cost_write() from public, anon, authenticated, service_role;
 revoke all on function private.enforce_project_cost_write_permission() from public, anon, authenticated, service_role;
-revoke all on function private.upsert_warehouse_project_cost(text,text,numeric,uuid,timestamptz,date,uuid,text,jsonb,jsonb) from public, anon, authenticated, service_role;
-revoke all on function private.post_minor_work_order_cost(uuid,uuid,timestamptz) from public, anon, authenticated, service_role;
+revoke all on function private.upsert_warehouse_project_cost(text,text,numeric,uuid,timestamptz,date,uuid,text,jsonb,jsonb,boolean) from public, anon, authenticated, service_role;
+revoke all on function private.post_minor_work_order_cost(uuid,uuid,timestamptz,boolean) from public, anon, authenticated, service_role;
+revoke all on function private.insert_warehouse_return_project_cost(uuid,text,numeric,uuid,timestamptz,uuid,jsonb) from public, anon, authenticated, service_role;
 revoke all on function private.reject_warehouse_workflow_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_purchase_warehouse_receipt_delete() from public, anon, authenticated, service_role;
 revoke all on function private.guard_warehouse_receipt_identity_update() from public, anon, authenticated, service_role;
@@ -2574,12 +3489,13 @@ revoke all on function private.reject_warehouse_destination_mutation() from publ
 revoke all on function private.warehouse_minor_work_order_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_receipt_json(uuid) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_receipt_submission_json(uuid) from public, anon, authenticated, service_role;
-revoke all on function private.warehouse_stock_out_json(uuid) from public, anon, authenticated, service_role;
-revoke all on function private.warehouse_return_json(uuid) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_stock_out_json(uuid,boolean) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_return_json(uuid,boolean) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_confirmation_quantity(jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_purchase_unit_cost(jsonb) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_receipt_confirmation_json(uuid,boolean) from public, anon, authenticated, service_role;
 revoke all on function private.warehouse_stock_out_confirmation_json(uuid,boolean) from public, anon, authenticated, service_role;
+revoke all on function private.warehouse_return_confirmation_json(uuid,boolean) from public, anon, authenticated, service_role;
 
 revoke all on function public.create_minor_work_order_secure(jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.assign_minor_work_order_to_project_secure(uuid,text) from public, anon, authenticated, service_role;
@@ -2589,6 +3505,10 @@ revoke all on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb,te
 revoke all on function public.list_purchase_warehouse_arrivals_secure() from public, anon, authenticated, service_role;
 revoke all on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
 revoke all on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
+revoke all on function public.confirm_warehouse_return_secure(uuid,jsonb,text) from public, anon, authenticated, service_role;
+revoke all on function public.reject_warehouse_stock_out_secure(uuid,text,text) from public, anon, authenticated, service_role;
+revoke all on function public.reject_warehouse_return_secure(uuid,text,text) from public, anon, authenticated, service_role;
+revoke all on function public.list_warehouse_request_context_secure() from public, anon, authenticated, service_role;
 revoke all on function public.list_warehouse_material_cost_context_secure() from public, anon, authenticated, service_role;
 grant execute on function public.create_minor_work_order_secure(jsonb) to authenticated;
 grant execute on function public.assign_minor_work_order_to_project_secure(uuid,text) to authenticated;
@@ -2598,6 +3518,10 @@ grant execute on function public.submit_warehouse_return_secure(uuid,jsonb,jsonb
 grant execute on function public.list_purchase_warehouse_arrivals_secure() to authenticated;
 grant execute on function public.confirm_warehouse_receipt_secure(uuid,jsonb,text) to authenticated;
 grant execute on function public.confirm_warehouse_stock_out_secure(uuid,jsonb,text) to authenticated;
+grant execute on function public.confirm_warehouse_return_secure(uuid,jsonb,text) to authenticated;
+grant execute on function public.reject_warehouse_stock_out_secure(uuid,text,text) to authenticated;
+grant execute on function public.reject_warehouse_return_secure(uuid,text,text) to authenticated;
+grant execute on function public.list_warehouse_request_context_secure() to authenticated;
 grant execute on function public.list_warehouse_material_cost_context_secure() to authenticated;
 
 commit;

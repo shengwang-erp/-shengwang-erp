@@ -169,6 +169,37 @@ test('warehouse-issued material preserves safe four-decimal frozen cost in proje
   )
 })
 
+test('minor-work full return remains a zero audit fact and a formal return reverses project cost', () => {
+  const minorId = '77777777-7777-4777-8777-777777777777'
+  const returnId = '88888888-8888-4888-8888-888888888888'
+  const stockOutId = '99999999-9999-4999-8999-999999999999'
+  const costs = [{
+    costRecordId: `WAREHOUSE-MWO:${minorId}`,
+    projectId: 'P1', costType: '材料费', amount: 0, date: '2026-07-09',
+    sourceType: 'warehouse', sourceDocumentId: minorId,
+    sourceDocumentType: 'warehouse_minor_work_order', sourcePurchaseRecordKeys: [],
+    sourceStockOutIds: [stockOutId],
+  }, {
+    costRecordId: `WAREHOUSE-SR:${returnId}`,
+    projectId: 'P1', costType: '材料费', amount: -90, date: '2026-07-09',
+    sourceType: 'warehouseReversal', sourceDocumentId: returnId,
+    sourceDocumentType: 'warehouse_return', sourcePurchaseRecordKeys: [],
+    sourceStockOutIds: [stockOutId],
+  }]
+  const model = buildCostAccountingReadModel(julyFixture({
+    purchaseRows: [], manualProjectCosts: costs,
+    fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    operatingExpenses: [],
+  }))
+  assert.equal(model.companyMonthlyTotal.purchase, -90)
+  assert.equal(model.projectLifetimeById.P1.purchase, -90)
+  assert.equal(
+    model.anomalies.some(({ source, code }) =>
+      source === 'warehouseMaterialCosts' && code === 'invalid_amount'),
+    false,
+  )
+})
+
 test('warehouse-issued four-decimal costs aggregate in fixed 1/10000 yen units', () => {
   const costs = [
     ['33333333-3333-4333-8333-333333333333', 0.1],

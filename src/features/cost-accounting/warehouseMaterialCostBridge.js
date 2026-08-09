@@ -67,11 +67,12 @@ function validIdentifier(value) {
   return typeof value === 'string' && IDENTIFIER_PATTERN.test(value)
 }
 
-function validWarehouseAmount(value, sourceType) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || Object.is(value, -0) || value === 0 ||
+function validWarehouseAmount(value, sourceType, sourceDocumentType) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Object.is(value, -0) ||
       Math.abs(value) > MAX_WAREHOUSE_MATERIAL_COST ||
       Number(Math.abs(value).toFixed(4)) !== Math.abs(value)) return false
-  return sourceType === 'warehouse' ? value > 0 : value < 0
+  if (sourceType === 'warehouseReversal') return value < 0
+  return sourceDocumentType === 'warehouse_minor_work_order' ? value >= 0 : value > 0
 }
 
 function deepFreeze(value) {
@@ -101,7 +102,8 @@ export function normalizeWarehouseMaterialCost(record) {
       : costRecordId === `WAREHOUSE-SO:${sourceDocumentId}`
   if (!plainDataObject(record) || !validSource || !UUID_PATTERN.test(sourceDocumentId || '') ||
       !validKey || !validIdentifier(projectId) || dataValue(record, 'costType') !== '材料费' ||
-      !validWarehouseAmount(amount, sourceType) || !Array.isArray(sourcePurchaseRecordKeys) ||
+      !validWarehouseAmount(amount, sourceType, sourceDocumentType) ||
+      !Array.isArray(sourcePurchaseRecordKeys) ||
       Object.getPrototypeOf(sourcePurchaseRecordKeys) !== Array.prototype ||
       sourcePurchaseRecordKeys.some((key) => !validIdentifier(key)) ||
       new Set(sourcePurchaseRecordKeys).size !== sourcePurchaseRecordKeys.length ||

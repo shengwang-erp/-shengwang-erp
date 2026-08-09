@@ -449,3 +449,121 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.warehouse-management-page.warehouse-request-page {
+  display: grid;
+  gap: 18px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-canvas);
+}
+
+.warehouse-management-page .warehouse-request-header,
+.warehouse-management-page .warehouse-request-panel {
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 16px;
+  background: var(--erp-bg-surface);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.warehouse-management-page .warehouse-request-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px;
+}
+
+.warehouse-management-page .warehouse-request-header p {
+  margin: 0;
+  color: var(--erp-accent-gold);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.warehouse-management-page .warehouse-request-header h1,
+.warehouse-management-page .warehouse-request-panel h2 { margin: 4px 0 0; }
+.warehouse-management-page .warehouse-request-panel { padding: 20px; }
+.warehouse-management-page .warehouse-request-panel-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.warehouse-management-page .warehouse-request-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+.warehouse-management-page .warehouse-request-field { display: grid; gap: 7px; }
+.warehouse-management-page .warehouse-request-field > span {
+  color: var(--erp-text-secondary); font-size: 0.85rem; font-weight: 650;
+}
+.warehouse-management-page .warehouse-request-field input,
+.warehouse-management-page .warehouse-request-field select,
+.warehouse-management-page .warehouse-request-field textarea {
+  width: 100%; min-height: 44px; box-sizing: border-box;
+  border: 1px solid var(--erp-border-subtle); border-radius: 10px; padding: 10px 12px;
+  color: var(--erp-text-primary); background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-request-field textarea { min-height: 86px; resize: vertical; }
+.warehouse-management-page .warehouse-request-variant {
+  grid-column: 1 / -1; display: flex; gap: 14px; padding: 14px;
+  border: 1px solid var(--erp-border-subtle); border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-request-variant img {
+  width: 88px; height: 88px; object-fit: cover; border-radius: 10px;
+}
+.warehouse-management-page .warehouse-request-variant div { display: grid; gap: 4px; }
+.warehouse-management-page .warehouse-request-variant span { color: var(--erp-text-secondary); }
+.warehouse-management-page .warehouse-request-stock { grid-column: 1 / -1; margin: 0; }
+.warehouse-management-page .warehouse-request-distribution {
+  grid-column: 1 / -1; display: grid; gap: 5px; padding: 12px;
+  border: 1px solid var(--erp-border-subtle); border-radius: 10px;
+  color: var(--erp-text-secondary); background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-request-minor-create {
+  grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; border: 1px solid var(--erp-border-gold-muted); border-radius: 12px; padding: 14px;
+}
+.warehouse-management-page .warehouse-request-minor-create legend { color: var(--erp-accent-gold); font-weight: 700; }
+.warehouse-management-page .warehouse-request-confirm-line { display: grid; gap: 8px; }
+.warehouse-management-page .warehouse-request-stock.is-low { color: var(--erp-danger); }
+.warehouse-management-page .warehouse-request-alert {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border-radius: 12px;
+}
+.warehouse-management-page .warehouse-request-alert.is-error { border: 1px solid var(--erp-danger); }
+.warehouse-management-page .warehouse-request-alert.is-success { border: 1px solid var(--erp-accent-gold); }
+.warehouse-management-page .warehouse-request-list { display: grid; gap: 12px; margin-top: 14px; }
+.warehouse-management-page .warehouse-request-card {
+  padding: 14px; border: 1px solid var(--erp-border-subtle); border-radius: 12px;
+  background: var(--erp-bg-elevated);
+}
+.warehouse-management-page .warehouse-request-card > div {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.warehouse-management-page .warehouse-request-status {
+  padding: 4px 9px; border: 1px solid var(--erp-border-gold-muted); border-radius: 999px;
+  color: var(--erp-accent-gold); font-size: 0.76rem;
+}
+.warehouse-management-page .warehouse-request-card > .warehouse-request-decision-actions {
+  display: grid;
+  align-items: stretch;
+  justify-content: initial;
+  gap: 10px;
+  margin-top: 12px;
+}
+.warehouse-management-page .warehouse-request-empty { color: var(--erp-text-secondary); }
+
+@media (max-width: 720px) {
+  .warehouse-management-page .warehouse-request-header,
+  .warehouse-management-page .warehouse-request-panel-title { align-items: stretch; flex-direction: column; }
+  .warehouse-management-page .warehouse-request-form { grid-template-columns: minmax(0, 1fr); }
+  .warehouse-management-page .warehouse-request-variant,
+  .warehouse-management-page .warehouse-request-stock,
+  .warehouse-management-page .warehouse-request-distribution,
+  .warehouse-management-page .warehouse-request-minor-create { grid-column: 1; }
+  .warehouse-management-page .warehouse-request-minor-create { grid-template-columns: minmax(0, 1fr); }
+  .warehouse-management-page .warehouse-request-page button,
+  .warehouse-management-page.warehouse-request-page button { min-height: 44px; }
+}

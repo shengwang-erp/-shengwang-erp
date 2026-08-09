@@ -6,11 +6,42 @@ const IDS = Object.freeze({
   receiptLine: 'a1100000-0000-4000-8000-000000000001',
   request: 'a2000000-0000-4000-8000-000000000001',
   stockOutLine: 'a2100000-0000-4000-8000-000000000001',
+  returnRequest: 'a2200000-0000-4000-8000-000000000001',
+  returnLine: 'a2300000-0000-4000-8000-000000000001',
   variant: 'a3000000-0000-4000-8000-000000000001',
   warehouse: 'a4000000-0000-4000-8000-000000000001',
   location: 'a4100000-0000-4000-8000-000000000001',
   submitter: 'a5000000-0000-4000-8000-000000000001',
   confirmer: 'a5000000-0000-4000-8000-000000000002',
+})
+
+const returnResult = Object.freeze({
+  id: IDS.returnRequest,
+  originalStockOutId: IDS.request,
+  destinationType: 'internal_use',
+  projectId: null,
+  minorWorkOrderId: null,
+  destinationNameSnapshot: '公司内部使用',
+  reason: '未使用',
+  receiver: '仓库负责人',
+  requestDate: '2026-08-09',
+  status: 'confirmed',
+  submittedByEmployeeProfileId: IDS.submitter,
+  submittedAt: '2026-08-09T00:30:00+00:00',
+  confirmedByEmployeeProfileId: IDS.confirmer,
+  confirmedAt: '2026-08-09T03:00:00+00:00',
+  rejectionReason: null,
+  idempotencyKey: 'return-submit-1',
+  confirmationIdempotencyKey: 'return-confirm-1',
+  lines: [{
+    id: IDS.returnLine,
+    returnId: IDS.returnRequest,
+    originalStockOutLineId: IDS.stockOutLine,
+    variantId: IDS.variant,
+    requestedQuantity: 1,
+    confirmedQuantity: 1,
+    frozenTotalCost: 100,
+  }],
 })
 
 const receiptResult = Object.freeze({
@@ -92,6 +123,9 @@ test('confirmation methods call only secure RPCs with canonical server-authorita
     confirm_warehouse_stock_out_secure: {
       data: stockOutResult, error: null, status: 200,
     },
+    confirm_warehouse_return_secure: {
+      data: returnResult, error: null, status: 200,
+    },
   })
   const service = createWarehouseConfirmationService(client, { configured: true, viewCost: true })
 
@@ -114,6 +148,11 @@ test('confirmation methods call only secure RPCs with canonical server-authorita
       warehouseId: IDS.warehouse,
       locationId: IDS.location,
     }],
+  })
+  const returned = await service.confirmReturn({
+    returnId: IDS.returnRequest,
+    idempotencyKey: 'return-confirm-1',
+    lines: [{ returnLineId: IDS.returnLine, confirmedQuantity: 1 }],
   })
 
   assert.deepEqual(calls, [
@@ -143,14 +182,279 @@ test('confirmation methods call only secure RPCs with canonical server-authorita
         p_idempotency_key: 'stock-confirm-1',
       },
     },
+    {
+      name: 'confirm_warehouse_return_secure',
+      args: {
+        p_return_id: IDS.returnRequest,
+        p_lines: [{ returnLineId: IDS.returnLine, confirmedQuantity: 1 }],
+        p_idempotency_key: 'return-confirm-1',
+      },
+    },
   ])
   assert.deepEqual(receipt, receiptResult)
   assert.deepEqual(stockOut, stockOutResult)
+  assert.deepEqual(returned, returnResult)
   assert.equal(Object.isFrozen(receipt), true)
   assert.equal(Object.isFrozen(receipt.lines), true)
   assert.equal(Object.isFrozen(receipt.lines[0]), true)
   assert.equal(Object.isFrozen(stockOut), true)
   assert.equal(Object.isFrozen(stockOut.lines[0]), true)
+  assert.equal(Object.isFrozen(returned.lines[0]), true)
+})
+
+test('warehouse confirmer can reject pending stock-out and return documents with exact audit binding', async () => {
+  const { createWarehouseConfirmationService } = await loadService()
+  const stockRejected = {
+    id: IDS.request, destinationType: 'internal_use', projectId: null,
+    minorWorkOrderId: null, destinationNameSnapshot: '公司内部使用',
+    purpose: '维修', receiver: '王师傅', requestDate: '2026-08-09',
+    status: 'rejected', submittedByEmployeeProfileId: IDS.submitter,
+    submittedAt: '2026-08-09T00:00:00+00:00',
+    confirmedByEmployeeProfileId: IDS.confirmer,
+    confirmedAt: '2026-08-09T02:00:00+00:00', rejectionReason: '库存不足',
+    idempotencyKey: 'stock-submit-1', confirmationIdempotencyKey: 'stock-reject-1',
+    lines: [{
+      id: IDS.stockOutLine, requestId: IDS.request, variantId: IDS.variant,
+      requestedQuantity: 3, confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  const returnRejected = {
+    id: IDS.returnRequest, originalStockOutId: IDS.request, reason: '未使用',
+    receiver: '仓库负责人', requestDate: '2026-08-09', status: 'rejected',
+    submittedByEmployeeProfileId: IDS.submitter,
+    submittedAt: '2026-08-09T00:30:00+00:00',
+    confirmedByEmployeeProfileId: IDS.confirmer,
+    confirmedAt: '2026-08-09T03:00:00+00:00', rejectionReason: '重复退回',
+    idempotencyKey: 'return-submit-1', confirmationIdempotencyKey: 'return-reject-1',
+    lines: [{
+      id: IDS.returnLine, returnId: IDS.returnRequest,
+      originalStockOutLineId: IDS.stockOutLine,
+      requestedQuantity: 1, confirmedQuantity: null, frozenTotalCost: null,
+    }],
+  }
+  const { client, calls } = rpcClient({
+    reject_warehouse_stock_out_secure: { data: stockRejected, error: null, status: 200 },
+    reject_warehouse_return_secure: { data: returnRejected, error: null, status: 200 },
+  })
+  const service = createWarehouseConfirmationService(client, { configured: true })
+
+  assert.deepEqual(await service.rejectStockOut({
+    requestId: IDS.request, reason: '库存不足', idempotencyKey: 'stock-reject-1',
+  }), stockRejected)
+  assert.deepEqual(await service.rejectReturn({
+    returnId: IDS.returnRequest, reason: '重复退回', idempotencyKey: 'return-reject-1',
+  }), returnRejected)
+  assert.deepEqual(calls, [
+    {
+      name: 'reject_warehouse_stock_out_secure',
+      args: {
+        p_request_id: IDS.request,
+        p_reason: '库存不足',
+        p_idempotency_key: 'stock-reject-1',
+      },
+    },
+    {
+      name: 'reject_warehouse_return_secure',
+      args: {
+        p_return_id: IDS.returnRequest,
+        p_reason: '重复退回',
+        p_idempotency_key: 'return-reject-1',
+      },
+    },
+  ])
+})
+
+test('return confirmation never accepts client warehouse, batch, variant or cost authority', async () => {
+  const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
+  const { client, calls } = rpcClient({})
+  const service = createWarehouseConfirmationService(client, { configured: true, viewCost: true })
+  const line = { returnLineId: IDS.returnLine, confirmedQuantity: 1 }
+  for (const extra of [
+    { warehouseId: IDS.warehouse }, { locationId: IDS.location },
+    { variantId: IDS.variant }, { batchId: IDS.receipt }, { unitCost: 1 },
+  ]) {
+    await assert.rejects(
+      service.confirmReturn({
+        returnId: IDS.returnRequest,
+        idempotencyKey: 'return-confirm-input',
+        lines: [{ ...line, ...extra }],
+      }),
+      (error) => error instanceof WarehouseConfirmationServiceError
+        && error.code === 'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+    )
+  }
+  assert.equal(calls.length, 0)
+})
+
+test('request context uses the secure read RPC and enforces cost redaction', async () => {
+  const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
+  const context = { stockOutRequests: [], returnRequests: [], minorWorkOrders: [] }
+  const { client, calls } = rpcClient({
+    list_warehouse_request_context_secure: { data: context, error: null, status: 200 },
+  })
+  assert.deepEqual(
+    await createWarehouseConfirmationService(client, { configured: true, viewCost: false })
+      .listRequestContext(),
+    context,
+  )
+  assert.deepEqual(calls, [{ name: 'list_warehouse_request_context_secure', args: {} }])
+  const unsafe = { stockOutRequests: [{ frozenTotalCost: 1 }], returnRequests: [], minorWorkOrders: [] }
+  const result = rpcClient({
+    list_warehouse_request_context_secure: { data: unsafe, error: null, status: 200 },
+  })
+  await assert.rejects(
+    createWarehouseConfirmationService(result.client, { configured: true, viewCost: false })
+      .listRequestContext(),
+    (error) => error instanceof WarehouseConfirmationServiceError
+      && error.code === 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+  )
+})
+
+test('request context rejects every malformed nested row without coercion', async () => {
+  const { createWarehouseConfirmationService, WarehouseConfirmationServiceError } = await loadService()
+  const valid = () => ({
+    stockOutRequests: [{
+      id: IDS.request, destinationType: 'internal_use', projectId: null,
+      minorWorkOrderId: null, destinationNameSnapshot: '公司内部使用', purpose: '维修',
+      receiver: '王师傅', requestDate: '2026-08-09', status: 'confirmed',
+      submittedByEmployeeProfileId: IDS.submitter, submittedAt: '2026-08-09T00:00:00Z',
+      confirmedByEmployeeProfileId: IDS.confirmer, confirmedAt: '2026-08-09T01:00:00Z',
+      rejectionReason: null,
+      lines: [{
+        id: IDS.stockOutLine, requestId: IDS.request, variantId: IDS.variant,
+        requestedQuantity: 2, confirmedQuantity: 1, remainingReturnable: 1,
+        frozenTotalCost: null,
+      }],
+    }],
+    returnRequests: [{
+      id: IDS.returnRequest, originalStockOutId: IDS.request,
+      destinationType: 'internal_use', projectId: null, minorWorkOrderId: null,
+      destinationNameSnapshot: '公司内部使用', reason: '未使用', receiver: '王师傅',
+      requestDate: '2026-08-09', status: 'pending',
+      submittedByEmployeeProfileId: IDS.submitter, submittedAt: '2026-08-09T02:00:00Z',
+      confirmedByEmployeeProfileId: null, confirmedAt: null, rejectionReason: null,
+      lines: [{
+        id: IDS.returnLine, returnId: IDS.returnRequest,
+        originalStockOutLineId: IDS.stockOutLine, variantId: IDS.variant,
+        requestedQuantity: 1, confirmedQuantity: null, frozenTotalCost: null,
+      }],
+    }],
+    minorWorkOrders: [{
+      id: 'a6000000-0000-4000-8000-000000000001', title: '小工事',
+      customerName: '未来社', workDate: '2026-08-09', locationText: '东京',
+      description: '', status: 'open', assignedProjectId: null, materialCost: null,
+      createdByEmployeeProfileId: IDS.submitter, createdAt: '2026-08-09T00:00:00Z',
+      updatedAt: '2026-08-09T00:00:00Z',
+    }],
+  })
+  let coercions = 0
+  const coercionValue = {}
+  Object.defineProperty(coercionValue, Symbol.toPrimitive, {
+    get() { coercions += 1; return () => '1' },
+  })
+  const mutations = [
+    (data) => { data.stockOutRequests[0].extra = true },
+    (data) => { data.stockOutRequests[0].lines[Symbol('hidden')] = true },
+    (data) => { delete data.stockOutRequests[0].status },
+    (data) => Object.defineProperty(data.stockOutRequests[0], 'purpose', { enumerable: true, get() { throw new Error('must not run') } }),
+    (data) => { data.stockOutRequests[0][Symbol('hostile')] = true },
+    (data) => Object.defineProperty(data.stockOutRequests[0], '__proto__', { enumerable: true, value: { polluted: true } }),
+    (data) => { data.stockOutRequests[0].constructor = 'hostile' },
+    (data) => { data.stockOutRequests[0].id = 'not-a-uuid' },
+    (data) => { data.stockOutRequests[0].status = 'approved' },
+    (data) => { data.stockOutRequests[0].lines[0].requestedQuantity = -1 },
+    (data) => { data.stockOutRequests[0].lines[0].requestedQuantity = 0.0001 },
+    (data) => { data.stockOutRequests[0].lines[0].remainingReturnable = 2 },
+    (data) => { data.stockOutRequests[0].lines[0].requestId = IDS.returnRequest },
+    (data) => { data.returnRequests[0].lines[0].returnId = IDS.request },
+    (data) => { data.stockOutRequests[0].lines[0].frozenTotalCost = 1 },
+    (data) => { data.stockOutRequests[0].destinationType = 'project' },
+    (data) => { data.stockOutRequests[0].destinationType = 'minor_work_order' },
+    (data) => { data.stockOutRequests[0].projectId = 'P-1' },
+    (data) => {
+      Object.assign(data.stockOutRequests[0], {
+        status: 'pending', confirmedByEmployeeProfileId: null, confirmedAt: null,
+      })
+    },
+    (data) => {
+      Object.assign(data.stockOutRequests[0], {
+        status: 'rejected', confirmedByEmployeeProfileId: IDS.confirmer,
+        confirmedAt: '2026-08-09T01:00:00Z',
+        rejectionReason: '库存不足',
+      })
+    },
+    (data) => {
+      data.stockOutRequests[0].lines[0].confirmedQuantity = null
+      data.stockOutRequests[0].lines[0].remainingReturnable = 0
+    },
+    (data) => {
+      data.stockOutRequests[0].status = 'void'
+      data.stockOutRequests[0].lines[0].confirmedQuantity = null
+    },
+    (data) => { data.minorWorkOrders[0].status = 'mystery' },
+    (data) => { data.minorWorkOrders[0].assignedProjectId = 'P-1' },
+    (data) => { data.minorWorkOrders[0].status = 'assigned' },
+    (data) => { data.minorWorkOrders[0].createdAt = 'not-a-time' },
+    (data) => { data.stockOutRequests[0].lines[0].requestedQuantity = coercionValue },
+  ]
+  for (const mutate of mutations) {
+    const data = valid()
+    mutate(data)
+    const { client } = rpcClient({
+      list_warehouse_request_context_secure: { data, error: null, status: 200 },
+    })
+    await assert.rejects(
+      createWarehouseConfirmationService(client, { configured: true, viewCost: false })
+        .listRequestContext(),
+      (error) => error instanceof WarehouseConfirmationServiceError
+        && error.code === 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    )
+  }
+  for (const mutate of [
+    (data) => { data.returnRequests = []; data.stockOutRequests = []; data.minorWorkOrders[0].materialCost = -1 },
+  ]) {
+    const data = valid()
+    data.stockOutRequests[0].lines[0].frozenTotalCost = 1
+    mutate(data)
+    const { client } = rpcClient({
+      list_warehouse_request_context_secure: { data, error: null, status: 200 },
+    })
+    await assert.rejects(
+      createWarehouseConfirmationService(client, { configured: true, viewCost: true })
+        .listRequestContext(),
+      (error) => error instanceof WarehouseConfirmationServiceError
+        && error.code === 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    )
+  }
+  const zeroCost = valid()
+  zeroCost.stockOutRequests[0].lines[0].frozenTotalCost = 0
+  const zeroCostRpc = rpcClient({
+    list_warehouse_request_context_secure: { data: zeroCost, error: null, status: 200 },
+  })
+  assert.equal(
+    (await createWarehouseConfirmationService(
+      zeroCostRpc.client, { configured: true, viewCost: true },
+    ).listRequestContext()).stockOutRequests[0].lines[0].frozenTotalCost,
+    0,
+  )
+  const rejected = valid()
+  Object.assign(rejected.stockOutRequests[0], {
+    status: 'rejected', confirmedByEmployeeProfileId: IDS.confirmer,
+    confirmedAt: '2026-08-09T01:00:00Z', rejectionReason: '库存不足',
+  })
+  rejected.stockOutRequests[0].lines[0].confirmedQuantity = null
+  rejected.stockOutRequests[0].lines[0].remainingReturnable = 0
+  const rejectedRpc = rpcClient({
+    list_warehouse_request_context_secure: { data: rejected, error: null, status: 200 },
+  })
+  assert.equal(
+    (await createWarehouseConfirmationService(
+      rejectedRpc.client, { configured: true, viewCost: false },
+    ).listRequestContext()).stockOutRequests[0].rejectionReason,
+    '库存不足',
+  )
+  assert.equal(coercions, 0)
+  assert.equal(Object.prototype.polluted, undefined)
 })
 
 test('confirmation input is exact and never accepts actor, time, price, sparse lines or excess precision', async () => {

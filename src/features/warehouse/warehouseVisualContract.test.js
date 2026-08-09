@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-const [css, source] = await Promise.all([
+const [css, source, requestSource] = await Promise.all([
   readFile(new URL('./warehouse.css', import.meta.url), 'utf8').catch(() => ''),
   readFile(new URL('./WarehouseCatalog.jsx', import.meta.url), 'utf8').catch(() => ''),
+  readFile(new URL('./WarehouseRequestPage.jsx', import.meta.url), 'utf8').catch(() => ''),
 ])
 
 function selectorsFrom(sourceCss) {
@@ -46,4 +47,12 @@ test('focus is visible and warehouse catalog CSS never leaks print or global the
   assert.doesNotMatch(css, /@media\s+print|@page|color-scheme|--erp-[\w-]+\s*:/u)
   assert.doesNotMatch(css, /\.erp-black-gold|\.warehouse-label-print-sheet/u)
   assert.match(source, /<button[^>]*className="warehouse-catalog-variant-select"[^>]*onClick=\{\(\) => chooseVariant\(variant\)\}/su)
+})
+
+test('warehouse request workflow keeps the second-version black-gold responsive shell', () => {
+  assert.match(requestSource, /className="warehouse-management-page warehouse-request-page"/u)
+  assert.match(css, /\.warehouse-management-page\.warehouse-request-page\s*\{[^}]*background:\s*var\(--erp-bg-canvas\)/su)
+  assert.match(css, /\.warehouse-management-page[^{]*\.warehouse-request-panel\s*\{[^}]*background:\s*var\(--erp-bg-surface\)/su)
+  assert.match(css, /@media\s*\(max-width:\s*720px\)[\s\S]*\.warehouse-management-page[^{]*\.warehouse-request-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u)
+  assert.match(css, /@media\s*\(max-width:\s*720px\)[\s\S]*\.warehouse-management-page(?:\.warehouse-request-page|[^{]*\.warehouse-request-page)[^{]*button[^}]*min-height:\s*44px/u)
 })

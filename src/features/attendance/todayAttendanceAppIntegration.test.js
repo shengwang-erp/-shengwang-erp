@@ -205,7 +205,7 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
   assert.doesNotMatch(openingTag, /\bprojects\s*=/u)
   assert.equal(
     (authenticatedApp.match(/return renderInDesktopShell\(/gu) || []).length,
-    16,
+    17,
   )
 })
 

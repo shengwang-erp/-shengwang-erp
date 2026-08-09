@@ -114,6 +114,31 @@ test('warehouse reversal costs use an explicit negative amount and never forge a
   assert.deepEqual(normalized.sourcePurchaseRecordKeys, [])
 })
 
+test('only a protected minor-work aggregate may retain an auditable zero net cost', () => {
+  const minorId = '33333333-3333-4333-8333-333333333333'
+  const zero = warehouseCost({
+    costRecordId: `WAREHOUSE-MWO:${minorId}`,
+    amount: 0,
+    sourceDocumentId: minorId,
+    sourceDocumentType: 'warehouse_minor_work_order',
+    sourceStockOutIds: ['11111111-1111-4111-8111-111111111111'],
+  })
+  assert.equal(normalizeWarehouseMaterialCost(zero).amount, 0)
+  assert.throws(
+    () => normalizeWarehouseMaterialCost(warehouseCost({ amount: 0 })),
+    /warehouse material cost is invalid/u,
+  )
+  assert.throws(
+    () => normalizeWarehouseMaterialCost({
+      ...zero,
+      costRecordId: `WAREHOUSE-SR:${minorId}`,
+      sourceType: 'warehouseReversal',
+      sourceDocumentType: 'warehouse_return',
+    }),
+    /warehouse material cost is invalid/u,
+  )
+})
+
 test('bridge requires exact plain input and does not execute accessors', () => {
   let reads = 0
   const accessor = {}

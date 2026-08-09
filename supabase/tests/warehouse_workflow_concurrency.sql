@@ -127,10 +127,10 @@ insert into public.warehouse_receipt_lines(
 
 insert into public.warehouse_stock_out_requests(
   id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
-  submitted_by_employee_profile_id, idempotency_key
+  submitted_by_employee_profile_id, idempotency_key, submission_payload
 ) values
-  ('dec00000-0000-4000-8000-000000000001', 'internal_use', '公司内部使用', '并发不足一', '测试员', '2026-08-09', 'de600000-0000-4000-8000-000000000001', 't3-race-stock-submit-a'),
-  ('dec00000-0000-4000-8000-000000000002', 'internal_use', '公司内部使用', '并发不足二', '测试员', '2026-08-09', 'de600000-0000-4000-8000-000000000001', 't3-race-stock-submit-b');
+  ('dec00000-0000-4000-8000-000000000001', 'internal_use', '公司内部使用', '并发不足一', '测试员', '2026-08-09', 'de600000-0000-4000-8000-000000000001', 't3-race-stock-submit-a', '{}'),
+  ('dec00000-0000-4000-8000-000000000002', 'internal_use', '公司内部使用', '并发不足二', '测试员', '2026-08-09', 'de600000-0000-4000-8000-000000000001', 't3-race-stock-submit-b', '{}');
 insert into public.warehouse_stock_out_lines(
   id, request_id, variant_id, requested_quantity
 ) values

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getList,
   isCloudDatabaseReady,
@@ -86,10 +86,15 @@ import { projectService } from './services/projectService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
 import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
 import { purchaseService } from './services/purchaseService.js'
+import { createWarehouseService } from './services/warehouseService.js'
+import { createWarehouseConfirmationService } from './services/warehouseConfirmationService.js'
+import { createWarehouseMediaService } from './services/warehouseMediaService.js'
 import {
   purchaseWarehouseBridge,
   resolvePurchaseArrivalStatus,
 } from './features/warehouse/purchaseWarehouseBridge.js'
+
+const WarehouseRequestPage = lazy(() => import('./features/warehouse/WarehouseRequestPage.jsx'))
 import {
   classifyBusinessSourceError,
   toBusinessSourceState,
@@ -104,6 +109,7 @@ import {
   getDashboardAccess,
   getPurchaseAccess,
   getVisibleAdminRoutes,
+  getWarehouseAccess,
 } from './auth/businessAccess.js'
 import { getAdminRoute } from './navigation/adminRoutes.js'
 
@@ -2234,6 +2240,18 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const accountingAccess = getAccountingAccess(currentUser)
   const purchaseAccess = getPurchaseAccess(currentUser)
   const dashboardAccess = getDashboardAccess(currentUser)
+  const warehouseAccess = getWarehouseAccess(currentUser)
+  const warehouseRequestService = useMemo(() => createWarehouseService(supabase, {
+    configured: Boolean(supabase), viewCost: warehouseAccess.viewCost,
+  }), [warehouseAccess.viewCost])
+  const warehouseConfirmationService = useMemo(() => createWarehouseConfirmationService(
+    supabase,
+    { configured: Boolean(supabase), viewCost: warehouseAccess.viewCost },
+  ), [warehouseAccess.viewCost])
+  const warehouseRequestMediaService = useMemo(() => createWarehouseMediaService(
+    supabase,
+    { configured: Boolean(supabase) },
+  ), [])
   const accountingReadAccess = {
     salary: accountingAccess.salary.view || dashboardAccess.labor.amounts,
     projectCost: accountingAccess.projectCost.view || dashboardAccess.costCategories.manualSupplement,
@@ -3996,6 +4014,27 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         }
         onBack={() => handlePersonnelAwareNavigate('home')}
       />
+    )
+  }
+
+  if (authorizedView === 'stockOut' || authorizedView === 'stockReturn') {
+    if (!warehouseAccess.requestStockFlow && !warehouseAccess.confirmStockFlow) return null
+    return renderInDesktopShell(
+      <Suspense fallback={<main className="warehouse-management-page"><p>正在载入仓库申请…</p></main>}>
+        <WarehouseRequestPage
+          mode={authorizedView}
+          projects={projects}
+          currentUser={currentUser}
+          onBack={() => handlePersonnelAwareNavigate('home')}
+          onAuthInvalid={onLogout}
+          warehouseService={warehouseRequestService}
+          confirmationService={warehouseConfirmationService}
+          warehouseMediaService={warehouseRequestMediaService}
+          viewCost={warehouseAccess.viewCost}
+          canRequest={warehouseAccess.requestStockFlow}
+          canConfirm={warehouseAccess.confirmStockFlow}
+        />
+      </Suspense>
     )
   }
 

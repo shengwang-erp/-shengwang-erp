@@ -140,8 +140,8 @@ export function addSafeSignedCostAccountingAmounts(left, right) {
 }
 
 function safeWarehouseYen(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 &&
-    value <= MAX_WAREHOUSE_MATERIAL_COST &&
+  return typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0) &&
+    Math.abs(value) <= MAX_WAREHOUSE_MATERIAL_COST &&
     fixedCostUnits(value) !== null
     ? value
     : null
@@ -412,14 +412,16 @@ function sumCostParts(parts) {
   let total = 0
   for (const amount of parts) {
     if (amount === null) return null
-    total = addSafeCostAccountingAmounts(total, amount)
+    total = addSafeSignedCostAccountingAmounts(total, amount)
     if (total === null) return null
   }
   return total
 }
 
-function tryAdd(target, category, amount) {
-  const total = addSafeCostAccountingAmounts(target[category], amount)
+function tryAdd(target, category, amount, signed = false) {
+  const total = signed
+    ? addSafeSignedCostAccountingAmounts(target[category], amount)
+    : addSafeCostAccountingAmounts(target[category], amount)
   if (total === null) return false
   target[category] = total
   return true
@@ -578,7 +580,7 @@ export function buildCostAccountingReadModel(input) {
     }
     let overflowed = false
     for (const target of targets) {
-      if (!tryAdd(target, category, amount)) overflowed = true
+      if (!tryAdd(target, category, amount, source === 'warehouseMaterialCosts')) overflowed = true
     }
     if (overflowed) {
       anomaly(anomalies, source, recordId, 'amount_overflow', '金额累计超出安全整数范围。')

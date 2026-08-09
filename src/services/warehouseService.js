@@ -812,30 +812,68 @@ function bindReceiptResponse(candidate, request, viewCost) {
 }
 
 function bindStockOutResponse(candidate, request, viewCost) {
-  const result = requirePendingDocument(validateStockOut(candidate, viewCost))
+  const result = validateStockOut(candidate, viewCost)
   const expected = request.p_request
+  const allConfirmed = result.lines.every((line) => line.confirmedQuantity !== null)
+  const noneConfirmed = result.lines.every((line) => line.confirmedQuantity === null)
+  const allFrozen = result.lines.every((line) =>
+    viewCost ? line.frozenTotalCost !== null : line.frozenTotalCost === null)
+  const noneFrozen = result.lines.every((line) => line.frozenTotalCost === null)
+  const pendingAudit = result.confirmedByEmployeeProfileId === null &&
+    result.confirmedAt === null && result.rejectionReason === null
+  const terminalAudit = result.confirmedByEmployeeProfileId !== null &&
+    result.confirmedAt !== null
+  const validState = (
+    result.status === 'pending' && pendingAudit && noneConfirmed && noneFrozen
+  ) || (
+    result.status === 'confirmed' && terminalAudit && result.rejectionReason === null &&
+    allConfirmed && allFrozen
+  ) || (
+    result.status === 'rejected' && terminalAudit && result.rejectionReason !== null &&
+    noneConfirmed && noneFrozen
+  ) || (
+    result.status === 'void' && terminalAudit && result.rejectionReason !== null &&
+    ((allConfirmed && allFrozen) || (noneConfirmed && noneFrozen))
+  )
   if (
-    result.idempotencyKey !== request.p_idempotency_key ||
+    !validState || result.idempotencyKey !== request.p_idempotency_key ||
     [
       'destinationType', 'projectId', 'minorWorkOrderId', 'destinationNameSnapshot',
       'purpose', 'receiver', 'requestDate',
-    ].some((field) => result[field] !== expected[field]) ||
-    result.lines.some((line) =>
-      line.confirmedQuantity !== null || line.frozenTotalCost !== null)
+    ].some((field) => result[field] !== expected[field])
   ) throw invalidResponse()
   sameLineSet(result.lines, request.p_lines, ['variantId', 'requestedQuantity'])
   return result
 }
 
 function bindReturnResponse(candidate, request, viewCost) {
-  const result = requirePendingDocument(validateReturn(candidate, viewCost))
+  const result = validateReturn(candidate, viewCost)
   const expected = request.p_request
+  const allConfirmed = result.lines.every((line) => line.confirmedQuantity !== null)
+  const noneConfirmed = result.lines.every((line) => line.confirmedQuantity === null)
+  const allFrozen = result.lines.every((line) =>
+    viewCost ? line.frozenTotalCost !== null : line.frozenTotalCost === null)
+  const noneFrozen = result.lines.every((line) => line.frozenTotalCost === null)
+  const pendingAudit = result.confirmedByEmployeeProfileId === null &&
+    result.confirmedAt === null && result.rejectionReason === null
+  const terminalAudit = result.confirmedByEmployeeProfileId !== null &&
+    result.confirmedAt !== null
+  const validState = (
+    result.status === 'pending' && pendingAudit && noneConfirmed && noneFrozen
+  ) || (
+    result.status === 'confirmed' && terminalAudit && result.rejectionReason === null &&
+    allConfirmed && allFrozen
+  ) || (
+    result.status === 'rejected' && terminalAudit && result.rejectionReason !== null &&
+    noneConfirmed && noneFrozen
+  ) || (
+    result.status === 'void' && terminalAudit && result.rejectionReason !== null &&
+    ((allConfirmed && allFrozen) || (noneConfirmed && noneFrozen))
+  )
   if (
-    result.originalStockOutId !== request.p_original_stock_out_id ||
+    !validState || result.originalStockOutId !== request.p_original_stock_out_id ||
     result.idempotencyKey !== request.p_idempotency_key ||
-    ['reason', 'receiver', 'requestDate'].some((field) => result[field] !== expected[field]) ||
-    result.lines.some((line) =>
-      line.confirmedQuantity !== null || line.frozenTotalCost !== null)
+    ['reason', 'receiver', 'requestDate'].some((field) => result[field] !== expected[field])
   ) throw invalidResponse()
   sameLineSet(result.lines, request.p_lines, [
     'originalStockOutLineId', 'requestedQuantity',

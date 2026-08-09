@@ -256,7 +256,8 @@ insert into public.purchase_records(record_key, payload, status) values
   ('PO-WF-001', '{"purchaseId":"PO-WF-001","itemName":"空调铜管","quantity":6,"unit":"米","totalCost":1000}'::jsonb, 'active');
 insert into public.projects(record_key, payload, status) values
   ('P-WF-001', '{"projectId":"P-WF-001","projectName":"正式项目"}'::jsonb, 'active'),
-  ('P-WF-OTHER', '{"projectId":"P-WF-OTHER","projectName":"其他正式项目"}'::jsonb, 'active');
+  ('P-WF-OTHER', '{"projectId":"P-WF-OTHER","projectName":"其他正式项目"}'::jsonb, 'active'),
+  ('P-WF-ARCHIVE', '{"projectId":"P-WF-ARCHIVE","projectName":"归档退料测试项目"}'::jsonb, 'active');
 
 create temporary table workflow_baseline as
 select
@@ -441,6 +442,32 @@ select is(
   (select payload->>'id' from saved_receipt),
   'an exact arrival retry returns the original receipt instead of adding pending quantity'
 );
+reset role;
+insert into public.permission_grants(subject_type, subject_code, permission_key) values
+  ('department', '工程部', 'warehouse.receipt.submit'),
+  ('department', '工程部', 'module.purchases.view'),
+  ('department', '工程部', 'module.purchases.create');
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select is(
+  pg_temp.task1_error_hint($statement$
+    select public.submit_warehouse_receipt_secure(
+      'PO-WF-001',
+      '[{"variantId":"d0300000-0000-4000-8000-000000000003","requestedQuantity":1,"warehouseId":null,"locationId":null},{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":2.125,"warehouseId":null,"locationId":null}]',
+      'receipt-wf-001'
+    )
+  $statement$),
+  'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT',
+  'an exact arrival retry cannot disclose another submitter receipt'
+);
+reset role;
+delete from public.permission_grants
+where subject_type = 'department' and subject_code = '工程部'
+  and permission_key in (
+    'warehouse.receipt.submit', 'module.purchases.view', 'module.purchases.create'
+  );
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
 select is(
   pg_temp.task1_error_hint($statement$
     select public.submit_warehouse_receipt_secure(
@@ -996,12 +1023,12 @@ select throws_ok(
 insert into public.warehouse_stock_out_requests(
   id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
   status, submitted_by_employee_profile_id, confirmed_by_employee_profile_id,
-  confirmed_at, idempotency_key
+  confirmed_at, idempotency_key, submission_payload
 ) values (
   'd8200000-0000-4000-8000-000000000001', 'internal_use', '另一个出库',
   '完整性测试', '测试员', '2026-08-09', 'confirmed',
   'd0600000-0000-4000-8000-000000000001',
-  'd0600000-0000-4000-8000-000000000001', statement_timestamp(), 'other-stock-out'
+  'd0600000-0000-4000-8000-000000000001', statement_timestamp(), 'other-stock-out', '{}'
 );
 insert into public.warehouse_stock_out_lines(
   id, request_id, variant_id, requested_quantity, confirmed_quantity, frozen_total_cost
@@ -1044,7 +1071,10 @@ select is(
     with rpc(signature) as (
       values
         (to_regprocedure('public.confirm_warehouse_receipt_secure(uuid,jsonb,text)')),
-        (to_regprocedure('public.confirm_warehouse_stock_out_secure(uuid,jsonb,text)'))
+        (to_regprocedure('public.confirm_warehouse_stock_out_secure(uuid,jsonb,text)')),
+        (to_regprocedure('public.confirm_warehouse_return_secure(uuid,jsonb,text)')),
+        (to_regprocedure('public.reject_warehouse_stock_out_secure(uuid,text,text)')),
+        (to_regprocedure('public.reject_warehouse_return_secure(uuid,text,text)'))
     )
     select count(*)::integer
     from rpc
@@ -1159,6 +1189,10 @@ insert into public.warehouse_variants(
   'e1300000-0000-4000-8000-000000000001',
   'e1200000-0000-4000-8000-000000000001', 'T3-SAFE-BOUNDARY', '', '', '', '个',
   0, 0, 'SWERP:VARIANT:e1300000-0000-4000-8000-000000000001', true
+), (
+  'e1300000-0000-4000-8000-000000000002',
+  'e1200000-0000-4000-8000-000000000001', 'T3-ZERO-COST', '零价库存', '', '', '个',
+  0, 0, 'SWERP:VARIANT:e1300000-0000-4000-8000-000000000002', true
 );
 insert into public.warehouse_batches(
   id, variant_id, received_at, unit_cost, original_quantity
@@ -1168,11 +1202,16 @@ insert into public.warehouse_batches(
    '2026-08-09T00:00:00Z', 1, 1),
   ('e1400000-0000-4000-8000-000000000002',
    'e1300000-0000-4000-8000-000000000001',
-   '2026-08-09T01:00:00Z', 900719925474.0991, 1);
+   '2026-08-09T01:00:00Z', 900719925474.0991, 1),
+  ('e1400000-0000-4000-8000-000000000003',
+   'e1300000-0000-4000-8000-000000000002',
+   '2026-08-09T02:00:00Z', 0, 1);
 insert into public.warehouse_batch_locations(batch_id, location_id, quantity) values
   ('e1400000-0000-4000-8000-000000000001',
    'e1100000-0000-4000-8000-000000000002', 1),
   ('e1400000-0000-4000-8000-000000000002',
+   'e1100000-0000-4000-8000-000000000002', 1),
+  ('e1400000-0000-4000-8000-000000000003',
    'e1100000-0000-4000-8000-000000000002', 1);
 insert into public.purchase_records(record_key, payload, status) values
   ('PO-T3-100', '{"purchaseId":"PO-T3-100","itemName":"空调铜管","quantity":2,"unit":"米","totalCost":200}', 'active'),
@@ -1197,11 +1236,11 @@ insert into public.warehouse_receipt_lines(
 );
 insert into public.warehouse_stock_out_requests(
   id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
-  submitted_by_employee_profile_id, idempotency_key
+  submitted_by_employee_profile_id, idempotency_key, submission_payload
 ) values (
   'e1800000-0000-4000-8000-000000000001', 'internal_use', '公司内部使用',
   '历史超量测试', '王师傅', '2026-08-09',
-  'e1600000-0000-4000-8000-000000000001', 't3-submit-stock-oversize-requested'
+  'e1600000-0000-4000-8000-000000000001', 't3-submit-stock-oversize-requested', '{}'
 );
 insert into public.warehouse_stock_out_lines(
   id, request_id, variant_id, requested_quantity
@@ -1517,6 +1556,24 @@ select public.submit_warehouse_stock_out_secure(
   '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":4}]',
   't3-submit-stock-out'
 ) as payload;
+select is(
+  public.submit_warehouse_stock_out_secure(
+    '{"destinationType":"project","projectId":"P-WF-001","minorWorkOrderId":null,"destinationNameSnapshot":"正式项目","purpose":"FIFO验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+    '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":4}]',
+    't3-submit-stock-out'
+  )->>'id',
+  (select payload->>'id' from task3_stock_out),
+  'exact stock-out submission retry returns the original pending document'
+);
+select is(
+  pg_temp.task1_error_hint($sql$select public.submit_warehouse_stock_out_secure(
+    '{"destinationType":"project","projectId":"P-WF-001","minorWorkOrderId":null,"destinationNameSnapshot":"正式项目","purpose":"不同内容","receiver":"王师傅","requestDate":"2026-08-09"}',
+    '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":4}]',
+    't3-submit-stock-out'
+  )$sql$),
+  'WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT',
+  'same stock-out submission key rejects a different canonical payload'
+);
 select throws_ok(
   format(
     'select public.confirm_warehouse_stock_out_secure(%L,%L::jsonb,%L)',
@@ -1697,6 +1754,101 @@ select is(
    where payload->>'sourceDocumentId' = (select payload->>'id' from task3_confirmed_redacted_stock_out)),
   0::bigint,
   'internal-use confirmation creates no project cost record'
+);
+
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_zero_cost_stock_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"project","projectId":"P-WF-001","minorWorkOrderId":null,"destinationNameSnapshot":"正式项目","purpose":"零价库存验证","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"e1300000-0000-4000-8000-000000000002","requestedQuantity":1}]',
+  't3-submit-zero-cost-stock'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_confirmed_zero_cost_stock as
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task3_zero_cost_stock_out),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId', (select payload#>>'{lines,0,id}' from task3_zero_cost_stock_out),
+    'confirmedQuantity', 1,
+    'warehouseId', 'e1000000-0000-4000-8000-000000000001',
+    'locationId', 'e1100000-0000-4000-8000-000000000002'
+  )),
+  't3-confirm-zero-cost-stock'
+) as payload;
+select is(
+  (select (payload#>>'{lines,0,frozenTotalCost}')::numeric from task3_confirmed_zero_cost_stock),
+  0.0000::numeric,
+  'formal-project confirmation accepts authoritative zero-price inventory'
+);
+select is(
+  (select (request#>>'{lines,0,frozenTotalCost}')::numeric
+   from jsonb_array_elements(public.list_warehouse_request_context_secure()->'stockOutRequests') request
+   where request->>'id' = (select payload->>'id' from task3_confirmed_zero_cost_stock)),
+  0.0000::numeric,
+  'cost-authorized request context preserves a confirmed zero frozen cost'
+);
+reset role;
+select is(
+  (select count(*) from public.warehouse_inventory_movements
+   where source_document_type = 'warehouse_stock_out'
+     and source_document_id = (select payload->>'id' from task3_confirmed_zero_cost_stock)),
+  1::bigint,
+  'zero-price formal issue still posts its immutable inventory movement'
+);
+select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-SO:' || (select payload->>'id' from task3_confirmed_zero_cost_stock)),
+  0::bigint,
+  'zero-price formal issue does not create an invalid zero project-cost row'
+);
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select is(
+  (select request#>>'{lines,0,frozenTotalCost}'
+   from jsonb_array_elements(public.list_warehouse_request_context_secure()->'stockOutRequests') request
+   where request->>'id' = (select payload->>'id' from task3_confirmed_zero_cost_stock)),
+  null,
+  'cost-free confirmer context redacts an authoritative zero frozen cost'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'd0500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_zero_cost_return as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task3_confirmed_zero_cost_stock),
+  '{"reason":"零价库存退回","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object(
+    'originalStockOutLineId', (select payload#>>'{lines,0,id}' from task3_confirmed_zero_cost_stock),
+    'requestedQuantity', 1
+  )),
+  't3-submit-zero-cost-return'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub', 'e1500000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table task3_confirmed_zero_cost_return as
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task3_zero_cost_return),
+  jsonb_build_array(jsonb_build_object(
+    'returnLineId', (select payload#>>'{lines,0,id}' from task3_zero_cost_return),
+    'confirmedQuantity', 1
+  )),
+  't3-confirm-zero-cost-return'
+) as payload;
+select is(
+  (select (payload#>>'{lines,0,frozenTotalCost}')::numeric from task3_confirmed_zero_cost_return),
+  0.0000::numeric,
+  'zero-price return succeeds and preserves the historical zero cost'
+);
+reset role;
+select is(
+  (select count(*) from public.project_cost_records
+   where record_key = 'WAREHOUSE-SR:' || (select payload->>'id' from task3_confirmed_zero_cost_return)),
+  0::bigint,
+  'zero-price return creates no zero reversal cost row'
 );
 
 -- Task 4: confirmed-receipt provenance, protected cost ownership and minor-work aggregation.
@@ -2186,6 +2338,406 @@ select is(
   'void receipt retains same-key different-payload conflict protection'
 );
 reset role;
+
+select has_function('public','confirm_warehouse_return_secure',array['uuid','jsonb','text'],'secure return confirmation RPC exists');
+select has_function('public','reject_warehouse_stock_out_secure',array['uuid','text','text'],'secure stock-out rejection RPC exists');
+select has_function('public','reject_warehouse_return_secure',array['uuid','text','text'],'secure return rejection RPC exists');
+select has_function('public','list_warehouse_request_context_secure',array[]::text[],'secure request context RPC exists');
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_project_partial_return as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task3_stock_out),
+  '{"reason":"现场剩余退回","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object(
+    'originalStockOutLineId',(select payload#>>'{lines,0,id}' from task3_stock_out),
+    'requestedQuantity',2
+  )), 't5-project-partial-return-submit'
+) as payload;
+select is(
+  public.submit_warehouse_return_secure(
+    (select (payload->>'id')::uuid from task3_stock_out),
+    '{"reason":"现场剩余退回","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+    jsonb_build_array(jsonb_build_object(
+      'originalStockOutLineId',(select payload#>>'{lines,0,id}' from task3_stock_out),
+      'requestedQuantity',2
+    )), 't5-project-partial-return-submit'
+  )->>'id',
+  (select payload->>'id' from task5_project_partial_return),
+  'exact return submission retry returns the original pending document'
+);
+reset role;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_project_partial_confirmed as
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_project_partial_return),
+  jsonb_build_array(jsonb_build_object(
+    'returnLineId',(select payload#>>'{lines,0,id}' from task5_project_partial_return),
+    'confirmedQuantity',2
+  )), 't5-project-partial-return-confirm'
+) as payload;
+reset role;
+select is((select (payload#>>'{lines,0,frozenTotalCost}')::numeric from task5_project_partial_confirmed),200.0000::numeric,'partial return uses the original oldest FIFO price after later price edits');
+select results_eq(
+  $$select quantity_delta,unit_cost from public.warehouse_inventory_movements
+    where source_document_type='warehouse_return'
+      and source_document_id=(select payload->>'id' from task5_project_partial_confirmed)
+    order by id$$,
+  $$values (2.000::numeric,100.0000::numeric)$$,
+  'partial return restores the exact original batch quantity and cost'
+);
+select is((select (payload->>'amount')::numeric from public.project_cost_records where record_key='WAREHOUSE-SR:'||(select payload->>'id' from task5_project_partial_confirmed)),-200.0000::numeric,'formal project return posts an independent negative WAREHOUSE-SR cost');
+select is(
+  (select (payload->>'amount')::numeric
+   from public.project_cost_records
+   where record_key='WAREHOUSE-SR:'||(select payload->>'id' from task5_project_partial_confirmed)),
+  -(select sum(frozen_total_cost)
+    from public.warehouse_return_lines
+    where return_id=(select (payload->>'id')::uuid from task5_project_partial_confirmed)),
+  'formal project reversal equals the negative sum of stored rounded return-line totals'
+);
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select is(public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_project_partial_return),
+  jsonb_build_array(jsonb_build_object('returnLineId',(select payload#>>'{lines,0,id}' from task5_project_partial_return),'confirmedQuantity',2)),
+  't5-project-partial-return-confirm')->>'id',
+  (select payload->>'id' from task5_project_partial_confirmed),
+  'exact return retry returns the same authoritative document'
+);
+reset role;
+select is((select count(*) from public.warehouse_inventory_movements where source_document_type='warehouse_return' and source_document_id=(select payload->>'id' from task5_project_partial_confirmed)),1::bigint,'exact return retry appends no duplicate movement');
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_project_excess_return as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task3_stock_out),
+  '{"reason":"超量原子性验证","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object(
+    'originalStockOutLineId',(select payload#>>'{lines,0,id}' from task3_stock_out),
+    'requestedQuantity',3
+  )), 't5-project-excess-return-submit'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select is(pg_temp.task1_error_hint(format(
+  'select public.confirm_warehouse_return_secure(%L,%L::jsonb,%L)',
+  (select payload->>'id' from task5_project_excess_return),
+  jsonb_build_array(jsonb_build_object('returnLineId',(select payload#>>'{lines,0,id}' from task5_project_excess_return),'confirmedQuantity',3)),
+  't5-project-excess-return-confirm'
+)),'WAREHOUSE_RETURN_QUANTITY_EXCEEDED','return confirmation rejects quantity beyond original remaining');
+reset role;
+select is((select status from public.warehouse_return_requests where id=(select (payload->>'id')::uuid from task5_project_excess_return)),'pending','excess return leaves the document pending');
+select is((select count(*) from public.warehouse_inventory_movements where source_document_id=(select payload->>'id' from task5_project_excess_return)),0::bigint,'excess return atomically leaves no movement');
+
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000003',true);
+set local role authenticated;
+create temporary table task5_confirm_only_context as
+select public.list_warehouse_request_context_secure() as payload;
+reset role;
+select ok(
+  exists (
+    select 1
+    from task5_confirm_only_context,
+      jsonb_array_elements(payload->'returnRequests') request
+    where request->>'id' = (select payload->>'id' from task5_project_excess_return)
+  ),
+  'confirm-only employee can open the request context and see all pending returns'
+);
+select is(
+  (select request#>>'{lines,0,frozenTotalCost}'
+   from task5_confirm_only_context,
+     jsonb_array_elements(payload->'returnRequests') request
+   where request->>'id' = (select payload->>'id' from task5_project_excess_return)),
+  null,
+  'confirm-only employee without cost permission receives redacted request costs'
+);
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_request_only_context as
+select public.list_warehouse_request_context_secure() as payload;
+reset role;
+select ok(
+  (select coalesce(bool_and(
+    request->>'submittedByEmployeeProfileId' = 'd0600000-0000-4000-8000-000000000001'
+  ), false)
+   from task5_request_only_context,
+     jsonb_array_elements((payload->'stockOutRequests') || (payload->'returnRequests')) request),
+  'request-only employee sees only their own stock-out and return documents'
+);
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000002',true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_warehouse_request_context_secure()$$,
+  '42501', 'warehouse permission required',
+  'employee with neither stock-flow permission cannot open request context'
+);
+reset role;
+
+create temporary table task5_bulk_history_ids as
+select gen_random_uuid() as id, sequence
+from generate_series(1, 1001) sequence;
+insert into public.warehouse_stock_out_requests(
+  id, destination_type, destination_name_snapshot, purpose, receiver, request_date,
+  status, submitted_by_employee_profile_id, submitted_at,
+  confirmed_by_employee_profile_id, confirmed_at, rejection_reason,
+  idempotency_key, submission_payload
+)
+select id, 'internal_use', '批量历史记录', '上下文上限验证', '测试员', '2026-08-09',
+  'rejected', 'd0600000-0000-4000-8000-000000000001',
+  statement_timestamp() + sequence * interval '1 second',
+  'd0600000-0000-4000-8000-000000000001', statement_timestamp(), '历史驳回',
+  'task5-bulk-history-' || sequence, '{}'::jsonb
+from task5_bulk_history_ids;
+insert into public.warehouse_stock_out_lines(
+  request_id, variant_id, requested_quantity
+)
+select id, 'd0300000-0000-4000-8000-000000000001', 1
+from task5_bulk_history_ids;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_bounded_request_context as
+select public.list_warehouse_request_context_secure() as payload;
+reset role;
+select is(
+  (select jsonb_array_length(payload->'stockOutRequests') from task5_bounded_request_context),
+  1000,
+  'request context stays within the strict client document limit'
+);
+select ok(
+  exists (
+    select 1 from task5_bounded_request_context,
+      jsonb_array_elements(payload->'stockOutRequests') request
+    where request->>'id' = (select payload->>'id' from task4_atomic_conflict_out)
+  ),
+  'pending stock-out remains visible ahead of more than one thousand newer history rows'
+);
+
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_rejected_stock as
+select public.reject_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task3_short_stock_out),
+  '库存不足，申请驳回', 't5-reject-stock'
+) as payload;
+select is(
+  (select payload->>'status' from task5_rejected_stock),
+  'rejected',
+  'warehouse confirmer can reject an unfulfillable pending stock-out'
+);
+select is(
+  public.reject_warehouse_stock_out_secure(
+    (select (payload->>'id')::uuid from task3_short_stock_out),
+    '库存不足，申请驳回', 't5-reject-stock'
+  )->>'id',
+  (select payload->>'id' from task5_rejected_stock),
+  'exact stock-out rejection retry returns the original audit result'
+);
+create temporary table task5_rejected_return as
+select public.reject_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_project_excess_return),
+  '超过原出库剩余可退数量', 't5-reject-return'
+) as payload;
+select is(
+  (select payload->>'status' from task5_rejected_return),
+  'rejected',
+  'warehouse confirmer can reject a conflicting pending return'
+);
+select is(
+  public.reject_warehouse_return_secure(
+    (select (payload->>'id')::uuid from task5_project_excess_return),
+    '超过原出库剩余可退数量', 't5-reject-return'
+  )->>'id',
+  (select payload->>'id' from task5_rejected_return),
+  'exact return rejection retry returns the original audit result'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_minor_return_before as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task4_minor_before_assignment),
+  '{"reason":"小工事全部退回一","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object('originalStockOutLineId',(select payload#>>'{lines,0,id}' from task4_minor_before_assignment),'requestedQuantity',0.5)),
+  't5-minor-return-before-submit'
+) as payload;
+create temporary table task5_minor_return_after as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task4_minor_after_assignment),
+  '{"reason":"小工事全部退回二","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object('originalStockOutLineId',(select payload#>>'{lines,0,id}' from task4_minor_after_assignment),'requestedQuantity',0.5)),
+  't5-minor-return-after-submit'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_minor_return_before),
+  jsonb_build_array(jsonb_build_object('returnLineId',(select payload#>>'{lines,0,id}' from task5_minor_return_before),'confirmedQuantity',0.5)),
+  't5-minor-return-before-confirm'
+);
+reset role;
+select is((select (payload->>'amount')::numeric from public.project_cost_records where record_key='WAREHOUSE-MWO:'||(select payload->>'id' from saved_minor)),65.0000::numeric,'minor-work partial return updates its single net aggregate');
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+select is(
+  (private.warehouse_minor_work_order_json((select (payload->>'id')::uuid from saved_minor))->>'materialCost')::numeric,
+  65.0000::numeric,
+  'minor-work response reports the same net cost after a partial return'
+);
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_minor_return_after),
+  jsonb_build_array(jsonb_build_object('returnLineId',(select payload#>>'{lines,0,id}' from task5_minor_return_after),'confirmedQuantity',0.5)),
+  't5-minor-return-after-confirm'
+);
+reset role;
+select is((select (payload->>'amount')::numeric from public.project_cost_records where record_key='WAREHOUSE-MWO:'||(select payload->>'id' from saved_minor)),0.0000::numeric,'fully returned minor work keeps its audit row at zero net cost');
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+select is(
+  (private.warehouse_minor_work_order_json((select (payload->>'id')::uuid from saved_minor))->>'materialCost')::numeric,
+  0.0000::numeric,
+  'minor-work response reports zero net cost after the full return'
+);
+select is(
+  (select status from public.warehouse_return_requests
+   where id = (select (payload->>'id')::uuid from task5_minor_return_after)),
+  'confirmed',
+  'minor-work inventory return reaches confirmed state'
+);
+select is((select count(*) from public.project_cost_records where record_key='WAREHOUSE-MWO:'||(select payload->>'id' from saved_minor)),1::bigint,'fully returned minor work retains exactly one protected audit row');
+select is((select count(*) from public.project_cost_records where record_key like 'WAREHOUSE-SR:%' and payload->>'sourceDocumentId' in ((select payload->>'id' from task5_minor_return_before),(select payload->>'id' from task5_minor_return_after))),0::bigint,'minor-work returns never create a second SR reversal path');
+
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_archived_minor as
+select public.create_minor_work_order_secure(
+  '{"title":"归档项目小工事","customerName":"未来社","workDate":"2026-08-09","locationText":"东京","description":"归档后退料验证"}'
+) as payload;
+create temporary table task5_archived_formal_out as
+select public.submit_warehouse_stock_out_secure(
+  '{"destinationType":"project","projectId":"P-WF-ARCHIVE","minorWorkOrderId":null,"destinationNameSnapshot":"归档退料测试项目","purpose":"归档前正式出库","receiver":"王师傅","requestDate":"2026-08-09"}',
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5}]',
+  't5-archived-formal-out-submit'
+) as payload;
+create temporary table task5_archived_minor_out as
+select public.submit_warehouse_stock_out_secure(
+  jsonb_build_object(
+    'destinationType','minor_work_order','projectId',null,
+    'minorWorkOrderId',(select payload->>'id' from task5_archived_minor),
+    'destinationNameSnapshot','未来社・归档项目小工事','purpose','归档前小工事出库',
+    'receiver','王师傅','requestDate','2026-08-09'
+  ),
+  '[{"variantId":"d0300000-0000-4000-8000-000000000001","requestedQuantity":0.5}]',
+  't5-archived-minor-out-submit'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task5_archived_formal_out),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId',(select payload#>>'{lines,0,id}' from task5_archived_formal_out),
+    'confirmedQuantity',0.5,'warehouseId','d0000000-0000-4000-8000-000000000001',
+    'locationId','e1100000-0000-4000-8000-000000000001'
+  )),
+  't5-archived-formal-out-confirm'
+);
+select public.confirm_warehouse_stock_out_secure(
+  (select (payload->>'id')::uuid from task5_archived_minor_out),
+  jsonb_build_array(jsonb_build_object(
+    'stockOutLineId',(select payload#>>'{lines,0,id}' from task5_archived_minor_out),
+    'confirmedQuantity',0.5,'warehouseId','d0000000-0000-4000-8000-000000000001',
+    'locationId','e1100000-0000-4000-8000-000000000001'
+  )),
+  't5-archived-minor-out-confirm'
+);
+reset role;
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select public.assign_minor_work_order_to_project_secure(
+  (select (payload->>'id')::uuid from task5_archived_minor), 'P-WF-ARCHIVE'
+);
+reset role;
+select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+update public.projects set status = 'deleted' where record_key = 'P-WF-ARCHIVE';
+reset role;
+select set_config('request.jwt.claim.role','authenticated',true);
+select set_config('request.jwt.claim.sub','d0500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+create temporary table task5_archived_formal_return as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_archived_formal_out),
+  '{"reason":"归档项目正式材料退回","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object(
+    'originalStockOutLineId',(select payload#>>'{lines,0,id}' from task5_archived_formal_out),
+    'requestedQuantity',0.5
+  )),
+  't5-archived-formal-return-submit'
+) as payload;
+create temporary table task5_archived_minor_return as
+select public.submit_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_archived_minor_out),
+  '{"reason":"归档项目小工事材料退回","receiver":"仓库负责人","requestDate":"2026-08-09"}',
+  jsonb_build_array(jsonb_build_object(
+    'originalStockOutLineId',(select payload#>>'{lines,0,id}' from task5_archived_minor_out),
+    'requestedQuantity',0.5
+  )),
+  't5-archived-minor-return-submit'
+) as payload;
+reset role;
+select set_config('request.jwt.claim.sub','e1500000-0000-4000-8000-000000000001',true);
+set local role authenticated;
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_archived_formal_return),
+  jsonb_build_array(jsonb_build_object(
+    'returnLineId',(select payload#>>'{lines,0,id}' from task5_archived_formal_return),
+    'confirmedQuantity',0.5
+  )),
+  't5-archived-formal-return-confirm'
+);
+select public.confirm_warehouse_return_secure(
+  (select (payload->>'id')::uuid from task5_archived_minor_return),
+  jsonb_build_array(jsonb_build_object(
+    'returnLineId',(select payload#>>'{lines,0,id}' from task5_archived_minor_return),
+    'confirmedQuantity',0.5
+  )),
+  't5-archived-minor-return-confirm'
+);
+reset role;
+select is(
+  (select status from public.warehouse_return_requests
+   where id=(select (payload->>'id')::uuid from task5_archived_formal_return)),
+  'confirmed',
+  'formal-project inventory return remains confirmable after project archival'
+);
+select is(
+  (select (payload->>'amount')::numeric from public.project_cost_records
+   where record_key='WAREHOUSE-SR:'||(select payload->>'id' from task5_archived_formal_return)),
+  -(select sum(frozen_total_cost) from public.warehouse_return_lines
+    where return_id=(select (payload->>'id')::uuid from task5_archived_formal_return)),
+  'archived formal project still records the exact historical reversal'
+);
+select is(
+  (select status from public.warehouse_return_requests
+   where id=(select (payload->>'id')::uuid from task5_archived_minor_return)),
+  'confirmed',
+  'assigned minor-work inventory return remains confirmable after project archival'
+);
+select is(
+  (select (payload->>'amount')::numeric from public.project_cost_records
+   where record_key='WAREHOUSE-MWO:'||(select payload->>'id' from task5_archived_minor)),
+  0.0000::numeric,
+  'archived minor-work aggregate is reduced to zero without a second reversal path'
+);
 
 update public.warehouse_stock_out_requests
 set status = 'void', rejection_reason = '确认后冲销前的历史保留测试'

@@ -25,6 +25,7 @@ const ERRORS = Object.freeze({
   WAREHOUSE_PURCHASE_COST_INVALID: Object.freeze({ message: '采购价格或数量无效，不能确认入库', status: 409 }),
   WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED: Object.freeze({ message: '确认数量超过采购剩余数量，请刷新后重试', status: 409 }),
   WAREHOUSE_INSUFFICIENT_STOCK: Object.freeze({ message: '所选货架区库存不足，未执行任何出库', status: 409 }),
+  WAREHOUSE_RETURN_QUANTITY_EXCEEDED: Object.freeze({ message: '退回数量超过原出库可退数量，请刷新后重试', status: 409 }),
 })
 
 const TRUSTED_HINTS = new Map([
@@ -36,6 +37,7 @@ const TRUSTED_HINTS = new Map([
   ['WAREHOUSE_PURCHASE_COST_INVALID', '22023'],
   ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', '23514'],
   ['WAREHOUSE_INSUFFICIENT_STOCK', '23514'],
+  ['WAREHOUSE_RETURN_QUANTITY_EXCEEDED', '23514'],
 ])
 
 export class WarehouseConfirmationServiceError extends Error {
@@ -85,7 +87,7 @@ function denseArray(value, errorCode, { minimum = 1, maximum = 100 } = {}) {
   const length = descriptors.length?.value
   if (
     !Number.isSafeInteger(length) || length < minimum || length > maximum ||
-    Object.keys(descriptors).length !== length + 1
+    Reflect.ownKeys(descriptors).length !== length + 1
   ) throw fail(errorCode)
   const result = []
   for (let index = 0; index < length; index += 1) {
@@ -190,6 +192,52 @@ function confirmationRequest(input, documentField, lineField) {
       'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
     ),
     lines,
+  })
+}
+
+function returnConfirmationRequest(input) {
+  const row = exactObject(input, [
+    'returnId', 'idempotencyKey', 'lines',
+  ], 'WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+  const lines = denseArray(row.lines, 'WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+    .map((value) => {
+      const line = exactObject(value, [
+        'returnLineId', 'confirmedQuantity',
+      ], 'WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+      return {
+        returnLineId: uuid(line.returnLineId, 'WAREHOUSE_CONFIRMATION_INPUT_INVALID'),
+        confirmedQuantity: quantity(
+          line.confirmedQuantity,
+          'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+        ).value,
+      }
+    })
+  if (new Set(lines.map((line) => line.returnLineId)).size !== lines.length) {
+    throw fail('WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+  }
+  return deepFreeze({
+    documentId: uuid(row.returnId, 'WAREHOUSE_CONFIRMATION_INPUT_INVALID'),
+    idempotencyKey: text(
+      row.idempotencyKey,
+      IDEMPOTENCY_KEY,
+      'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+    ),
+    lines,
+  })
+}
+
+function rejectionRequest(input, documentField) {
+  const row = exactObject(input, [
+    documentField, 'reason', 'idempotencyKey',
+  ], 'WAREHOUSE_CONFIRMATION_INPUT_INVALID')
+  return deepFreeze({
+    documentId: uuid(row[documentField], 'WAREHOUSE_CONFIRMATION_INPUT_INVALID'),
+    reason: displayText(row.reason, 1000, 'WAREHOUSE_CONFIRMATION_INPUT_INVALID'),
+    idempotencyKey: text(
+      row.idempotencyKey,
+      IDEMPOTENCY_KEY,
+      'WAREHOUSE_CONFIRMATION_INPUT_INVALID',
+    ),
   })
 }
 
@@ -356,6 +404,410 @@ function stockOutResponse(value, request, viewCost) {
   return deepFreeze(result)
 }
 
+function returnResponse(value, request, viewCost) {
+  const row = exactObject(value, [
+    'id', 'originalStockOutId', 'destinationType', 'projectId', 'minorWorkOrderId',
+    'destinationNameSnapshot', 'reason', 'receiver', 'requestDate', 'status',
+    'submittedByEmployeeProfileId', 'submittedAt', 'confirmedByEmployeeProfileId',
+    'confirmedAt', 'rejectionReason', 'idempotencyKey',
+    'confirmationIdempotencyKey', 'lines',
+  ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  const lines = denseArray(row.lines, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+    .map((value) => {
+      const line = exactObject(value, [
+        'id', 'returnId', 'originalStockOutLineId', 'variantId',
+        'requestedQuantity', 'confirmedQuantity', 'frozenTotalCost',
+      ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      const requestedQuantity = quantity(
+        line.requestedQuantity,
+        'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+      )
+      const confirmedQuantity = quantity(
+        line.confirmedQuantity,
+        'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+      )
+      if (confirmedQuantity.units > requestedQuantity.units) {
+        throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      }
+      return {
+        id: uuid(line.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        returnId: uuid(line.returnId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        originalStockOutLineId: uuid(
+          line.originalStockOutLineId,
+          'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+        ),
+        variantId: uuid(line.variantId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        requestedQuantity: requestedQuantity.value,
+        confirmedQuantity: confirmedQuantity.value,
+        frozenTotalCost: nullableCost(
+          line.frozenTotalCost,
+          'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+          viewCost,
+        ),
+      }
+    })
+  const result = {
+    id: uuid(row.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    originalStockOutId: uuid(row.originalStockOutId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    destinationType: row.destinationType,
+    projectId: row.projectId === null
+      ? null
+      : text(row.projectId, RECORD_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    minorWorkOrderId: nullableUuid(row.minorWorkOrderId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    destinationNameSnapshot: displayText(
+      row.destinationNameSnapshot, 500, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    ),
+    reason: displayText(row.reason, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    receiver: displayText(row.receiver, 300, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    requestDate: text(row.requestDate, DATE, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    status: row.status,
+    submittedByEmployeeProfileId: uuid(
+      row.submittedByEmployeeProfileId,
+      'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    ),
+    submittedAt: timestamp(row.submittedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmedByEmployeeProfileId: uuid(
+      row.confirmedByEmployeeProfileId,
+      'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    ),
+    confirmedAt: timestamp(row.confirmedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    rejectionReason: row.rejectionReason === null
+      ? null
+      : displayText(row.rejectionReason, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmationIdempotencyKey: text(
+      row.confirmationIdempotencyKey,
+      IDEMPOTENCY_KEY,
+      'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID',
+    ),
+    lines,
+  }
+  if (
+    result.id !== request.documentId || !['confirmed', 'void'].includes(result.status) ||
+    result.confirmationIdempotencyKey !== request.idempotencyKey ||
+    lines.length !== request.lines.length
+  ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  const expected = new Map(request.lines.map((line) => [line.returnLineId, line]))
+  for (const line of lines) {
+    const input = expected.get(line.id)
+    if (
+      !input || line.returnId !== result.id ||
+      quantity(line.confirmedQuantity, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').units !==
+        quantity(input.confirmedQuantity, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').units
+    ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+    expected.delete(line.id)
+  }
+  if (expected.size !== 0) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  return deepFreeze(result)
+}
+
+function stockOutRejectionResponse(value, request, viewCost) {
+  const row = exactObject(value, [
+    'id', 'destinationType', 'projectId', 'minorWorkOrderId', 'destinationNameSnapshot',
+    'purpose', 'receiver', 'requestDate', 'status', 'submittedByEmployeeProfileId',
+    'submittedAt', 'confirmedByEmployeeProfileId', 'confirmedAt', 'rejectionReason',
+    'idempotencyKey', 'lines', 'confirmationIdempotencyKey',
+  ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  const result = {
+    id: uuid(row.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    destinationType: row.destinationType,
+    projectId: row.projectId === null
+      ? null
+      : text(row.projectId, RECORD_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    minorWorkOrderId: nullableUuid(row.minorWorkOrderId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    destinationNameSnapshot: displayText(row.destinationNameSnapshot, 500, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    purpose: displayText(row.purpose, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    receiver: displayText(row.receiver, 300, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    requestDate: text(row.requestDate, DATE, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    status: row.status,
+    submittedByEmployeeProfileId: uuid(row.submittedByEmployeeProfileId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    submittedAt: timestamp(row.submittedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmedByEmployeeProfileId: uuid(row.confirmedByEmployeeProfileId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmedAt: timestamp(row.confirmedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    rejectionReason: displayText(row.rejectionReason, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmationIdempotencyKey: text(row.confirmationIdempotencyKey, IDEMPOTENCY_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    lines: denseArray(row.lines, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').map((value) => {
+      const line = exactObject(value, [
+        'id', 'requestId', 'variantId', 'requestedQuantity',
+        'confirmedQuantity', 'frozenTotalCost',
+      ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      const normalized = {
+        id: uuid(line.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        requestId: uuid(line.requestId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        variantId: uuid(line.variantId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        requestedQuantity: quantity(line.requestedQuantity, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').value,
+        confirmedQuantity: line.confirmedQuantity,
+        frozenTotalCost: line.frozenTotalCost,
+      }
+      if (
+        normalized.requestId !== request.documentId ||
+        normalized.confirmedQuantity !== null || normalized.frozenTotalCost !== null
+      ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      return normalized
+    }),
+  }
+  if (
+    result.id !== request.documentId || result.status !== 'rejected' ||
+    result.rejectionReason !== request.reason ||
+    result.confirmationIdempotencyKey !== request.idempotencyKey ||
+    !['project', 'minor_work_order', 'internal_use'].includes(result.destinationType) ||
+    (result.destinationType === 'project' && (result.projectId === null || result.minorWorkOrderId !== null)) ||
+    (result.destinationType === 'minor_work_order' && (result.projectId !== null || result.minorWorkOrderId === null)) ||
+    (result.destinationType === 'internal_use' && (result.projectId !== null || result.minorWorkOrderId !== null))
+  ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  if (viewCost && result.lines.some((line) => line.frozenTotalCost !== null)) {
+    throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  }
+  return deepFreeze(result)
+}
+
+function returnRejectionResponse(value, request) {
+  const row = exactObject(value, [
+    'id', 'originalStockOutId', 'reason', 'receiver', 'requestDate', 'status',
+    'submittedByEmployeeProfileId', 'submittedAt', 'confirmedByEmployeeProfileId',
+    'confirmedAt', 'rejectionReason', 'idempotencyKey', 'lines',
+    'confirmationIdempotencyKey',
+  ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  const result = {
+    id: uuid(row.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    originalStockOutId: uuid(row.originalStockOutId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    reason: displayText(row.reason, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    receiver: displayText(row.receiver, 300, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    requestDate: text(row.requestDate, DATE, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    status: row.status,
+    submittedByEmployeeProfileId: uuid(row.submittedByEmployeeProfileId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    submittedAt: timestamp(row.submittedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmedByEmployeeProfileId: uuid(row.confirmedByEmployeeProfileId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmedAt: timestamp(row.confirmedAt, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    rejectionReason: displayText(row.rejectionReason, 1000, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    idempotencyKey: text(row.idempotencyKey, IDEMPOTENCY_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    confirmationIdempotencyKey: text(row.confirmationIdempotencyKey, IDEMPOTENCY_KEY, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+    lines: denseArray(row.lines, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').map((value) => {
+      const line = exactObject(value, [
+        'id', 'returnId', 'originalStockOutLineId', 'requestedQuantity',
+        'confirmedQuantity', 'frozenTotalCost',
+      ], 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      const normalized = {
+        id: uuid(line.id, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        returnId: uuid(line.returnId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        originalStockOutLineId: uuid(line.originalStockOutLineId, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'),
+        requestedQuantity: quantity(line.requestedQuantity, 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID').value,
+        confirmedQuantity: line.confirmedQuantity,
+        frozenTotalCost: line.frozenTotalCost,
+      }
+      if (
+        normalized.returnId !== request.documentId ||
+        normalized.confirmedQuantity !== null || normalized.frozenTotalCost !== null
+      ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+      return normalized
+    }),
+  }
+  if (
+    result.id !== request.documentId || result.status !== 'rejected' ||
+    result.rejectionReason !== request.reason ||
+    result.confirmationIdempotencyKey !== request.idempotencyKey
+  ) throw fail('WAREHOUSE_CONFIRMATION_RESPONSE_INVALID')
+  return deepFreeze(result)
+}
+
+function requestContextResponse(value, viewCost) {
+  const errorCode = 'WAREHOUSE_CONFIRMATION_RESPONSE_INVALID'
+  const root = exactObject(value, [
+    'stockOutRequests', 'returnRequests', 'minorWorkOrders',
+  ], errorCode)
+  const rows = (input, maximum = 1000) => denseArray(input, errorCode, {
+    minimum: 0, maximum,
+  })
+  const nullableTimestamp = (input) => input === null ? null : timestamp(input, errorCode)
+  const nullableProfile = (input) => input === null ? null : uuid(input, errorCode)
+  const nullableRecordKey = (input) => input === null ? null : text(input, RECORD_KEY, errorCode)
+  const contextCost = (input, { positive = false, nonnegative = false } = {}) => {
+    if (input === null) return null
+    if (!viewCost) throw fail(errorCode)
+    const normalized = nullableCost(input, errorCode, true)
+    if ((positive && normalized <= 0) || (nonnegative && normalized < 0)) throw fail(errorCode)
+    return normalized
+  }
+  const contextQuantity = (input, { nullable = false, positive = true } = {}) => {
+    if (nullable && input === null) return null
+    return quantity(input, errorCode, { positive }).value
+  }
+  const status = (input) => {
+    if (!['pending', 'confirmed', 'rejected', 'void'].includes(input)) throw fail(errorCode)
+    return input
+  }
+  const destination = (type, projectId, minorWorkOrderId) => {
+    if (
+      (type === 'project' && projectId !== null && minorWorkOrderId === null) ||
+      (type === 'minor_work_order' && projectId === null && minorWorkOrderId !== null) ||
+      (type === 'internal_use' && projectId === null && minorWorkOrderId === null)
+    ) return
+    throw fail(errorCode)
+  }
+  const outcome = (row, normalizedStatus) => {
+    const confirmedByEmployeeProfileId = nullableProfile(row.confirmedByEmployeeProfileId)
+    const confirmedAt = nullableTimestamp(row.confirmedAt)
+    const rejectionReason = row.rejectionReason === null
+      ? null
+      : displayText(row.rejectionReason, 1000, errorCode)
+    if (
+      (normalizedStatus === 'confirmed' &&
+        (confirmedByEmployeeProfileId === null || confirmedAt === null || rejectionReason !== null)) ||
+      (['rejected', 'void'].includes(normalizedStatus) &&
+        (confirmedByEmployeeProfileId === null || confirmedAt === null || rejectionReason === null)) ||
+      (normalizedStatus === 'pending' &&
+        (confirmedByEmployeeProfileId !== null || confirmedAt !== null || rejectionReason !== null))
+    ) throw fail(errorCode)
+    return { confirmedByEmployeeProfileId, confirmedAt, rejectionReason }
+  }
+  const stockOutRequests = rows(root.stockOutRequests).map((value) => {
+    const row = exactObject(value, [
+      'id', 'destinationType', 'projectId', 'minorWorkOrderId',
+      'destinationNameSnapshot', 'purpose', 'receiver', 'requestDate', 'status',
+      'submittedByEmployeeProfileId', 'submittedAt', 'confirmedByEmployeeProfileId',
+      'confirmedAt', 'rejectionReason', 'lines',
+    ], errorCode)
+    const normalizedStatus = status(row.status)
+    const normalized = {
+      id: uuid(row.id, errorCode),
+      destinationType: ['project', 'minor_work_order', 'internal_use'].includes(row.destinationType)
+        ? row.destinationType
+        : (() => { throw fail(errorCode) })(),
+      projectId: nullableRecordKey(row.projectId),
+      minorWorkOrderId: nullableProfile(row.minorWorkOrderId),
+      destinationNameSnapshot: displayText(row.destinationNameSnapshot, 500, errorCode),
+      purpose: displayText(row.purpose, 1000, errorCode),
+      receiver: displayText(row.receiver, 300, errorCode),
+      requestDate: text(row.requestDate, DATE, errorCode),
+      status: normalizedStatus,
+      submittedByEmployeeProfileId: uuid(row.submittedByEmployeeProfileId, errorCode),
+      submittedAt: timestamp(row.submittedAt, errorCode),
+      ...outcome(row, normalizedStatus),
+      lines: rows(row.lines, 100).map((value) => {
+        const line = exactObject(value, [
+          'id', 'requestId', 'variantId', 'requestedQuantity', 'confirmedQuantity',
+          'remainingReturnable', 'frozenTotalCost',
+        ], errorCode)
+        const normalizedLine = {
+          id: uuid(line.id, errorCode),
+          requestId: uuid(line.requestId, errorCode),
+          variantId: uuid(line.variantId, errorCode),
+          requestedQuantity: contextQuantity(line.requestedQuantity),
+          confirmedQuantity: contextQuantity(line.confirmedQuantity, { nullable: true }),
+          remainingReturnable: contextQuantity(line.remainingReturnable, { positive: false }),
+          frozenTotalCost: contextCost(line.frozenTotalCost, { nonnegative: true }),
+        }
+        if (
+          normalizedLine.requestId !== uuid(row.id, errorCode) ||
+          (normalizedLine.confirmedQuantity !== null &&
+            normalizedLine.confirmedQuantity > normalizedLine.requestedQuantity) ||
+          normalizedLine.remainingReturnable > (normalizedLine.confirmedQuantity ?? 0)
+        ) throw fail(errorCode)
+        const confirmedGroup = normalizedLine.confirmedQuantity !== null &&
+          (!viewCost || normalizedLine.frozenTotalCost !== null)
+        const emptyGroup = normalizedLine.confirmedQuantity === null &&
+          normalizedLine.frozenTotalCost === null && normalizedLine.remainingReturnable === 0
+        if (
+          (normalizedStatus === 'confirmed' && !confirmedGroup) ||
+          (['pending', 'rejected'].includes(normalizedStatus) && !emptyGroup) ||
+          (normalizedStatus === 'void' && !confirmedGroup && !emptyGroup)
+        ) throw fail(errorCode)
+        return normalizedLine
+      }),
+    }
+    destination(normalized.destinationType, normalized.projectId, normalized.minorWorkOrderId)
+    return normalized
+  })
+  const returnRequests = rows(root.returnRequests).map((value) => {
+    const row = exactObject(value, [
+      'id', 'originalStockOutId', 'destinationType', 'projectId', 'minorWorkOrderId',
+      'destinationNameSnapshot', 'reason', 'receiver', 'requestDate', 'status',
+      'submittedByEmployeeProfileId', 'submittedAt', 'confirmedByEmployeeProfileId',
+      'confirmedAt', 'rejectionReason', 'lines',
+    ], errorCode)
+    const normalizedStatus = status(row.status)
+    const normalized = {
+      id: uuid(row.id, errorCode),
+      originalStockOutId: uuid(row.originalStockOutId, errorCode),
+      destinationType: ['project', 'minor_work_order', 'internal_use'].includes(row.destinationType)
+        ? row.destinationType
+        : (() => { throw fail(errorCode) })(),
+      projectId: nullableRecordKey(row.projectId),
+      minorWorkOrderId: nullableProfile(row.minorWorkOrderId),
+      destinationNameSnapshot: displayText(row.destinationNameSnapshot, 500, errorCode),
+      reason: displayText(row.reason, 1000, errorCode),
+      receiver: displayText(row.receiver, 300, errorCode),
+      requestDate: text(row.requestDate, DATE, errorCode),
+      status: normalizedStatus,
+      submittedByEmployeeProfileId: uuid(row.submittedByEmployeeProfileId, errorCode),
+      submittedAt: timestamp(row.submittedAt, errorCode),
+      ...outcome(row, normalizedStatus),
+      lines: rows(row.lines, 100).map((value) => {
+        const line = exactObject(value, [
+          'id', 'returnId', 'originalStockOutLineId', 'variantId', 'requestedQuantity',
+          'confirmedQuantity', 'frozenTotalCost',
+        ], errorCode)
+        const normalizedLine = {
+          id: uuid(line.id, errorCode),
+          returnId: uuid(line.returnId, errorCode),
+          originalStockOutLineId: uuid(line.originalStockOutLineId, errorCode),
+          variantId: uuid(line.variantId, errorCode),
+          requestedQuantity: contextQuantity(line.requestedQuantity),
+          confirmedQuantity: contextQuantity(line.confirmedQuantity, { nullable: true }),
+          frozenTotalCost: contextCost(line.frozenTotalCost, { nonnegative: true }),
+        }
+        if (
+          normalizedLine.returnId !== uuid(row.id, errorCode) ||
+          (normalizedLine.confirmedQuantity !== null &&
+            normalizedLine.confirmedQuantity > normalizedLine.requestedQuantity)
+        ) throw fail(errorCode)
+        const confirmedGroup = normalizedLine.confirmedQuantity !== null &&
+          (!viewCost || normalizedLine.frozenTotalCost !== null)
+        const emptyGroup = normalizedLine.confirmedQuantity === null &&
+          normalizedLine.frozenTotalCost === null
+        if (
+          (normalizedStatus === 'confirmed' && !confirmedGroup) ||
+          (['pending', 'rejected'].includes(normalizedStatus) && !emptyGroup) ||
+          (normalizedStatus === 'void' && !confirmedGroup && !emptyGroup)
+        ) throw fail(errorCode)
+        return normalizedLine
+      }),
+    }
+    destination(normalized.destinationType, normalized.projectId, normalized.minorWorkOrderId)
+    return normalized
+  })
+  const minorWorkOrders = rows(root.minorWorkOrders).map((value) => {
+    const row = exactObject(value, [
+      'id', 'title', 'customerName', 'workDate', 'locationText', 'description',
+      'status', 'assignedProjectId', 'materialCost', 'createdByEmployeeProfileId',
+      'createdAt', 'updatedAt',
+    ], errorCode)
+    const normalized = {
+      id: uuid(row.id, errorCode),
+      title: displayText(row.title, 300, errorCode),
+      customerName: displayText(row.customerName, 300, errorCode),
+      workDate: text(row.workDate, DATE, errorCode),
+      locationText: displayText(row.locationText, 500, errorCode),
+      description: displayText(row.description, 2000, errorCode, { required: false }),
+      status: ['open', 'assigned', 'closed', 'void'].includes(row.status)
+        ? row.status
+        : (() => { throw fail(errorCode) })(),
+      assignedProjectId: nullableRecordKey(row.assignedProjectId),
+      materialCost: contextCost(row.materialCost, { nonnegative: true }),
+      createdByEmployeeProfileId: uuid(row.createdByEmployeeProfileId, errorCode),
+      createdAt: timestamp(row.createdAt, errorCode),
+      updatedAt: timestamp(row.updatedAt, errorCode),
+    }
+    if (
+      (normalized.status === 'open' && normalized.assignedProjectId !== null) ||
+      (normalized.status === 'assigned' && normalized.assignedProjectId === null)
+    ) throw fail(errorCode)
+    return normalized
+  })
+  return deepFreeze({ stockOutRequests, returnRequests, minorWorkOrders })
+}
+
 function supplierField(value, key) {
   const descriptors = ownObject(value)
   return descriptors?.[key]?.value
@@ -448,6 +900,36 @@ export function createWarehouseConfirmationService(client, options = {}) {
         p_lines: request.lines,
         p_idempotency_key: request.idempotencyKey,
       }), request, viewCost)
+    },
+    async confirmReturn(input) {
+      const request = returnConfirmationRequest(input)
+      return returnResponse(await call('confirm_warehouse_return_secure', {
+        p_return_id: request.documentId,
+        p_lines: request.lines,
+        p_idempotency_key: request.idempotencyKey,
+      }), request, viewCost)
+    },
+    async rejectStockOut(input) {
+      const request = rejectionRequest(input, 'requestId')
+      return stockOutRejectionResponse(await call('reject_warehouse_stock_out_secure', {
+        p_request_id: request.documentId,
+        p_reason: request.reason,
+        p_idempotency_key: request.idempotencyKey,
+      }), request, viewCost)
+    },
+    async rejectReturn(input) {
+      const request = rejectionRequest(input, 'returnId')
+      return returnRejectionResponse(await call('reject_warehouse_return_secure', {
+        p_return_id: request.documentId,
+        p_reason: request.reason,
+        p_idempotency_key: request.idempotencyKey,
+      }), request)
+    },
+    async listRequestContext() {
+      return requestContextResponse(
+        await call('list_warehouse_request_context_secure', {}),
+        viewCost,
+      )
     },
   })
 }

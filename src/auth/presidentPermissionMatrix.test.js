@@ -46,8 +46,6 @@ const EXPECTED_PRESIDENT_DESKTOP_VIEWS = [
   'employees',
   'accounting',
   'labor',
-  'stockOut',
-  'stockReturn',
   'purchase',
   'vehicle',
   'toolBorrow',

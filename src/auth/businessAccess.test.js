@@ -90,8 +90,14 @@ test('zero-permission users get only active-only routes and module routes requir
   }
 
   const inventoryUser = activeUser(['module.inventory.view'])
-  assert.equal(canAccessView(inventoryUser, 'stockOut'), true)
-  assert.equal(canAccessView(inventoryUser, 'stockReturn'), true)
+  assert.equal(canAccessView(inventoryUser, 'stockOut'), false)
+  assert.equal(canAccessView(inventoryUser, 'stockReturn'), false)
+  const requester = activeUser(['module.inventory.view', 'warehouse.stock_flow.request'])
+  assert.equal(canAccessView(requester, 'stockOut'), true)
+  assert.equal(canAccessView(requester, 'stockReturn'), true)
+  const confirmer = activeUser(['module.inventory.view', 'warehouse.stock_flow.confirm'])
+  assert.equal(canAccessView(confirmer, 'stockOut'), true)
+  assert.equal(canAccessView(confirmer, 'stockReturn'), true)
   assert.equal(canAccessView(inventoryUser, 'purchase'), false)
 })
 

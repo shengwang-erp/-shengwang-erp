@@ -1189,6 +1189,53 @@ test('warehouse receipt exact retries accept safe terminal states while binding 
   }
 })
 
+test('stock-out and return exact retries accept terminal cost-redacted documents', async () => {
+  const audit = {
+    status: 'confirmed', submittedByEmployeeProfileId: IDS.operator,
+    submittedAt: '2026-08-09T00:00:00Z',
+    confirmedByEmployeeProfileId: IDS.operator,
+    confirmedAt: '2026-08-09T01:00:00Z', rejectionReason: null,
+  }
+  const stockInput = {
+    destinationType: 'internal_use', projectId: null, minorWorkOrderId: null,
+    destinationNameSnapshot: '公司内部使用', purpose: '维修', receiver: '王师傅',
+    requestDate: '2026-08-09', idempotencyKey: 'stock-terminal',
+    lines: [{ variantId: IDS.variant, requestedQuantity: 1 }],
+  }
+  const stock = {
+    id: IDS.stockOut, destinationType: 'internal_use', projectId: null,
+    minorWorkOrderId: null, destinationNameSnapshot: '公司内部使用',
+    purpose: '维修', receiver: '王师傅', requestDate: '2026-08-09',
+    ...audit, idempotencyKey: 'stock-terminal', lines: [{
+      id: IDS.stockOutLine, requestId: IDS.stockOut, variantId: IDS.variant,
+      requestedQuantity: 1, confirmedQuantity: 1, frozenTotalCost: null,
+    }],
+  }
+  const stockService = createWarehouseService(rpcClient({
+    submit_warehouse_stock_out_secure: { data: stock, error: null, status: 200 },
+  }).client, { configured: true })
+  assert.deepEqual(await stockService.submitStockOut(stockInput), stock)
+
+  const returnInput = {
+    originalStockOutId: IDS.stockOut, reason: '未使用', receiver: '仓库负责人',
+    requestDate: '2026-08-10', idempotencyKey: 'return-terminal',
+    lines: [{ originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1 }],
+  }
+  const returned = {
+    id: IDS.returnRequest, originalStockOutId: IDS.stockOut, reason: '未使用',
+    receiver: '仓库负责人', requestDate: '2026-08-10', ...audit,
+    idempotencyKey: 'return-terminal', lines: [{
+      id: IDS.receipt, returnId: IDS.returnRequest,
+      originalStockOutLineId: IDS.stockOutLine, requestedQuantity: 1,
+      confirmedQuantity: 1, frozenTotalCost: null,
+    }],
+  }
+  const returnService = createWarehouseService(rpcClient({
+    submit_warehouse_return_secure: { data: returned, error: null, status: 200 },
+  }).client, { configured: true })
+  assert.deepEqual(await returnService.submitReturn(returnInput), returned)
+})
+
 test('workflow submission binds the normalized request to the exact returned document and line set', async () => {
   const input = {
     purchaseRecordKey: 'BUY-BOUND', idempotencyKey: 'receipt-bound',

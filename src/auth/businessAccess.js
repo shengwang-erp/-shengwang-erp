@@ -127,6 +127,11 @@ function canAccessSafeUser(user, view) {
   if (!route) return false
   if (ACTIVE_ONLY_VIEWS.has(route.view)) return true
   if (route.view === 'contractRevenue') return canViewProjectFinancials(user)
+  if (route.view === 'stockOut' || route.view === 'stockReturn') {
+    return hasModule(user, route.moduleName) &&
+      (hasEffectivePermissionKey(user, WAREHOUSE_PERMISSION_KEYS.stockFlowRequest) ||
+        hasEffectivePermissionKey(user, WAREHOUSE_PERMISSION_KEYS.stockFlowConfirm))
+  }
   return hasModule(user, route.moduleName)
 }
 
