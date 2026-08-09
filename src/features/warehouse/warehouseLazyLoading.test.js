@@ -48,6 +48,14 @@ async function createFixture(source, filename = 'entry.js') {
     path.join(ownedDirectory, 'WarehouseCatalog.jsx'),
     "import './WarehouseQrScanner.jsx'\nimport './WarehouseLabelSheet.jsx'\nexport default function WarehouseCatalog() { return null }\n",
   )
+  await writeFile(
+    path.join(ownedDirectory, 'warehouseExport.js'),
+    "export const loadExcel = () => import('exceljs')\n",
+  )
+  await writeFile(
+    path.join(ownedDirectory, 'WarehouseReports.jsx'),
+    "import './warehouseExport.js'\nexport default function WarehouseReports() { return null }\n",
+  )
   return root
 }
 
@@ -59,6 +67,8 @@ async function createOwnedFixture(files) {
   )
   const ownedFiles = {
     'WarehouseCatalog.jsx': "import './WarehouseQrScanner.jsx'\nimport './WarehouseLabelSheet.jsx'\nexport default function WarehouseCatalog() { return null }\n",
+    'warehouseExport.js': "export const loadExcel = () => import('exceljs')\n",
+    'WarehouseReports.jsx': "import './warehouseExport.js'\nexport default function WarehouseReports() { return null }\n",
     ...files,
   }
   for (const [filename, source] of Object.entries(ownedFiles)) {
@@ -550,6 +560,38 @@ test('disconnected owned QR callsites fail catalog-root reachability', async (t)
 })
 
 test('real scanner and label dynamic callsites are reachable from WarehouseCatalog import graph', () => {
+  const result = runChecker(REPOSITORY_ROOT)
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+})
+
+test('fixture-only Excel dynamic import cannot satisfy the real warehouse export callsite', async (t) => {
+  const root = await createOwnedFixture({
+    'warehouseExport.js': 'export const noExcelHere = true\n',
+    'entry.js': "export const fake = () => import('exceljs')\n",
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /warehouseExport\.js.*exceljs/iu)
+})
+
+test('disconnected warehouse export fails WarehouseReports-root reachability', async (t) => {
+  const root = await createOwnedFixture({
+    'warehouseExport.js': "export const loadExcel = () => import('exceljs')\n",
+    'WarehouseReports.jsx': 'export default function WarehouseReports() { return null }\n',
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = runChecker(root)
+
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /WarehouseReports\.jsx.*warehouseExport\.js.*reachable/iu)
+})
+
+test('production WarehouseReports reaches the real lazy ExcelJS export module', () => {
   const result = runChecker(REPOSITORY_ROOT)
 
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)

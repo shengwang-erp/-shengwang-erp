@@ -617,10 +617,163 @@ test('service options are a closed plain-object contract', () => {
     { configured: 'yes' },
     { configured: true, viewCost: 1 },
     { configured: true, manageCatalog: 1 },
+    { configured: true, exportReports: 1 },
   ]) {
     assert.throws(
       () => createWarehouseService(client, options),
       safeError('WAREHOUSE_NOT_CONFIGURED', 503),
+    )
+  }
+})
+
+test('warehouse reports use only the secure server-filtered RPC and return immutable exact rows', async () => {
+  const report = {
+    reportType: 'items',
+    page: 2,
+    pageSize: 25,
+    export: false,
+    generatedAt: '2026-08-09T01:02:03Z',
+    rows: [{
+      itemId: IDS.item,
+      variantId: IDS.variant,
+      itemName: '铜管',
+      category: '空调材料',
+      brand: '厂家A',
+      model: 'R410A',
+      size: '6mm',
+      material: '铜',
+      sku: 'CU-6MM',
+      unit: '米',
+      minimumStock: 20,
+      itemStatus: 'active',
+      variantStatus: 'active',
+      unitCost: null,
+      totalCost: null,
+    }],
+  }
+  const { client, calls } = rpcClient({
+    list_warehouse_report_secure: { data: report, error: null, status: 200 },
+  })
+  const result = await createWarehouseService(client, { configured: true }).listReport(
+    'items',
+    { category: '空调材料', keyword: '铜管', status: 'active', page: 2, pageSize: 25 },
+  )
+
+  assert.deepEqual(calls, [{
+    name: 'list_warehouse_report_secure',
+    args: {
+      p_report_type: 'items',
+      p_filters: { category: '空调材料', keyword: '铜管', status: 'active', page: 2, pageSize: 25 },
+      p_export: false,
+    },
+  }])
+  assert.deepEqual(result, report)
+  assert.notEqual(result, report)
+  assert.notEqual(result.rows[0], report.rows[0])
+  assert.equal(Object.isFrozen(result), true)
+  assert.equal(Object.isFrozen(result.rows), true)
+  assert.equal(Object.isFrozen(result.rows[0]), true)
+})
+
+test('warehouse report filters and export authority fail closed before RPC', async () => {
+  const { client, calls } = rpcClient()
+  const service = createWarehouseService(client, { configured: true })
+  const invalidCalls = [
+    () => service.listReport('unknown'),
+    () => service.listReport('items', { unknown: true }),
+    () => service.listReport('items', { dateFrom: '2026-02-30' }),
+    () => service.listReport('items', { dateFrom: '2026-09-01', dateTo: '2026-08-01' }),
+    () => service.listReport('items', { month: '2026-13' }),
+    () => service.listReport('items', { warehouseId: 'not-a-uuid' }),
+    () => service.listReport('items', { destinationType: 'external' }),
+    () => service.listReport('items', { status: 'deleted' }),
+    () => service.listReport('items', { pageSize: 501 }),
+    () => service.listReport('items', { page: 1_000_000_000 }),
+    () => service.listReport('items', {}, { export: true }),
+    () => service.listReport('items', {}, { export: false, extra: true }),
+  ]
+  for (const operation of invalidCalls) {
+    await assert.rejects(operation, (error) => (
+      safeError(
+        operation === invalidCalls[10] ? 'ACCESS_DENIED' : 'WAREHOUSE_INVALID_FILTER',
+        operation === invalidCalls[10] ? 403 : 400,
+      )(error)
+    ))
+  }
+  assert.deepEqual(calls, [])
+})
+
+test('warehouse report export uses the separate grant and the 20000-row server contract', async () => {
+  const report = {
+    reportType: 'current_stock', page: 1, pageSize: 20000, export: true,
+    generatedAt: '2026-08-09T01:02:03Z', rows: [],
+  }
+  const { client, calls } = rpcClient({
+    list_warehouse_report_secure: { data: report, error: null, status: 200 },
+  })
+  const result = await createWarehouseService(client, {
+    configured: true,
+    exportReports: true,
+  }).listReport('current_stock', {}, { export: true })
+
+  assert.deepEqual(calls, [{
+    name: 'list_warehouse_report_secure',
+    args: {
+      p_report_type: 'current_stock',
+      p_filters: { page: 1, pageSize: 20000 },
+      p_export: true,
+    },
+  }])
+  assert.deepEqual(result, report)
+})
+
+test('warehouse report costs remain null without cost access and are numeric only with cost access', async () => {
+  const baseRow = {
+    variantId: IDS.variant, itemName: '铜管', category: '空调材料', model: 'R410A',
+    size: '6mm', sku: 'CU-6MM', unit: '米', warehouseId: IDS.site,
+    warehouseName: '本社仓', locationId: IDS.location, shelfCode: 'A-01',
+    shelfName: 'A区一号架', quantity: 12.5,
+  }
+  const envelope = (unitCost, totalCost) => ({
+    reportType: 'current_stock', page: 1, pageSize: 100, export: false,
+    generatedAt: '2026-08-09T01:02:03Z',
+    rows: [{ ...baseRow, unitCost, totalCost }],
+  })
+
+  for (const [options, data, succeeds] of [
+    [{ configured: true }, envelope(null, null), true],
+    [{ configured: true }, envelope(120, 1500), false],
+    [{ configured: true, viewCost: true }, envelope(120, 1500), true],
+    [{ configured: true, viewCost: true }, envelope('120', 1500), false],
+  ]) {
+    const client = rpcClient({
+      list_warehouse_report_secure: { data, error: null, status: 200 },
+    }).client
+    const operation = createWarehouseService(client, options).listReport('current_stock')
+    if (succeeds) assert.deepEqual(await operation, data)
+    else await assert.rejects(operation, safeError('WAREHOUSE_INVALID_RESPONSE', 502))
+  }
+})
+
+test('warehouse report responses reject type substitution, extra keys, mismatched envelopes and row shapes', async () => {
+  const valid = {
+    reportType: 'items', page: 1, pageSize: 100, export: false,
+    generatedAt: '2026-08-09T01:02:03Z', rows: [],
+  }
+  for (const data of [
+    { ...valid, reportType: 'movements' },
+    { ...valid, page: 2 },
+    { ...valid, export: true },
+    { ...valid, extra: true },
+    { ...valid, rows: {} },
+    { ...valid, rows: [{ forged: true }] },
+  ]) {
+    const client = rpcClient({
+      list_warehouse_report_secure: { data, error: null, status: 200 },
+    }).client
+    await assert.rejects(
+      createWarehouseService(client, { configured: true }).listReport('items'),
+      safeError('WAREHOUSE_INVALID_RESPONSE', 502),
     )
   }
 })

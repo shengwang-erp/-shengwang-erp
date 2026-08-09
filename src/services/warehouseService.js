@@ -38,6 +38,10 @@ const SAFE_ERRORS = Object.freeze({
     message: '仓库筛选条件无效',
     status: 400,
   }),
+  WAREHOUSE_REPORT_FILTER_INVALID: Object.freeze({
+    message: '仓库报表筛选条件无效',
+    status: 400,
+  }),
   WAREHOUSE_INVALID_RESPONSE: Object.freeze({
     message: '仓库服务返回了无效数据',
     status: 502,
@@ -133,6 +137,7 @@ const CATALOG_ERROR_HINTS = new Map([
   ['WAREHOUSE_DESTINATION_UNAVAILABLE', Object.freeze({ sqlState: '55000', status: 500 })],
   ['WAREHOUSE_WORKFLOW_IDEMPOTENCY_CONFLICT', Object.freeze({ sqlState: '23505', status: 409 })],
   ['WAREHOUSE_PURCHASE_REMAINDER_EXCEEDED', Object.freeze({ sqlState: '23514', status: 400 })],
+  ['WAREHOUSE_REPORT_FILTER_INVALID', Object.freeze({ sqlState: '22023', status: 400 })],
 ])
 const SUPPLIER_RESULT_FIELDS = new Set(['data', 'error', 'status', 'statusText', 'count'])
 
@@ -175,6 +180,80 @@ const MOVEMENT_FILTERS = Object.freeze([
   'variantId', 'warehouseId', 'locationId', 'projectId', 'movementType',
   'occurredFrom', 'occurredTo', 'page', 'pageSize',
 ])
+const REPORT_TYPES = Object.freeze([
+  'items', 'current_stock', 'receipts', 'issues', 'returns',
+  'transfers', 'stocktakes', 'low_stock', 'movements',
+])
+const REPORT_TYPE_SET = new Set(REPORT_TYPES)
+const REPORT_FILTERS = Object.freeze([
+  'dateFrom', 'dateTo', 'month', 'warehouseId', 'locationId', 'category',
+  'variantId', 'projectId', 'destinationType', 'status', 'keyword', 'page', 'pageSize',
+])
+const REPORT_STATUSES = new Set(['active', 'inactive', 'pending', 'confirmed', 'rejected', 'void'])
+const REPORT_DESTINATIONS = new Set(['project', 'minor_work_order', 'internal_use'])
+const REPORT_ROW_FIELDS = Object.freeze({
+  items: Object.freeze([
+    'itemId', 'variantId', 'itemName', 'category', 'brand', 'model', 'size', 'material',
+    'sku', 'unit', 'minimumStock', 'itemStatus', 'variantStatus', 'unitCost', 'totalCost',
+  ]),
+  current_stock: Object.freeze([
+    'variantId', 'itemName', 'category', 'model', 'size', 'sku', 'unit', 'warehouseId',
+    'warehouseName', 'locationId', 'shelfCode', 'shelfName', 'quantity', 'unitCost', 'totalCost',
+  ]),
+  receipts: Object.freeze([
+    'receiptId', 'purchaseRecordKey', 'date', 'variantId', 'itemName', 'category', 'model',
+    'size', 'sku', 'unit', 'warehouseId', 'warehouseName', 'locationId', 'shelfCode',
+    'shelfName', 'quantity', 'status', 'operator', 'reason', 'unitCost', 'totalCost',
+  ]),
+  issues: Object.freeze([
+    'issueId', 'date', 'variantId', 'itemName', 'category', 'model', 'size', 'sku', 'unit',
+    'warehouseId', 'warehouseName', 'locationId', 'shelfCode', 'shelfName', 'quantity',
+    'projectId', 'destinationType', 'destinationName', 'receiver', 'status', 'operator',
+    'reason', 'unitCost', 'totalCost',
+  ]),
+  returns: Object.freeze([
+    'returnId', 'originalIssueId', 'date', 'variantId', 'itemName', 'category', 'model',
+    'size', 'sku', 'unit', 'warehouseId', 'warehouseName', 'locationId', 'shelfCode',
+    'shelfName', 'quantity', 'projectId', 'destinationType', 'destinationName', 'receiver',
+    'status', 'operator', 'reason', 'unitCost', 'totalCost',
+  ]),
+  transfers: Object.freeze([
+    'transferId', 'date', 'variantId', 'itemName', 'category', 'model', 'size', 'sku',
+    'unit', 'sourceWarehouseId', 'sourceWarehouseName', 'sourceLocationId',
+    'sourceShelfCode', 'sourceShelfName', 'destinationWarehouseId',
+    'destinationWarehouseName', 'destinationLocationId', 'destinationShelfCode',
+    'destinationShelfName', 'quantity', 'status', 'operator', 'reason', 'unitCost', 'totalCost',
+  ]),
+  stocktakes: Object.freeze([
+    'stocktakeId', 'date', 'month', 'variantId', 'itemName', 'category', 'model', 'size',
+    'sku', 'unit', 'warehouseId', 'warehouseName', 'locationId', 'shelfCode', 'shelfName',
+    'bookQuantity', 'countedQuantity', 'quantityDelta', 'differenceType', 'status',
+    'operator', 'reason', 'unitCost', 'totalCost',
+  ]),
+  low_stock: Object.freeze([
+    'variantId', 'itemName', 'category', 'model', 'size', 'sku', 'unit', 'quantity',
+    'minimumStock', 'shortageQuantity', 'unitCost', 'totalCost',
+  ]),
+  movements: Object.freeze([
+    'movementId', 'date', 'movementType', 'sourceDocumentType', 'sourceDocumentId',
+    'variantId', 'itemName', 'category', 'model', 'size', 'sku', 'unit', 'warehouseId',
+    'warehouseName', 'locationId', 'shelfCode', 'shelfName', 'quantityDelta', 'projectId',
+    'destinationType', 'destinationName', 'operator', 'reason', 'unitCost', 'totalCost',
+  ]),
+})
+const REPORT_UUID_FIELDS = new Set([
+  'itemId', 'variantId', 'receiptId', 'issueId', 'returnId', 'originalIssueId',
+  'transferId', 'stocktakeId', 'movementId', 'warehouseId', 'locationId',
+  'sourceWarehouseId', 'sourceLocationId', 'destinationWarehouseId', 'destinationLocationId',
+])
+const REPORT_NULLABLE_FIELDS = new Set([
+  'warehouseId', 'warehouseName', 'locationId', 'shelfCode', 'shelfName',
+  'projectId', 'destinationType', 'destinationName',
+])
+const REPORT_QUANTITY_FIELDS = new Set([
+  'minimumStock', 'quantity', 'bookQuantity', 'countedQuantity', 'shortageQuantity',
+])
+const REPORT_SIGNED_NUMBER_FIELDS = new Set(['quantityDelta', 'totalCost'])
 
 export class WarehouseServiceError extends Error {
   constructor(code, { authInvalid = false } = {}) {
@@ -973,9 +1052,159 @@ function normalizeFilters(filters, movement) {
   return result
 }
 
+function filterReportDate(value) {
+  try {
+    return dateValue(value)
+  } catch {
+    throw fail('WAREHOUSE_INVALID_FILTER')
+  }
+}
+
+function normalizeReportRequest(reportType, filters, requestOptions, exportReports) {
+  if (typeof reportType !== 'string' || !REPORT_TYPE_SET.has(reportType)) {
+    throw fail('WAREHOUSE_INVALID_FILTER')
+  }
+  const input = exactFilterObject(filters, REPORT_FILTERS)
+  const optionDescriptors = ownDataDescriptors(requestOptions)
+  if (
+    !optionDescriptors ||
+    Object.keys(optionDescriptors).some((key) => key !== 'export')
+  ) throw fail('WAREHOUSE_INVALID_FILTER')
+  const exportReport = Object.hasOwn(optionDescriptors, 'export')
+    ? optionDescriptors.export.value
+    : false
+  if (typeof exportReport !== 'boolean') throw fail('WAREHOUSE_INVALID_FILTER')
+  if (exportReport && !exportReports) throw fail('ACCESS_DENIED')
+
+  const normalized = {}
+  for (const field of REPORT_FILTERS) {
+    if (!Object.hasOwn(input, field)) continue
+    const value = input[field]
+    if (['warehouseId', 'locationId', 'variantId'].includes(field)) {
+      normalized[field] = filterUuid(value)
+    } else if (field === 'dateFrom' || field === 'dateTo') {
+      normalized[field] = filterReportDate(value)
+    } else if (field === 'month') {
+      const text = filterText(value)
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(text)) throw fail('WAREHOUSE_INVALID_FILTER')
+      normalized[field] = text
+    } else if (field === 'destinationType') {
+      const text = filterText(value)
+      if (!REPORT_DESTINATIONS.has(text)) throw fail('WAREHOUSE_INVALID_FILTER')
+      normalized[field] = text
+    } else if (field === 'status') {
+      const text = filterText(value)
+      if (!REPORT_STATUSES.has(text)) throw fail('WAREHOUSE_INVALID_FILTER')
+      normalized[field] = text
+    } else if (field === 'page') {
+      normalized[field] = filterPage(value)
+      if (normalized[field] > 999_999_999) throw fail('WAREHOUSE_INVALID_FILTER')
+    } else if (field === 'pageSize') {
+      const maximum = exportReport ? 20_000 : 500
+      if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+        throw fail('WAREHOUSE_INVALID_FILTER')
+      }
+      normalized[field] = value
+    } else {
+      normalized[field] = filterText(value)
+    }
+  }
+  if (
+    normalized.dateFrom && normalized.dateTo &&
+    normalized.dateFrom > normalized.dateTo
+  ) throw fail('WAREHOUSE_INVALID_FILTER')
+  if (!Object.hasOwn(normalized, 'page')) normalized.page = 1
+  if (!Object.hasOwn(normalized, 'pageSize')) normalized.pageSize = exportReport ? 20_000 : 100
+  return { reportType, filters: normalized, exportReport }
+}
+
+function signedCostResponse(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidResponse()
+  const sign = value < 0 ? -1 : 1
+  const parsed = costResponse(Math.abs(value)).value * sign
+  return Object.is(parsed, -0) ? 0 : parsed
+}
+
+function validateReportRow(reportType, candidate, viewCost) {
+  const row = exactObject(candidate, REPORT_ROW_FIELDS[reportType])
+  const result = {}
+  for (const field of REPORT_ROW_FIELDS[reportType]) {
+    const value = row[field]
+    if (field === 'unitCost' || field === 'totalCost') {
+      if (!viewCost) {
+        if (value !== null) throw invalidResponse()
+        result[field] = null
+      } else if (value === null) {
+        result[field] = null
+      } else {
+        result[field] = field === 'unitCost'
+          ? costResponse(value).value
+          : signedCostResponse(value)
+      }
+    } else if (REPORT_UUID_FIELDS.has(field)) {
+      result[field] = value === null && REPORT_NULLABLE_FIELDS.has(field)
+        ? null
+        : uuidValue(value)
+    } else if (REPORT_QUANTITY_FIELDS.has(field)) {
+      result[field] = quantityResponse(value).value
+    } else if (REPORT_SIGNED_NUMBER_FIELDS.has(field)) {
+      result[field] = finiteNumber(value)
+    } else if (field === 'date') {
+      const text = nonemptyString(value)
+      if (!Number.isFinite(Date.parse(text))) throw invalidResponse()
+      result[field] = text
+    } else if (field === 'month') {
+      const text = nonemptyString(value)
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(text)) throw invalidResponse()
+      result[field] = text
+    } else if (field === 'status' || field === 'itemStatus' || field === 'variantStatus') {
+      const text = nonemptyString(value)
+      if (!REPORT_STATUSES.has(text)) throw invalidResponse()
+      result[field] = text
+    } else if (field === 'destinationType') {
+      if (value === null && REPORT_NULLABLE_FIELDS.has(field)) result[field] = null
+      else {
+        const text = nonemptyString(value)
+        if (!REPORT_DESTINATIONS.has(text)) throw invalidResponse()
+        result[field] = text
+      }
+    } else if (field === 'movementType') {
+      const text = nonemptyString(value)
+      if (!MOVEMENT_TYPE_SET.has(text)) throw invalidResponse()
+      result[field] = text
+    } else if (value === null && REPORT_NULLABLE_FIELDS.has(field)) {
+      result[field] = null
+    } else {
+      result[field] = stringValue(value)
+    }
+  }
+  return result
+}
+
+function validateReportResponse(value, request, viewCost) {
+  const row = exactObject(value, [
+    'reportType', 'page', 'pageSize', 'export', 'generatedAt', 'rows',
+  ])
+  if (
+    row.reportType !== request.reportType ||
+    row.page !== request.filters.page ||
+    row.pageSize !== request.filters.pageSize ||
+    row.export !== request.exportReport
+  ) throw invalidResponse()
+  return deepFreeze({
+    reportType: row.reportType,
+    page: filterPage(row.page),
+    pageSize: row.pageSize,
+    export: booleanValue(row.export),
+    generatedAt: timestampValue(row.generatedAt),
+    rows: exactArray(row.rows).map((candidate) =>
+      validateReportRow(request.reportType, candidate, viewCost)),
+  })
+}
+
 function normalizeOptions(options, client) {
   const descriptors = ownDataDescriptors(options)
-  const allowed = new Set(['configured', 'viewCost', 'manageCatalog'])
+  const allowed = new Set(['configured', 'viewCost', 'manageCatalog', 'exportReports'])
   if (!descriptors || Object.keys(descriptors).some((key) => !allowed.has(key))) {
     throw fail('WAREHOUSE_NOT_CONFIGURED')
   }
@@ -988,18 +1217,22 @@ function normalizeOptions(options, client) {
   const manageCatalog = Object.hasOwn(descriptors, 'manageCatalog')
     ? descriptors.manageCatalog.value
     : false
+  const exportReports = Object.hasOwn(descriptors, 'exportReports')
+    ? descriptors.exportReports.value
+    : false
   if (
     typeof configured !== 'boolean' ||
     typeof viewCost !== 'boolean' ||
-    typeof manageCatalog !== 'boolean'
+    typeof manageCatalog !== 'boolean' ||
+    typeof exportReports !== 'boolean'
   ) {
     throw fail('WAREHOUSE_NOT_CONFIGURED')
   }
-  return { configured, viewCost: viewCost || manageCatalog }
+  return { configured, viewCost: viewCost || manageCatalog, exportReports }
 }
 
 export function createWarehouseService(client, options = {}) {
-  const { configured, viewCost } = normalizeOptions(options, client)
+  const { configured, viewCost, exportReports } = normalizeOptions(options, client)
   const ensureConfigured = () => {
     const rpc = configured ? safeMethod(client, 'rpc') : null
     if (!rpc) {
@@ -1084,6 +1317,19 @@ export function createWarehouseService(client, options = {}) {
         await call('list_warehouse_movements_secure', { p_filters: normalized }),
         viewCost,
       )
+    },
+    async listReport(reportType, filters = {}, requestOptions = {}) {
+      const request = normalizeReportRequest(
+        reportType,
+        filters,
+        requestOptions,
+        exportReports,
+      )
+      return validateReportResponse(await call('list_warehouse_report_secure', {
+        p_report_type: request.reportType,
+        p_filters: request.filters,
+        p_export: request.exportReport,
+      }), request, viewCost)
     },
     async resolveQr(input) {
       let code

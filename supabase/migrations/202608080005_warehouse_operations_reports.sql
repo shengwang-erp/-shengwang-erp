@@ -1602,4 +1602,392 @@ to authenticated;
 revoke all on function public.confirm_warehouse_transfer_secure(uuid,uuid,uuid,uuid,uuid,uuid,numeric,text,text) from public,anon,service_role;
 grant execute on function public.confirm_warehouse_transfer_secure(uuid,uuid,uuid,uuid,uuid,uuid,numeric,text,text) to authenticated;
 
+-- Server-filtered warehouse reports.  Browser callers never receive a broad
+-- table snapshot and cannot request export-sized payloads without the separate
+-- report permission.  Cost keys stay present but null when cost access is absent.
+create or replace function public.list_warehouse_report_secure(
+  p_report_type text,
+  p_filters jsonb default '{}'::jsonb,
+  p_export boolean default false
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  view_cost boolean;
+  page_value integer;
+  page_size_value integer;
+  maximum_page_size integer;
+  warehouse_filter uuid;
+  location_filter uuid;
+  variant_filter uuid;
+  date_from_filter date;
+  date_to_filter date;
+  month_filter text;
+  category_filter text;
+  keyword_filter text;
+  project_filter text;
+  destination_filter text;
+  status_filter text;
+  rows_value jsonb;
+begin
+  perform private.assert_warehouse_permission('module.inventory.view');
+  if p_export is null then
+    raise exception using errcode='22023', message='warehouse report input invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end if;
+  if p_export and not public.has_current_permission('warehouse.report.export') then
+    raise exception using errcode='42501', message='warehouse export permission required';
+  end if;
+  if p_report_type is null or p_report_type not in (
+    'items','current_stock','receipts','issues','returns',
+    'transfers','stocktakes','low_stock','movements'
+  ) or jsonb_typeof(p_filters) is distinct from 'object'
+    or exists (
+      select 1 from jsonb_object_keys(p_filters) key
+      where key not in (
+        'dateFrom','dateTo','month','warehouseId','locationId','category',
+        'variantId','projectId','destinationType','status','keyword','page','pageSize'
+      )
+    )
+  then
+    raise exception using errcode='22023', message='warehouse report input invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end if;
+
+  maximum_page_size := case when p_export then 20000 else 500 end;
+  if coalesce(p_filters->>'page','1') !~ '^[1-9][0-9]{0,8}$'
+    or coalesce(p_filters->>'pageSize',case when p_export then '20000' else '100' end) !~ '^[1-9][0-9]{0,4}$'
+  then
+    raise exception using errcode='22023', message='warehouse report page invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end if;
+  page_value := (coalesce(p_filters->>'page','1'))::integer;
+  page_size_value := (coalesce(p_filters->>'pageSize',case when p_export then '20000' else '100' end))::integer;
+  if page_size_value > maximum_page_size then
+    raise exception using errcode='22023', message='warehouse report page invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end if;
+
+  begin
+    warehouse_filter := nullif(p_filters->>'warehouseId','')::uuid;
+    location_filter := nullif(p_filters->>'locationId','')::uuid;
+    variant_filter := nullif(p_filters->>'variantId','')::uuid;
+    date_from_filter := nullif(p_filters->>'dateFrom','')::date;
+    date_to_filter := nullif(p_filters->>'dateTo','')::date;
+  exception when others then
+    raise exception using errcode='22023', message='warehouse report filter invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end;
+  month_filter := nullif(p_filters->>'month','');
+  category_filter := nullif(p_filters->>'category','');
+  keyword_filter := nullif(p_filters->>'keyword','');
+  project_filter := nullif(p_filters->>'projectId','');
+  destination_filter := nullif(p_filters->>'destinationType','');
+  status_filter := nullif(p_filters->>'status','');
+  if (month_filter is not null and month_filter !~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+    or (date_from_filter is not null and date_from_filter::text <> p_filters->>'dateFrom')
+    or (date_to_filter is not null and date_to_filter::text <> p_filters->>'dateTo')
+    or (date_from_filter is not null and date_to_filter is not null and date_from_filter > date_to_filter)
+    or (category_filter is not null and (category_filter <> btrim(category_filter) or char_length(category_filter)>200))
+    or (keyword_filter is not null and (keyword_filter <> btrim(keyword_filter) or char_length(keyword_filter)>200))
+    or (project_filter is not null and (project_filter <> btrim(project_filter) or char_length(project_filter)>200))
+    or (destination_filter is not null and destination_filter not in ('project','minor_work_order','internal_use'))
+    or (status_filter is not null and status_filter not in ('active','inactive','pending','confirmed','rejected','void'))
+  then
+    raise exception using errcode='22023', message='warehouse report filter invalid', hint='WAREHOUSE_REPORT_FILTER_INVALID';
+  end if;
+
+  view_cost := public.has_current_permission('warehouse.cost.view');
+  with candidates as (
+    select 'items'::text report_type,
+      jsonb_build_object(
+        'itemId',item.id,'variantId',variant.id,'itemName',item.name,
+        'category',item.category,'brand',item.brand,'model',variant.model,
+        'size',variant.size,'material',variant.material,'sku',variant.sku,
+        'unit',variant.unit,'minimumStock',variant.minimum_stock,
+        'itemStatus',case when item.active then 'active' else 'inactive' end,
+        'variantStatus',case when variant.active then 'active' else 'inactive' end,
+        'unitCost',case when view_cost then variant.default_purchase_price else null end,
+        'totalCost',null
+      ) row_value,
+      variant.id variant_id, array[]::uuid[] warehouse_ids, array[]::uuid[] location_ids,
+      item.category category, null::text project_id, null::text destination_type,
+      case when variant.active then 'active' else 'inactive' end status,
+      null::date operation_date, null::text operation_month,
+      lower(concat_ws(' ',item.name,item.category,item.brand,variant.sku,variant.model,variant.size,variant.material)) search_text,
+      variant.updated_at sort_at, variant.id::text sort_id
+    from public.warehouse_variants variant
+    join public.warehouse_items item on item.id=variant.item_id
+    where p_report_type='items'
+
+    union all
+    select 'current_stock',
+      jsonb_build_object(
+        'variantId',variant.id,'itemName',item.name,'category',item.category,
+        'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'warehouseId',site.id,'warehouseName',site.name,'locationId',location.id,
+        'shelfCode',location.shelf_code,'shelfName',location.shelf_name,
+        'quantity',sum(balance.quantity),
+        'unitCost',case when view_cost and sum(balance.quantity)>0 then round(sum(balance.quantity*batch.unit_cost)/sum(balance.quantity),4) when view_cost then 0 else null end,
+        'totalCost',case when view_cost then round(sum(balance.quantity*batch.unit_cost),4) else null end
+      ),
+      variant.id,array[site.id],array[location.id],item.category,null,null,null,null,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,site.name,location.shelf_code,location.shelf_name)),
+      max(balance.updated_at),variant.id::text||':'||location.id::text
+    from public.warehouse_batch_locations balance
+    join public.warehouse_batches batch on batch.id=balance.batch_id
+    join public.warehouse_variants variant on variant.id=batch.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.warehouse_locations location on location.id=balance.location_id
+    join public.warehouse_sites site on site.id=location.warehouse_id
+    where p_report_type='current_stock'
+    group by variant.id,item.name,item.category,variant.model,variant.size,variant.sku,variant.unit,
+      site.id,site.name,location.id,location.shelf_code,location.shelf_name
+
+    union all
+    select 'receipts',
+      jsonb_build_object(
+        'receiptId',receipt.id,'purchaseRecordKey',receipt.purchase_record_key,
+        'date',coalesce(receipt.confirmed_at,receipt.submitted_at),
+        'variantId',variant.id,'itemName',item.name,'category',item.category,
+        'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'warehouseId',site.id,'warehouseName',site.name,'locationId',location.id,
+        'shelfCode',location.shelf_code,'shelfName',location.shelf_name,
+        'quantity',coalesce(line.confirmed_quantity,line.requested_quantity),
+        'status',receipt.status,'operator',coalesce(confirmer.name,submitter.name),
+        'reason',coalesce(receipt.rejection_reason,''),
+        'unitCost',case when view_cost then line.unit_cost else null end,
+        'totalCost',case when view_cost and line.unit_cost is not null then round(coalesce(line.confirmed_quantity,line.requested_quantity)*line.unit_cost,4) else null end
+      ),
+      variant.id,case when site.id is null then array[]::uuid[] else array[site.id] end,
+      case when location.id is null then array[]::uuid[] else array[location.id] end,
+      item.category,null,null,receipt.status,(coalesce(receipt.confirmed_at,receipt.submitted_at) at time zone 'Asia/Tokyo')::date,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,receipt.purchase_record_key,site.name,location.shelf_code)),
+      coalesce(receipt.confirmed_at,receipt.submitted_at),receipt.id::text||':'||line.id::text
+    from public.warehouse_receipts receipt
+    join public.warehouse_receipt_lines line on line.receipt_id=receipt.id
+    join public.warehouse_variants variant on variant.id=line.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    left join public.warehouse_locations location on location.id=line.location_id
+    left join public.warehouse_sites site on site.id=line.warehouse_id
+    join public.employee_profiles submitter on submitter.id=receipt.submitted_by_employee_profile_id
+    left join public.employee_profiles confirmer on confirmer.id=receipt.confirmed_by_employee_profile_id
+    where p_report_type='receipts'
+
+    union all
+    select 'issues',
+      jsonb_build_object(
+        'issueId',request.id,'date',request.request_date,'variantId',variant.id,
+        'itemName',item.name,'category',item.category,'model',variant.model,
+        'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'warehouseId',movement_data.warehouse_id,'warehouseName',movement_data.warehouse_name,
+        'locationId',movement_data.location_id,'shelfCode',movement_data.shelf_code,'shelfName',movement_data.shelf_name,
+        'quantity',coalesce(line.confirmed_quantity,line.requested_quantity),
+        'projectId',request.project_id,'destinationType',request.destination_type,
+        'destinationName',request.destination_name_snapshot,'receiver',request.receiver,
+        'status',request.status,'operator',coalesce(confirmer.name,submitter.name),'reason',coalesce(request.rejection_reason,request.purpose),
+        'unitCost',case when view_cost and line.confirmed_quantity>0 then round(line.frozen_total_cost/line.confirmed_quantity,4) else null end,
+        'totalCost',case when view_cost then line.frozen_total_cost else null end
+      ),
+      variant.id,coalesce(movement_data.warehouse_ids,array[]::uuid[]),coalesce(movement_data.location_ids,array[]::uuid[]),
+      item.category,request.project_id,request.destination_type,request.status,request.request_date,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,request.destination_name_snapshot,request.receiver,request.purpose)),
+      coalesce(request.confirmed_at,request.submitted_at),request.id::text||':'||line.id::text
+    from public.warehouse_stock_out_requests request
+    join public.warehouse_stock_out_lines line on line.request_id=request.id
+    join public.warehouse_variants variant on variant.id=line.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.employee_profiles submitter on submitter.id=request.submitted_by_employee_profile_id
+    left join public.employee_profiles confirmer on confirmer.id=request.confirmed_by_employee_profile_id
+    left join lateral (
+      select array_agg(distinct movement.warehouse_id) warehouse_ids,
+        array_agg(distinct movement.location_id) location_ids,
+        min(movement.warehouse_id::text)::uuid warehouse_id,min(site.name) warehouse_name,
+        min(movement.location_id::text)::uuid location_id,min(location.shelf_code) shelf_code,min(location.shelf_name) shelf_name
+      from public.warehouse_inventory_movements movement
+      join public.warehouse_sites site on site.id=movement.warehouse_id
+      join public.warehouse_locations location on location.id=movement.location_id
+      where movement.source_document_type='warehouse_stock_out'
+        and movement.source_document_id=request.id::text
+        and movement.metadata->>'stockOutLineId'=line.id::text
+    ) movement_data on true
+    where p_report_type='issues'
+
+    union all
+    select 'returns',
+      jsonb_build_object(
+        'returnId',returned.id,'originalIssueId',returned.original_stock_out_id,
+        'date',returned.request_date,'variantId',variant.id,'itemName',item.name,
+        'category',item.category,'model',variant.model,'size',variant.size,
+        'sku',variant.sku,'unit',variant.unit,'warehouseId',movement_data.warehouse_id,
+        'warehouseName',movement_data.warehouse_name,'locationId',movement_data.location_id,
+        'shelfCode',movement_data.shelf_code,'shelfName',movement_data.shelf_name,
+        'quantity',coalesce(line.confirmed_quantity,line.requested_quantity),
+        'projectId',original.project_id,'destinationType',original.destination_type,
+        'destinationName',original.destination_name_snapshot,'receiver',returned.receiver,
+        'status',returned.status,'operator',coalesce(confirmer.name,submitter.name),
+        'reason',coalesce(returned.rejection_reason,returned.reason),
+        'unitCost',case when view_cost and line.confirmed_quantity>0 then round(line.frozen_total_cost/line.confirmed_quantity,4) else null end,
+        'totalCost',case when view_cost then line.frozen_total_cost else null end
+      ),
+      variant.id,coalesce(movement_data.warehouse_ids,array[]::uuid[]),coalesce(movement_data.location_ids,array[]::uuid[]),
+      item.category,original.project_id,original.destination_type,returned.status,returned.request_date,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,original.destination_name_snapshot,returned.receiver,returned.reason)),
+      coalesce(returned.confirmed_at,returned.submitted_at),returned.id::text||':'||line.id::text
+    from public.warehouse_return_requests returned
+    join public.warehouse_return_lines line on line.return_id=returned.id
+    join public.warehouse_stock_out_requests original on original.id=returned.original_stock_out_id
+    join public.warehouse_stock_out_lines original_line on original_line.id=line.original_stock_out_line_id
+    join public.warehouse_variants variant on variant.id=original_line.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.employee_profiles submitter on submitter.id=returned.submitted_by_employee_profile_id
+    left join public.employee_profiles confirmer on confirmer.id=returned.confirmed_by_employee_profile_id
+    left join lateral (
+      select array_agg(distinct movement.warehouse_id) warehouse_ids,
+        array_agg(distinct movement.location_id) location_ids,
+        min(movement.warehouse_id::text)::uuid warehouse_id,min(site.name) warehouse_name,
+        min(movement.location_id::text)::uuid location_id,min(location.shelf_code) shelf_code,min(location.shelf_name) shelf_name
+      from public.warehouse_inventory_movements movement
+      join public.warehouse_sites site on site.id=movement.warehouse_id
+      join public.warehouse_locations location on location.id=movement.location_id
+      where movement.source_document_type='warehouse_return'
+        and movement.source_document_id=returned.id::text
+        and movement.metadata->>'returnLineId'=line.id::text
+    ) movement_data on true
+    where p_report_type='returns'
+
+    union all
+    select 'transfers',
+      jsonb_build_object(
+        'transferId',transfer.id,'date',transfer.confirmed_at,'variantId',variant.id,
+        'itemName',item.name,'category',item.category,'model',variant.model,
+        'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'sourceWarehouseId',source_site.id,'sourceWarehouseName',source_site.name,
+        'sourceLocationId',source_location.id,'sourceShelfCode',source_location.shelf_code,'sourceShelfName',source_location.shelf_name,
+        'destinationWarehouseId',destination_site.id,'destinationWarehouseName',destination_site.name,
+        'destinationLocationId',destination_location.id,'destinationShelfCode',destination_location.shelf_code,'destinationShelfName',destination_location.shelf_name,
+        'quantity',transfer.requested_quantity,'status',transfer.status,'operator',operator.name,'reason',transfer.reason,
+        'unitCost',case when view_cost and transfer.requested_quantity>0 then round(transfer.total_cost/transfer.requested_quantity,4) else null end,
+        'totalCost',case when view_cost then transfer.total_cost else null end
+      ),
+      variant.id,array[transfer.source_warehouse_id,transfer.destination_warehouse_id],array[transfer.source_location_id,transfer.destination_location_id],
+      item.category,null,null,transfer.status,(transfer.confirmed_at at time zone 'Asia/Tokyo')::date,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,source_site.name,destination_site.name,source_location.shelf_code,destination_location.shelf_code,transfer.reason)),
+      transfer.confirmed_at,transfer.id::text
+    from public.warehouse_transfers transfer
+    join public.warehouse_variants variant on variant.id=transfer.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.warehouse_sites source_site on source_site.id=transfer.source_warehouse_id
+    join public.warehouse_sites destination_site on destination_site.id=transfer.destination_warehouse_id
+    join public.warehouse_locations source_location on source_location.id=transfer.source_location_id
+    join public.warehouse_locations destination_location on destination_location.id=transfer.destination_location_id
+    join public.employee_profiles operator on operator.id=transfer.confirmed_by_employee_profile_id
+    where p_report_type='transfers'
+
+    union all
+    select 'stocktakes',
+      jsonb_build_object(
+        'stocktakeId',stocktake.id,'date',stocktake.confirmed_at,'month',stocktake.stocktake_month,
+        'variantId',variant.id,'itemName',item.name,'category',item.category,
+        'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'warehouseId',site.id,'warehouseName',site.name,'locationId',location.id,
+        'shelfCode',location.shelf_code,'shelfName',location.shelf_name,
+        'bookQuantity',line.book_quantity,'countedQuantity',line.counted_quantity,
+        'quantityDelta',line.quantity_delta,'differenceType',line.difference_type,
+        'status',stocktake.status,'operator',operator.name,'reason',line.reason,
+        'unitCost',case when view_cost then line.frozen_unit_cost else null end,
+        'totalCost',case when view_cost then line.frozen_total_cost else null end
+      ),
+      variant.id,array[stocktake.warehouse_id],array[line.location_id],item.category,null,null,stocktake.status,
+      (stocktake.confirmed_at at time zone 'Asia/Tokyo')::date,stocktake.stocktake_month,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,site.name,location.shelf_code,line.reason)),
+      stocktake.confirmed_at,stocktake.id::text||':'||line.id::text
+    from public.warehouse_stocktakes stocktake
+    join public.warehouse_stocktake_lines line on line.stocktake_id=stocktake.id
+    join public.warehouse_variants variant on variant.id=line.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.warehouse_sites site on site.id=stocktake.warehouse_id
+    join public.warehouse_locations location on location.id=line.location_id
+    join public.employee_profiles operator on operator.id=stocktake.confirmed_by_employee_profile_id
+    where p_report_type='stocktakes'
+
+    union all
+    select 'low_stock',
+      jsonb_build_object(
+        'variantId',variant.id,'itemName',item.name,'category',item.category,
+        'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'quantity',coalesce(sum(balance.quantity),0),'minimumStock',variant.minimum_stock,
+        'shortageQuantity',greatest(variant.minimum_stock-coalesce(sum(balance.quantity),0),0),
+        'unitCost',case when view_cost and coalesce(sum(balance.quantity),0)>0 then round(sum(balance.quantity*batch.unit_cost)/sum(balance.quantity),4) when view_cost then 0 else null end,
+        'totalCost',case when view_cost then round(coalesce(sum(balance.quantity*batch.unit_cost),0),4) else null end
+      ),
+      variant.id,array[]::uuid[],array[]::uuid[],item.category,null,null,null,null,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size)),
+      variant.updated_at,variant.id::text
+    from public.warehouse_variants variant
+    join public.warehouse_items item on item.id=variant.item_id
+    left join public.warehouse_batches batch on batch.variant_id=variant.id
+    left join public.warehouse_batch_locations balance on balance.batch_id=batch.id
+    where p_report_type='low_stock' and variant.active and item.active
+    group by variant.id,item.name,item.category,variant.model,variant.size,variant.sku,variant.unit,variant.minimum_stock
+    having coalesce(sum(balance.quantity),0)<variant.minimum_stock
+
+    union all
+    select 'movements',
+      jsonb_build_object(
+        'movementId',movement.id,'date',movement.occurred_at,'movementType',movement.movement_type,
+        'sourceDocumentType',movement.source_document_type,'sourceDocumentId',movement.source_document_id,
+        'variantId',variant.id,'itemName',item.name,'category',item.category,
+        'model',variant.model,'size',variant.size,'sku',variant.sku,'unit',variant.unit,
+        'warehouseId',site.id,'warehouseName',site.name,'locationId',location.id,
+        'shelfCode',location.shelf_code,'shelfName',location.shelf_name,
+        'quantityDelta',movement.quantity_delta,'projectId',movement.project_id,
+        'destinationType',movement.destination_type,'destinationName',movement.destination_name,
+        'operator',operator.name,'reason',coalesce(movement.metadata->>'reason',''),
+        'unitCost',case when view_cost then movement.unit_cost else null end,
+        'totalCost',case when view_cost then round(movement.quantity_delta*movement.unit_cost,4) else null end
+      ),
+      variant.id,array[movement.warehouse_id],array[movement.location_id],item.category,movement.project_id,movement.destination_type,null,
+      (movement.occurred_at at time zone 'Asia/Tokyo')::date,null,
+      lower(concat_ws(' ',item.name,item.category,variant.sku,variant.model,variant.size,site.name,location.shelf_code,movement.movement_type,movement.source_document_id,movement.destination_name)),
+      movement.occurred_at,movement.id::text
+    from public.warehouse_inventory_movements movement
+    join public.warehouse_variants variant on variant.id=movement.variant_id
+    join public.warehouse_items item on item.id=variant.item_id
+    join public.warehouse_sites site on site.id=movement.warehouse_id
+    join public.warehouse_locations location on location.id=movement.location_id
+    join public.employee_profiles operator on operator.id=movement.operator_employee_profile_id
+    where p_report_type='movements'
+  ), filtered as (
+    select row_value,sort_at,sort_id
+    from candidates
+    where report_type=p_report_type
+      and (variant_filter is null or variant_id=variant_filter)
+      and (warehouse_filter is null or warehouse_filter=any(warehouse_ids))
+      and (location_filter is null or location_filter=any(location_ids))
+      and (category_filter is null or category=category_filter)
+      and (project_filter is null or project_id=project_filter)
+      and (destination_filter is null or destination_type=destination_filter)
+      and (status_filter is null or status=status_filter)
+      and (date_from_filter is null or operation_date>=date_from_filter)
+      and (date_to_filter is null or operation_date<=date_to_filter)
+      and (month_filter is null or operation_month=month_filter)
+      and (keyword_filter is null or search_text like '%'||lower(keyword_filter)||'%')
+    order by sort_at desc nulls last,sort_id
+    limit page_size_value offset (page_value::bigint-1)*page_size_value::bigint
+  )
+  select coalesce(jsonb_agg(row_value order by sort_at desc nulls last,sort_id),'[]'::jsonb)
+  into rows_value from filtered;
+
+  return jsonb_build_object(
+    'reportType',p_report_type,'page',page_value,'pageSize',page_size_value,
+    'export',p_export,'generatedAt',statement_timestamp(),'rows',rows_value
+  );
+end;
+$$;
+
+revoke all on function public.list_warehouse_report_secure(text,jsonb,boolean)
+from public,anon,service_role;
+grant execute on function public.list_warehouse_report_secure(text,jsonb,boolean)
+to authenticated;
+
 commit;

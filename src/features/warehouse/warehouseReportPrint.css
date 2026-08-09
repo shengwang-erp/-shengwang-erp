@@ -1,0 +1,50 @@
+@page warehouse-report {
+  size: A4 landscape;
+  margin: 10mm;
+}
+
+@media print {
+  body.warehouse-report-printing * {
+    visibility: hidden !important;
+  }
+
+  body.warehouse-report-printing .warehouse-print-sheet,
+  body.warehouse-report-printing .warehouse-print-sheet * {
+    visibility: visible !important;
+  }
+
+  body.warehouse-report-printing .warehouse-print-sheet {
+    position: absolute;
+    inset: 0;
+    page: warehouse-report;
+    padding: 0 !important;
+    border: 0 !important;
+    color: #111 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  body.warehouse-report-printing .warehouse-print-header {
+    display: block !important;
+    margin-bottom: 12px;
+  }
+
+  body.warehouse-report-printing .warehouse-report-table-wrap {
+    overflow: visible !important;
+    border: 1px solid #777 !important;
+  }
+
+  body.warehouse-report-printing .warehouse-report-table {
+    min-width: 0 !important;
+    font-size: 8pt !important;
+  }
+
+  body.warehouse-report-printing .warehouse-report-table th,
+  body.warehouse-report-printing .warehouse-report-table td {
+    padding: 4px 5px !important;
+    border: 1px solid #999 !important;
+    color: #111 !important;
+    background: #fff !important;
+    white-space: normal !important;
+  }
+}

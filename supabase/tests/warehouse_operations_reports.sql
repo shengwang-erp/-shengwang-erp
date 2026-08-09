@@ -32,6 +32,9 @@ select has_function('public', 'confirm_warehouse_stocktake_secure', array[
 select has_function('public', 'reverse_warehouse_operation_secure', array[
   'text', 'uuid', 'text', 'text'
 ]);
+select has_function('public', 'list_warehouse_report_secure', array[
+  'text', 'jsonb', 'boolean'
+]);
 select ok(
   strpos(pg_get_functiondef('public.confirm_warehouse_transfer_secure(uuid,uuid,uuid,uuid,uuid,uuid,numeric,text,text)'::regprocedure),
     'least(p_source_location_id,p_destination_location_id)')
@@ -80,6 +83,8 @@ insert into public.employee_profiles(
   ('c0200000-0000-4000-8000-000000000003', 'SW-9863', 'c0100000-0000-4000-8000-000000000003', '无成本盘点人', '事务部', '主任', '在职', 'active', false);
 
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
+  ('department', '采购部', 'module.inventory.view'),
+  ('department', '采购部', 'warehouse.report.export'),
   ('department', '采购部', 'warehouse.receipt.confirm'),
   ('department', '采购部', 'warehouse.transfer.manage'),
   ('department', '采购部', 'warehouse.stocktake.confirm'),
@@ -87,7 +92,8 @@ insert into public.permission_grants(subject_type, subject_code, permission_key)
   ('department', '采购部', 'warehouse.stock_flow.request'),
   ('department', '采购部', 'warehouse.stock_flow.confirm'),
   ('department', '营业部', 'warehouse.transfer.manage'),
-  ('department', '事务部', 'warehouse.stocktake.confirm');
+  ('department', '事务部', 'warehouse.stocktake.confirm'),
+  ('department', '事务部', 'module.inventory.view');
 
 insert into public.warehouse_sites(id, code, name, kind, active) values
   ('c1000000-0000-4000-8000-000000000001', 'OP-A', '操作测试A仓', 'normal', true),
@@ -720,6 +726,87 @@ select is(
   'WAREHOUSE_OPERATION_IMMUTABLE',
   'reversal audit records remain immutable'
 );
+
+set local role authenticated;
+select ok(
+  (select bool_and(jsonb_typeof(public.list_warehouse_report_secure(report_type,'{}',false)->'rows')='array')
+   from unnest(array[
+     'items','current_stock','receipts','issues','returns',
+     'transfers','stocktakes','low_stock','movements'
+   ]) report_type),
+  'all nine warehouse report types return server-filtered row arrays'
+);
+select is(
+  (public.list_warehouse_report_secure('current_stock',jsonb_build_object(
+    'warehouseId','c1000000-0000-4000-8000-000000000001',
+    'locationId','c1100000-0000-4000-8000-000000000001',
+    'variantId','c1300000-0000-4000-8000-000000000001',
+    'category','测试','pageSize',500
+  ),false)->>'pageSize')::integer,
+  500,
+  'ordinary report validates and accepts every stock identity filter at the 500-row ceiling'
+);
+select ok(
+  jsonb_array_length(public.list_warehouse_report_secure('issues',jsonb_build_object(
+    'projectId','P-REV-RETURN','destinationType','project','status','confirmed',
+    'dateFrom','2026-08-09','dateTo','2026-08-09'
+  ),false)->'rows') >= 1,
+  'issue report combines project destination status and inclusive date filters'
+);
+select ok(
+  jsonb_array_length(public.list_warehouse_report_secure('stocktakes','{"month":"2026-08"}',false)->'rows') >= 1,
+  'stocktake report validates the monthly filter'
+);
+select ok(
+  (public.list_warehouse_report_secure('current_stock','{"pageSize":1}',false)#>>'{rows,0,unitCost}') is not null,
+  'cost-authorized report receives unit cost'
+);
+select is(
+  (public.list_warehouse_report_secure('movements','{"pageSize":500}',false)->>'pageSize')::integer,
+  500,
+  'ordinary report responses are bounded to 500 rows'
+);
+select is(
+  (public.list_warehouse_report_secure('movements','{"pageSize":20000}',true)->>'pageSize')::integer,
+  20000,
+  'authorized export responses are bounded to 20000 rows'
+);
+select is(
+  pg_temp.operation_error_hint($sql$select public.list_warehouse_report_secure('movements','{"pageSize":501}',false)$sql$),
+  'WAREHOUSE_REPORT_FILTER_INVALID',
+  'ordinary report rejects page sizes above 500'
+);
+select is(
+  pg_temp.operation_error_hint($sql$select public.list_warehouse_report_secure(null,'{}',false)$sql$),
+  'WAREHOUSE_REPORT_FILTER_INVALID',
+  'report rejects a null report type with the stable filter error'
+);
+select is(
+  pg_temp.operation_error_hint($sql$select public.list_warehouse_report_secure('movements','{"page":2147483648}',false)$sql$),
+  'WAREHOUSE_REPORT_FILTER_INVALID',
+  'report rejects oversized page numbers with the stable filter error'
+);
+select is(
+  pg_temp.operation_error_hint($sql$select public.list_warehouse_report_secure('movements','{"dateFrom":"2026-02-30"}',false)$sql$),
+  'WAREHOUSE_REPORT_FILTER_INVALID',
+  'report rejects impossible calendar dates'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'c0100000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select is(
+  (public.list_warehouse_report_secure('current_stock','{"pageSize":1}',false)#>>'{rows,0,unitCost}'),
+  null,
+  'report cost is redacted without warehouse cost permission'
+);
+select throws_ok(
+  $$select public.list_warehouse_report_secure('movements','{}',true)$$,
+  '42501','warehouse export permission required',
+  'export-sized report requires the independent export permission'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'c0100000-0000-4000-8000-000000000001', true);
 
 set local role authenticated;
 select is(

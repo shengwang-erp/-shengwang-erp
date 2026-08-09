@@ -12,7 +12,11 @@ const REQUIRED_OWNED_QR_CALLSITES = Object.freeze({
   '@zxing/browser': 'src/features/warehouse/WarehouseQrScanner.jsx',
   qrcode: 'src/features/warehouse/WarehouseLabelSheet.jsx',
 })
+const REQUIRED_OWNED_REPORT_CALLSITES = Object.freeze({
+  exceljs: 'src/features/warehouse/warehouseExport.js',
+})
 const WAREHOUSE_CATALOG_ROOT = 'src/features/warehouse/WarehouseCatalog.jsx'
+const WAREHOUSE_REPORTS_ROOT = 'src/features/warehouse/WarehouseReports.jsx'
 const SOURCE_EXTENSIONS = new Set([
   '.js', '.jsx', '.mjs', '.cjs',
   '.ts', '.tsx', '.mts', '.cts',
@@ -290,7 +294,7 @@ async function main() {
   const root = path.resolve(process.argv[2] ?? process.cwd())
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
   const violations = []
-  const ownedQrCallsites = new Set()
+  const ownedDynamicCallsites = new Set()
   const productionSources = await listProductionSources(path.join(root, 'src'))
   const relativeSources = new Set(productionSources.map(
     (filename) => path.relative(root, filename).split(path.sep).join('/'),
@@ -326,8 +330,12 @@ async function main() {
       }
       if (node.type === 'CallExpression' && node.callee?.type === 'Import') {
         const dependency = dependencyForSpecifier(node.arguments?.[0]?.value)
-        if (REQUIRED_OWNED_QR_CALLSITES[dependency] === relativeFilename) {
-          ownedQrCallsites.add(dependency)
+        const expectedFilename = {
+          ...REQUIRED_OWNED_QR_CALLSITES,
+          ...REQUIRED_OWNED_REPORT_CALLSITES,
+        }[dependency]
+        if (expectedFilename === relativeFilename) {
+          ownedDynamicCallsites.add(dependency)
         }
       }
       if (
@@ -419,7 +427,14 @@ async function main() {
   }
 
   for (const [dependency, filename] of Object.entries(REQUIRED_OWNED_QR_CALLSITES)) {
-    if (!ownedQrCallsites.has(dependency)) {
+    if (!ownedDynamicCallsites.has(dependency)) {
+      violations.push(
+        `${filename}: missing literal dynamic import() of ${dependency} in the real warehouse-owned module`,
+      )
+    }
+  }
+  for (const [dependency, filename] of Object.entries(REQUIRED_OWNED_REPORT_CALLSITES)) {
+    if (!ownedDynamicCallsites.has(dependency)) {
       violations.push(
         `${filename}: missing literal dynamic import() of ${dependency} in the real warehouse-owned module`,
       )
@@ -431,6 +446,15 @@ async function main() {
     if (!catalogReachable.has(filename)) {
       violations.push(
         `${WAREHOUSE_CATALOG_ROOT}: ${filename} must be reachable through the static local import graph`,
+      )
+    }
+  }
+
+  const reportReachable = reachableSources(localImportGraph, WAREHOUSE_REPORTS_ROOT)
+  for (const filename of Object.values(REQUIRED_OWNED_REPORT_CALLSITES)) {
+    if (!reportReachable.has(filename)) {
+      violations.push(
+        `${WAREHOUSE_REPORTS_ROOT}: ${filename} must be reachable through the static local import graph`,
       )
     }
   }
