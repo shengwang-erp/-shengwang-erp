@@ -26,9 +26,11 @@ export default function DesktopAdminShell({
     <div className="erp-black-gold desktop-admin-layout">
       <aside className="desktop-admin-sidebar">
         <div className="desktop-admin-brand">
-          <span className="desktop-admin-brand-mark" aria-hidden="true">
-            SW
-          </span>
+          <img
+            className="desktop-admin-brand-mark"
+            src="/sw-sidebar-mark.png"
+            alt="生旺株式会社标志"
+          />
           <span>
             <strong>生旺株式会社</strong>
             <small>ERP 管理数据中心</small>

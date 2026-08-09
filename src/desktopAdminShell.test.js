@@ -58,6 +58,63 @@ async function loadDesktopShell() {
 
 const desktopShellModule = await loadDesktopShell()
 
+test('desktop brand renders the approved horizontal oval image without fallback SW text', async () => {
+  const currentUser = {
+    employeeId: 'E-BRAND',
+    employeeNumber: 'SW-321',
+    name: '品牌验收员工',
+    department: '总务部',
+    position: '社长',
+    employmentStatus: '在职',
+    accountStatus: 'active',
+    mustChangePassword: false,
+    effectivePermissionKeys: [],
+  }
+  const markup = renderToStaticMarkup(createElement(
+    desktopShellModule.default,
+    {
+      currentView: 'home',
+      currentUser,
+      onNavigate() {},
+      onLogout() {},
+    },
+    createElement('div', null, 'Home content'),
+  ))
+  const brandMarkup = sliceBetween(
+    markup,
+    '<div class="desktop-admin-brand">',
+    '</div>',
+  )
+
+  assert.match(
+    brandMarkup,
+    /<img class="desktop-admin-brand-mark" src="\/sw-sidebar-mark\.png" alt="生旺株式会社标志"\/>/u,
+  )
+  assert.doesNotMatch(brandMarkup, />SW</u)
+  assert.match(brandMarkup, /生旺株式会社/u)
+  assert.match(brandMarkup, /ERP 管理数据中心/u)
+
+  const logo = await readFile(
+    new URL('../public/sw-sidebar-mark.png', import.meta.url),
+  ).catch(() => Buffer.alloc(0))
+  assert.deepEqual([...logo.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+  assert.equal(logo.readUInt32BE(16), 1120)
+  assert.equal(logo.readUInt32BE(20), 800)
+  assert.equal(logo[25], 6)
+  assert.match(
+    cssSource,
+    /\.desktop-admin-brand\s*\{[^}]*grid-template-columns:\s*56px\s+minmax\(0,\s*1fr\)[^}]*gap:\s*6px/su,
+  )
+  assert.match(
+    cssSource,
+    /\.desktop-admin-brand strong\s*\{[^}]*font-size:\s*14px[^}]*letter-spacing:\s*0\.04em[^}]*white-space:\s*nowrap/su,
+  )
+  assert.match(
+    cssSource,
+    /\.desktop-admin-brand small\s*\{[^}]*font-size:\s*9px[^}]*letter-spacing:\s*0\.04em[^}]*white-space:\s*nowrap/su,
+  )
+})
+
 test('desktop shell renders only centrally authorized routes and falls back to Home metadata', () => {
   const currentUser = {
     employeeId: 'E-ZERO',

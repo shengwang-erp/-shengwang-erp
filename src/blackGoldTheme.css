@@ -68,10 +68,10 @@
 }
 
 .erp-black-gold .desktop-admin-brand-mark {
-  border-color: var(--erp-accent-gold);
-  color: var(--erp-accent-gold-soft);
-  background: var(--erp-accent-gold-surface);
-  box-shadow: inset 0 0 18px rgba(214, 170, 92, 0.12);
+  border: 0;
+  color: inherit;
+  background: transparent;
+  box-shadow: none;
 }
 
 .erp-black-gold .desktop-admin-brand small,
