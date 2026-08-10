@@ -65,10 +65,18 @@
 字段，信封 `status` 用于软删除。浏览器不能直接 SELECT/INSERT/UPDATE/DELETE 此表，统一使用：
 
 - `list_projects_secure()`
+- `list_project_references_secure()`
 - `create_project_secure(project)`
 - `update_project_secure(project_id, patch)`
 - `soft_delete_project_secure(project_id)`
 - `migrate_legacy_project_contract_secure(project_id, expected, opening_receipt)`
+
+跨模块只需要绑定项目时调用 `list_project_references_secure()`，不会借用完整工程模块权限。
+它仅返回服务端权威的 `projectId`、`projectName`、`status`、`address` 四个字符串字段，绝不返回
+客户、合同金额、备注、坐标或其他工程详情。有效员工只有满足既有关系读取链之一才能调用：完整
+工程查看、采购查看、会计页加项目成本查看、会计页加经营费用查看、车辆查看，或工具查看加工具
+修改。工具只读人员不能取得项目引用。该 RPC 是空 `search_path` 的 `SECURITY DEFINER`，先撤销
+所有角色权限，再仅向 `authenticated` 与 `service_role` 授予执行权。
 
 可变基础 payload 只允许 `projectName`、`customerName`、`address`、经纬度、打卡半径、
 定位确认时间与地址快照、七种项目状态、设计/现场担当各三项快照、起止日期和备注。

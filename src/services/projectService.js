@@ -28,6 +28,44 @@ function validateProject(value) {
   return { ...project }
 }
 
+const PROJECT_REFERENCE_KEYS = Object.freeze([
+  'projectId', 'projectName', 'status', 'address',
+])
+
+function validateProjectReference(value) {
+  try {
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    ) throw new ProjectServiceError('invalidResponse')
+
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string')) {
+      throw new ProjectServiceError('invalidResponse')
+    }
+    const keys = Object.keys(descriptors)
+    if (
+      keys.length !== PROJECT_REFERENCE_KEYS.length ||
+      keys.some((key) => !PROJECT_REFERENCE_KEYS.includes(key)) ||
+      PROJECT_REFERENCE_KEYS.some((key) => {
+        const descriptor = descriptors[key]
+        return !descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string'
+      }) ||
+      descriptors.projectId.value.trim() === '' ||
+      descriptors.projectName.value.trim() === ''
+    ) throw new ProjectServiceError('invalidResponse')
+
+    return Object.fromEntries(PROJECT_REFERENCE_KEYS.map(
+      (key) => [key, descriptors[key].value],
+    ))
+  } catch (error) {
+    if (error instanceof ProjectServiceError) throw error
+    throw new ProjectServiceError('invalidResponse')
+  }
+}
+
 export function createProjectService(client = supabase, { configured = isSupabaseConfigured } = {}) {
   function ensureConfigured() {
     if (!configured || !client || typeof client.rpc !== 'function') {
@@ -52,6 +90,11 @@ export function createProjectService(client = supabase, { configured = isSupabas
       const data = await call('list_projects_secure', {})
       if (!Array.isArray(data)) throw new ProjectServiceError('invalidResponse')
       return data.map(validateProject)
+    },
+    async listProjectReferences() {
+      const data = await call('list_project_references_secure', {})
+      if (!Array.isArray(data)) throw new ProjectServiceError('invalidResponse')
+      return data.map(validateProjectReference)
     },
     async createProject(payload) {
       return validateProject(await call('create_project_secure', { p_payload: payload }))

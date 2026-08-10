@@ -5777,3 +5777,14 @@ commit;
 -- Summary and category totals fail with SQLSTATE 22003 outside
 -- +/-900719925474.0991, and
 -- pagination numbers must be mathematically integral before integer conversion.
+
+-- PROJECT REFERENCE ACCESS REVIEW SNAPSHOT
+-- Canonical executable DDL: 202608100001_project_reference_access.sql
+--
+-- public.list_project_references_secure() is an empty-search_path,
+-- SECURITY DEFINER relation boundary. It emits only projectId, projectName,
+-- status, and address. Full project viewers and the existing purchase,
+-- accounting project-cost, accounting operating-expense, and vehicle relation
+-- readers may execute it. Tool responsibility binding requires both
+-- module.tools.view and module.tools.update. Anonymous execution is revoked;
+-- only authenticated and service_role receive EXECUTE.

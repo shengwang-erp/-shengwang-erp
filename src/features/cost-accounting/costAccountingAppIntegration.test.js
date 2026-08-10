@@ -22,6 +22,8 @@ function sliceBetween(source, startMarker, endMarker) {
 async function loadAppModule() {
   const server = await createServer({
     root: process.cwd(),
+    configFile: false,
+    cacheDir: '/private/tmp/task5-cost-accounting-vite-cache',
     logLevel: 'silent',
     appType: 'custom',
     plugins: [{
@@ -135,7 +137,11 @@ test('accounting project relations use an authorized projected project source', 
   )
   assert.match(
     authenticated,
-    /const projectRelationReadAccess = [\s\S]*?dashboardAccess\.projectSnapshot[\s\S]*?purchaseReadAccess\.records[\s\S]*?accountingReadAccess\.projectCost[\s\S]*?accountingReadAccess\.operatingExpense[\s\S]*?canAccessView\(currentUser, 'vehicle'\)/u,
+    /const projectReferenceAccess = getProjectReferenceAccess\(currentUser\)[\s\S]*?const projectRelationReadAccess = projectReferenceAccess\.view/u,
+  )
+  assert.match(
+    authenticated,
+    /loadProjectDirectoryForAccess\(projectService, projectReferenceAccess\)/u,
   )
   assert.match(projectProjection, /readAllowed:\s*projectRelationReadAccess/u)
 })

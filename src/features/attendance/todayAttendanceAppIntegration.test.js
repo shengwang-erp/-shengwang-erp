@@ -171,17 +171,19 @@ test('legacy project startup clears stale data before any unauthorized list call
     "\n  useEffect(() => {\n    let active = true\n    if (!contractRevenueAccess.view)",
   )
   const permissionIndex = projectStartup.indexOf(
-    "const canViewProjects = canAccessView(currentUser, 'projects')",
+    'const canViewProjects = projectReferenceAccess.view',
   )
   const earlyReturnIndex = projectStartup.indexOf('if (!canViewProjects)')
   const clearIndex = projectStartup.indexOf('setStoredProjects([])', earlyReturnIndex)
-  const listIndex = projectStartup.indexOf('projectService.listProjects()')
+  const listIndex = projectStartup.indexOf(
+    'loadProjectDirectoryForAccess(projectService, projectReferenceAccess)',
+  )
 
   assert.ok(permissionIndex >= 0)
   assert.ok(earlyReturnIndex > permissionIndex)
   assert.ok(clearIndex > earlyReturnIndex)
   assert.ok(listIndex > clearIndex)
-  assert.match(projectStartup, /\}, \[canViewProjects\]\)/u)
+  assert.match(projectStartup, /\}, \[canViewProjects, projectReferenceAccess\.full\]\)/u)
 })
 
 test('one attendance route passes only identity, auth invalidation, and Home navigation', () => {

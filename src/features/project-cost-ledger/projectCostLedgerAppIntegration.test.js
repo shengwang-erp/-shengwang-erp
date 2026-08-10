@@ -5,6 +5,7 @@ import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
 import { installWarehouseReactDom, TestEvent } from '../warehouse/warehouseReactDomTestUtils.js'
+import { canEdit } from '../../utils/permissions.js'
 
 const bootstrapDom = installWarehouseReactDom()
 const { createRoot } = await import('react-dom/client')
@@ -12,6 +13,7 @@ bootstrapDom.cleanup()
 
 const server = await createServer({
   root: process.cwd(),
+  cacheDir: '/private/tmp/task5-project-cost-ledger-vite-cache',
   configFile: false,
   logLevel: 'silent',
   appType: 'custom',
@@ -81,6 +83,13 @@ const ledgerAccess = {
   readLedger: true, createManual: true, adjust: true, allocate: true,
 }
 
+const activeToolManager = {
+  employeeId: 'E-TOOLS', employeeNumber: 'SW-TOOLS', name: '工具管理员',
+  department: '总务部', position: '社员', employmentStatus: '在职',
+  accountStatus: 'active', mustChangePassword: false,
+  effectivePermissionKeys: ['module.tools.view', 'module.tools.update'],
+}
+
 test('ledger component never requests while denied and drops a stale prior-account response', async () => {
   assert.equal(typeof app.ProjectCostLedgerSection, 'function')
   assert.notEqual(
@@ -145,6 +154,81 @@ test('ledger component never requests while denied and drops a stale prior-accou
     assert.match(container.textContent, /项目成本尚未读取|正在读取项目成本/u)
     third.resolve(ledgerSnapshot('第三账号数据'))
     await act(async () => {})
+    assert.match(container.textContent, /第三账号数据/u)
+
+    const callsBeforePermissionLoss = calls
+    await act(async () => { flushSync(() => { root.render(createElement(app.ProjectCostLedgerSection, {
+      service: secondService,
+      access: { ...ledgerAccess, view: false, readLedger: false },
+      projects: [], actorFingerprint: 'actor-c|denied', onAuthInvalid() {},
+    })) }) })
+    assert.equal(calls, callsBeforePermissionLoss)
+    assert.doesNotMatch(container.textContent, /第三账号数据/u)
+    assert.match(container.textContent, /无权读取项目成本/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('ledger unmount cleanup prevents a pending response from refilling exited UI', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const pending = deferred()
+  let calls = 0
+  await act(async () => { root.render(createElement(app.ProjectCostLedgerSection, {
+    service: { list() { calls += 1; return pending.promise } },
+    access: ledgerAccess, projects: [], actorFingerprint: 'actor-route-exit',
+    onAuthInvalid() {},
+  })) })
+  assert.equal(calls, 1)
+  await act(async () => { root.unmount() })
+  pending.resolve(ledgerSnapshot('退出后机密'))
+  await act(async () => {})
+  assert.equal(container.textContent, '')
+  assert.equal(calls, 1)
+  dom.cleanup()
+})
+
+test('tool-only manager follows the real App project-reference loader and can save binding', async () => {
+  assert.equal(typeof app.loadProjectDirectoryForAccess, 'function')
+  assert.equal(typeof app.getProjectReferenceAccess, 'function')
+  const access = app.getProjectReferenceAccess(activeToolManager)
+  const canManageTools = canEdit(activeToolManager, '工具管理')
+  const calls = []
+  const projects = await app.loadProjectDirectoryForAccess({
+    async listProjects() { calls.push('full'); return [] },
+    async listProjectReferences() {
+      calls.push('references')
+      return [{ projectId: 'P-1', projectName: '一号项目', status: '进行中', address: '' }]
+    },
+  }, access)
+  assert.deepEqual(access, { view: true, full: false })
+  assert.equal(canManageTools, true)
+  assert.deepEqual(calls, ['references'])
+
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  let saved = []
+  try {
+    await act(async () => { root.render(createElement(app.ToolResponsibilitySection, {
+      employees: [], assignments: [{
+        assignmentId: 'A-1', toolId: 'T-1', toolName: '电钻', employeeId: 'E-1',
+        employeeName: '施工员', serialNumber: 'SN-1', toolValue: 800,
+        responsibilityStatus: '正常使用中',
+      }],
+      setAssignments() {}, toolRecords: [], setToolRecords() {}, projects, records: [],
+      setRecords(updater) { saved = updater(saved) }, canManageTools,
+    })) })
+    await change(field(container, '员工名下工具'), 'A-1')
+    const checkbox = field(container, '计入项目成本')
+    await act(async () => { checkbox.checked = true; checkbox.click() })
+    await change(field(container, '工程项目'), 'P-1')
+    const form = elements(container, (element) => element.nodeName === 'FORM')[0]
+    await act(async () => { form.dispatchEvent(new TestEvent('submit')) })
+    assert.equal(saved[0].projectId, 'P-1')
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()

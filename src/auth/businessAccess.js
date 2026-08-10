@@ -151,6 +151,23 @@ export function getVisibleAdminRoutes(user) {
   )
 }
 
+export function getProjectReferenceAccess(user) {
+  const snapshot = activeUserSnapshot(user)
+  if (!snapshot) return freezeProjection({ view: false, full: false })
+
+  const full = canAccessSafeUser(snapshot, 'projects')
+  const accountingPage = canAccessSafeUser(snapshot, 'accounting')
+  const relationView = full ||
+    canAccessSafeUser(snapshot, 'purchase') ||
+    (accountingPage && (
+      hasModule(snapshot, '项目成本') || hasModule(snapshot, '经营费用')
+    )) ||
+    canAccessSafeUser(snapshot, 'vehicle') ||
+    (canAccessSafeUser(snapshot, 'toolBorrow') && canEdit(snapshot, '工具管理'))
+
+  return freezeProjection({ view: relationView, full })
+}
+
 export function getDashboardAccess(user) {
   const snapshot = activeUserSnapshot(user)
   const page = snapshot ? canAccessSafeUser(snapshot, 'dashboard') : false

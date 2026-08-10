@@ -6,6 +6,7 @@ import {
   canAccessView,
   getAccountingAccess,
   getDashboardAccess,
+  getProjectReferenceAccess,
   getPurchaseAccess,
   getVisibleAdminRoutes,
 } from './businessAccess.js'
@@ -314,12 +315,13 @@ test('accounting sections use exact module, sensitive, and action permissions', 
 })
 
 test('project cost ledger permission is independent and maps create/update to accounting operations', () => {
-  const access = getAccountingAccess(activeFinanceUser([
+  const user = activeFinanceUser([
     'module.accounting.view',
     'module.project_costs.view',
     'module.project_costs.create',
     'module.project_costs.update',
-  ]))
+  ])
+  const access = getAccountingAccess(user)
 
   assert.deepEqual(access.projectCost, {
     view: true,
@@ -334,6 +336,25 @@ test('project cost ledger permission is independent and maps create/update to ac
   assert.equal(access.purchaseAccounting.view, false)
   assert.equal(access.monthlySummary.purchaseAccrual, false)
   assert.equal(access.monthlySummary.purchasePayments, false)
+  for (const view of ['purchase', 'warehouse', 'vehicle', 'toolBorrow']) {
+    assert.equal(canAccessView(user, view), false, view)
+  }
+  assert.deepEqual(getProjectReferenceAccess(user), {
+    view: true,
+    full: false,
+  })
+})
+
+test('tool responsibility managers get project references without project module access', () => {
+  const manager = activeUser([
+    'module.tools.view',
+    'module.tools.update',
+  ])
+  const viewer = activeUser(['module.tools.view'])
+
+  assert.deepEqual(getProjectReferenceAccess(manager), { view: true, full: false })
+  assert.deepEqual(getProjectReferenceAccess(viewer), { view: false, full: false })
+  assert.equal(canAccessView(manager, 'projects'), false)
 })
 
 test('purchase sections separate accrual actions from payment sensitive actions', () => {

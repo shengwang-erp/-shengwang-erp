@@ -110,10 +110,12 @@ import {
   canAccessView,
   getAccountingAccess,
   getDashboardAccess,
+  getProjectReferenceAccess,
   getPurchaseAccess,
   getVisibleAdminRoutes,
   getWarehouseAccess,
 } from './auth/businessAccess.js'
+export { getProjectReferenceAccess } from './auth/businessAccess.js'
 import { getAdminRoute } from './navigation/adminRoutes.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
@@ -2264,6 +2266,11 @@ export function buildAuthorizedHomeSummary(currentUser, sources) {
   }
 }
 
+export function loadProjectDirectoryForAccess(service, access) {
+  if (!access?.view) return Promise.resolve([])
+  return access.full ? service.listProjects() : service.listProjectReferences()
+}
+
 export function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
@@ -2340,9 +2347,8 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       accountingAccess.monthlySummary.purchasePayments ||
       dashboardAccess.purchase.payments,
   }
-  const projectRelationReadAccess = dashboardAccess.projectSnapshot ||
-    purchaseReadAccess.records || accountingReadAccess.projectCost ||
-    accountingReadAccess.operatingExpense || canAccessView(currentUser, 'vehicle')
+  const projectReferenceAccess = getProjectReferenceAccess(currentUser)
+  const projectRelationReadAccess = projectReferenceAccess.view
   const warehouseContextReadAccess = purchaseReadAccess.records &&
     accountingReadAccess.projectCost
   const [warehouseMaterialCostContextState, setWarehouseMaterialCostContextState] = useState(
@@ -2663,7 +2669,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     onWriteError: setPersistenceFailure,
   }
   const contractRevenueAccess = getContractRevenueAccess(currentUser)
-  const canViewProjects = canAccessView(currentUser, 'projects') || projectRelationReadAccess
+  const canViewProjects = projectReferenceAccess.view
   const [storedProjects, setStoredProjects] = useState([])
   const [projectRawState, setProjectRawState] = useState({
     loading: canViewProjects,
@@ -2696,7 +2702,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       return () => { active = false }
     }
     setProjectRawState((current) => ({ ...current, loading: true, error: '', code: '' }))
-    projectService.listProjects().then((rows) => {
+    loadProjectDirectoryForAccess(projectService, projectReferenceAccess).then((rows) => {
       if (!active) return
       setStoredProjects(rows)
       setProjectRawState({
@@ -2720,7 +2726,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       if (classification.fatal) setPersistenceFailure(error)
     })
     return () => { active = false }
-  }, [canViewProjects])
+  }, [canViewProjects, projectReferenceAccess.full])
   useEffect(() => {
     let active = true
     if (!contractRevenueAccess.view) {
