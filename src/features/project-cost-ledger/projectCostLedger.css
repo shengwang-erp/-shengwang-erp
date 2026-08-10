@@ -384,3 +384,245 @@
     flex: 1 1 140px;
   }
 }
+
+.erp-black-gold .project-cost-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(5px);
+}
+
+.erp-black-gold .project-cost-dialog {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-top: 3px solid var(--erp-accent-gold);
+  border-radius: 16px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.65);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-allocation-dialog {
+  width: min(900px, 100%);
+}
+
+.erp-black-gold .project-cost-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--erp-border-subtle);
+}
+
+.erp-black-gold .project-cost-dialog header small {
+  color: var(--erp-accent-gold-soft);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-dialog h2 {
+  margin: 5px 0 0;
+  color: var(--erp-text-primary);
+  font-size: 25px;
+  line-height: 1.35;
+}
+
+.erp-black-gold .project-cost-dialog form {
+  display: grid;
+  gap: 18px;
+  padding: 22px 24px 24px;
+}
+
+.erp-black-gold .project-cost-dialog label {
+  display: grid;
+  gap: 8px;
+  color: var(--erp-accent-gold-soft);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.erp-black-gold .project-cost-dialog input,
+.erp-black-gold .project-cost-dialog select,
+.erp-black-gold .project-cost-dialog textarea {
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 9px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  font: inherit;
+  font-size: 16px;
+}
+
+.erp-black-gold .project-cost-dialog textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.erp-black-gold .project-cost-dialog input:focus,
+.erp-black-gold .project-cost-dialog select:focus,
+.erp-black-gold .project-cost-dialog textarea:focus {
+  border-color: var(--erp-accent-gold);
+  outline: 2px solid var(--erp-accent-gold-surface);
+  outline-offset: 1px;
+}
+
+.erp-black-gold .project-cost-dialog-amounts,
+.erp-black-gold .project-cost-allocation-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 12px;
+  padding: 20px 24px 0;
+}
+
+.erp-black-gold .project-cost-dialog-amounts article,
+.erp-black-gold .project-cost-allocation-totals article,
+.erp-black-gold .project-cost-dialog-preview {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 11px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-dialog-amounts span,
+.erp-black-gold .project-cost-allocation-totals span,
+.erp-black-gold .project-cost-dialog-preview span {
+  color: var(--erp-text-muted);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-dialog-amounts strong,
+.erp-black-gold .project-cost-allocation-totals strong,
+.erp-black-gold .project-cost-dialog-preview strong {
+  color: var(--erp-text-primary);
+  font-size: 24px;
+}
+
+.erp-black-gold .project-cost-dialog-preview {
+  border-color: var(--erp-border-gold-muted);
+}
+
+.erp-black-gold .project-cost-dialog-preview strong {
+  color: var(--erp-accent-gold-soft);
+  font-size: 30px;
+}
+
+.erp-black-gold .project-cost-dialog-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.erp-black-gold .project-cost-allocation-mode {
+  max-width: 260px;
+}
+
+.erp-black-gold .project-cost-allocation-rows {
+  display: grid;
+  gap: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.erp-black-gold .project-cost-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 11px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-allocation-totals {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  padding: 0;
+}
+
+.erp-black-gold .project-cost-allocation-totals .is-balanced {
+  border-color: var(--erp-accent-gold);
+}
+
+.erp-black-gold .project-cost-allocation-totals .is-balanced strong {
+  color: var(--erp-accent-gold-soft);
+}
+
+.erp-black-gold .project-cost-allocation-totals .is-unbalanced strong,
+.erp-black-gold .project-cost-dialog-error,
+.erp-black-gold .project-cost-dialog-hint {
+  color: var(--erp-status-warning);
+}
+
+.erp-black-gold .project-cost-dialog-error,
+.erp-black-gold .project-cost-dialog-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--erp-status-warning);
+  border-radius: 9px;
+  background: var(--erp-bg-surface);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.erp-black-gold .project-cost-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.erp-black-gold .project-cost-dialog button {
+  min-height: 42px;
+  padding: 9px 15px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 9px;
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.erp-black-gold .project-cost-dialog button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.erp-black-gold .project-cost-dialog .project-cost-ledger-primary {
+  color: var(--erp-bg-canvas);
+  border-color: var(--erp-accent-gold);
+  background: var(--erp-accent-gold);
+}
+
+@media (max-width: 760px) {
+  .erp-black-gold .project-cost-dialog-backdrop {
+    align-items: start;
+    padding: 12px;
+  }
+
+  .erp-black-gold .project-cost-dialog {
+    max-height: calc(100vh - 24px);
+  }
+
+  .erp-black-gold .project-cost-dialog-amounts,
+  .erp-black-gold .project-cost-dialog-form-grid,
+  .erp-black-gold .project-cost-allocation-totals,
+  .erp-black-gold .project-cost-allocation-row {
+    grid-template-columns: 1fr;
+  }
+}

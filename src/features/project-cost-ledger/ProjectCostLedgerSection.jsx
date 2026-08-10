@@ -1,5 +1,9 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import ProjectCostAdjustmentDialog from './ProjectCostAdjustmentDialog.jsx'
+import ProjectCostAllocationDialog from './ProjectCostAllocationDialog.jsx'
+import ProjectCostManualEntryDialog from './ProjectCostManualEntryDialog.jsx'
+
 const DEFAULT_FILTERS = Object.freeze({
   projectId: '', dateFrom: '', dateTo: '', category: '', sourceModule: '',
   adjusted: 'all', keyword: '',
@@ -166,6 +170,8 @@ export default function ProjectCostLedgerSection({
   const [draftFilters, setDraftFilters] = useState(() => ({ ...DEFAULT_FILTERS }))
   const [appliedFilters, setAppliedFilters] = useState(() => ({ ...DEFAULT_FILTERS }))
   const [expandedRows, setExpandedRows] = useState(() => new Set())
+  const [dialogState, setDialogState] = useState(null)
+  const [actionHint, setActionHint] = useState('')
   const [projectTotal, setProjectTotal] = useState(() => initialSnapshot?.totalAmount ?? 0)
   const requestSequenceRef = useRef(0)
   const activeFingerprintRef = useRef(actorFingerprint)
@@ -201,11 +207,15 @@ export default function ProjectCostLedgerSection({
     })
 
     let listSucceeded = false
+    let auditSucceeded = false
+    let loadedSnapshot = null
+    let loadedAuditSnapshot = null
     const listPromise = Promise.resolve().then(() => service.list(requestFilters(filters, page, pageSize))).then((snapshot) => {
       if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
       setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
       if (replaceApplied) setAppliedFilters({ ...filters })
       if (isDefaultFilters(filters)) setProjectTotal(snapshot.totalAmount)
+      loadedSnapshot = snapshot
       listSucceeded = true
       return true
     }).catch((error) => {
@@ -225,6 +235,8 @@ export default function ProjectCostLedgerSection({
             identity: fingerprint, filterIdentity: requestedFilterIdentity,
             status: 'ready', data: snapshot, error: '',
           })
+          loadedAuditSnapshot = snapshot
+          auditSucceeded = true
           return true
         }).catch((error) => {
           if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
@@ -238,7 +250,8 @@ export default function ProjectCostLedgerSection({
       : Promise.resolve(false)
 
     await Promise.all([listPromise, auditPromise])
-    return listSucceeded
+    return listSucceeded && auditSucceeded &&
+      reconcileVisibleAudit(loadedSnapshot, loadedAuditSnapshot).status === 'ready'
   }, [actorFingerprint, onAuthInvalid, readAllowed, service])
 
   useEffect(() => {
@@ -246,6 +259,8 @@ export default function ProjectCostLedgerSection({
     setDraftFilters({ ...DEFAULT_FILTERS })
     setAppliedFilters({ ...DEFAULT_FILTERS })
     setExpandedRows(new Set())
+    setDialogState(null)
+    setActionHint('')
 
     if (!readAllowed) {
       requestSequenceRef.current += 1
@@ -359,6 +374,45 @@ export default function ProjectCostLedgerSection({
     })
   }
 
+  const openManualDialog = () => {
+    if (!access?.createManual || typeof service?.createManual !== 'function') return
+    setActionHint('')
+    setDialogState({ type: 'manual' })
+    onCreateManual?.()
+  }
+
+  const openAdjustmentDialog = (row) => {
+    if (!access?.adjust || typeof service?.adjust !== 'function') return
+    setActionHint('')
+    setDialogState({ type: 'adjustment', sourceKey: row.sourceKey, projectId: row.projectId, row })
+    onAdjust?.(row)
+  }
+
+  const openAllocationDialog = (row, allocations) => {
+    if (!access?.allocate || typeof service?.replaceAllocations !== 'function' || auditStatus !== 'ready') return
+    setActionHint('')
+    setDialogState({ type: 'allocation', sourceKey: row.sourceKey, projectId: row.projectId, row, allocations })
+    onAllocate?.(row)
+  }
+
+  const reloadMutationSnapshot = useCallback(async (target, { close = false } = {}) => {
+    const loaded = await load(appliedFilters, snapshot?.page ?? 1, snapshot?.pageSize ?? 20)
+    if (!loaded) return false
+    if (target?.sourceKey) {
+      setExpandedRows(new Set([`${target.sourceKey}:${target.projectId || ''}`]))
+    }
+    if (close) setDialogState(null)
+    return true
+  }, [appliedFilters, load, snapshot?.page, snapshot?.pageSize])
+
+  const activeDialogRow = dialogState?.sourceKey
+    ? snapshot?.rows.find((row) => row.sourceKey === dialogState.sourceKey && row.projectId === dialogState.projectId) ||
+      snapshot?.rows.find((row) => row.sourceKey === dialogState.sourceKey) || dialogState.row
+    : null
+  const activeAllocationEvent = activeDialogRow
+    ? auditIndex.latestAllocationBySource.get(activeDialogRow.sourceKey)
+    : null
+
   return (
     <section className="project-cost-ledger" data-project-count={projects.length}>
       <div className="project-cost-ledger-actions" aria-label="项目成本操作">
@@ -367,13 +421,15 @@ export default function ProjectCostLedgerSection({
           <span>原始业务记录保持不变，会计调整自动留痕</span>
         </div>
         <div className="project-cost-ledger-action-buttons">
-          <button className="project-cost-ledger-primary" type="button" disabled={!access?.createManual || typeof onCreateManual !== 'function'} onClick={onCreateManual}>新增调整费用</button>
-          <button type="button" disabled={!access?.allocate || typeof onAllocate !== 'function'} onClick={onAllocate}>拆分项目</button>
+          <button className="project-cost-ledger-primary" type="button" disabled={!access?.createManual || typeof service?.createManual !== 'function'} onClick={openManualDialog}>新增调整费用</button>
+          <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || !snapshot?.rows.length || auditStatus !== 'ready'} onClick={() => setActionHint('请在明细表的“操作”列选择要拆分的费用')}>拆分项目</button>
           <button type="button" disabled={reportBlocked || typeof onExportExcel !== 'function'} onClick={() => runReportAction(onExportExcel)}>导出 Excel</button>
           <button type="button" disabled={reportBlocked || typeof onExportPdf !== 'function'} onClick={() => runReportAction(onExportPdf)}>导出 PDF</button>
           <button type="button" disabled={reportBlocked || typeof onPrint !== 'function'} onClick={() => runReportAction(onPrint)}>打印</button>
         </div>
       </div>
+
+      {actionHint && <div className="project-cost-ledger-state" role="status">{actionHint}</div>}
 
       <div className="project-cost-ledger-filters">
         <label>项目
@@ -466,7 +522,7 @@ export default function ProjectCostLedgerSection({
               </tr></thead>
               <tbody>
                 {snapshot.rows.map((row, index) => {
-                  const rowKey = `${row.sourceKey}:${row.projectId}:${index}`
+                  const rowKey = `${row.sourceKey}:${row.projectId}`
                   const expanded = expandedRows.has(rowKey)
                   const categoryStart = index === 0 || snapshot.rows[index - 1].category !== row.category
                   const sourceAuditEvents = auditIndex.eventsBySource.get(row.sourceKey) ?? []
@@ -489,8 +545,8 @@ export default function ProjectCostLedgerSection({
                         <td>{row.operator || '—'}</td><td>{row.adjusted ? <span className="project-cost-ledger-adjusted">已调整</span> : '原始'}</td>
                         <td><div className="project-cost-ledger-row-actions">
                           <button type="button" onClick={() => toggleExpanded(rowKey)}>{expanded ? '收起' : '展开'}</button>
-                          <button type="button" disabled={!access?.adjust || typeof onAdjust !== 'function'} onClick={() => onAdjust?.(row)}>调整</button>
-                          <button type="button" disabled={!access?.allocate || typeof onAllocate !== 'function'} onClick={() => onAllocate?.(row)}>拆分</button>
+                          <button type="button" disabled={!access?.adjust || typeof service?.adjust !== 'function'} onClick={() => openAdjustmentDialog(row)}>调整</button>
+                          <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || auditStatus !== 'ready'} onClick={() => openAllocationDialog(row, fullAllocations ?? row.allocations)}>拆分</button>
                         </div></td>
                       </tr>
                       {expanded && <tr className="project-cost-ledger-detail-row"><td colSpan="12">
@@ -524,6 +580,36 @@ export default function ProjectCostLedgerSection({
           </div>
         </>
       )}
+
+      {dialogState?.type === 'adjustment' && <ProjectCostAdjustmentDialog
+        row={activeDialogRow}
+        allowed={Boolean(access?.adjust)}
+        onSubmit={(request) => service.adjust(request)}
+        onRefresh={(target) => reloadMutationSnapshot(target)}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
+        onCancel={() => setDialogState(null)}
+        onAuthInvalid={onAuthInvalid}
+      />}
+      {dialogState?.type === 'allocation' && <ProjectCostAllocationDialog
+        row={activeDialogRow}
+        projects={projects}
+        allocations={activeAllocationEvent?.allocationsAfter ?? dialogState.allocations}
+        allowed={Boolean(access?.allocate)}
+        onSubmit={(request) => service.replaceAllocations(request)}
+        onRefresh={(target) => reloadMutationSnapshot(target)}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
+        onCancel={() => setDialogState(null)}
+        onAuthInvalid={onAuthInvalid}
+      />}
+      {dialogState?.type === 'manual' && <ProjectCostManualEntryDialog
+        open
+        projects={projects}
+        allowed={Boolean(access?.createManual)}
+        onSubmit={({ requestId, ...entry }) => service.createManual({ requestId, entry })}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
+        onCancel={() => setDialogState(null)}
+        onAuthInvalid={onAuthInvalid}
+      />}
     </section>
   )
 }
