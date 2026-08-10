@@ -56,12 +56,31 @@
 
 ## 不完整来源与恢复
 
-`incompleteSources` 非空、分页不完整、页间汇总不一致、账本总额与逐行固定点合计不一致，或账本/审计版本不匹配时，报表状态必须保持不完整：
+`incompleteSources` 非空、明细分页不完整、账本总额与逐行固定点合计不一致，或打印账本/审计版本
+不匹配时，对应读取状态必须保持不完整：
 
 - 不把缺失来源显示成 `¥0`，也不回退到旧采购、仓库或本地缓存总额；
 - 禁止打印、导出 PDF 和导出 Excel；
 - 会计月度总成本保持“暂不可用”，但已独立确认的公司工资、采购付款现金流和公司级经营费用仍按各自来源展示；
 - 使用页面“重试/刷新”重新取得同一账号、同一筛选条件的新快照。连续失败时记录安全错误码、发生时间和不可用来源，不记录敏感原始响应。
+
+## 会计汇总与明细报表边界
+
+- 会计成本中心的月度、项目累计和成本构成只调用
+  `summarize_project_cost_ledger_secure('{}')`。该稳定 `SECURITY DEFINER` RPC 在一个数据库语句
+  快照内应用当前有效来源、最新会计调整和最新项目拆分，再由服务器直接聚合；浏览器不跨页读取
+  明细，也不调用文档导出 RPC 生成会计卡片。
+- 聚合 DTO 的精确字段是 `status`、`generatedAt`、`totalAmount`、`monthlyTotals`、
+  `projectTotals`、`categoryTotals`、`projectMonthCategoryTotals` 和 `incompleteSources`。
+  它不返回原始账本行、说明、经办人、单据详情或审计事件；`incompleteSources` 只保留安全来源键，
+  供失败关闭和恢复定位。
+- 服务端分别校验全生命周期、月度、项目、类别及项目×月×类别汇总的四位小数安全范围；客户端
+  再核对所有维度能精确回卷到同一总额，并验证项目和类别可映射。任一来源不完整、金额越界、
+  DTO 多字段/缺字段或维度不一致时，会计状态保持不可用，不读取旧明细报表兜底。
+- 会计聚合没有 5000 条原始账本行或 20000 条审计事件限制。它无论底层事实是否超过 5000 条都
+  只返回服务端预聚合维度，不向客户端泄露超量原始数据。
+- `export_project_cost_report_secure` 是独立的打印/Excel 文档边界，仍严格限制 5000 行账本和
+  20000 条审计事件；超过限制必须缩小筛选范围，不能改用会计聚合伪造明细文档。
 
 ## 打印、PDF 与 Excel
 
@@ -71,6 +90,42 @@
 - 页面、打印/PDF 和 Excel 必须消费同一个已应用、完整且审计匹配的不可变快照；未点击“应用”的筛选条件不能改变报表标题或数值。
 - 每次导出只调用一次 `export_project_cost_report_secure`，由数据库在同一语句快照内返回完整账本、匹配审计、同一 `generatedAt` 和 SHA-256 `snapshotToken`；禁止浏览器跨页拼接。
 - 单次原子报表最多 5000 行账本和 20000 条审计事件；超过上限返回 `PROJECT_COST_LEDGER_REPORT_TOO_LARGE`，应缩小项目或日期范围后重试。
+
+## 部署顺序与恢复
+
+新环境和已有环境都必须按 `supabase/migrations/` 文件名顺序部署。项目成本直接依赖顺序为：
+
+1. `202608090001_project_cost_ledger.sql`：账本表、来源 helper、明细/审计和写入 RPC；
+2. `202608100002_project_cost_ledger_hardening.sql`：项目资格、拆分后调整保护及原子文档导出；
+3. `202608100003_project_cost_accounting_summary.sql`：独立原子会计聚合 RPC。
+
+部署到已链接环境前先检查待应用顺序，再由 CLI 应用迁移；不要手工跳过 `202608100002` 后直接
+创建 `202608100003`：
+
+```bash
+npx supabase migration list
+npx supabase db push --dry-run
+npx supabase db push
+```
+
+`202608100003` 只新增 RPC 和权限，不修改或删除账本事实。若上线后需要紧急停止会计聚合，先在
+受控数据库会话撤销执行权，使会计页面安全显示“暂不可用”，不要删除函数、回滚迁移历史或改用
+文档导出兜底：
+
+```sql
+revoke execute on function public.summarize_project_cost_ledger_secure(jsonb)
+  from authenticated, service_role;
+```
+
+修复应使用更高编号的前向迁移；恢复服务时也在该前向迁移中重新授予：
+
+```sql
+grant execute on function public.summarize_project_cost_ledger_secure(jsonb)
+  to authenticated, service_role;
+```
+
+仅隔离本地环境允许用下一节的 `db reset --local` 从完整迁移链重建；共享或生产环境不得用 reset
+恢复，也不得把 `docs/supabase-schema.sql` 当作 bootstrap 重放。
 
 ## 隔离本地验证
 
