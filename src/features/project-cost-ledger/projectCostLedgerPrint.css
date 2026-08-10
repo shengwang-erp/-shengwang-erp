@@ -1,0 +1,172 @@
+@page project-cost-ledger {
+  size: A4 landscape;
+  margin: 10mm;
+}
+
+.project-cost-print-sheet {
+  display: none;
+  font-family: "Noto Sans CJK SC", "Hiragino Sans GB", "Yu Gothic", sans-serif;
+  font-size: 10pt;
+  line-height: 1.45;
+  color: #171513;
+  background: #ffffff;
+}
+
+.project-cost-ledger-pdf-action {
+  display: grid;
+  gap: 3px;
+  max-width: 190px;
+}
+
+.project-cost-ledger-pdf-action small {
+  color: #b7ad9c;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.project-cost-print-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.project-cost-print-sheet th,
+.project-cost-print-sheet td {
+  padding: 5pt 6pt;
+  border: 0.6pt solid #a89d8c;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+.project-cost-print-sheet th {
+  font-weight: 700;
+  background: #eee8de;
+}
+
+.project-cost-print-header {
+  display: grid;
+  gap: 8pt;
+  margin-bottom: 10pt;
+}
+
+.project-cost-print-header > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12pt;
+}
+
+.project-cost-print-header strong {
+  font-size: 18pt;
+}
+
+.project-cost-print-header span {
+  font-size: 14pt;
+  font-weight: 700;
+}
+
+.project-cost-print-header dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4pt 14pt;
+  margin: 0;
+}
+
+.project-cost-print-header dl > div {
+  display: flex;
+  gap: 5pt;
+}
+
+.project-cost-print-header dt {
+  font-weight: 700;
+}
+
+.project-cost-print-header dd {
+  margin: 0;
+}
+
+.project-cost-print-main-table small,
+.project-cost-print-audit-appendix small {
+  display: block;
+  margin-top: 2pt;
+  color: #574f45;
+}
+
+.project-cost-print-money {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.project-cost-print-adjusted {
+  display: inline-block;
+  padding: 1pt 4pt;
+  border: 0.6pt solid #7b5620;
+  border-radius: 3pt;
+}
+
+.project-cost-print-subtotal th,
+.project-cost-print-subtotal td,
+.project-cost-print-main-table tfoot th,
+.project-cost-print-main-table tfoot td {
+  border-top-width: 1.2pt;
+  background: #e5dccd;
+}
+
+.project-cost-print-audit-appendix {
+  break-before: page;
+  page-break-before: always;
+  padding-top: 2pt;
+}
+
+.project-cost-print-audit-appendix header {
+  margin-bottom: 8pt;
+}
+
+.project-cost-print-audit-appendix h2 {
+  margin: 0 0 3pt;
+  font-size: 15pt;
+}
+
+.project-cost-print-audit-appendix p {
+  margin: 0;
+}
+
+@media print {
+  body.project-cost-ledger-printing {
+    color: #171513 !important;
+    background: #ffffff !important;
+  }
+
+  body.project-cost-ledger-printing * {
+    visibility: hidden !important;
+  }
+
+  body.project-cost-ledger-printing .project-cost-print-sheet,
+  body.project-cost-ledger-printing .project-cost-print-sheet * {
+    visibility: visible !important;
+  }
+
+  body.project-cost-ledger-printing .project-cost-print-sheet {
+    display: block !important;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    page: project-cost-ledger;
+    font-size: 10pt;
+  }
+
+  body.project-cost-ledger-printing thead {
+    display: table-header-group;
+  }
+
+  body.project-cost-ledger-printing tfoot {
+    display: table-row-group;
+  }
+
+  body.project-cost-ledger-printing tr,
+  body.project-cost-ledger-printing td,
+  body.project-cost-ledger-printing th {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

@@ -149,6 +149,55 @@ test('SSR renders the approved roomy ledger hierarchy and finance columns', () =
   }
 })
 
+test('ready matching snapshots expose built-in Excel, print and PDF entries', () => {
+  const html = renderToStaticMarkup(createElement(ProjectCostLedgerSection, {
+    access: ledgerAccess,
+    projects: [{ projectId: 'P-1', projectName: '东京站项目' }],
+    initialSnapshot: ledgerSnapshot(),
+    initialAuditSnapshot: auditSnapshot(),
+  }))
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>导出 Excel<\/button>/u)
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>导出 PDF<\/button>/u)
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>打印<\/button>/u)
+  assert.match(html, /在打印窗口选择“另存为 PDF”/u)
+  assert.doesNotMatch(html, /project-cost-print-sheet/u)
+})
+
+test('print temporarily mounts the exact applied ledger and audit snapshots', async () => {
+  const currentSnapshot = deepFreeze(ledgerSnapshot())
+  const currentAudit = deepFreeze(auditSnapshot())
+  let received = null
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      access: ledgerAccess,
+      projects: [{ projectId: 'P-1', projectName: '东京站项目' }],
+      initialSnapshot: currentSnapshot,
+      initialAuditSnapshot: currentAudit,
+      onPrint(payload) {
+        received = payload
+        assert.match(container.textContent, /材料费小计/u)
+        assert.match(container.textContent, /调整记录附页/u)
+      },
+    })) })
+    await act(async () => {
+      button(container, '打印').click()
+      await new Promise((resolve) => setImmediate(resolve))
+    })
+    assert.equal(received.snapshot, currentSnapshot)
+    assert.equal(received.auditSnapshot, currentAudit)
+    assert.deepEqual(received.filters, {
+      projectId: '', dateFrom: '', dateTo: '', category: '', sourceModule: '', adjusted: 'all', keyword: '',
+    })
+    assert.doesNotMatch(container.textContent, /调整记录附页/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('filters keep the last successful snapshot until applied, clear cleanly, and paginate at 20/50/100', async () => {
   const calls = []
   const service = {

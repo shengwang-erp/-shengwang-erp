@@ -3,6 +3,8 @@ import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } fr
 import ProjectCostAdjustmentDialog from './ProjectCostAdjustmentDialog.jsx'
 import ProjectCostAllocationDialog from './ProjectCostAllocationDialog.jsx'
 import ProjectCostManualEntryDialog from './ProjectCostManualEntryDialog.jsx'
+import ProjectCostPrintSheet from './ProjectCostPrintSheet.jsx'
+import { exportProjectCostXlsx, printProjectCostReport } from './projectCostLedgerExport.js'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
 const DEFAULT_FILTERS = Object.freeze({
@@ -230,6 +232,7 @@ export default function ProjectCostLedgerSection({
   const [expandedRows, setExpandedRows] = useState(() => new Set())
   const [dialogState, setDialogState] = useState(null)
   const [actionHint, setActionHint] = useState('')
+  const [pendingPrintReport, setPendingPrintReport] = useState(null)
   const [projectTotal, setProjectTotal] = useState(() => initialSnapshot?.totalAmount ?? 0)
   const requestSequenceRef = useRef(0)
   const mountedRef = useRef(true)
@@ -354,6 +357,7 @@ export default function ProjectCostLedgerSection({
     setExpandedRows(new Set())
     setDialogState(null)
     setActionHint('')
+    setPendingPrintReport(null)
     activeDialogTokenRef.current = ''
     dialogGenerationRef.current += 1
 
@@ -438,11 +442,72 @@ export default function ProjectCostLedgerSection({
     () => appliedFilterLabel(appliedFilters, projects),
     [appliedFilters, projects],
   )
+  const reportMetadata = useMemo(() => ({
+    companyName: '生旺株式会社',
+    projectName: appliedFilters.projectId
+      ? projectName(projects, appliedFilters.projectId)
+      : '全部项目',
+    dateRange: appliedFilters.dateFrom || appliedFilters.dateTo
+      ? `${appliedFilters.dateFrom || '不限'} 至 ${appliedFilters.dateTo || '不限'}`
+      : '全部日期',
+    filterSummary: appliedLabel,
+    generatedAt: snapshot?.generatedAt || '',
+    reportComplete: Boolean(snapshot) && snapshot.incompleteSources.length === 0 && auditStatus === 'ready',
+  }), [appliedFilterIdentity, appliedLabel, auditStatus, projects, snapshot])
+  const exportExcelAction = typeof onExportExcel === 'function'
+    ? onExportExcel
+    : ({ snapshot: reportSnapshot, auditSnapshot, metadata }) =>
+        exportProjectCostXlsx(reportSnapshot, auditSnapshot, metadata)
+  const exportPdfAction = typeof onExportPdf === 'function' ? onExportPdf : () => printProjectCostReport()
+  const printAction = typeof onPrint === 'function' ? onPrint : () => printProjectCostReport()
 
   const runReportAction = (callback) => {
     if (reportBlocked || typeof callback !== 'function') return
-    callback({ snapshot, auditSnapshot: visibleAuditState.data, filters: { ...appliedFilters } })
+    setActionHint('')
+    const payload = {
+      snapshot,
+      auditSnapshot: visibleAuditState.data,
+      filters: { ...appliedFilters },
+      metadata: { ...reportMetadata },
+    }
+    try {
+      const result = callback(payload)
+      if (result && typeof result.then === 'function') {
+        void result.catch(() => {
+          if (mountedRef.current) setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
+        })
+      }
+    } catch {
+      setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
+    }
   }
+
+  const queuePrintReport = (callback) => {
+    if (reportBlocked || pendingPrintReport || typeof callback !== 'function') return
+    setActionHint('')
+    setPendingPrintReport({
+      callback,
+      payload: {
+        snapshot,
+        auditSnapshot: visibleAuditState.data,
+        filters: { ...appliedFilters },
+        metadata: { ...reportMetadata },
+      },
+    })
+  }
+
+  useEffect(() => {
+    if (!pendingPrintReport) return undefined
+    let active = true
+    Promise.resolve().then(() => pendingPrintReport.callback(pendingPrintReport.payload)).catch(() => {
+      if (active && mountedRef.current) {
+        setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
+      }
+    }).finally(() => {
+      if (active && mountedRef.current) setPendingPrintReport(null)
+    })
+    return () => { active = false }
+  }, [pendingPrintReport])
 
   const updateDraft = (field, value) => {
     setDraftFilters((current) => ({ ...current, [field]: value }))
@@ -570,9 +635,12 @@ export default function ProjectCostLedgerSection({
         <div className="project-cost-ledger-action-buttons">
           <button className="project-cost-ledger-primary" type="button" disabled={!access?.createManual || typeof service?.createManual !== 'function'} onClick={openManualDialog}>新增调整费用</button>
           <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || !snapshot?.rows.length || auditStatus !== 'ready'} onClick={() => setActionHint('请在明细表的“操作”列选择要拆分的费用')}>拆分项目</button>
-          <button type="button" disabled={reportBlocked || typeof onExportExcel !== 'function'} onClick={() => runReportAction(onExportExcel)}>导出 Excel</button>
-          <button type="button" disabled={reportBlocked || typeof onExportPdf !== 'function'} onClick={() => runReportAction(onExportPdf)}>导出 PDF</button>
-          <button type="button" disabled={reportBlocked || typeof onPrint !== 'function'} onClick={() => runReportAction(onPrint)}>打印</button>
+          <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => runReportAction(exportExcelAction)}>导出 Excel</button>
+          <span className="project-cost-ledger-pdf-action">
+            <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => queuePrintReport(exportPdfAction)}>导出 PDF</button>
+            <small>在打印窗口选择“另存为 PDF”</small>
+          </span>
+          <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => queuePrintReport(printAction)}>打印</button>
         </div>
       </div>
 
@@ -727,6 +795,12 @@ export default function ProjectCostLedgerSection({
           </div>
         </>
       )}
+
+      {pendingPrintReport && <ProjectCostPrintSheet
+        ledgerSnapshot={pendingPrintReport.payload.snapshot}
+        auditSnapshot={pendingPrintReport.payload.auditSnapshot}
+        metadata={pendingPrintReport.payload.metadata}
+      />}
 
       {visibleDialogState?.type === 'adjustment' && <ProjectCostAdjustmentDialog
         row={visibleDialogState.model}
