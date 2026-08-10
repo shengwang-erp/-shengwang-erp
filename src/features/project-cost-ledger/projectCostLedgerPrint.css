@@ -3,8 +3,12 @@
   margin: 10mm;
 }
 
-.project-cost-print-sheet {
+.project-cost-print-root {
   display: none;
+}
+
+.project-cost-print-sheet {
+  display: block;
   font-family: "Noto Sans CJK SC", "Hiragino Sans GB", "Yu Gothic", sans-serif;
   font-size: 10pt;
   line-height: 1.45;
@@ -137,35 +141,33 @@
     background: #ffffff !important;
   }
 
-  body.project-cost-ledger-printing * {
-    visibility: hidden !important;
+  body.project-cost-ledger-printing > :not(.project-cost-print-root) {
+    display: none !important;
   }
 
-  body.project-cost-ledger-printing .project-cost-print-sheet,
-  body.project-cost-ledger-printing .project-cost-print-sheet * {
-    visibility: visible !important;
+  body.project-cost-ledger-printing > .project-cost-print-root {
+    display: block !important;
+    width: 100%;
   }
 
   body.project-cost-ledger-printing .project-cost-print-sheet {
     display: block !important;
-    position: absolute;
-    inset: 0;
     width: 100%;
     page: project-cost-ledger;
     font-size: 10pt;
   }
 
-  body.project-cost-ledger-printing thead {
+  body.project-cost-ledger-printing .project-cost-print-root thead {
     display: table-header-group;
   }
 
-  body.project-cost-ledger-printing tfoot {
+  body.project-cost-ledger-printing .project-cost-print-root tfoot {
     display: table-row-group;
   }
 
-  body.project-cost-ledger-printing tr,
-  body.project-cost-ledger-printing td,
-  body.project-cost-ledger-printing th {
+  body.project-cost-ledger-printing .project-cost-print-root tr,
+  body.project-cost-ledger-printing .project-cost-print-root td,
+  body.project-cost-ledger-printing .project-cost-print-root th {
     break-inside: avoid;
     page-break-inside: avoid;
   }

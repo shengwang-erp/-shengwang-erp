@@ -1,4 +1,5 @@
 import React from 'react'
+import { createPortal } from 'react-dom'
 
 import './projectCostLedgerPrint.css'
 
@@ -53,7 +54,7 @@ export default function ProjectCostPrintSheet({ ledgerSnapshot, auditSnapshot, m
     auditSnapshot?.status === 'ready'
   const groupedRows = groupRows(ledgerSnapshot.rows)
 
-  return (
+  const sheet = (
     <article className="project-cost-print-sheet" aria-label="项目成本打印报表">
       <header className="project-cost-print-header">
         <div><strong>{companyName}</strong><span>项目成本明细账</span></div>
@@ -119,4 +120,7 @@ export default function ProjectCostPrintSheet({ ledgerSnapshot, auditSnapshot, m
       </section>
     </article>
   )
+  const root = <div className="project-cost-print-root">{sheet}</div>
+  const portalTarget = globalThis.document?.body
+  return portalTarget?.nodeType === 1 ? createPortal(root, portalTarget) : root
 }

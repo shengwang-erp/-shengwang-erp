@@ -4,7 +4,12 @@ import ProjectCostAdjustmentDialog from './ProjectCostAdjustmentDialog.jsx'
 import ProjectCostAllocationDialog from './ProjectCostAllocationDialog.jsx'
 import ProjectCostManualEntryDialog from './ProjectCostManualEntryDialog.jsx'
 import ProjectCostPrintSheet from './ProjectCostPrintSheet.jsx'
-import { exportProjectCostXlsx, printProjectCostReport } from './projectCostLedgerExport.js'
+import {
+  exportProjectCostXlsx,
+  loadCompleteProjectCostReportSnapshot,
+  printProjectCostReport,
+  reconcileProjectCostAuditSnapshots as reconcileVisibleAudit,
+} from './projectCostLedgerExport.js'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
 const DEFAULT_FILTERS = Object.freeze({
@@ -96,64 +101,6 @@ function auditDescription(event) {
   return `${formatYen(event.amountBefore)} → ${formatYen(event.amountAfter)}`
 }
 
-function reconcileVisibleAudit(snapshot, auditSnapshot) {
-  const eventsBySource = new Map()
-  const latestAllocationBySource = new Map()
-  if (!snapshot || !auditSnapshot) {
-    return { status: 'inconsistent', eventsBySource, latestAllocationBySource }
-  }
-
-  const expectedVersionBySource = new Map()
-  for (const row of snapshot.rows) {
-    if (!Number.isSafeInteger(row.version) || row.version < 1) {
-      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-    }
-    const previousVersion = expectedVersionBySource.get(row.sourceKey)
-    if (previousVersion !== undefined && previousVersion !== row.version) {
-      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-    }
-    expectedVersionBySource.set(row.sourceKey, row.version)
-  }
-
-  for (const event of auditSnapshot.events) {
-    if (!expectedVersionBySource.has(event.sourceKey)) continue
-    if (!Number.isSafeInteger(event.sequenceNo) || event.sequenceNo < 1) {
-      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-    }
-    const events = eventsBySource.get(event.sourceKey)
-    if (events) events.push(event)
-    else eventsBySource.set(event.sourceKey, [event])
-  }
-
-  for (const [sourceKey, version] of expectedVersionBySource) {
-    const expectedMaximum = version - 1
-    const events = eventsBySource.get(sourceKey) ?? []
-    if (events.length !== expectedMaximum) {
-      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-    }
-    const sequences = new Set(events.map(({ sequenceNo }) => sequenceNo))
-    if (sequences.size !== expectedMaximum) {
-      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-    }
-    for (let sequence = 1; sequence <= expectedMaximum; sequence += 1) {
-      if (!sequences.has(sequence)) {
-        return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
-      }
-    }
-    const orderedEvents = [...events].sort((left, right) =>
-      left.sequenceNo - right.sequenceNo || left.createdAt.localeCompare(right.createdAt) ||
-      left.eventType.localeCompare(right.eventType))
-    eventsBySource.set(sourceKey, orderedEvents)
-    for (const event of orderedEvents) {
-      if (event.eventType === 'allocation' && Array.isArray(event.allocationsAfter)) {
-        latestAllocationBySource.set(sourceKey, event)
-      }
-    }
-  }
-
-  return { status: 'ready', eventsBySource, latestAllocationBySource }
-}
-
 function allocationTotalUnits(allocations) {
   let total = 0
   for (const allocation of allocations) {
@@ -232,11 +179,13 @@ export default function ProjectCostLedgerSection({
   const [expandedRows, setExpandedRows] = useState(() => new Set())
   const [dialogState, setDialogState] = useState(null)
   const [actionHint, setActionHint] = useState('')
-  const [pendingPrintReport, setPendingPrintReport] = useState(null)
+  const [reportState, setReportState] = useState(null)
   const [projectTotal, setProjectTotal] = useState(() => initialSnapshot?.totalAmount ?? 0)
   const requestSequenceRef = useRef(0)
   const mountedRef = useRef(true)
   const dialogGenerationRef = useRef(0)
+  const reportGenerationRef = useRef(0)
+  const reportContextRef = useRef('')
   const activeDialogTokenRef = useRef('')
   const activeFingerprintRef = useRef(actorFingerprint)
   activeFingerprintRef.current = actorFingerprint
@@ -347,6 +296,7 @@ export default function ProjectCostLedgerSection({
       mountedRef.current = false
       activeDialogTokenRef.current = ''
       dialogGenerationRef.current += 1
+      reportGenerationRef.current += 1
     }
   }, [])
 
@@ -357,7 +307,8 @@ export default function ProjectCostLedgerSection({
     setExpandedRows(new Set())
     setDialogState(null)
     setActionHint('')
-    setPendingPrintReport(null)
+    reportGenerationRef.current += 1
+    setReportState(null)
     activeDialogTokenRef.current = ''
     dialogGenerationRef.current += 1
 
@@ -413,6 +364,8 @@ export default function ProjectCostLedgerSection({
       : { status: 'idle', data: null, error: '' }
   const snapshot = visibleState.data
   const appliedFilterIdentity = filterIdentity(appliedFilters)
+  const reportContextIdentity = `${actorFingerprint}:${appliedFilterIdentity}:${filterIdentity(draftFilters)}:${readAllowed}`
+  reportContextRef.current = reportContextIdentity
   const visibleAuditState = !readAllowed
     ? { status: 'forbidden', data: null, error: '' }
     : auditState.identity === actorFingerprint && auditState.filterIdentity === appliedFilterIdentity
@@ -435,8 +388,12 @@ export default function ProjectCostLedgerSection({
     : ''
   activeDialogTokenRef.current = activeDialogToken
   const filtersDirty = !sameFilters(draftFilters, appliedFilters)
+  const completeSnapshotAvailable = Boolean(snapshot) && snapshot.page === 1 &&
+    snapshot.rows.length === snapshot.totalRows
+  const completeLoaderAvailable = typeof service?.list === 'function' && typeof service?.listAudit === 'function'
   const reportBlocked = filtersDirty || !snapshot || visibleState.status === 'loading' ||
-    snapshot.incompleteSources.length > 0 || auditStatus !== 'ready'
+    snapshot.incompleteSources.length > 0 || auditStatus !== 'ready' ||
+    (!completeSnapshotAvailable && !completeLoaderAvailable)
   const pageCount = snapshot ? Math.max(1, Math.ceil(snapshot.totalRows / snapshot.pageSize)) : 1
   const appliedLabel = useMemo(
     () => appliedFilterLabel(appliedFilters, projects),
@@ -461,53 +418,77 @@ export default function ProjectCostLedgerSection({
   const exportPdfAction = typeof onExportPdf === 'function' ? onExportPdf : () => printProjectCostReport()
   const printAction = typeof onPrint === 'function' ? onPrint : () => printProjectCostReport()
 
-  const runReportAction = (callback) => {
-    if (reportBlocked || typeof callback !== 'function') return
-    setActionHint('')
-    const payload = {
-      snapshot,
-      auditSnapshot: visibleAuditState.data,
-      filters: { ...appliedFilters },
-      metadata: { ...reportMetadata },
-    }
-    try {
-      const result = callback(payload)
-      if (result && typeof result.then === 'function') {
-        void result.catch(() => {
-          if (mountedRef.current) setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
-        })
-      }
-    } catch {
-      setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
-    }
-  }
+  useEffect(() => {
+    reportGenerationRef.current += 1
+    setReportState(null)
+  }, [reportContextIdentity])
 
-  const queuePrintReport = (callback) => {
-    if (reportBlocked || pendingPrintReport || typeof callback !== 'function') return
+  const reportGenerationIsCurrent = (generation, contextIdentity) => mountedRef.current &&
+    reportGenerationRef.current === generation && reportContextRef.current === contextIdentity
+
+  const prepareReport = async (type, callback) => {
+    if (reportBlocked || reportState || typeof callback !== 'function') return
+    const generation = reportGenerationRef.current + 1
+    reportGenerationRef.current = generation
+    const contextIdentity = reportContextRef.current
+    const capturedFilters = { ...appliedFilters }
+    const isCurrent = () => reportGenerationIsCurrent(generation, contextIdentity)
     setActionHint('')
-    setPendingPrintReport({
-      callback,
-      payload: {
-        snapshot,
-        auditSnapshot: visibleAuditState.data,
-        filters: { ...appliedFilters },
-        metadata: { ...reportMetadata },
-      },
-    })
+    setReportState({ status: 'loading', type, generation })
+    try {
+      const complete = await loadCompleteProjectCostReportSnapshot({
+        service,
+        filters: capturedFilters,
+        screenSnapshot: snapshot,
+        screenAuditSnapshot: visibleAuditState.data,
+        isCurrent,
+      })
+      if (!complete || !isCurrent()) return
+      const payload = {
+        snapshot: complete.ledgerSnapshot,
+        auditSnapshot: complete.auditSnapshot,
+        filters: capturedFilters,
+        metadata: {
+          ...reportMetadata,
+          generatedAt: new Date().toISOString(),
+          ledgerGeneratedAt: complete.ledgerSnapshot.generatedAt,
+          outputGuard: isCurrent,
+        },
+      }
+      if (type === 'excel') {
+        await callback(payload)
+        if (isCurrent()) setReportState(null)
+        return
+      }
+      setReportState({ status: 'print-ready', type, generation, contextIdentity, callback, payload })
+    } catch (error) {
+      if (!isCurrent()) return
+      if (error?.authInvalid) onAuthInvalid?.()
+      setActionHint('报表生成失败，未输出不完整数据，当前页面和筛选已保留')
+      setReportState(null)
+    }
   }
 
   useEffect(() => {
-    if (!pendingPrintReport) return undefined
+    if (reportState?.status !== 'print-ready') return undefined
     let active = true
-    Promise.resolve().then(() => pendingPrintReport.callback(pendingPrintReport.payload)).catch(() => {
-      if (active && mountedRef.current) {
-        setActionHint('报表生成失败，当前页面和筛选已保留，请稍后重试')
+    const isCurrent = () => active && reportGenerationIsCurrent(
+      reportState.generation,
+      reportState.contextIdentity,
+    )
+    Promise.resolve().then(() => {
+      if (!isCurrent()) return false
+      return reportState.callback(reportState.payload)
+    }).catch((error) => {
+      if (isCurrent()) {
+        if (error?.authInvalid) onAuthInvalid?.()
+        setActionHint('报表生成失败，未输出不完整数据，当前页面和筛选已保留')
       }
     }).finally(() => {
-      if (active && mountedRef.current) setPendingPrintReport(null)
+      if (isCurrent()) setReportState(null)
     })
     return () => { active = false }
-  }, [pendingPrintReport])
+  }, [onAuthInvalid, reportState])
 
   const updateDraft = (field, value) => {
     setDraftFilters((current) => ({ ...current, [field]: value }))
@@ -635,12 +616,12 @@ export default function ProjectCostLedgerSection({
         <div className="project-cost-ledger-action-buttons">
           <button className="project-cost-ledger-primary" type="button" disabled={!access?.createManual || typeof service?.createManual !== 'function'} onClick={openManualDialog}>新增调整费用</button>
           <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || !snapshot?.rows.length || auditStatus !== 'ready'} onClick={() => setActionHint('请在明细表的“操作”列选择要拆分的费用')}>拆分项目</button>
-          <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => runReportAction(exportExcelAction)}>导出 Excel</button>
+          <button type="button" disabled={reportBlocked || Boolean(reportState)} onClick={() => void prepareReport('excel', exportExcelAction)}>导出 Excel</button>
           <span className="project-cost-ledger-pdf-action">
-            <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => queuePrintReport(exportPdfAction)}>导出 PDF</button>
+            <button type="button" disabled={reportBlocked || Boolean(reportState)} onClick={() => void prepareReport('pdf', exportPdfAction)}>导出 PDF</button>
             <small>在打印窗口选择“另存为 PDF”</small>
           </span>
-          <button type="button" disabled={reportBlocked || Boolean(pendingPrintReport)} onClick={() => queuePrintReport(printAction)}>打印</button>
+          <button type="button" disabled={reportBlocked || Boolean(reportState)} onClick={() => void prepareReport('print', printAction)}>打印</button>
         </div>
       </div>
 
@@ -796,10 +777,10 @@ export default function ProjectCostLedgerSection({
         </>
       )}
 
-      {pendingPrintReport && <ProjectCostPrintSheet
-        ledgerSnapshot={pendingPrintReport.payload.snapshot}
-        auditSnapshot={pendingPrintReport.payload.auditSnapshot}
-        metadata={pendingPrintReport.payload.metadata}
+      {reportState?.status === 'print-ready' && <ProjectCostPrintSheet
+        ledgerSnapshot={reportState.payload.snapshot}
+        auditSnapshot={reportState.payload.auditSnapshot}
+        metadata={reportState.payload.metadata}
       />}
 
       {visibleDialogState?.type === 'adjustment' && <ProjectCostAdjustmentDialog

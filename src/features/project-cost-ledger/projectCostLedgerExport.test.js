@@ -4,7 +4,11 @@ import test from 'node:test'
 
 import ExcelJS from 'exceljs'
 
-import { createProjectCostWorkbook } from './projectCostLedgerExport.js'
+import {
+  createProjectCostWorkbook,
+  exportProjectCostXlsx,
+  loadCompleteProjectCostReportSnapshot,
+} from './projectCostLedgerExport.js'
 
 const MONEY_FORMAT = '¥#,##0.0000;[Red]-¥#,##0.0000'
 
@@ -123,4 +127,124 @@ test('production Excel entry retains a literal dynamic ExcelJS import', async ()
   const source = await readFile(new URL('./projectCostLedgerExport.js', import.meta.url), 'utf8')
   assert.match(source, /import\(\s*['"]exceljs['"]\s*\)/u)
   assert.doesNotMatch(source, /^\s*import\s+[^('\n]+from\s+['"]exceljs['"]/mu)
+})
+
+function reportRow(index, { version = 1 } = {}) {
+  return Object.freeze({
+    sourceKey: `manual:ROW-${index}`, sourceModule: 'manual', sourceDocumentType: 'manual_project_cost',
+    sourceDocumentId: `ROW-${index}`, projectId: 'P-1', projectName: '东京站项目', category: '其他费用',
+    date: '2026-08-10', description: `费用-${index}`, originalAmount: 1, adjustmentAmount: 0,
+    effectiveAmount: 1, operator: '会计甲', adjusted: false, version,
+    allocations: Object.freeze([Object.freeze({ projectId: 'P-1', amount: 1 })]), auditEvents: Object.freeze([]),
+  })
+}
+
+function reportPage(page, { totalRows = 205, version = 1 } = {}) {
+  const start = (page - 1) * 100
+  const count = Math.max(0, Math.min(100, totalRows - start))
+  return Object.freeze({
+    status: 'ready', generatedAt: `2026-08-10T03:00:0${page}.000Z`, page, pageSize: 100,
+    totalRows, totalAmount: totalRows, adjustmentTotal: 0,
+    categoryTotals: Object.freeze([Object.freeze({ category: '其他费用', amount: totalRows })]),
+    incompleteSources: Object.freeze([]),
+    rows: Object.freeze(Array.from({ length: count }, (_, offset) => reportRow(start + offset + 1, { version }))),
+  })
+}
+
+test('complete report loader ignores a non-first screen page and collects every stable 100-row page', async () => {
+  const listCalls = []
+  const auditCalls = []
+  const service = {
+    async list(filters) {
+      listCalls.push({ ...filters })
+      return reportPage(filters.page)
+    },
+    async listAudit(filters) {
+      auditCalls.push({ ...filters })
+      return Object.freeze({ status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: Object.freeze([]) })
+    },
+  }
+  const screenPage = { ...reportPage(2), pageSize: 20, rows: reportPage(2).rows.slice(0, 20) }
+  const report = await loadCompleteProjectCostReportSnapshot({
+    service, filters: { projectId: 'P-1', dateFrom: '2026-08-01', dateTo: '2026-08-31', category: '', sourceModule: '', adjusted: 'all', keyword: '' },
+    screenSnapshot: screenPage,
+    screenAuditSnapshot: { status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z', events: [] },
+    isCurrent: () => true,
+  })
+  assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [[1, 100], [2, 100], [3, 100]])
+  assert.deepEqual(auditCalls, [{ projectId: 'P-1', dateFrom: '2026-08-01', dateTo: '2026-08-31' }])
+  assert.equal(report.ledgerSnapshot.rows.length, 205)
+  assert.equal(report.ledgerSnapshot.totalRows, 205)
+  assert.equal(report.ledgerSnapshot.rows[0].sourceDocumentId, 'ROW-1')
+  assert.equal(report.ledgerSnapshot.rows.at(-1).sourceDocumentId, 'ROW-205')
+  assert.ok(Object.isFrozen(report.ledgerSnapshot))
+  assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
+})
+
+test('complete report loader rejects changed page totals and ledger-audit version gaps', async () => {
+  const unstableService = {
+    async list({ page }) { return reportPage(page, { totalRows: page === 2 ? 204 : 205 }) },
+    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+  }
+  await assert.rejects(() => loadCompleteProjectCostReportSnapshot({
+    service: unstableService, filters: {}, screenSnapshot: reportPage(1),
+    screenAuditSnapshot: { status: 'ready', events: [] }, isCurrent: () => true,
+  }), /完整|consistent|page/iu)
+
+  const auditGapService = {
+    async list() { return reportPage(1, { totalRows: 1, version: 2 }) },
+    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+  }
+  await assert.rejects(() => loadCompleteProjectCostReportSnapshot({
+    service: auditGapService, filters: {}, screenSnapshot: reportPage(1, { totalRows: 1, version: 2 }),
+    screenAuditSnapshot: { status: 'ready', events: [] }, isCurrent: () => true,
+  }), /审计|audit/iu)
+})
+
+test('complete report loader returns no partial snapshot after its generation becomes stale', async () => {
+  let current = true
+  let release
+  const blocked = new Promise((resolve) => { release = resolve })
+  const service = {
+    async list({ page }) {
+      if (page === 2) await blocked
+      return reportPage(page)
+    },
+    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+  }
+  const pending = loadCompleteProjectCostReportSnapshot({
+    service, filters: {}, screenSnapshot: reportPage(2),
+    screenAuditSnapshot: { status: 'ready', events: [] }, isCurrent: () => current,
+  })
+  current = false
+  release()
+  assert.equal(await pending, null)
+})
+
+test('Excel download guard prevents stale output after asynchronous workbook generation', async () => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const previousCreate = Object.getOwnPropertyDescriptor(globalThis.URL, 'createObjectURL')
+  const previousRevoke = Object.getOwnPropertyDescriptor(globalThis.URL, 'revokeObjectURL')
+  let created = 0
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true, value: { createElement() { return { click() { throw new Error('stale click') } } } },
+  })
+  Object.defineProperty(globalThis.URL, 'createObjectURL', {
+    configurable: true, value() { created += 1; return 'blob:stale' },
+  })
+  Object.defineProperty(globalThis.URL, 'revokeObjectURL', { configurable: true, value() {} })
+  try {
+    const result = await exportProjectCostXlsx(ledgerSnapshot, auditSnapshot, {
+      ...metadata, outputGuard: () => false,
+    })
+    assert.equal(result, false)
+    assert.equal(created, 0)
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument)
+    else delete globalThis.document
+    if (previousCreate) Object.defineProperty(globalThis.URL, 'createObjectURL', previousCreate)
+    else delete globalThis.URL.createObjectURL
+    if (previousRevoke) Object.defineProperty(globalThis.URL, 'revokeObjectURL', previousRevoke)
+    else delete globalThis.URL.revokeObjectURL
+  }
 })

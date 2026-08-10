@@ -7,6 +7,10 @@ const SOURCE_LABELS = Object.freeze({
   purchase: '采购', warehouse: '仓库', labor: '人工', vehicle: '车辆', tool: '工具',
   operating: '经营费用', manual: '手工费用',
 })
+const REPORT_PAGE_SIZE = 100
+const REPORT_FILTER_FIELDS = Object.freeze([
+  'projectId', 'dateFrom', 'dateTo', 'category', 'sourceModule', 'keyword',
+])
 
 export function escapeProjectCostSpreadsheetText(value) {
   if (value === null || value === undefined) return ''
@@ -121,6 +125,156 @@ function groupRowsByCategory(rows) {
     else groups.set(row.category, [row])
   }
   return groups
+}
+
+export function reconcileProjectCostAuditSnapshots(snapshot, auditSnapshot) {
+  const eventsBySource = new Map()
+  const latestAllocationBySource = new Map()
+  if (!snapshot || !auditSnapshot || !Array.isArray(snapshot.rows) || !Array.isArray(auditSnapshot.events)) {
+    return { status: 'inconsistent', eventsBySource, latestAllocationBySource }
+  }
+  const expectedVersionBySource = new Map()
+  for (const row of snapshot.rows) {
+    if (!Number.isSafeInteger(row.version) || row.version < 1) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const previousVersion = expectedVersionBySource.get(row.sourceKey)
+    if (previousVersion !== undefined && previousVersion !== row.version) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    expectedVersionBySource.set(row.sourceKey, row.version)
+  }
+  for (const event of auditSnapshot.events) {
+    if (!expectedVersionBySource.has(event.sourceKey)) continue
+    if (!Number.isSafeInteger(event.sequenceNo) || event.sequenceNo < 1) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const sourceEvents = eventsBySource.get(event.sourceKey)
+    if (sourceEvents) sourceEvents.push(event)
+    else eventsBySource.set(event.sourceKey, [event])
+  }
+  for (const [sourceKey, version] of expectedVersionBySource) {
+    const expectedMaximum = version - 1
+    const events = eventsBySource.get(sourceKey) ?? []
+    if (events.length !== expectedMaximum) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const sequences = new Set(events.map(({ sequenceNo }) => sequenceNo))
+    if (sequences.size !== expectedMaximum) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    for (let sequence = 1; sequence <= expectedMaximum; sequence += 1) {
+      if (!sequences.has(sequence)) {
+        return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+      }
+    }
+    const orderedEvents = [...events].sort((left, right) =>
+      left.sequenceNo - right.sequenceNo || left.createdAt.localeCompare(right.createdAt) ||
+      left.eventType.localeCompare(right.eventType))
+    eventsBySource.set(sourceKey, orderedEvents)
+    for (const event of orderedEvents) {
+      if (event.eventType === 'allocation' && Array.isArray(event.allocationsAfter)) {
+        latestAllocationBySource.set(sourceKey, event)
+      }
+    }
+  }
+  return { status: 'ready', eventsBySource, latestAllocationBySource }
+}
+
+function reportListFilters(filters, page) {
+  const result = { page, pageSize: REPORT_PAGE_SIZE }
+  for (const field of REPORT_FILTER_FIELDS) {
+    if (filters?.[field]) result[field] = filters[field]
+  }
+  if (filters?.adjusted && filters.adjusted !== 'all') result.adjusted = filters.adjusted
+  return result
+}
+
+function reportAuditFilters(filters) {
+  const result = {}
+  for (const field of ['projectId', 'dateFrom', 'dateTo']) {
+    if (filters?.[field]) result[field] = filters[field]
+  }
+  return result
+}
+
+function samePageSummary(left, right) {
+  return left?.status === 'ready' && right?.status === 'ready' &&
+    left.totalRows === right.totalRows && left.totalAmount === right.totalAmount &&
+    left.adjustmentTotal === right.adjustmentTotal &&
+    JSON.stringify(left.categoryTotals) === JSON.stringify(right.categoryTotals) &&
+    JSON.stringify(left.incompleteSources) === JSON.stringify(right.incompleteSources)
+}
+
+function completeSnapshotFromPages(pages) {
+  const first = pages[0]
+  if (!first || !Number.isSafeInteger(first.totalRows) || first.totalRows < 0 ||
+      !Array.isArray(first.rows) || !Array.isArray(first.categoryTotals) ||
+      !Array.isArray(first.incompleteSources)) throw new TypeError('项目成本完整报表页无效')
+  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
+  if (pages.length !== pageCount) throw new TypeError('项目成本完整报表页数无效')
+  const rows = []
+  const rowKeys = new Set()
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = pages[index]
+    const pageNumber = index + 1
+    const expectedRows = Math.max(0, Math.min(REPORT_PAGE_SIZE, first.totalRows - index * REPORT_PAGE_SIZE))
+    if (!samePageSummary(first, page) || page.page !== pageNumber || page.pageSize !== REPORT_PAGE_SIZE ||
+        !Array.isArray(page.rows) || page.rows.length !== expectedRows) {
+      throw new TypeError('项目成本完整报表分页不一致')
+    }
+    for (const row of page.rows) {
+      const key = `${row.sourceKey}:${row.projectId}`
+      if (rowKeys.has(key)) throw new TypeError('项目成本完整报表明细重复')
+      rowKeys.add(key)
+      rows.push(row)
+    }
+  }
+  if (rows.length !== first.totalRows) throw new TypeError('项目成本完整报表明细缺失')
+  return Object.freeze({
+    ...first,
+    page: 1,
+    pageSize: REPORT_PAGE_SIZE,
+    rows: Object.freeze(rows),
+  })
+}
+
+export async function loadCompleteProjectCostReportSnapshot({
+  service,
+  filters = {},
+  screenSnapshot,
+  screenAuditSnapshot,
+  isCurrent = () => true,
+}) {
+  if (typeof isCurrent !== 'function' || !isCurrent()) return null
+  const canRead = typeof service?.list === 'function' && typeof service?.listAudit === 'function'
+  if (!canRead) {
+    if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows ||
+        reconcileProjectCostAuditSnapshots(screenSnapshot, screenAuditSnapshot).status !== 'ready') {
+      throw new TypeError('项目成本完整报表暂时不可用')
+    }
+    return Object.freeze({ ledgerSnapshot: screenSnapshot, auditSnapshot: screenAuditSnapshot })
+  }
+
+  const first = await service.list(reportListFilters(filters, 1))
+  if (!isCurrent()) return null
+  if (!Number.isSafeInteger(first?.totalRows) || first.totalRows < 0) {
+    throw new TypeError('项目成本完整报表首页无效')
+  }
+  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
+  const rest = await Promise.all(Array.from({ length: pageCount - 1 }, (_, index) =>
+    service.list(reportListFilters(filters, index + 2))))
+  if (!isCurrent()) return null
+  const ledgerSnapshot = completeSnapshotFromPages([first, ...rest])
+  if (ledgerSnapshot.incompleteSources.length > 0) {
+    throw new TypeError('项目成本完整报表数据不完整')
+  }
+  const auditSnapshot = await service.listAudit(reportAuditFilters(filters))
+  if (!isCurrent()) return null
+  if (reconcileProjectCostAuditSnapshots(ledgerSnapshot, auditSnapshot).status !== 'ready') {
+    throw new TypeError('项目成本完整报表审计不一致')
+  }
+  return Object.freeze({ ledgerSnapshot, auditSnapshot })
 }
 
 function allocationText(allocations) {
@@ -246,10 +400,14 @@ function safeFileName(value) {
 }
 
 export async function exportProjectCostXlsx(ledgerSnapshot, auditSnapshot, metadata = {}) {
+  const outputGuard = typeof metadata.outputGuard === 'function' ? metadata.outputGuard : () => true
+  if (!outputGuard()) return false
   const excelModule = await import('exceljs')
+  if (!outputGuard()) return false
   const ExcelJS = excelModule.default ?? excelModule
   const workbook = createProjectCostWorkbook(ExcelJS, ledgerSnapshot, auditSnapshot, metadata)
   const buffer = await workbook.xlsx.writeBuffer()
+  if (!outputGuard()) return false
   const documentRef = globalThis.document
   const urlApi = globalThis.URL
   if (!documentRef || typeof documentRef.createElement !== 'function' ||
@@ -263,10 +421,12 @@ export async function exportProjectCostXlsx(ledgerSnapshot, auditSnapshot, metad
     link.href = href
     link.download = `${safeFileName(metadata.fileName || `${metadata.projectName || '项目成本'}_明细`)}.xlsx`
     link.rel = 'noopener'
+    if (!outputGuard()) return false
     link.click()
   } finally {
     urlApi.revokeObjectURL(href)
   }
+  return true
 }
 
 export function printProjectCostReport(

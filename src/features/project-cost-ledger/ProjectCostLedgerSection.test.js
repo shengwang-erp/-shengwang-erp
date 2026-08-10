@@ -93,6 +93,27 @@ function auditSnapshot({
   }
 }
 
+function reportPageSnapshot(page, pageSize = 100, totalRows = 205) {
+  const start = (page - 1) * pageSize
+  const count = Math.max(0, Math.min(pageSize, totalRows - start))
+  return deepFreeze({
+    status: 'ready', generatedAt: '2000-01-01T00:00:00.000Z', page, pageSize,
+    totalRows, totalAmount: totalRows, adjustmentTotal: 0,
+    categoryTotals: [{ category: '其他费用', amount: totalRows }], incompleteSources: [],
+    rows: Array.from({ length: count }, (_, offset) => {
+      const index = start + offset + 1
+      return {
+        sourceKey: `manual:REPORT-${index}`, sourceModule: 'manual',
+        sourceDocumentType: 'manual_project_cost', sourceDocumentId: `REPORT-${index}`,
+        projectId: 'P-1', projectName: '东京站项目', category: '其他费用', date: '2026-08-10',
+        description: `报表费用-${index}`, originalAmount: 1, adjustmentAmount: 0, effectiveAmount: 1,
+        operator: '会计甲', adjusted: false, version: 1,
+        allocations: [{ projectId: 'P-1', amount: 1 }], auditEvents: [],
+      }
+    }),
+  })
+}
+
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const item of Object.values(value)) deepFreeze(item)
@@ -153,6 +174,7 @@ test('ready matching snapshots expose built-in Excel, print and PDF entries', ()
   const html = renderToStaticMarkup(createElement(ProjectCostLedgerSection, {
     access: ledgerAccess,
     projects: [{ projectId: 'P-1', projectName: '东京站项目' }],
+    service: { list() {}, listAudit() {} },
     initialSnapshot: ledgerSnapshot(),
     initialAuditSnapshot: auditSnapshot(),
   }))
@@ -164,9 +186,10 @@ test('ready matching snapshots expose built-in Excel, print and PDF entries', ()
 })
 
 test('print temporarily mounts the exact applied ledger and audit snapshots', async () => {
-  const currentSnapshot = deepFreeze(ledgerSnapshot())
+  const currentSnapshot = deepFreeze({ ...ledgerSnapshot(), totalRows: 3 })
   const currentAudit = deepFreeze(auditSnapshot())
   let received = null
+  let printBodyText = ''
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
@@ -178,8 +201,7 @@ test('print temporarily mounts the exact applied ledger and audit snapshots', as
       initialAuditSnapshot: currentAudit,
       onPrint(payload) {
         received = payload
-        assert.match(container.textContent, /材料费小计/u)
-        assert.match(container.textContent, /调整记录附页/u)
+        printBodyText = dom.document.body.textContent
       },
     })) })
     await act(async () => {
@@ -188,10 +210,100 @@ test('print temporarily mounts the exact applied ledger and audit snapshots', as
     })
     assert.equal(received.snapshot, currentSnapshot)
     assert.equal(received.auditSnapshot, currentAudit)
+    assert.match(printBodyText, /材料费小计/u)
+    assert.match(printBodyText, /调整记录附页/u)
     assert.deepEqual(received.filters, {
       projectId: '', dateFrom: '', dateTo: '', category: '', sourceModule: '', adjusted: 'all', keyword: '',
     })
     assert.doesNotMatch(container.textContent, /调整记录附页/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('non-first screen page prints a complete reconciled all-page snapshot through an isolated body portal', async () => {
+  const currentSnapshot = reportPageSnapshot(2, 20)
+  const currentAudit = deepFreeze({ status: 'ready', generatedAt: '2000-01-01T00:00:01.000Z', events: [] })
+  const listCalls = []
+  let received = null
+  let layout = null
+  const service = {
+    async list(filters) {
+      listCalls.push({ ...filters })
+      return reportPageSnapshot(filters.page, filters.pageSize)
+    },
+    async listAudit() { return deepFreeze({ status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] }) },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: ledgerAccess, actorFingerprint: 'accountant-a',
+      projects: [{ projectId: 'P-1', projectName: '东京站项目' }],
+      initialSnapshot: currentSnapshot, initialAuditSnapshot: currentAudit,
+      onPrint(payload) {
+        received = payload
+        const printRoots = elements(dom.document.body, (element) => element.className === 'project-cost-print-root')
+        layout = {
+          count: printRoots.length,
+          directBodyChild: printRoots[0]?.parentNode === dom.document.body,
+          hasFirst: printRoots[0]?.textContent.includes('报表费用-1') === true,
+          hasLast: printRoots[0]?.textContent.includes('报表费用-205') === true,
+        }
+      },
+    })) })
+    await act(async () => {
+      button(container, '打印').click()
+      for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    })
+    assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [[1, 100], [2, 100], [3, 100]])
+    assert.equal(received.snapshot.rows.length, 205)
+    assert.equal(received.snapshot.totalRows, 205)
+    assert.equal(received.auditSnapshot.events.length, 0)
+    assert.deepEqual(layout, { count: 1, directBodyChild: true, hasFirst: true, hasLast: true })
+    assert.notEqual(received.metadata.generatedAt, currentSnapshot.generatedAt)
+    assert.equal(received.metadata.ledgerGeneratedAt, '2000-01-01T00:00:00.000Z')
+    assert.equal(elements(dom.document.body, (element) => element.className === 'project-cost-print-root').length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('actor replacement cancels an in-flight all-page export before any stale callback runs', async () => {
+  let releaseFirst
+  const firstPage = new Promise((resolve) => { releaseFirst = resolve })
+  let exportCalls = 0
+  const service = {
+    async list(filters) {
+      if (filters.page === 1) return firstPage
+      return reportPageSnapshot(filters.page, filters.pageSize)
+    },
+    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+  }
+  const props = {
+    service, access: ledgerAccess, projects: [], initialSnapshot: reportPageSnapshot(2, 20),
+    initialAuditSnapshot: { status: 'ready', generatedAt: '2000-01-01T00:00:01.000Z', events: [] },
+    onExportExcel() { exportCalls += 1 },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, { ...props, actorFingerprint: 'accountant-a' })) })
+    await act(async () => {
+      button(container, '导出 Excel').click()
+      await Promise.resolve()
+    })
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, { ...props, actorFingerprint: 'accountant-b' })) })
+    releaseFirst(reportPageSnapshot(1, 100))
+    await act(async () => {
+      for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    })
+    assert.equal(exportCalls, 0)
+    assert.equal(elements(dom.document.body, (element) => element.className === 'project-cost-print-root').length, 0)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
