@@ -151,8 +151,17 @@ function accountingLedgerSnapshot({ amount = 250.125, description = '会计调�
   }
 }
 
-function accountingLedgerReport(snapshot) {
-  return { ledgerSnapshot: snapshot }
+function accountingAggregateSummary({ amount = 250.125 } = {}) {
+  return {
+    status: 'ready', generatedAt: '2026-08-15T01:00:00.000Z', totalAmount: amount,
+    monthlyTotals: [{ month: '2026-08', amount }],
+    projectTotals: [{ projectId: 'P1', amount }],
+    categoryTotals: [{ category: '材料费', amount }],
+    projectMonthCategoryTotals: [{
+      projectId: 'P1', month: '2026-08', category: '材料费', amount,
+    }],
+    incompleteSources: [],
+  }
 }
 
 const loaded = await loadAppModule()
@@ -161,7 +170,7 @@ function ProjectLedgerSummaryProbe(props) {
   const state = loaded.module.useProjectLedgerSummaryLifecycle(props)
   props.capture?.(state)
   return createElement('output', null,
-    `${state.status}:${state.data?.rows?.[0]?.description || ''}`)
+    `${state.status}:${state.data?.totalAmount ?? ''}`)
 }
 
 const summaryAccess = {
@@ -229,7 +238,7 @@ test('project ledger accounting summary is actor-isolated and never refills from
   const access = { view: true, readLedger: true }
   try {
     await act(async () => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { report() { calls += 1; return first.promise } },
+      service: { accountingSummary() { calls += 1; return first.promise } },
       access, actorFingerprint: 'actor-a', onAuthInvalid() {},
       capture(state) { actorAInvalidate = state.invalidate },
     })) })
@@ -237,40 +246,34 @@ test('project ledger accounting summary is actor-isolated and never refills from
     assert.match(container.textContent, /loading:/u)
 
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { report() { calls += 1; return second.promise } },
+      service: { accountingSummary() { calls += 1; return second.promise } },
       access, actorFingerprint: 'actor-b', onAuthInvalid() {},
       capture(state) { currentInvalidate = state.invalidate },
     })) }) })
     assert.equal(calls, 2)
     assert.doesNotMatch(container.textContent, /会计调整后的仓库材料/u)
 
-    second.resolve(accountingLedgerReport({
-      ...accountingLedgerSnapshot(),
-      rows: [{ ...accountingLedgerSnapshot().rows[0], description: '新账号账本' }],
-    }))
+    second.resolve(accountingAggregateSummary({ amount: 222 }))
     await act(async () => {})
-    assert.match(container.textContent, /ready:新账号账本/u)
+    assert.match(container.textContent, /ready:222/u)
 
-    first.resolve(accountingLedgerReport({
-      ...accountingLedgerSnapshot(),
-      rows: [{ ...accountingLedgerSnapshot().rows[0], description: '旧账号机密' }],
-    }))
+    first.resolve(accountingAggregateSummary({ amount: 111 }))
     await act(async () => {})
-    assert.match(container.textContent, /ready:新账号账本/u)
-    assert.doesNotMatch(container.textContent, /旧账号机密/u)
+    assert.match(container.textContent, /ready:222/u)
+    assert.doesNotMatch(container.textContent, /ready:111/u)
     assert.equal(actorAInvalidate(), false)
     assert.equal(calls, 2)
     assert.equal(typeof currentInvalidate, 'function')
 
     const callsBeforeDenied = calls
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { report() { calls += 1; return Promise.resolve(accountingLedgerReport(accountingLedgerSnapshot())) } },
+      service: { accountingSummary() { calls += 1; return Promise.resolve(accountingAggregateSummary()) } },
       access: { view: false, readLedger: false }, actorFingerprint: 'actor-b-denied',
       onAuthInvalid() {},
     })) }) })
     assert.equal(calls, callsBeforeDenied)
     assert.match(container.textContent, /forbidden:/u)
-    assert.doesNotMatch(container.textContent, /新账号账本/u)
+    assert.doesNotMatch(container.textContent, /ready:222/u)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -287,7 +290,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
   const sourceChange = deferred()
   const pending = [first, mutation, sourceChange]
   const service = {
-    report() {
+    accountingSummary() {
       const request = pending.shift()
       assert.ok(request, 'unexpected duplicate project ledger summary load')
       return request.promise
@@ -306,7 +309,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.match(container.textContent, /home:loading:/u)
 
-    first.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 250.125, description: '初始账本' })))
+    first.resolve(accountingAggregateSummary({ amount: 250.125 }))
     await act(async () => {})
     assert.match(container.textContent, /¥350\.125/u)
     assert.match(container.textContent, /home:ready:350\.125/u)
@@ -315,7 +318,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     await act(async () => { latestState.invalidate() })
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.doesNotMatch(container.textContent, /¥350\.125|home:ready:350\.125/u)
-    mutation.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 400, description: '调整后账本' })))
+    mutation.resolve(accountingAggregateSummary({ amount: 400 }))
     await act(async () => {})
     assert.match(container.textContent, /¥500/u)
     assert.match(container.textContent, /home:ready:500/u)
@@ -323,7 +326,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     await act(async () => { root.render(createElement(ProjectLedgerConsumerProbe, props(sourceB))) })
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.doesNotMatch(container.textContent, /home:ready:500/u)
-    sourceChange.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 450, description: '来源更新账本' })))
+    sourceChange.resolve(accountingAggregateSummary({ amount: 450 }))
     await act(async () => {})
     assert.match(container.textContent, /¥550/u)
     assert.match(container.textContent, /home:ready:550/u)

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { projectCostDialogOutcome, safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
 import { toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
@@ -90,7 +91,7 @@ export default function ProjectCostManualEntryDialog({
   }
   const modal = useProjectCostModalA11y({ open, submitting, onRequestClose: cancelOperation })
 
-  return (
+  const content = (
     <div className="project-cost-dialog-backdrop" role="presentation">
       <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog project-cost-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-manual-title">
         <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭新增费用窗口">关闭</button></header>
@@ -115,4 +116,6 @@ export default function ProjectCostManualEntryDialog({
       </section>
     </div>
   )
+  const portalTarget = globalThis.document?.body
+  return portalTarget?.nodeType === 1 ? createPortal(content, portalTarget) : content
 }

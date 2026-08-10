@@ -66,8 +66,15 @@ select has_function(
 select has_function(
   'public', 'export_project_cost_report_secure', array['jsonb']
 );
+select has_function(
+  'public', 'summarize_project_cost_ledger_secure', array['jsonb']
+);
 select function_privs_are(
   'public', 'export_project_cost_report_secure', array['jsonb'],
+  'authenticated', array['EXECUTE']
+);
+select function_privs_are(
+  'public', 'summarize_project_cost_ledger_secure', array['jsonb'],
   'authenticated', array['EXECUTE']
 );
 select function_privs_are(
@@ -83,7 +90,8 @@ select ok(
       ('replace_project_cost_allocations_secure(text,bigint,text,jsonb)', 'v'),
       ('create_manual_project_cost_secure(uuid,jsonb)', 'v'),
       ('list_project_cost_audit_secure(jsonb)', 's'),
-      ('export_project_cost_report_secure(jsonb)', 's')
+      ('export_project_cost_report_secure(jsonb)', 's'),
+      ('summarize_project_cost_ledger_secure(jsonb)', 's')
     ) expected(signature, volatility)
     left join lateral (
       select procedure.*
@@ -597,7 +605,120 @@ select public.list_project_cost_ledger_secure('{"pageSize":50}') as payload;
 create temporary table default_ledger_snapshot as
 select public.list_project_cost_ledger_secure('{}') as payload;
 
+create temporary table accounting_summary_snapshot as
+select public.summarize_project_cost_ledger_secure('{}') as payload;
+
 reset role;
+
+select is(
+  (select array_agg(key order by key)
+   from accounting_summary_snapshot,
+     lateral pg_catalog.jsonb_object_keys(payload) key),
+  array[
+    'categoryTotals', 'generatedAt', 'incompleteSources', 'monthlyTotals',
+    'projectMonthCategoryTotals', 'projectTotals', 'status', 'totalAmount'
+  ]::text[],
+  'accounting summary exposes only exact aggregate and readiness fields'
+);
+select is(
+  (select (payload->>'totalAmount')::numeric from accounting_summary_snapshot),
+  (select (payload->>'totalAmount')::numeric from ledger_snapshot),
+  'small accounting aggregate total has parity with the row-derived ledger total'
+);
+select is(
+  (select payload->'categoryTotals' from accounting_summary_snapshot),
+  (select payload->'categoryTotals' from ledger_snapshot),
+  'small accounting aggregate categories have parity with row-derived totals'
+);
+select ok(
+  (select not (payload ?| array[
+    'rows', 'sourceKey', 'description', 'operator', 'sourceDocumentId'
+  ]) from accounting_summary_snapshot),
+  'accounting summary cannot leak raw source or operator data'
+);
+
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000002', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.summarize_project_cost_ledger_secure('{}')$$,
+  '42501', 'project cost ledger view permission required',
+  'accounting aggregate denies an active actor without view permission'
+);
+reset role;
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000003', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.summarize_project_cost_ledger_secure('{}')$$,
+  '42501', 'active employee required',
+  'accounting aggregate denies an inactive actor before reading facts'
+);
+reset role;
+
+savepoint accounting_incomplete_source;
+insert into public.project_cost_allocation_events(
+  source_key, sequence_no, amount_snapshot, allocations, reason,
+  actor_employee_profile_id, actor_name
+) values (
+  'purchase:LEDGER-PO-DIRECT', 2, 109,
+  '[{"projectId":"LEDGER-P-A","amount":109}]',
+  '测试不完整来源', 'a9200000-0000-4000-8000-000000000001', '成本会计'
+);
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  public.summarize_project_cost_ledger_secure('{}')->'incompleteSources',
+  '["purchase:LEDGER-PO-DIRECT"]'::jsonb,
+  'accounting aggregate reports invalid allocation sources without raw rows'
+);
+reset role;
+rollback to savepoint accounting_incomplete_source;
+
+savepoint accounting_overflow;
+insert into public.project_cost_manual_entries(
+  source_key, project_id, project_name, category, cost_date, original_amount,
+  description, operator, created_by_employee_profile_id, created_by_name
+) values
+  ('manual:b9600000-0000-4000-8000-000000000001', 'LEDGER-P-A', '甲项目',
+   '其他费用', '2100-01-01', 900719925474.0991, '汇总边界', '成本会计',
+   'a9200000-0000-4000-8000-000000000001', '成本会计'),
+  ('manual:b9600000-0000-4000-8000-000000000002', 'LEDGER-P-A', '甲项目',
+   '其他费用', '2100-01-01', 900719925474.0991, '汇总越界', '成本会计',
+   'a9200000-0000-4000-8000-000000000001', '成本会计');
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.summarize_project_cost_ledger_secure('{}')$$,
+  '22003', 'project cost ledger summary exceeds Task 1 safe units',
+  'accounting aggregate rejects fixed-point lifetime overflow'
+);
+reset role;
+rollback to savepoint accounting_overflow;
+
+savepoint accounting_more_than_report_cap;
+insert into public.project_cost_manual_entries(
+  source_key, project_id, project_name, category, cost_date, original_amount,
+  description, operator, created_by_employee_profile_id, created_by_name
+)
+select
+  'manual:b9700000-0000-4000-8000-' || pg_catalog.lpad(series::text, 12, '0'),
+  'LEDGER-P-A', '甲项目', '其他费用', '2100-01-01', 1,
+  '大批量汇总测试', '成本会计',
+  'a9200000-0000-4000-8000-000000000001', '成本会计'
+from pg_catalog.generate_series(1, 5001) series;
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select is(
+  (public.summarize_project_cost_ledger_secure('{}')->>'totalAmount')::numeric,
+  (select (payload->>'totalAmount')::numeric from accounting_summary_snapshot) + 5001,
+  'accounting aggregate stays exact beyond 5000 lifetime facts'
+);
+select throws_ok(
+  $$select public.export_project_cost_report_secure('{}')$$,
+  '54000', 'PROJECT_COST_LEDGER_REPORT_TOO_LARGE',
+  'document report keeps its 5000-row cap while accounting remains available'
+);
+reset role;
+rollback to savepoint accounting_more_than_report_cap;
 
 select is(
   (select payload->>'status' from ledger_snapshot),

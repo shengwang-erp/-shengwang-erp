@@ -43,10 +43,27 @@ const ledgerRow = {
   allocations: [{ projectId: 'P-1', amount: 900 }], auditEvents: [],
 }
 
-function elements(root, predicate, result = []) {
+function collectElements(root, predicate, result) {
   if (root?.nodeType === 1 && predicate(root)) result.push(root)
-  for (const child of root?.childNodes ?? []) elements(child, predicate, result)
+  for (const child of root?.childNodes ?? []) collectElements(child, predicate, result)
+}
+
+function portalSiblings(root) {
+  const body = root?.ownerDocument?.body
+  if (!body || root === body || root?.parentNode !== body) return []
+  return Array.from(body.children).filter((child) => (
+    child !== root && child.className.split(/\s+/u).includes('project-cost-dialog-backdrop')
+  ))
+}
+
+function elements(root, predicate, result = []) {
+  collectElements(root, predicate, result)
+  for (const portal of portalSiblings(root)) collectElements(portal, predicate, result)
   return result
+}
+
+function renderedText(root) {
+  return `${root?.textContent ?? ''}${portalSiblings(root).map((node) => node.textContent).join('')}`
 }
 
 function button(root, label) {
@@ -95,10 +112,10 @@ test('adjustment accepts a signed delta, requires a reason, and previews the new
     async onSuccess() { return true }, onCancel() {},
   })
   try {
-    assert.match(view.container.textContent, /原始金额.*[¥￥]1,000/u)
-    assert.match(view.container.textContent, /累计会计调整.*-[¥￥]100/u)
+    assert.match(renderedText(view.container), /原始金额.*[¥￥]1,000/u)
+    assert.match(renderedText(view.container), /累计会计调整.*-[¥￥]100/u)
     await change(field(view.container, '本次调整金额'), '-50')
-    assert.match(view.container.textContent, /调整后金额.*[¥￥]850/u)
+    assert.match(renderedText(view.container), /调整后金额.*[¥￥]850/u)
     assert.equal(button(view.container, '保存调整').disabled, true)
     await change(field(view.container, '调整原因'), '盘点差异冲减')
     assert.equal(button(view.container, '保存调整').disabled, false)
@@ -125,16 +142,16 @@ test('allocation rejects duplicate projects and imbalance, then submits fixed am
     await act(async () => { button(view.container, '新增项目').click() })
     await change(field(view.container, '项目', 0), 'P-1')
     await change(field(view.container, '项目', 1), 'P-1')
-    assert.match(view.container.textContent, /每个项目只能出现一次/u)
+    assert.match(renderedText(view.container), /每个项目只能出现一次/u)
     await change(field(view.container, '项目', 1), 'P-2')
     await change(field(view.container, '分摊方式'), 'percent')
     await change(field(view.container, '比例', 0), '60')
     await change(field(view.container, '比例', 1), '30')
     await change(field(view.container, '调整原因'), '两项目共同使用')
-    assert.match(view.container.textContent, /差额.*[¥￥]100/u)
+    assert.match(renderedText(view.container), /差额.*[¥￥]100/u)
     assert.equal(button(view.container, '保存拆分').disabled, true)
     await change(field(view.container, '比例', 1), '40')
-    assert.match(view.container.textContent, /差额.*[¥￥]0/u)
+    assert.match(renderedText(view.container), /差额.*[¥￥]0/u)
     assert.equal(button(view.container, '保存拆分').disabled, false)
     await submitForm(view.container)
     assert.deepEqual(submissions, [{
@@ -204,17 +221,17 @@ test('a real 60/40 split builds one source-level dialog model and never treats t
       projects, actorFingerprint: 'accountant-split',
     })) })
     await act(async () => { button(container, '调整').click() })
-    assert.match(container.textContent, /当前最终金额.*[¥￥]100/u)
+    assert.match(renderedText(container), /当前最终金额.*[¥￥]100/u)
     await change(field(container, '本次调整金额'), '-10')
-    assert.match(container.textContent, /调整后金额.*[¥￥]90/u)
-    assert.match(container.textContent, /已有项目分摊历史/u)
+    assert.match(renderedText(container), /调整后金额.*[¥￥]90/u)
+    assert.match(renderedText(container), /已有项目分摊历史/u)
     assert.equal(button(container, '保存调整').disabled, true)
     await act(async () => { button(container, '取消').click() })
 
     await act(async () => { button(container, '拆分').click() })
-    assert.match(container.textContent, /当前最终金额.*[¥￥]100/u)
-    assert.match(container.textContent, /已分摊.*[¥￥]100/u)
-    assert.match(container.textContent, /差额.*[¥￥]0/u)
+    assert.match(renderedText(container), /当前最终金额.*[¥￥]100/u)
+    assert.match(renderedText(container), /已分摊.*[¥￥]100/u)
+    assert.match(renderedText(container), /差额.*[¥￥]0/u)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -243,8 +260,8 @@ test('manual entry keeps one request id across a failed retry and only clears it
     await change(field(view.container, '经办人'), '会计甲')
     await change(field(view.container, '录入原因'), '供应商退款')
     await submitForm(view.container)
-    assert.match(view.container.textContent, /项目成本服务暂时不可用/u)
-    assert.doesNotMatch(view.container.textContent, /private server detail/u)
+    assert.match(renderedText(view.container), /项目成本服务暂时不可用/u)
+    assert.doesNotMatch(renderedText(view.container), /private server detail/u)
     await submitForm(view.container)
     assert.deepEqual(requestIds, [
       '11111111-1111-4111-8111-111111111111',
@@ -277,11 +294,11 @@ test('dialog submit latches synchronously and maps allocation and missing-source
     assert.equal(calls, 1)
     pending.reject(Object.assign(new Error('unsafe'), { code: 'PROJECT_COST_LEDGER_SOURCE_MISSING' }))
     await act(async () => {})
-    assert.match(view.container.textContent, /原始费用记录已不可用，请刷新后重试/u)
-    assert.doesNotMatch(view.container.textContent, /unsafe/u)
+    assert.match(renderedText(view.container), /原始费用记录已不可用，请刷新后重试/u)
+    assert.doesNotMatch(renderedText(view.container), /unsafe/u)
     await act(async () => { button(view.container, '刷新最新记录').click() })
     assert.equal(refreshCalls, 1)
-    assert.match(view.container.textContent, /请调整筛选后重试/u)
+    assert.match(renderedText(view.container), /请调整筛选后重试/u)
   } finally {
     await act(async () => { view.root.unmount() })
     view.dom.cleanup()
@@ -295,7 +312,7 @@ test('dialog submit latches synchronously and maps allocation and missing-source
   try {
     await change(field(allocation.container, '调整原因'), '重新拆分')
     await submitForm(allocation.container)
-    assert.match(allocation.container.textContent, /项目分摊合计必须与当前成本一致/u)
+    assert.match(renderedText(allocation.container), /项目分摊合计必须与当前成本一致/u)
   } finally {
     await act(async () => { allocation.root.unmount() })
     allocation.dom.cleanup()
@@ -427,7 +444,7 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
     })) })
     await act(async () => { button(container, '调整').click() })
     await act(async () => { button(container, '取消').click() })
-    assert.doesNotMatch(container.textContent, /调整项目成本/u)
+    assert.doesNotMatch(renderedText(container), /调整项目成本/u)
 
     await act(async () => { button(container, '调整').click() })
     await change(field(container, '本次调整金额'), '-10')
@@ -438,7 +455,7 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
     assert.equal(listCalls, 1)
     assert.equal(auditCalls, 1)
     assert.equal(invalidationCalls, 1)
-    assert.doesNotMatch(container.textContent, /调整项目成本/u)
+    assert.doesNotMatch(renderedText(container), /调整项目成本/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
     await act(async () => { root.unmount() })
@@ -465,9 +482,12 @@ test('all three StrictMode dialogs focus, trap, escape, restore and inert backgr
       await act(async () => { root.render(createElement(StrictMode, null, createElement(Component, {
         ...baseProps, onCancel() { cancelled += 1 },
       }))) })
-      const dialog = elements(container, (element) => element.getAttribute?.('role') === 'dialog')[0]
+      const dialog = elements(dom.document.body, (element) => element.getAttribute?.('role') === 'dialog')[0]
+      assert.equal(dialog.parentNode.parentNode, dom.document.body, 'modal portal is a direct body child')
       assert.ok(dialog.contains(dom.document.activeElement), 'initial focus is inside the modal')
       assert.equal(background.inert, true)
+      assert.equal(container.inert, true, 'the production #root sibling is inert')
+      assert.equal(container.getAttribute('aria-hidden'), 'true')
       const focusables = dialog.querySelectorAll('button,input,select,textarea,[tabindex]')
       focusables.at(-1).focus()
       await act(async () => { dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Tab' })) })
@@ -475,7 +495,17 @@ test('all three StrictMode dialogs focus, trap, escape, restore and inert backgr
       await act(async () => { dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Escape' })) })
       assert.equal(cancelled, 1)
       assert.equal(background.inert, false)
+      assert.equal(container.inert, false)
+      assert.equal(container.getAttribute('aria-hidden'), null)
       assert.equal(dom.document.activeElement, background)
+      await act(async () => { root.render(null) })
+      assert.equal(
+        elements(dom.document.body, (element) => element.getAttribute?.('role') === 'dialog').length,
+        0,
+        'portal node is removed during cleanup',
+      )
+      assert.equal(container.inert, false)
+      assert.equal(container.getAttribute('aria-hidden'), null)
     } finally {
       await act(async () => { root.unmount() })
       dom.cleanup()
@@ -525,7 +555,7 @@ test('StrictMode section completes one allocation mutation and its guarded reloa
     assert.equal(listCalls, 1)
     assert.equal(auditCalls, 1)
     assert.equal(invalidationCalls, 1)
-    assert.doesNotMatch(container.textContent, /拆分项目成本/u)
+    assert.doesNotMatch(renderedText(container), /拆分项目成本/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
     await act(async () => { root.unmount() })
@@ -633,8 +663,8 @@ test('section keeps conflict drafts, refreshes safely, and reloads the applied s
     await change(field(container, '本次调整金额'), '-30')
     await change(field(container, '调整原因'), '复核冲减')
     await submitForm(container)
-    assert.match(container.textContent, /记录已被修改，请刷新后重试/u)
-    assert.doesNotMatch(container.textContent, /unsafe database detail/u)
+    assert.match(renderedText(container), /记录已被修改，请刷新后重试/u)
+    assert.doesNotMatch(renderedText(container), /unsafe database detail/u)
     assert.equal(field(container, '本次调整金额').value, '-30')
     assert.equal(field(container, '调整原因').value, '复核冲减')
 
@@ -645,8 +675,8 @@ test('section keeps conflict drafts, refreshes safely, and reloads the applied s
 
     assert.deepEqual(listCalls.at(-1), { keyword: '铜管', page: 1, pageSize: 20 })
     assert.deepEqual(auditCalls.at(-1), {})
-    assert.match(container.textContent, /[¥￥]850/u)
-    assert.match(container.textContent, /自动审计记录/u)
+    assert.match(renderedText(container), /[¥￥]850/u)
+    assert.match(renderedText(container), /自动审计记录/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
     await act(async () => { root.unmount() })
@@ -677,8 +707,8 @@ test('a successful mutation stays open when the refreshed audit is still behind 
     await change(field(container, '本次调整金额'), '-30')
     await change(field(container, '调整原因'), '复核冲减')
     await submitForm(container)
-    assert.match(container.textContent, /调整已保存，但最新项目成本读取失败/u)
-    assert.match(container.textContent, /调整项目成本/u)
+    assert.match(renderedText(container), /调整已保存，但最新项目成本读取失败/u)
+    assert.match(renderedText(container), /调整项目成本/u)
     assert.equal(field(container, '本次调整金额').value, '-30')
     assert.equal(field(container, '调整原因').value, '复核冲减')
   } finally {
@@ -711,8 +741,8 @@ test('a mutation result never closes against an older but internally consistent 
     await change(field(container, '调整原因'), '复核冲减')
     await submitForm(container)
     assert.equal(mutated, true)
-    assert.match(container.textContent, /调整已保存，但最新项目成本读取失败/u)
-    assert.match(container.textContent, /调整项目成本/u)
+    assert.match(renderedText(container), /调整已保存，但最新项目成本读取失败/u)
+    assert.match(renderedText(container), /调整项目成本/u)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -750,8 +780,8 @@ test('manual success remains open when its source is hidden or missing from the 
     await change(field(manualDialog, '经办人'), '会计甲')
     await change(field(manualDialog, '录入原因'), '供应商退款')
     await submitForm(manualDialog)
-    assert.match(container.textContent, /费用已保存，但最新项目成本读取失败/u)
-    assert.match(container.textContent, /新增调整费用/u)
+    assert.match(renderedText(container), /费用已保存，但最新项目成本读取失败/u)
+    assert.match(renderedText(container), /新增调整费用/u)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -798,8 +828,8 @@ test('allocation success reopens the refreshed source first row when the formerl
     await change(field(container, '项目'), 'P-2')
     await change(field(container, '调整原因'), '转归横滨')
     await submitForm(container)
-    assert.doesNotMatch(container.textContent, /拆分项目成本/u)
-    assert.match(container.textContent, /横滨仓库项目/u)
+    assert.doesNotMatch(renderedText(container), /拆分项目成本/u)
+    assert.match(renderedText(container), /横滨仓库项目/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
     await act(async () => { root.unmount() })
@@ -835,7 +865,7 @@ test('conflict refresh keeps the draft and stale version when the applied filter
     await change(field(container, '调整原因'), '复核冲减')
     await submitForm(container)
     await act(async () => { button(container, '刷新最新记录').click() })
-    assert.match(container.textContent, /当前筛选未显示这笔费用，请调整筛选后重试/u)
+    assert.match(renderedText(container), /当前筛选未显示这笔费用，请调整筛选后重试/u)
     assert.equal(field(container, '本次调整金额').value, '-30')
     assert.equal(field(container, '调整原因').value, '复核冲减')
   } finally {
@@ -873,7 +903,7 @@ test('late mutation completion after cancel or actor replacement cannot reload o
     pending.resolve({ sourceKey: ledgerRow.sourceKey, version: 3, effectiveAmount: 890 })
     await act(async () => {})
     assert.equal(listCalls, callsBeforeLate)
-    assert.match(container.textContent, /调整项目成本/u)
+    assert.match(renderedText(container), /调整项目成本/u)
     assert.equal(field(container, '调整原因').value, '新弹窗')
   } finally {
     await act(async () => { root.unmount() })
@@ -915,7 +945,7 @@ test('cancelled mutation reload cannot enter loading or commit its late ledger, 
     await change(field(container, '调整原因'), '旧保存')
     await submitForm(container)
     await act(async () => { await reloadStarted.promise })
-    assert.doesNotMatch(container.textContent, /正在读取项目成本/u)
+    assert.doesNotMatch(renderedText(container), /正在读取项目成本/u)
     await act(async () => { button(container, '取消').click() })
     await act(async () => { button(container, '调整').click() })
     await change(field(container, '调整原因'), '新弹窗')
@@ -925,8 +955,8 @@ test('cancelled mutation reload cannot enter loading or commit its late ledger, 
     lateAudit.reject(Object.assign(new Error('expired'), { authInvalid: true }))
     await act(async () => {})
     assert.equal(authInvalidCalls, 0)
-    assert.doesNotMatch(container.textContent, /已取消操作的迟到数据/u)
-    assert.match(container.textContent, /调整项目成本/u)
+    assert.doesNotMatch(renderedText(container), /已取消操作的迟到数据/u)
+    assert.match(renderedText(container), /调整项目成本/u)
     assert.equal(field(container, '调整原因').value, '新弹窗')
   } finally {
     await act(async () => { root.unmount() })
@@ -972,7 +1002,7 @@ test('unmounted mutation reload drops late ledger, audit, and auth-invalid compl
   lateAudit.reject(Object.assign(new Error('expired'), { authInvalid: true }))
   await act(async () => {})
   assert.equal(authInvalidCalls, 0)
-  assert.equal(container.textContent, '')
+  assert.equal(renderedText(container), '')
   dom.cleanup()
 })
 

@@ -1,4 +1,7 @@
-import { normalizeLedgerSnapshot } from '../features/project-cost-ledger/projectCostLedgerDomain.js'
+import {
+  normalizeLedgerSnapshot,
+  normalizeProjectCostAccountingSummary,
+} from '../features/project-cost-ledger/projectCostLedgerDomain.js'
 import { toSignedFourDecimalUnits } from '../features/cost-accounting/fixedPointCurrency.js'
 
 const DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
@@ -344,10 +347,17 @@ function normalizeListResponse(value) {
   return snapshot
 }
 
+function normalizeAccountingSummaryResponse(value) {
+  const summary = normalizeProjectCostAccountingSummary(value)
+  validInstant(summary.generatedAt)
+  return summary
+}
+
 export const projectCostLedgerResponseNormalizers = Object.freeze({
   list: normalizeListResponse,
   listAudit: normalizeAuditResponse,
   report: normalizeReportResponse,
+  accountingSummary: normalizeAccountingSummaryResponse,
   adjust: normalizeAdjustmentResponse,
   replaceAllocations: normalizeAllocationResponse,
   createManual: normalizeManualResponse,
@@ -392,6 +402,12 @@ export function createProjectCostLedgerService(client, { configured } = {}) {
       return rpc('export_project_cost_report_secure', {
         p_filters: normalizeProjectCostLedgerReportFilters(filters),
       }, projectCostLedgerResponseNormalizers.report)
+    },
+    async accountingSummary(filters = {}) {
+      const value = objectFields(filters, [])
+      return rpc('summarize_project_cost_ledger_secure', {
+        p_filters: value,
+      }, projectCostLedgerResponseNormalizers.accountingSummary)
     },
     async adjust(request) {
       const value = normalizeProjectCostAdjustmentRequest(request)

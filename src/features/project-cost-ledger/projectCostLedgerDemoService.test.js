@@ -53,6 +53,69 @@ test('demo atomic report returns one immutable complete ledger and matching audi
   assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
 })
 
+test('demo accounting aggregate remains exact beyond 5000 rows while document export stays capped', async () => {
+  const manualProjectCosts = Array.from({ length: 5001 }, (_, index) => ({
+    costRecordId: `COST-${index + 1}`, projectId: 'P1', projectName: '第一项目',
+    costType: '其他费用', date: '2026-08-10', amount: 1,
+    description: `费用-${index + 1}`, operator: '会计甲',
+  }))
+  const service = createProjectCostLedgerDemoService({
+    getSources: () => ({
+      purchaseRows: [], warehouseCosts: [], laborRows: [], vehicleRows: [],
+      toolRows: [], operatingExpenses: [], manualProjectCosts,
+    }),
+    eventStore: { adjustments: [], allocations: [], manualEntries: [] },
+  })
+
+  await assert.rejects(service.report({}), (error) => (
+    error.code === 'PROJECT_COST_LEDGER_REPORT_TOO_LARGE'
+  ))
+  const summary = await service.accountingSummary()
+  assert.equal(summary.totalAmount, 5001)
+  assert.deepEqual(summary.monthlyTotals, [{ month: '2026-08', amount: 5001 }])
+  assert.deepEqual(summary.projectTotals, [{ projectId: 'P1', amount: 5001 }])
+  assert.deepEqual(summary.categoryTotals, [{ category: '其他费用', amount: 5001 }])
+  assert.deepEqual(summary.projectMonthCategoryTotals, [{
+    projectId: 'P1', month: '2026-08', category: '其他费用', amount: 5001,
+  }])
+  assert.deepEqual(summary.incompleteSources, [])
+})
+
+test('demo accounting aggregate exposes incomplete source metadata and rejects aggregate overflow', async () => {
+  const sources = demoSources()
+  const incompleteService = createProjectCostLedgerDemoService({
+    getSources: () => sources,
+    eventStore: {
+      adjustments: [], manualEntries: [], allocations: [{
+        eventType: 'allocation', sourceKey: 'purchase:PO-DIRECT', sequenceNo: 1,
+        amountSnapshot: 99, allocationsBefore: [{ projectId: 'P1', amount: 100 }],
+        allocations: [{ projectId: 'P1', amount: 99 }], reason: '伪造失配快照',
+        actorName: '会计甲', createdAt: '2026-08-10T01:00:00.000Z',
+      }],
+    },
+  })
+  assert.deepEqual(
+    (await incompleteService.accountingSummary()).incompleteSources,
+    ['purchase:PO-DIRECT'],
+  )
+
+  const overflowService = createProjectCostLedgerDemoService({
+    getSources: () => ({
+      purchaseRows: [1, 2].map((id) => ({
+        purchaseId: `OVERFLOW-${id}`, purchaseDate: '2026-08-10',
+        projectId: 'P1', projectName: '第一项目', totalCost: 900719925474.0991,
+      })),
+      warehouseCosts: [], laborRows: [], vehicleRows: [], toolRows: [],
+      operatingExpenses: [], manualProjectCosts: [],
+    }),
+    eventStore: { adjustments: [], allocations: [], manualEntries: [] },
+  })
+  await assert.rejects(
+    overflowService.accountingSummary(),
+    (error) => error.code === 'PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE',
+  )
+})
+
 test('demo allocations replace the effective view and preserve immutable history', async () => {
   const { service, eventStore } = createDemo()
   await service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: 100, reason: '增加运费' })

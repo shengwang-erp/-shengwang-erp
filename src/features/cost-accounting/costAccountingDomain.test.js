@@ -53,6 +53,35 @@ function readyLedgerSummary(rows, overrides = {}) {
   }
 }
 
+function readyAccountingSummary(rows, overrides = {}) {
+  const sum = (values) => values.reduce(
+    (total, value) => Math.round((total + value) * 10000) / 10000,
+    0,
+  )
+  const group = (keyOf, fieldsOf) => [...Map.groupBy(rows, keyOf)].map(([key, values]) => ({
+    ...fieldsOf(key), amount: sum(values.map(({ effectiveAmount }) => effectiveAmount)),
+  }))
+  return {
+    status: 'ready',
+    data: {
+      status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z',
+      totalAmount: sum(rows.map(({ effectiveAmount }) => effectiveAmount)),
+      monthlyTotals: group(({ date }) => date.slice(0, 7), (month) => ({ month })),
+      projectTotals: group(({ projectId }) => projectId, (projectId) => ({ projectId })),
+      categoryTotals: group(({ category }) => category, (category) => ({ category })),
+      projectMonthCategoryTotals: group(
+        ({ projectId, date, category }) => `${projectId}\u0000${date.slice(0, 7)}\u0000${category}`,
+        (key) => {
+          const [projectId, month, category] = key.split('\u0000')
+          return { projectId, month, category }
+        },
+      ),
+      incompleteSources: [],
+      ...overrides,
+    },
+  }
+}
+
 function laborWindow(overrides = {}) {
   return {
     monthly: [{
@@ -398,6 +427,39 @@ test('unified ledger aggregation keeps adjusted and negative rows in exact four-
   assert.equal(model.projectLifetimeById.P1.total, 0.2999)
   assert.equal(model.companyMonthlyTotal.manual, 0.2999)
   assert.equal(model.companyMonthlyTotal.total, 300000.2999)
+})
+
+test('server aggregate accounting summary is parity-equivalent to a complete small ledger snapshot', () => {
+  const rows = [
+    ledgerRow({ sourceKey: 'manual:A', sourceDocumentId: 'A', category: '材料费', effectiveAmount: 12.25 }),
+    ledgerRow({ sourceKey: 'manual:B', sourceDocumentId: 'B', category: '其他费用', effectiveAmount: -2.25 }),
+    ledgerRow({ sourceKey: 'manual:C', sourceDocumentId: 'C', category: '人工费', effectiveAmount: 30 }),
+  ]
+  const common = {
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }
+  const rowDerived = buildCostAccountingReadModel(julyFixture({
+    ...common, projectLedgerSummary: readyLedgerSummary(rows),
+  }))
+  const serverAggregated = buildCostAccountingReadModel(julyFixture({
+    ...common, projectLedgerSummary: readyAccountingSummary(rows),
+  }))
+
+  assert.deepEqual(serverAggregated.monthlyByMonth, rowDerived.monthlyByMonth)
+  assert.deepEqual(serverAggregated.projectLifetimeById, rowDerived.projectLifetimeById)
+  assert.deepEqual(serverAggregated.selectedComposition, rowDerived.selectedComposition)
+  assert.deepEqual(serverAggregated.projectLedger, rowDerived.projectLedger)
+
+  const incomplete = buildCostAccountingReadModel(julyFixture({
+    ...common,
+    projectLedgerSummary: readyAccountingSummary(rows, {
+      incompleteSources: ['warehouse:missing-project'],
+    }),
+  }))
+  assert.equal(incomplete.projectLedger.status, 'incomplete')
+  assert.equal(incomplete.projectLedger.lifetimeTotal, null)
+  assert.equal(incomplete.companyMonthlyTotal.total, null)
 })
 
 test('a ready-labelled partial or arithmetically inconsistent ledger never publishes a stale project total', () => {

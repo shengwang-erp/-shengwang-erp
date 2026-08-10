@@ -4,7 +4,10 @@ import {
   MAX_WAREHOUSE_MATERIAL_COST,
 } from './warehouseMaterialCostBridge.js'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from './fixedPointCurrency.js'
-import { normalizeLedgerSnapshot } from '../project-cost-ledger/projectCostLedgerDomain.js'
+import {
+  normalizeLedgerSnapshot,
+  normalizeProjectCostAccountingSummary,
+} from '../project-cost-ledger/projectCostLedgerDomain.js'
 
 const PENDING_MANUAL_TYPES = new Set(['人工费', '材料费', '工具费', '车辆费'])
 const CONFIRMED_MANUAL_TYPES = new Set(['外包费', '运输费', '其他费用'])
@@ -428,17 +431,31 @@ function normalizeInput(input) {
       throw new TypeError('projectLedgerSummary state is invalid')
     }
     if (state.status === 'ready') {
-      const data = normalizeLedgerSnapshot(state.data)
       const recognizedProjects = new Set(activeProjectIds)
-      const rowsAreMappable = data.rows.every((row) => (
-        monthOfDate(row.date) !== '' && recognizedProjects.has(row.projectId) &&
-        row.allocations.every((allocation) => recognizedProjects.has(allocation.projectId))
-      ))
-      projectLedgerSummary = data.incompleteSources.length === 0 && data.page === 1 &&
-          data.totalRows === data.rows.length && ledgerSnapshotSummaryMatches(data) &&
-          rowsAreMappable
-        ? { status: 'ready', data }
-        : { status: 'incomplete', data: null }
+      if (isPlainRecord(state.data) && Object.hasOwn(state.data, 'projectMonthCategoryTotals')) {
+        const data = normalizeProjectCostAccountingSummary(state.data)
+        const aggregatesAreMappable = data.projectTotals.every(({ projectId }) => (
+          recognizedProjects.has(projectId)
+        )) && data.categoryTotals.every(({ category }) => (
+          Object.hasOwn(LEDGER_CATEGORY_PART, category)
+        )) && data.projectMonthCategoryTotals.every(({ projectId, category }) => (
+          recognizedProjects.has(projectId) && Object.hasOwn(LEDGER_CATEGORY_PART, category)
+        ))
+        projectLedgerSummary = data.incompleteSources.length === 0 && aggregatesAreMappable
+          ? { status: 'ready', data, source: 'aggregate' }
+          : { status: 'incomplete', data: null }
+      } else {
+        const data = normalizeLedgerSnapshot(state.data)
+        const rowsAreMappable = data.rows.every((row) => (
+          monthOfDate(row.date) !== '' && recognizedProjects.has(row.projectId) &&
+          row.allocations.every((allocation) => recognizedProjects.has(allocation.projectId))
+        ))
+        projectLedgerSummary = data.incompleteSources.length === 0 && data.page === 1 &&
+            data.totalRows === data.rows.length && ledgerSnapshotSummaryMatches(data) &&
+            rowsAreMappable
+          ? { status: 'ready', data, source: 'rows' }
+          : { status: 'incomplete', data: null }
+      }
     } else {
       projectLedgerSummary = { status: state.status, data: null }
     }
@@ -857,14 +874,29 @@ export function buildCostAccountingReadModel(input) {
     }
     let ledgerMonthlyUnits = 0n
     let ledgerLifetimeUnits = 0n
-    for (const row of normalized.projectLedgerSummary.data.rows) {
+    const ledgerEntries = normalized.projectLedgerSummary.source === 'aggregate'
+      ? normalized.projectLedgerSummary.data.projectMonthCategoryTotals.map((total) => ({
+          projectId: total.projectId,
+          category: total.category,
+          month: total.month,
+          effectiveAmount: total.amount,
+          recordId: `${total.projectId}:${total.month}:${total.category}`,
+        }))
+      : normalized.projectLedgerSummary.data.rows.map((row) => ({
+          projectId: row.projectId,
+          category: row.category,
+          month: monthOfDate(row.date),
+          effectiveAmount: row.effectiveAmount,
+          recordId: row.sourceKey,
+        }))
+    for (const row of ledgerEntries) {
       if (!aggregationComplete) break
       const category = LEDGER_CATEGORY_PART[row.category]
-      const month = monthOfDate(row.date)
+      const month = row.month
       const projectId = row.projectId
       const amountUnits = ledgerUnits(row.effectiveAmount)
       if (amountUnits === null) {
-        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目成本账本金额超出固定精度范围。')
+        anomaly(anomalies, 'projectLedgerSummary', row.recordId, 'amount_overflow', '项目成本账本金额超出固定精度范围。')
         aggregationComplete = false
         break
       }

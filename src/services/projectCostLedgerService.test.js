@@ -27,6 +27,21 @@ const REPORT_RESPONSE = {
   auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', events: [] },
 }
 
+const ACCOUNTING_SUMMARY_RESPONSE = {
+  status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', totalAmount: 150,
+  monthlyTotals: [{ month: '2026-08', amount: 150 }],
+  projectTotals: [{ projectId: 'P1', amount: 150 }],
+  categoryTotals: [
+    { category: '人工费', amount: 50 },
+    { category: '材料费', amount: 100 },
+  ],
+  projectMonthCategoryTotals: [
+    { projectId: 'P1', month: '2026-08', category: '人工费', amount: 50 },
+    { projectId: 'P1', month: '2026-08', category: '材料费', amount: 100 },
+  ],
+  incompleteSources: [],
+}
+
 function clientReturning(result) {
   const calls = []
   return {
@@ -71,6 +86,39 @@ test('report uses one atomic secure RPC and validates its exact signed snapshot 
     const candidate = clientReturning({ data: hostile, error: null, status: 200 })
     await assert.rejects(
       createProjectCostLedgerService(candidate.client, { configured: true }).report({}),
+      errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'),
+    )
+  }
+})
+
+test('accountingSummary uses the narrow uncapped aggregate RPC and rejects raw-data leakage', async () => {
+  const { client, calls } = clientReturning({
+    data: ACCOUNTING_SUMMARY_RESPONSE, error: null, status: 200,
+  })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  const result = await service.accountingSummary()
+
+  assert.deepEqual(calls, [[
+    'summarize_project_cost_ledger_secure', { p_filters: {} },
+  ]])
+  assert.equal(result.totalAmount, 150)
+  assert.equal(result.projectMonthCategoryTotals.length, 2)
+  assert.ok(Object.isFrozen(result.projectMonthCategoryTotals))
+
+  for (const leaked of [
+    { ...ACCOUNTING_SUMMARY_RESPONSE, rows: [LEDGER_ROW] },
+    { ...ACCOUNTING_SUMMARY_RESPONSE, sourceKey: 'warehouse:SO-1' },
+    {
+      ...ACCOUNTING_SUMMARY_RESPONSE,
+      projectMonthCategoryTotals: [{
+        ...ACCOUNTING_SUMMARY_RESPONSE.projectMonthCategoryTotals[0],
+        description: '供应商私密说明',
+      }],
+    },
+  ]) {
+    const hostile = clientReturning({ data: leaked, error: null, status: 200 })
+    await assert.rejects(
+      createProjectCostLedgerService(hostile.client, { configured: true }).accountingSummary(),
       errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'),
     )
   }

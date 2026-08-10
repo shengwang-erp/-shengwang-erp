@@ -195,17 +195,23 @@ test('complete report loader uses one atomic server snapshot even when legacy pa
   assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
 })
 
-test('accounting summary loader consumes the same atomic server report', async () => {
-  const reportCalls = []
+test('accounting summary loader uses the narrow aggregate contract beyond the report row cap', async () => {
+  const summaryCalls = []
   const service = {
-    async report(filters) {
-      reportCalls.push({ ...filters })
+    async accountingSummary(filters) {
+      summaryCalls.push({ ...filters })
       return {
-        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'c'.repeat(64),
-        ledgerSnapshot: { ...reportPage(1), rows: Array.from({ length: 205 }, (_, index) => reportRow(index + 1)) },
-        auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] },
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', totalAmount: 5001,
+        monthlyTotals: [{ month: '2026-08', amount: 5001 }],
+        projectTotals: [{ projectId: 'P-1', amount: 5001 }],
+        categoryTotals: [{ category: '其他费用', amount: 5001 }],
+        projectMonthCategoryTotals: [{
+          projectId: 'P-1', month: '2026-08', category: '其他费用', amount: 5001,
+        }],
+        incompleteSources: [],
       }
     },
+    async report() { throw new Error('document export RPC must not serve accounting') },
   }
   const snapshot = await loadCompleteProjectCostLedgerSnapshot({
     service,
@@ -213,11 +219,24 @@ test('accounting summary loader consumes the same atomic server report', async (
     isCurrent: () => true,
   })
 
-  assert.deepEqual(reportCalls, [{}])
-  assert.equal(snapshot.totalRows, 205)
-  assert.equal(snapshot.rows.length, 205)
+  assert.deepEqual(summaryCalls, [{}])
+  assert.equal(snapshot.totalAmount, 5001)
+  assert.equal(snapshot.projectMonthCategoryTotals.length, 1)
   assert.ok(Object.isFrozen(snapshot))
-  assert.ok(Object.isFrozen(snapshot.rows))
+  assert.ok(Object.isFrozen(snapshot.projectMonthCategoryTotals))
+})
+
+test('accounting summary loader fails closed when the narrow aggregate service is unavailable', async () => {
+  let legacyCalls = 0
+  await assert.rejects(() => loadCompleteProjectCostLedgerSnapshot({
+    service: {
+      async report() { legacyCalls += 1 },
+      async list() { legacyCalls += 1 },
+    },
+    screenSnapshot: reportPage(1),
+    isCurrent: () => true,
+  }), /会计汇总|aggregate|暂时不可用/iu)
+  assert.equal(legacyCalls, 0)
 })
 
 test('atomic report loader fails closed instead of falling back to equal-count equal-total pages', async () => {

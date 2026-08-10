@@ -294,6 +294,58 @@ function snapshotFromStates(states, normalized, generatedAt, { complete = false 
   })
 }
 
+function aggregateAmount(units) {
+  if (units < BigInt(Number.MIN_SAFE_INTEGER) || units > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw unavailable()
+  }
+  return fromFourDecimalUnits(Number(units))
+}
+
+function addAggregate(map, key, units) {
+  map.set(key, (map.get(key) ?? 0n) + units)
+}
+
+function accountingSummaryFromStates(states, generatedAt) {
+  const built = buildRows(states)
+  const monthly = new Map()
+  const projects = new Map()
+  const categories = new Map()
+  const cells = new Map()
+  let totalUnits = 0n
+  for (const row of built.rows) {
+    const unitsValue = toSignedFourDecimalUnits(row.effectiveAmount)
+    if (unitsValue === null) throw unavailable()
+    const units = BigInt(unitsValue)
+    const month = row.date.slice(0, 7)
+    totalUnits += units
+    addAggregate(monthly, month, units)
+    addAggregate(projects, row.projectId, units)
+    addAggregate(categories, row.category, units)
+    const cellKey = JSON.stringify([row.projectId, month, row.category])
+    const cell = cells.get(cellKey) ?? {
+      projectId: row.projectId, month, category: row.category, units: 0n,
+    }
+    cell.units += units
+    cells.set(cellKey, cell)
+  }
+  const keyedTotals = (map, key) => [...map]
+    .sort(([left], [right]) => left.localeCompare(right, 'zh-Hans-CN'))
+    .map(([value, units]) => ({ [key]: value, amount: aggregateAmount(units) }))
+  return projectCostLedgerResponseNormalizers.accountingSummary({
+    status: 'ready', generatedAt, totalAmount: aggregateAmount(totalUnits),
+    monthlyTotals: keyedTotals(monthly, 'month'),
+    projectTotals: keyedTotals(projects, 'projectId'),
+    categoryTotals: keyedTotals(categories, 'category'),
+    projectMonthCategoryTotals: [...cells.values()]
+      .sort((left, right) => left.projectId.localeCompare(right.projectId) ||
+        left.month.localeCompare(right.month) || left.category.localeCompare(right.category, 'zh-Hans-CN'))
+      .map(({ projectId, month, category, units }) => ({
+        projectId, month, category, amount: aggregateAmount(units),
+      })),
+    incompleteSources: built.incompleteSources,
+  })
+}
+
 function auditFromStates(states, sourceKeys, generatedAt) {
   const events = states.flatMap((state) => sourceKeys.has(state.fact.sourceKey)
     ? state.events.map(auditDto)
@@ -338,6 +390,14 @@ export function createProjectCostLedgerDemoService({ getSources, eventStore } = 
         snapshotToken: await reportToken(ledgerSnapshot, auditSnapshot),
         ledgerSnapshot, auditSnapshot,
       })
+    },
+
+    async accountingSummary(filters = {}) {
+      const normalized = copy(filters)
+      if (!normalized || Array.isArray(normalized) || Object.keys(normalized).length !== 0) {
+        throw invalidInput()
+      }
+      return accountingSummaryFromStates(currentStates(getSources, store), eventTime())
     },
 
     async listAudit(filters = {}) {

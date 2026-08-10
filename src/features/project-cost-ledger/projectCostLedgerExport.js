@@ -233,19 +233,15 @@ function atomicReportFilters(filters) {
 export async function loadCompleteProjectCostLedgerSnapshot({
   service,
   filters = {},
-  screenSnapshot = null,
   isCurrent = () => true,
 }) {
   if (typeof isCurrent !== 'function' || !isCurrent()) return null
-  if (typeof service?.report !== 'function') {
-    if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows) {
-      throw new TypeError('项目成本原子完整报表暂时不可用')
-    }
-    return screenSnapshot
+  if (typeof service?.accountingSummary !== 'function') {
+    throw new TypeError('项目成本会计汇总暂时不可用')
   }
-  const report = await service.report(atomicReportFilters(filters))
+  const summary = await service.accountingSummary(atomicReportFilters(filters))
   if (!isCurrent()) return null
-  return deepFreezeReportValue(report.ledgerSnapshot)
+  return deepFreezeReportValue(summary)
 }
 
 export async function loadCompleteProjectCostReportSnapshot({

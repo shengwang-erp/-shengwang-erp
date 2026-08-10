@@ -7,12 +7,21 @@ const LEDGER_RESPONSE_FIELDS = Object.freeze([
   'status', 'generatedAt', 'page', 'pageSize', 'totalRows', 'rows', 'categoryTotals',
   'totalAmount', 'adjustmentTotal', 'incompleteSources',
 ])
+const ACCOUNTING_SUMMARY_FIELDS = Object.freeze([
+  'status', 'generatedAt', 'totalAmount', 'monthlyTotals', 'projectTotals',
+  'categoryTotals', 'projectMonthCategoryTotals', 'incompleteSources',
+])
 const LEDGER_ROW_FIELDS = Object.freeze([
   'sourceKey', 'sourceModule', 'sourceDocumentType', 'sourceDocumentId', 'projectId',
   'projectName', 'category', 'date', 'description', 'originalAmount', 'adjustmentAmount',
   'effectiveAmount', 'operator', 'adjusted', 'version', 'allocations', 'auditEvents',
 ])
 const CATEGORY_TOTAL_FIELDS = Object.freeze(['category', 'amount'])
+const MONTH_TOTAL_FIELDS = Object.freeze(['month', 'amount'])
+const PROJECT_TOTAL_FIELDS = Object.freeze(['projectId', 'amount'])
+const PROJECT_MONTH_CATEGORY_TOTAL_FIELDS = Object.freeze([
+  'projectId', 'month', 'category', 'amount',
+])
 const ALLOCATION_FIELDS = Object.freeze(['projectId', 'amount'])
 const ALLOCATION_DRAFT_FIELDS = Object.freeze(['projectId', 'mode', 'value'])
 const FILTER_FIELDS = Object.freeze([
@@ -35,6 +44,7 @@ const CONFIRMED_WAREHOUSE_STATUSES = new Set([
 ])
 const WAREHOUSE_COST_SOURCE_TYPES = new Set(['warehouse', 'warehouseReversal'])
 const DATE_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u
+const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/u
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
@@ -169,7 +179,28 @@ function allowedPageSize(value) {
 }
 
 function sourceName(value) {
-  return text(value, 'source name')
+  const result = text(value, 'source name')
+  if (result.length > 600) throw new TypeError('source name invalid')
+  return result
+}
+
+function projectIdentifier(value) {
+  const result = text(value, 'projectId')
+  if (result.length > 500) throw new TypeError('projectId invalid')
+  return result
+}
+
+function categoryName(value) {
+  const result = text(value, 'category')
+  if (result.length > 100) throw new TypeError('category invalid')
+  return result
+}
+
+function month(value) {
+  if (typeof value !== 'string' || !MONTH_PATTERN.test(value)) {
+    throw new TypeError('month invalid')
+  }
+  return value
 }
 
 function normalizeAllocation(value) {
@@ -208,7 +239,103 @@ function normalizeLedgerRow(value) {
 
 function normalizeCategoryTotal(value) {
   const total = exactObject(value, CATEGORY_TOTAL_FIELDS, 'ledger category total invalid')
-  return { category: text(total.category, 'category'), amount: signedMoney(total.amount) }
+  return { category: categoryName(total.category), amount: signedMoney(total.amount) }
+}
+
+function normalizeMonthTotal(value) {
+  const total = exactObject(value, MONTH_TOTAL_FIELDS, 'accounting month total invalid')
+  return { month: month(total.month), amount: signedMoney(total.amount) }
+}
+
+function normalizeProjectTotal(value) {
+  const total = exactObject(value, PROJECT_TOTAL_FIELDS, 'accounting project total invalid')
+  return { projectId: projectIdentifier(total.projectId), amount: signedMoney(total.amount) }
+}
+
+function normalizeProjectMonthCategoryTotal(value) {
+  const total = exactObject(
+    value,
+    PROJECT_MONTH_CATEGORY_TOTAL_FIELDS,
+    'accounting project month category total invalid',
+  )
+  return {
+    projectId: projectIdentifier(total.projectId),
+    month: month(total.month),
+    category: categoryName(total.category),
+    amount: signedMoney(total.amount),
+  }
+}
+
+function totalUnits(value) {
+  return BigInt(toSignedFourDecimalUnits(value))
+}
+
+function aggregateUnits(rows, keyOf) {
+  const result = new Map()
+  for (const row of rows) {
+    const key = keyOf(row)
+    if (result.has(key)) throw new TypeError('accounting aggregate contains duplicate keys')
+    result.set(key, totalUnits(row.amount))
+  }
+  return result
+}
+
+function rollupCells(cells, keyOf) {
+  const result = new Map()
+  for (const cell of cells) {
+    const key = keyOf(cell)
+    result.set(key, (result.get(key) ?? 0n) + totalUnits(cell.amount))
+  }
+  return result
+}
+
+function sameAggregate(expected, actual) {
+  if (expected.size !== actual.size) return false
+  for (const [key, amount] of expected) {
+    if (actual.get(key) !== amount) return false
+  }
+  return true
+}
+
+export function normalizeProjectCostAccountingSummary(response) {
+  const source = exactObject(
+    response,
+    ACCOUNTING_SUMMARY_FIELDS,
+    'project cost accounting summary invalid',
+  )
+  if (source.status !== 'ready') throw new TypeError('project cost accounting summary invalid')
+  const monthlyTotals = exactArray(source.monthlyTotals).map(normalizeMonthTotal)
+  const projectTotals = exactArray(source.projectTotals).map(normalizeProjectTotal)
+  const categoryTotals = exactArray(source.categoryTotals).map(normalizeCategoryTotal)
+  const projectMonthCategoryTotals = exactArray(source.projectMonthCategoryTotals)
+    .map(normalizeProjectMonthCategoryTotal)
+  const cellsByKey = aggregateUnits(
+    projectMonthCategoryTotals,
+    ({ projectId, month: valueMonth, category }) => `${projectId}\u0000${valueMonth}\u0000${category}`,
+  )
+  const monthly = aggregateUnits(monthlyTotals, ({ month: valueMonth }) => valueMonth)
+  const projects = aggregateUnits(projectTotals, ({ projectId }) => projectId)
+  const categories = aggregateUnits(categoryTotals, ({ category }) => category)
+  if (!sameAggregate(monthly, rollupCells(projectMonthCategoryTotals, ({ month: valueMonth }) => valueMonth)) ||
+      !sameAggregate(projects, rollupCells(projectMonthCategoryTotals, ({ projectId }) => projectId)) ||
+      !sameAggregate(categories, rollupCells(projectMonthCategoryTotals, ({ category }) => category))) {
+    throw new TypeError('project cost accounting summary totals mismatch')
+  }
+  let cellTotal = 0n
+  for (const amount of cellsByKey.values()) cellTotal += amount
+  if (cellTotal !== totalUnits(signedMoney(source.totalAmount))) {
+    throw new TypeError('project cost accounting summary total mismatch')
+  }
+  const incompleteSources = exactArray(source.incompleteSources).map(sourceName)
+  if (new Set(incompleteSources).size !== incompleteSources.length) {
+    throw new TypeError('project cost accounting summary incomplete sources invalid')
+  }
+  return deepFreeze({
+    status: 'ready', generatedAt: instant(source.generatedAt),
+    totalAmount: source.totalAmount,
+    monthlyTotals, projectTotals, categoryTotals, projectMonthCategoryTotals,
+    incompleteSources,
+  })
 }
 
 export function normalizeLedgerSnapshot(response) {
