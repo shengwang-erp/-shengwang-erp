@@ -237,7 +237,14 @@ export function getAccountingAccess(user) {
     '查看工资',
     '修改工资',
   )
-  const projectCost = sectionActions(snapshot, page, '项目成本')
+  const projectCostActions = sectionActions(snapshot, page, '项目成本')
+  const projectCost = {
+    ...projectCostActions,
+    readLedger: projectCostActions.view,
+    createManual: projectCostActions.create,
+    adjust: projectCostActions.update,
+    allocate: projectCostActions.update,
+  }
   const operatingExpense = sectionActions(snapshot, page, '经营费用')
   const purchaseAccountingView = page && hasModule(snapshot, '采购管理')
   const purchasePayments = purchaseAccountingView &&

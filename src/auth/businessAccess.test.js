@@ -284,7 +284,10 @@ test('accounting sections use exact module, sensitive, and action permissions', 
 
   assert.deepEqual(getAccountingAccess(activeFinanceUser(keys)), {
     salary: { view: true, create: true, update: true, delete: true },
-    projectCost: { view: true, create: true, update: true, delete: true },
+    projectCost: {
+      view: true, create: true, update: true, delete: true,
+      readLedger: true, createManual: true, adjust: true, allocate: true,
+    },
     operatingExpense: { view: true, create: true, update: true, delete: true },
     purchaseAccounting: { view: true },
     monthlySummary: {
@@ -308,6 +311,29 @@ test('accounting sections use exact module, sensitive, and action permissions', 
     update: false,
     delete: false,
   })
+})
+
+test('project cost ledger permission is independent and maps create/update to accounting operations', () => {
+  const access = getAccountingAccess(activeFinanceUser([
+    'module.accounting.view',
+    'module.project_costs.view',
+    'module.project_costs.create',
+    'module.project_costs.update',
+  ]))
+
+  assert.deepEqual(access.projectCost, {
+    view: true,
+    create: true,
+    update: true,
+    delete: false,
+    readLedger: true,
+    createManual: true,
+    adjust: true,
+    allocate: true,
+  })
+  assert.equal(access.purchaseAccounting.view, false)
+  assert.equal(access.monthlySummary.purchaseAccrual, false)
+  assert.equal(access.monthlySummary.purchasePayments, false)
 })
 
 test('purchase sections separate accrual actions from payment sensitive actions', () => {

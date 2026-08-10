@@ -86,6 +86,8 @@ import { projectService } from './services/projectService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
 import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
 import { purchaseService } from './services/purchaseService.js'
+import { createProjectCostLedgerService } from './services/projectCostLedgerService.js'
+import { createProjectCostLedgerDemoService } from './features/project-cost-ledger/projectCostLedgerDemoService.js'
 import { createWarehouseService } from './services/warehouseService.js'
 import { createWarehouseConfirmationService } from './services/warehouseConfirmationService.js'
 import { createWarehouseMediaService } from './services/warehouseMediaService.js'
@@ -171,6 +173,15 @@ const manualProjectCostPersistence = createManualProjectCostPersistence({
   softDelete,
   storageKey: STORAGE_KEYS.projectCostRecords,
 })
+
+const configuredProjectCostLedgerService = createProjectCostLedgerService(supabase, {
+  configured: Boolean(supabase),
+})
+const localProjectCostLedgerEventStore = {
+  adjustments: [],
+  allocations: [],
+  manualEntries: [],
+}
 
 const statusOptions = PROJECT_STATUS_OPTIONS
 const DASHBOARD_PROJECT_STATUSES = new Set(['all', ...PROJECT_STATUS_OPTIONS])
@@ -1014,7 +1025,8 @@ function normalizeLifelongToolAssignment(record) {
   }
 }
 
-function normalizeToolResponsibilityRecord(record) {
+export function normalizeToolResponsibilityRecord(record) {
+  const allocateToProject = Boolean(record.allocateToProject)
   return {
     responsibilityRecordId: record.responsibilityRecordId || '',
     assignmentId: record.assignmentId || '',
@@ -1033,6 +1045,9 @@ function normalizeToolResponsibilityRecord(record) {
     salaryDeductionMonth: record.salaryDeductionMonth || currentMonthValue(),
     handlerEmployeeId: record.handlerEmployeeId || '',
     handlerEmployeeName: record.handlerEmployeeName || '',
+    allocateToProject,
+    projectId: allocateToProject ? record.projectId || '' : '',
+    projectName: allocateToProject ? record.projectName || '' : '',
     remark: record.remark || '',
     createdAt: record.createdAt || todayValue(),
   }
@@ -1879,8 +1894,31 @@ function createEmptyToolResponsibilityForm() {
     deductFromSalary: false,
     salaryDeductionMonth: currentMonthValue(),
     handlerEmployeeId: '',
+    allocateToProject: false,
+    projectId: '',
     remark: '',
   }
+}
+
+export function toolResponsibilityGrossCost(record = {}) {
+  return record.issueType === '丢失'
+    ? toAmount(record.toolValue)
+    : toAmount(record.repairCost)
+}
+
+export function createProjectCostLedgerActorFingerprint(currentUser, access) {
+  const permissionKeys = Array.isArray(currentUser?.effectivePermissionKeys)
+    ? [...new Set(currentUser.effectivePermissionKeys.filter((key) => typeof key === 'string'))]
+        .sort()
+    : []
+  return JSON.stringify([
+    typeof currentUser?.tenantId === 'string' ? currentUser.tenantId : '',
+    typeof currentUser?.id === 'string' ? currentUser.id : currentUser?.employeeId || '',
+    permissionKeys,
+    Boolean(access?.view),
+    Boolean(access?.create),
+    Boolean(access?.update),
+  ])
 }
 
 function markLaborBridgeRetry(targetRef, requestIdentity) {
@@ -3140,6 +3178,47 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       ),
     [storedToolResponsibilityRecords],
   )
+  const projectCostLedgerSourcesRef = useRef(null)
+  projectCostLedgerSourcesRef.current = {
+    purchaseRows: purchaseRecords,
+    warehouseCosts: projectCostRecords.filter((record) => isWarehouseManagedProjectCost(record)),
+    laborRows: laborRecords.map((record) => ({
+      id: record.laborRecordId,
+      date: record.workDate,
+      projectId: record.projectId,
+      projectName: record.projectName,
+      amount: record.laborCost,
+      description: record.jobContent || record.remark,
+      operator: record.operatorName,
+      status: record.status,
+    })),
+    vehicleRows: [...fuelRecords, ...vehicleExpenseRecords, ...vehicleIssueRecords],
+    toolRows: toolResponsibilityRecords
+      .filter((record) => record.allocateToProject && toolResponsibilityGrossCost(record) > 0)
+      .map((record) => ({
+        id: record.responsibilityRecordId,
+        date: record.recordDate,
+        projectId: record.projectId,
+        projectName: record.projectName,
+        amount: toolResponsibilityGrossCost(record),
+        description: `${record.toolName}${record.issueDescription ? `｜${record.issueDescription}` : ''}`,
+        operator: record.handlerEmployeeName,
+      })),
+    operatingExpenses: operatingExpenseRecords,
+    manualProjectCosts: projectCostRecords.filter((record) => !isWarehouseManagedProjectCost(record)),
+  }
+  const activeProjectCostLedgerService = useMemo(() => (
+    localDemoMode
+      ? createProjectCostLedgerDemoService({
+          getSources: () => projectCostLedgerSourcesRef.current,
+          eventStore: localProjectCostLedgerEventStore,
+        })
+      : configuredProjectCostLedgerService
+  ), [])
+  const projectCostActorFingerprint = createProjectCostLedgerActorFingerprint(
+    currentUser,
+    accountingAccess.projectCost,
+  )
 
   if (authorizedView === null) return null
 
@@ -4011,6 +4090,9 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     return renderInDesktopShell(
       <AccountingCostPage
         access={accountingAccess}
+        projectCostLedgerService={activeProjectCostLedgerService}
+        projectCostActorFingerprint={projectCostActorFingerprint}
+        onProjectCostAuthInvalid={onLogout}
         vehicleAccess={canAccessView(currentUser, 'vehicle')}
         sourceStates={accountingSourceStates}
         projects={projects}
@@ -5764,6 +5846,7 @@ function ToolManagementPage({
       )}
       {section === 'responsibility' && (
         <ToolResponsibilitySection
+          projects={projects}
           employees={employees}
           assignments={lifelongToolAssignments}
           setAssignments={setLifelongToolAssignments}
@@ -6191,10 +6274,11 @@ function EmployeeToolHolderSection({ employees, assignments, responsibilityRecor
   )
 }
 
-function ToolResponsibilitySection({ employees, assignments, setAssignments, toolRecords, setToolRecords, records, setRecords, canManageTools }) {
+export function ToolResponsibilitySection({ projects = [], employees, assignments, setAssignments, toolRecords, setToolRecords, records, setRecords, canManageTools }) {
   const [form, setForm] = useState(createEmptyToolResponsibilityForm)
   const selectedAssignment = assignments.find((assignment) => assignment.assignmentId === form.assignmentId)
   const handler = employees.find((employee) => employee.employeeId === form.handlerEmployeeId)
+  const selectedProject = projects.find((project) => project.projectId === form.projectId)
 
   const calculateCompensation = (issueType, toolValue, repairCost) => {
     if (issueType === '丢失') return toAmount(toolValue)
@@ -6213,6 +6297,16 @@ function ToolResponsibilitySection({ employees, assignments, setAssignments, too
       form.compensationAmount !== ''
         ? toAmount(form.compensationAmount)
         : calculateCompensation(form.issueType, form.toolValue || selectedAssignment.toolValue, form.repairCost)
+    const grossCost = toolResponsibilityGrossCost({
+      issueType: form.issueType,
+      toolValue: form.toolValue || selectedAssignment.toolValue,
+      repairCost: form.repairCost,
+    })
+    const allocateToProject = form.allocateToProject && grossCost > 0
+    if (allocateToProject && !selectedProject) {
+      window.alert('请选择工程项目')
+      return
+    }
     const record = normalizeToolResponsibilityRecord({
       ...form,
       responsibilityRecordId: nextId('TRP', records, 'responsibilityRecordId'),
@@ -6223,6 +6317,9 @@ function ToolResponsibilitySection({ employees, assignments, setAssignments, too
       toolValue: form.toolValue || selectedAssignment.toolValue,
       compensationAmount,
       handlerEmployeeName: handler?.name || '',
+      allocateToProject,
+      projectId: allocateToProject ? selectedProject.projectId : '',
+      projectName: allocateToProject ? selectedProject.projectName : '',
       createdAt: todayValue(),
     })
     setRecords((current) => [record, ...current])
@@ -6304,6 +6401,33 @@ function ToolResponsibilitySection({ employees, assignments, setAssignments, too
             <Field label="赔偿金额" type="number" value={form.compensationAmount} onChange={(value) => setForm({ ...form, compensationAmount: value })} />
             <OptionField label="赔偿状态" value={form.compensationStatus} onChange={(value) => setForm({ ...form, compensationStatus: value })} options={compensationStatusOptions} />
           </FormGroup>
+          {toolResponsibilityGrossCost({
+            issueType: form.issueType,
+            toolValue: form.toolValue || selectedAssignment?.toolValue,
+            repairCost: form.repairCost,
+          }) > 0 && (
+            <FormGroup title="项目成本">
+              <label className="field full-width">
+                <span>计入项目成本</span>
+                <input
+                  type="checkbox"
+                  checked={form.allocateToProject}
+                  onChange={(event) => setForm({
+                    ...form,
+                    allocateToProject: event.target.checked,
+                    projectId: event.target.checked ? form.projectId : '',
+                  })}
+                />
+              </label>
+              {form.allocateToProject && (
+                <ProjectSelect
+                  projects={projects}
+                  value={form.projectId}
+                  onChange={(value) => setForm({ ...form, projectId: value })}
+                />
+              )}
+            </FormGroup>
+          )}
           <FormGroup title="工资扣款预留">
             <OptionField label="是否从工资扣款" value={form.deductFromSalary ? '是' : '否'} onChange={(value) => setForm({ ...form, deductFromSalary: value === '是' })} options={['否', '是']} />
             <Field label="扣款月份" type="month" value={form.salaryDeductionMonth} onChange={(value) => setForm({ ...form, salaryDeductionMonth: value })} />
@@ -6493,6 +6617,7 @@ function ToolResponsibilityList({ records }) {
               <div><dt>赔偿金额</dt><dd>{formatYen(record.compensationAmount)}</dd></div>
               <div><dt>工资扣款</dt><dd>{record.deductFromSalary ? `是｜${record.salaryDeductionMonth}` : '否'}</dd></div>
               <div><dt>处理人</dt><dd>{record.handlerEmployeeName || '未填写'}</dd></div>
+              <div><dt>项目成本</dt><dd>{record.allocateToProject ? record.projectName : '公司级'}</dd></div>
               <div><dt>备注</dt><dd>{record.remark || '未填写'}</dd></div>
             </dl>
           </article>
@@ -6504,6 +6629,9 @@ function ToolResponsibilityList({ records }) {
 
 export function AccountingCostPage({
   access,
+  projectCostLedgerService,
+  projectCostActorFingerprint,
+  onProjectCostAuthInvalid,
   vehicleAccess,
   sourceStates,
   projects,
@@ -6588,14 +6716,19 @@ export function AccountingCostPage({
         <SalaryRecordsSection access={resolvedAccess.salary} employees={employees} records={salaryRecords} setRecords={setSalaryRecords} />
       )}
       {visibleSection === 'projectCost' && (
-        <ProjectCostSection
+        <ProjectCostLedgerSection
+          service={projectCostLedgerService}
+          actorFingerprint={projectCostActorFingerprint}
+          onAuthInvalid={onProjectCostAuthInvalid}
           projects={projects}
-          employees={employees}
-          records={projectCostRecords}
-          setRecords={setProjectCostRecords}
-          saveRecord={saveManualProjectCost}
-          deleteRecord={deleteManualProjectCost}
           access={resolvedAccess.projectCost}
+          legacyProps={{
+            employees,
+            records: projectCostRecords,
+            setRecords: setProjectCostRecords,
+            saveRecord: saveManualProjectCost,
+            deleteRecord: deleteManualProjectCost,
+          }}
         />
       )}
       {visibleSection === 'operatingExpense' && (
@@ -6869,6 +7002,94 @@ function SalaryRecordsSection({ access, employees, records, setRecords }) {
         )}
       </div>
     </>
+  )
+}
+
+export function ProjectCostLedgerSection({
+  service,
+  access,
+  projects = [],
+  actorFingerprint = '',
+  onAuthInvalid,
+  legacyProps = null,
+}) {
+  const readAllowed = access?.readLedger ?? access?.view ?? false
+  const requestSequenceRef = useRef(0)
+  const activeFingerprintRef = useRef(actorFingerprint)
+  activeFingerprintRef.current = actorFingerprint
+  const [ledgerState, setLedgerState] = useState(() => ({
+    status: readAllowed ? 'idle' : 'forbidden',
+    data: null,
+    error: '',
+  }))
+
+  useEffect(() => {
+    const sequence = requestSequenceRef.current + 1
+    requestSequenceRef.current = sequence
+    const fingerprint = actorFingerprint
+    let active = true
+
+    if (!readAllowed) {
+      setLedgerState({ status: 'forbidden', data: null, error: '' })
+      return () => {
+        active = false
+        requestSequenceRef.current += 1
+      }
+    }
+    if (!service || typeof service.list !== 'function') {
+      setLedgerState({ status: 'error', data: null, error: '项目成本服务暂时不可用' })
+      return () => {
+        active = false
+        requestSequenceRef.current += 1
+      }
+    }
+
+    setLedgerState({ status: 'loading', data: null, error: '' })
+    void service.list({ page: 1, pageSize: 20 }).then((snapshot) => {
+      if (!active || requestSequenceRef.current !== sequence ||
+          activeFingerprintRef.current !== fingerprint) return
+      setLedgerState({ status: 'ready', data: snapshot, error: '' })
+    }).catch((error) => {
+      if (!active || requestSequenceRef.current !== sequence ||
+          activeFingerprintRef.current !== fingerprint) return
+      if (error?.authInvalid) onAuthInvalid?.()
+      setLedgerState({
+        status: 'error',
+        data: null,
+        error: '项目成本服务暂时不可用，请稍后重试',
+      })
+    })
+
+    return () => {
+      active = false
+      requestSequenceRef.current += 1
+    }
+  }, [actorFingerprint, onAuthInvalid, readAllowed, service])
+
+  return (
+    <section className="project-cost-ledger-lifecycle" data-project-count={projects.length}>
+      {ledgerState.status === 'idle' && <div className="empty-state">项目成本尚未读取</div>}
+      {ledgerState.status === 'loading' && <div className="empty-state">正在读取项目成本…</div>}
+      {ledgerState.status === 'forbidden' && <div className="empty-state">无权读取项目成本</div>}
+      {ledgerState.status === 'error' && (
+        <div className="empty-state" role="alert">项目成本读取失败：{ledgerState.error}</div>
+      )}
+      {ledgerState.status === 'ready' && (
+        <div className="project-cost-ledger-loaded">
+          <span>已加载 {ledgerState.data.totalRows} 条</span>
+          {ledgerState.data.rows.map((row) => (
+            <span key={`${row.sourceKey}:${row.projectId}`}>{row.description}</span>
+          ))}
+        </div>
+      )}
+      {legacyProps && !service && (
+        <ProjectCostSection
+          {...legacyProps}
+          access={access}
+          projects={projects}
+        />
+      )}
+    </section>
   )
 }
 

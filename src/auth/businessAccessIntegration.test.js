@@ -483,7 +483,10 @@ test('Accounting defaults to the first authorized section and hides forbidden sa
 
   const access = {
     salary: { view: false, create: false, update: false, delete: false },
-    projectCost: { view: true, create: false, update: false, delete: false },
+    projectCost: {
+      view: true, create: false, update: false, delete: false,
+      readLedger: true, createManual: false, adjust: false, allocate: false,
+    },
     operatingExpense: { view: false, create: false, update: false, delete: false },
     purchaseAccounting: { view: false },
     monthlySummary: {
@@ -528,6 +531,7 @@ test('Accounting defaults to the first authorized section and hides forbidden sa
   }))
 
   assert.match(html, /项目成本/u)
+  assert.match(html, /项目成本尚未读取/u)
   assert.match(html, /¥1,200/u)
   assert.doesNotMatch(html, /工资记录|工资机密|SALARY-SECRET|¥999,999/u)
   assert.doesNotMatch(html, /<form|>编辑<|>删除</u)
