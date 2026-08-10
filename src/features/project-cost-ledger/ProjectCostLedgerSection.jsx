@@ -89,6 +89,64 @@ function auditDescription(event) {
   return `${formatYen(event.amountBefore)} → ${formatYen(event.amountAfter)}`
 }
 
+function reconcileVisibleAudit(snapshot, auditSnapshot) {
+  const eventsBySource = new Map()
+  const latestAllocationBySource = new Map()
+  if (!snapshot || !auditSnapshot) {
+    return { status: 'inconsistent', eventsBySource, latestAllocationBySource }
+  }
+
+  const expectedVersionBySource = new Map()
+  for (const row of snapshot.rows) {
+    if (!Number.isSafeInteger(row.version) || row.version < 1) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const previousVersion = expectedVersionBySource.get(row.sourceKey)
+    if (previousVersion !== undefined && previousVersion !== row.version) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    expectedVersionBySource.set(row.sourceKey, row.version)
+  }
+
+  for (const event of auditSnapshot.events) {
+    if (!expectedVersionBySource.has(event.sourceKey)) continue
+    if (!Number.isSafeInteger(event.sequenceNo) || event.sequenceNo < 1) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const events = eventsBySource.get(event.sourceKey)
+    if (events) events.push(event)
+    else eventsBySource.set(event.sourceKey, [event])
+  }
+
+  for (const [sourceKey, version] of expectedVersionBySource) {
+    const expectedMaximum = version - 1
+    const events = eventsBySource.get(sourceKey) ?? []
+    if (events.length !== expectedMaximum) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    const sequences = new Set(events.map(({ sequenceNo }) => sequenceNo))
+    if (sequences.size !== expectedMaximum) {
+      return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+    }
+    for (let sequence = 1; sequence <= expectedMaximum; sequence += 1) {
+      if (!sequences.has(sequence)) {
+        return { status: 'inconsistent', eventsBySource: new Map(), latestAllocationBySource: new Map() }
+      }
+    }
+    const orderedEvents = [...events].sort((left, right) =>
+      left.sequenceNo - right.sequenceNo || left.createdAt.localeCompare(right.createdAt) ||
+      left.eventType.localeCompare(right.eventType))
+    eventsBySource.set(sourceKey, orderedEvents)
+    for (const event of orderedEvents) {
+      if (event.eventType === 'allocation' && Array.isArray(event.allocationsAfter)) {
+        latestAllocationBySource.set(sourceKey, event)
+      }
+    }
+  }
+
+  return { status: 'ready', eventsBySource, latestAllocationBySource }
+}
+
 export default function ProjectCostLedgerSection({
   service,
   access,
@@ -248,25 +306,16 @@ export default function ProjectCostLedgerSection({
       : auditState.identity === actorFingerprint && visibleState.status === 'loading'
         ? { status: 'loading', data: null, error: '' }
         : { status: 'idle', data: null, error: '' }
-  const auditIndex = useMemo(() => {
-    const eventsBySource = new Map()
-    const latestAllocationBySource = new Map()
-    for (const event of visibleAuditState.data?.events ?? []) {
-      const events = eventsBySource.get(event.sourceKey)
-      if (events) events.push(event)
-      else eventsBySource.set(event.sourceKey, [event])
-      if (event.eventType !== 'allocation' || !Array.isArray(event.allocationsAfter)) continue
-      const previous = latestAllocationBySource.get(event.sourceKey)
-      if (!previous || event.sequenceNo > previous.sequenceNo ||
-          (event.sequenceNo === previous.sequenceNo && event.createdAt > previous.createdAt)) {
-        latestAllocationBySource.set(event.sourceKey, event)
-      }
-    }
-    return { eventsBySource, latestAllocationBySource }
-  }, [visibleAuditState.data])
+  const auditIndex = useMemo(
+    () => visibleAuditState.status === 'ready'
+      ? reconcileVisibleAudit(snapshot, visibleAuditState.data)
+      : { status: visibleAuditState.status, eventsBySource: new Map(), latestAllocationBySource: new Map() },
+    [snapshot, visibleAuditState.data, visibleAuditState.status],
+  )
+  const auditStatus = auditIndex.status
   const filtersDirty = !sameFilters(draftFilters, appliedFilters)
   const reportBlocked = filtersDirty || !snapshot || visibleState.status === 'loading' ||
-    snapshot.incompleteSources.length > 0 || visibleAuditState.status !== 'ready'
+    snapshot.incompleteSources.length > 0 || auditStatus !== 'ready'
   const pageCount = snapshot ? Math.max(1, Math.ceil(snapshot.totalRows / snapshot.pageSize)) : 1
   const appliedLabel = useMemo(
     () => appliedFilterLabel(appliedFilters, projects),
@@ -381,6 +430,12 @@ export default function ProjectCostLedgerSection({
           <button type="button" disabled={visibleState.status === 'loading'} onClick={() => load(appliedFilters, snapshot.page, snapshot.pageSize)}>重新读取审计</button>
         </div>
       )}
+      {snapshot && auditStatus === 'inconsistent' && (
+        <div className="project-cost-ledger-alert" role="alert">
+          <div><strong>审计版本与明细账不一致，拆分状态暂不可确认</strong><span>数据可能正在更新，请重新读取后再导出或打印</span></div>
+          <button type="button" disabled={visibleState.status === 'loading'} onClick={() => load(appliedFilters, snapshot.page, snapshot.pageSize)}>重新读取审计</button>
+        </div>
+      )}
 
       {snapshot && snapshot.incompleteSources.length > 0 && (
         <div className="project-cost-ledger-alert" role="alert">
@@ -417,7 +472,7 @@ export default function ProjectCostLedgerSection({
                   const sourceAuditEvents = auditIndex.eventsBySource.get(row.sourceKey) ?? []
                   const latestAllocationEvent = auditIndex.latestAllocationBySource.get(row.sourceKey)
                   const fullAllocations = latestAllocationEvent?.allocationsAfter ?? null
-                  const isSplit = visibleAuditState.status === 'ready' && fullAllocations?.length > 1
+                  const isSplit = auditStatus === 'ready' && fullAllocations?.length > 1
                   return (
                     <Fragment key={rowKey}>
                       <tr className={categoryStart ? 'project-cost-ledger-category-start' : ''}>
@@ -426,7 +481,7 @@ export default function ProjectCostLedgerSection({
                         <td className="project-cost-ledger-amount">{formatYen(row.originalAmount)}</td>
                         <td className="project-cost-ledger-amount">{formatYen(row.adjustmentAmount)}</td>
                         <td className="project-cost-ledger-amount project-cost-ledger-effective">{formatYen(row.effectiveAmount)}</td>
-                        <td>{visibleAuditState.status !== 'ready'
+                        <td>{auditStatus !== 'ready'
                           ? '拆分状态待读取'
                           : isSplit
                             ? `已拆分（${fullAllocations.length}个项目）`
@@ -444,10 +499,10 @@ export default function ProjectCostLedgerSection({
                             <div><dt>来源键</dt><dd>{row.sourceKey}</dd></div><div><dt>单据类型</dt><dd>{row.sourceDocumentType}</dd></div>
                             <div><dt>版本</dt><dd>{row.version}</dd></div>
                           </dl></section>
-                          <section><h3>项目分摊</h3>{visibleAuditState.status !== 'ready'
+                          <section><h3>项目分摊</h3>{auditStatus !== 'ready'
                             ? <p>审计记录暂不可用，无法确认完整分摊</p>
                             : (fullAllocations ?? row.allocations).map((allocation) => <div className="project-cost-ledger-allocation" key={allocation.projectId}><span>{projectName(projects, allocation.projectId)}</span><strong>{formatYen(allocation.amount)}</strong></div>)}</section>
-                          <section><h3>自动审计记录</h3>{visibleAuditState.status !== 'ready'
+                          <section><h3>自动审计记录</h3>{auditStatus !== 'ready'
                             ? <p>审计记录暂不可用</p>
                             : sourceAuditEvents.length === 0
                               ? <p>暂无会计调整</p>

@@ -362,6 +362,128 @@ test('a late audit response from an older applied-filter request cannot refill t
   }
 })
 
+async function renderAuditIntegrityScenario({ snapshot, audits }) {
+  let auditCall = 0
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+    service: {
+      async list() { return snapshot },
+      async listAudit() {
+        const result = audits[Math.min(auditCall, audits.length - 1)]
+        auditCall += 1
+        return result
+      },
+    },
+    access: ledgerAccess,
+    projects: [
+      { projectId: 'P-1', projectName: '东京站项目' },
+      { projectId: 'P-2', projectName: '横滨仓库项目' },
+    ],
+    actorFingerprint: 'accountant-integrity',
+    onExportExcel() {}, onExportPdf() {}, onPrint() {},
+  })) })
+  return { dom, container, root, auditCalls: () => auditCall }
+}
+
+test('audit ahead fails closed and a correlated retry restores the complete split', async () => {
+  const ahead = auditSnapshot()
+  ahead.events[0].sequenceNo = 2
+  const scenario = await renderAuditIntegrityScenario({
+    snapshot: ledgerSnapshot(), audits: [ahead, auditSnapshot()],
+  })
+  try {
+    assert.match(scenario.container.textContent, /审计版本与明细账不一致/u)
+    assert.match(scenario.container.textContent, /拆分状态待读取/u)
+    assert.doesNotMatch(scenario.container.textContent, /已拆分（2个项目）/u)
+    assert.equal(button(scenario.container, '导出 Excel').disabled, true)
+    await act(async () => { button(scenario.container, '重新读取审计').click() })
+    assert.equal(scenario.auditCalls(), 2)
+    assert.doesNotMatch(scenario.container.textContent, /审计版本与明细账不一致/u)
+    assert.match(scenario.container.textContent, /已拆分（2个项目）/u)
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+  } finally {
+    await act(async () => { scenario.root.unmount() })
+    scenario.dom.cleanup()
+  }
+})
+
+test('audit behind and inconsistent row versions both fail closed', async (t) => {
+  await t.test('behind max sequence', async () => {
+    const snapshot = ledgerSnapshot()
+    snapshot.rows[0].version = 3
+    snapshot.rows[1].version = 3
+    const scenario = await renderAuditIntegrityScenario({ snapshot, audits: [auditSnapshot()] })
+    try {
+      assert.match(scenario.container.textContent, /审计版本与明细账不一致/u)
+      assert.equal(button(scenario.container, '打印').disabled, true)
+    } finally {
+      await act(async () => { scenario.root.unmount() })
+      scenario.dom.cleanup()
+    }
+  })
+
+  await t.test('same source rows disagree', async () => {
+    const snapshot = ledgerSnapshot()
+    snapshot.rows[1].version = 3
+    const scenario = await renderAuditIntegrityScenario({ snapshot, audits: [auditSnapshot()] })
+    try {
+      assert.match(scenario.container.textContent, /审计版本与明细账不一致/u)
+      assert.equal(button(scenario.container, '导出 PDF').disabled, true)
+    } finally {
+      await act(async () => { scenario.root.unmount() })
+      scenario.dom.cleanup()
+    }
+  })
+})
+
+test('duplicate or discontinuous audit sequences cannot be composed into a report', async (t) => {
+  for (const [name, events] of [
+    ['duplicate', [
+      { ...auditSnapshot().events[0], sequenceNo: 1 },
+      { ...auditSnapshot().events[0], sequenceNo: 1, reason: '重复事件' },
+    ]],
+    ['gap', [
+      { ...auditSnapshot().events[0], sequenceNo: 1 },
+      { ...auditSnapshot().events[0], sequenceNo: 3, reason: '断号事件' },
+    ]],
+  ]) {
+    await t.test(name, async () => {
+      const snapshot = ledgerSnapshot()
+      snapshot.rows[0].version = name === 'duplicate' ? 3 : 4
+      snapshot.rows[1].version = name === 'duplicate' ? 3 : 4
+      const scenario = await renderAuditIntegrityScenario({
+        snapshot, audits: [{ ...auditSnapshot(), events }],
+      })
+      try {
+        assert.match(scenario.container.textContent, /审计版本与明细账不一致/u)
+        assert.match(scenario.container.textContent, /拆分状态待读取/u)
+        assert.equal(button(scenario.container, '导出 Excel').disabled, true)
+      } finally {
+        await act(async () => { scenario.root.unmount() })
+        scenario.dom.cleanup()
+      }
+    })
+  }
+})
+
+test('version one source with no audit event is a complete ordinary project row', async () => {
+  const full = ledgerSnapshot()
+  const snapshot = { ...full, rows: [full.rows[2]], totalRows: 1, totalAmount: 25000, adjustmentTotal: 0 }
+  const scenario = await renderAuditIntegrityScenario({
+    snapshot, audits: [{ ...auditSnapshot(), events: [] }],
+  })
+  try {
+    assert.doesNotMatch(scenario.container.textContent, /审计版本与明细账不一致|拆分状态待读取/u)
+    assert.match(scenario.container.textContent, /东京站项目/u)
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+  } finally {
+    await act(async () => { scenario.root.unmount() })
+    scenario.dom.cleanup()
+  }
+})
+
 test('black-gold CSS enforces the readable table dimensions without white or blue surfaces', async () => {
   const css = await readFile(new URL('./projectCostLedger.css', import.meta.url), 'utf8')
   assert.match(css, /\.project-cost-ledger-table\s*\{[^}]*min-width:\s*1380px[^}]*font-size:\s*15px/su)
