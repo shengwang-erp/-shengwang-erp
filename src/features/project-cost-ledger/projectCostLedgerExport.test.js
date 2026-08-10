@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs'
 import {
   createProjectCostWorkbook,
   exportProjectCostXlsx,
+  loadCompleteProjectCostLedgerSnapshot,
   loadCompleteProjectCostReportSnapshot,
 } from './projectCostLedgerExport.js'
 
@@ -189,6 +190,29 @@ test('complete report loader ignores a non-first screen page and collects every 
   assert.equal(report.ledgerSnapshot.rows.at(-1).sourceDocumentId, 'ROW-205')
   assert.ok(Object.isFrozen(report.ledgerSnapshot))
   assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
+})
+
+test('accounting summary loader collects every stable ledger page without requiring audit access', async () => {
+  const listCalls = []
+  const service = {
+    async list(filters) {
+      listCalls.push({ ...filters })
+      return reportPage(filters.page)
+    },
+  }
+  const snapshot = await loadCompleteProjectCostLedgerSnapshot({
+    service,
+    filters: {},
+    isCurrent: () => true,
+  })
+
+  assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [
+    [1, 100], [2, 100], [3, 100],
+  ])
+  assert.equal(snapshot.totalRows, 205)
+  assert.equal(snapshot.rows.length, 205)
+  assert.ok(Object.isFrozen(snapshot))
+  assert.ok(Object.isFrozen(snapshot.rows))
 })
 
 test('complete report loader rejects changed page totals and ledger-audit version gaps', async () => {

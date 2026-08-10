@@ -5676,6 +5676,8 @@ to service_role;
 
 commit;
 
+-- END ATTENDANCE ACCOUNTING REFERENCE SNAPSHOT
+
 -- ---------------------------------------------------------------------------
 -- Review snapshot: 202608090001_project_cost_ledger.sql
 -- ---------------------------------------------------------------------------

@@ -12,8 +12,16 @@ test('baseline schema and operations runbook cover attendance accounting deploym
   const accountingReference = baseline.slice(baseline.indexOf(accountingMarker))
   const migrationStart = '-- Normalized, RPC-only attendance accounting state.'
   const migrationOffset = accountingReference.indexOf(migrationStart)
+  const accountingEnd = accountingReference.indexOf(
+    '-- END ATTENDANCE ACCOUNTING REFERENCE SNAPSHOT',
+    migrationOffset,
+  )
   assert.ok(migrationOffset >= 0)
-  assert.equal(accountingReference.slice(migrationOffset).trim(), migration.trim())
+  assert.ok(accountingEnd > migrationOffset)
+  assert.equal(
+    accountingReference.slice(migrationOffset, accountingEnd).trim(),
+    migration.trim(),
+  )
 
   for (const table of [
     'attendance_accounting_settings',

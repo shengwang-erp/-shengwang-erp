@@ -7,6 +7,52 @@ import {
 } from './costAccountingDomain.js'
 import { bridgeWarehouseMaterialCosts } from './warehouseMaterialCostBridge.js'
 
+function ledgerRow(overrides = {}) {
+  const projectId = overrides.projectId || 'P1'
+  const amount = overrides.effectiveAmount ?? 1
+  return {
+    sourceKey: overrides.sourceKey || 'manual:LEDGER-1',
+    sourceModule: overrides.sourceModule || 'manual',
+    sourceDocumentType: overrides.sourceDocumentType || 'manual_project_cost',
+    sourceDocumentId: overrides.sourceDocumentId || 'LEDGER-1',
+    projectId,
+    projectName: overrides.projectName || projectId,
+    category: overrides.category || '其他费用',
+    date: overrides.date || '2026-07-10',
+    description: overrides.description || '统一账本费用',
+    originalAmount: overrides.originalAmount ?? amount,
+    adjustmentAmount: overrides.adjustmentAmount ?? 0,
+    effectiveAmount: amount,
+    operator: overrides.operator || '会计甲',
+    adjusted: overrides.adjusted ?? false,
+    version: overrides.version || 1,
+    allocations: overrides.allocations || [{ projectId, amount }],
+    auditEvents: overrides.auditEvents || [],
+  }
+}
+
+function readyLedgerSummary(rows, overrides = {}) {
+  const categoryTotals = [...new Set(rows.map(({ category }) => category))].map((category) => ({
+    category,
+    amount: rows.filter((row) => row.category === category)
+      .reduce((total, row) => Math.round((total + row.effectiveAmount) * 10000) / 10000, 0),
+  }))
+  return {
+    status: 'ready',
+    data: {
+      status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', page: 1, pageSize: 100,
+      totalRows: rows.length, rows, categoryTotals,
+      totalAmount: rows.reduce(
+        (total, row) => Math.round((total + row.effectiveAmount) * 10000) / 10000,
+        0,
+      ),
+      adjustmentTotal: 20,
+      incompleteSources: [],
+      ...overrides,
+    },
+  }
+}
+
 function laborWindow(overrides = {}) {
   return {
     monthly: [{
@@ -221,6 +267,157 @@ test('warehouse-issued four-decimal costs aggregate in fixed 1/10000 yen units',
   assert.equal(model.companyMonthlyTotal.purchase, 1.305)
   assert.equal(model.companyMonthlyTotal.total, 300001.305)
   assert.equal(model.projectLifetimeById.P1.purchase, 1.305)
+})
+
+test('ready unified ledger replaces every project-bound legacy cost exactly once', () => {
+  const rows = [
+    ledgerRow({
+      sourceKey: 'warehouse:SPLIT', sourceModule: 'warehouse',
+      sourceDocumentType: 'warehouse_stock_out', sourceDocumentId: 'SPLIT',
+      projectId: 'P1', category: '材料费', originalAmount: 60,
+      adjustmentAmount: 12, effectiveAmount: 72, adjusted: true, version: 3,
+      allocations: [{ projectId: 'P1', amount: 72 }],
+    }),
+    ledgerRow({
+      sourceKey: 'warehouse:SPLIT', sourceModule: 'warehouse',
+      sourceDocumentType: 'warehouse_stock_out', sourceDocumentId: 'SPLIT',
+      projectId: 'P2', category: '材料费', originalAmount: 40,
+      adjustmentAmount: 8, effectiveAmount: 48, adjusted: true, version: 3,
+      allocations: [{ projectId: 'P2', amount: 48 }],
+    }),
+    ledgerRow({
+      sourceKey: 'manual:REFUND', sourceDocumentId: 'REFUND',
+      projectId: 'P1', category: '其他费用', effectiveAmount: -10,
+    }),
+    ledgerRow({
+      sourceKey: 'labor:L1', sourceModule: 'labor',
+      sourceDocumentType: 'project_labor', sourceDocumentId: 'L1',
+      projectId: 'P1', category: '人工费', effectiveAmount: 30,
+    }),
+    ledgerRow({
+      sourceKey: 'operating:O1', sourceModule: 'operating',
+      sourceDocumentType: 'operating_expense', sourceDocumentId: 'O1',
+      projectId: 'P1', category: '经营费用', effectiveAmount: 5,
+    }),
+  ]
+  const model = buildCostAccountingReadModel(julyFixture({
+    activeProjectIds: ['P1', 'P2'],
+    laborWindow: laborWindow({ projectLaborLifetimeById: { P1: 300000, P2: 0 } }),
+    projectLedgerSummary: readyLedgerSummary(rows),
+    purchaseRows: [
+      {
+        purchaseId: 'OLD-PROJECT', purchaseDate: '2026-07-03', projectId: 'P1',
+        purchaseStatus: '正常', totalCost: 999,
+      },
+      {
+        purchaseId: 'COMPANY-PURCHASE', purchaseDate: '2026-07-03',
+        purchaseStatus: '正常', totalCost: 30,
+      },
+    ],
+    fuelRecords: [{
+      fuelRecordId: 'COMPANY-FUEL', fuelDate: '2026-07-04', fuelAmount: 40,
+      allocateToProject: false,
+    }, {
+      fuelRecordId: 'OLD-PROJECT-FUEL', fuelDate: '2026-07-04', fuelAmount: 888,
+      allocateToProject: true, projectId: 'P1',
+    }],
+    vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [{
+      costRecordId: 'OLD-MANUAL', costType: '其他费用', amount: 777,
+      projectId: 'P1', date: '2026-07-07',
+    }],
+    operatingExpenses: [{
+      operatingExpenseId: 'COMPANY-OPEX', date: '2026-07-08', amount: 50,
+      allocateToProject: false,
+    }, {
+      operatingExpenseId: 'OLD-PROJECT-OPEX', date: '2026-07-08', amount: 666,
+      allocateToProject: true, projectId: 'P1',
+    }],
+  }))
+
+  assert.deepEqual(model.projectLifetimeById.P1, {
+    labor: 30, purchase: 72, vehicle: 0, manual: -10, operating: 5, total: 97,
+  })
+  assert.deepEqual(model.projectLifetimeById.P2, {
+    labor: 0, purchase: 48, vehicle: 0, manual: 0, operating: 0, total: 48,
+  })
+  assert.equal(model.monthlyByMonth['2026-07'].salary, 300000)
+  assert.equal(model.monthlyByMonth['2026-07'].purchase, 150)
+  assert.equal(model.monthlyByMonth['2026-07'].vehicle, 40)
+  assert.equal(model.monthlyByMonth['2026-07'].manual, -10)
+  assert.equal(model.monthlyByMonth['2026-07'].operating, 55)
+  assert.equal(model.monthlyByMonth['2026-07'].total, 300235)
+  assert.equal(model.projectLedger.status, 'ready')
+  assert.equal(model.projectLedger.monthlyTotal, 145)
+  assert.equal(model.projectLedger.lifetimeTotal, 145)
+})
+
+test('incomplete unified ledger makes project totals explicitly unavailable without hiding company-only facts', () => {
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: { status: 'loading', data: null },
+    purchaseRows: [{
+      purchaseId: 'COMPANY-PURCHASE', purchaseDate: '2026-07-03',
+      purchaseStatus: '正常', totalCost: 30,
+    }],
+    fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [],
+    operatingExpenses: [{
+      operatingExpenseId: 'COMPANY-OPEX', date: '2026-07-08', amount: 50,
+      allocateToProject: false,
+    }],
+  }))
+
+  assert.equal(model.projectLedger.status, 'loading')
+  assert.equal(model.companyMonthlyTotal.salary, 300000)
+  assert.equal(model.companyMonthlyTotal.companyOperating, 50)
+  assert.equal(model.companyMonthlyTotal.purchase, null)
+  assert.equal(model.companyMonthlyTotal.operating, null)
+  assert.equal(model.companyMonthlyTotal.total, null)
+  assert.equal(model.companyMonthlyTotal.incomplete, true)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+  assert.equal(model.selectedComposition.total, null)
+  assert.equal(model.selectedComposition.incomplete, true)
+})
+
+test('unified ledger aggregation keeps adjusted and negative rows in exact four-decimal units', () => {
+  const rows = [
+    ledgerRow({ sourceKey: 'manual:A', sourceDocumentId: 'A', effectiveAmount: 0.1 }),
+    ledgerRow({ sourceKey: 'manual:B', sourceDocumentId: 'B', effectiveAmount: 0.2 }),
+    ledgerRow({ sourceKey: 'manual:C', sourceDocumentId: 'C', effectiveAmount: -0.0001 }),
+  ]
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: readyLedgerSummary(rows, {
+      totalAmount: 0.2999,
+      categoryTotals: [{ category: '其他费用', amount: 0.2999 }],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(model.projectLedger.monthlyTotal, 0.2999)
+  assert.equal(model.projectLifetimeById.P1.total, 0.2999)
+  assert.equal(model.companyMonthlyTotal.manual, 0.2999)
+  assert.equal(model.companyMonthlyTotal.total, 300000.2999)
+})
+
+test('a ready-labelled partial or arithmetically inconsistent ledger never publishes a stale project total', () => {
+  const row = ledgerRow({ sourceKey: 'manual:ONLY', sourceDocumentId: 'ONLY', effectiveAmount: 10 })
+  for (const projectLedgerSummary of [
+    readyLedgerSummary([row], { totalRows: 2 }),
+    readyLedgerSummary([row], { totalAmount: 999 }),
+    readyLedgerSummary([row], { categoryTotals: [{ category: '其他费用', amount: 999 }] }),
+    readyLedgerSummary([{ ...row, category: '未知费用' }]),
+  ]) {
+    const model = buildCostAccountingReadModel(julyFixture({
+      projectLedgerSummary,
+      purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+      manualProjectCosts: [], operatingExpenses: [],
+    }))
+    assert.equal(model.projectLedger.status, 'incomplete')
+    assert.equal(model.projectLedger.monthlyTotal, null)
+    assert.equal(model.projectLifetimeById.P1.total, null)
+    assert.equal(model.companyMonthlyTotal.total, null)
+  }
 })
 
 test('confirmed warehouse receipt without an issue is inventory, not current project purchase cost', () => {

@@ -89,6 +89,7 @@ import { purchaseService } from './services/purchaseService.js'
 import { createProjectCostLedgerService } from './services/projectCostLedgerService.js'
 import { createProjectCostLedgerDemoService } from './features/project-cost-ledger/projectCostLedgerDemoService.js'
 import ProjectCostLedgerSection from './features/project-cost-ledger/ProjectCostLedgerSection.jsx'
+import { loadCompleteProjectCostLedgerSnapshot } from './features/project-cost-ledger/projectCostLedgerExport.js'
 import './features/project-cost-ledger/projectCostLedger.css'
 import { createWarehouseService } from './services/warehouseService.js'
 import { createWarehouseConfirmationService } from './services/warehouseConfirmationService.js'
@@ -1926,6 +1927,69 @@ export function createProjectCostLedgerActorFingerprint(currentUser, access) {
   ])
 }
 
+function initialProjectLedgerSummaryState(identity, canRead) {
+  return {
+    identity,
+    status: canRead ? 'loading' : 'forbidden',
+    data: null,
+  }
+}
+
+export function useProjectLedgerSummaryLifecycle({
+  service,
+  access,
+  actorFingerprint,
+  onAuthInvalid,
+}) {
+  const canRead = Boolean(access?.readLedger ?? access?.view)
+  const activeIdentityRef = useRef(actorFingerprint)
+  activeIdentityRef.current = actorFingerprint
+  const onAuthInvalidRef = useRef(onAuthInvalid)
+  onAuthInvalidRef.current = onAuthInvalid
+  const requestSequenceRef = useRef(0)
+  const [state, setState] = useState(() =>
+    initialProjectLedgerSummaryState(actorFingerprint, canRead))
+
+  useEffect(() => {
+    const identity = actorFingerprint
+    const sequence = requestSequenceRef.current + 1
+    requestSequenceRef.current = sequence
+    let active = true
+    const isCurrent = () => active && requestSequenceRef.current === sequence &&
+      activeIdentityRef.current === identity
+
+    if (!canRead) {
+      setState(initialProjectLedgerSummaryState(identity, false))
+      return () => {
+        active = false
+        requestSequenceRef.current += 1
+      }
+    }
+
+    setState(initialProjectLedgerSummaryState(identity, true))
+    void loadCompleteProjectCostLedgerSnapshot({ service, filters: {}, isCurrent })
+      .then((snapshot) => {
+        if (!snapshot || !isCurrent()) return
+        setState({ identity, status: 'ready', data: snapshot })
+      })
+      .catch((error) => {
+        if (!isCurrent()) return
+        setState({ identity, status: 'error', data: null })
+        if (error?.authInvalid === true) onAuthInvalidRef.current?.(error)
+      })
+
+    return () => {
+      active = false
+      requestSequenceRef.current += 1
+    }
+  }, [actorFingerprint, canRead, service])
+
+  if (state.identity !== actorFingerprint) {
+    return initialProjectLedgerSummaryState(actorFingerprint, canRead)
+  }
+  return { status: state.status, data: state.data }
+}
+
 function markLaborBridgeRetry(targetRef, requestIdentity) {
   targetRef.current = typeof requestIdentity === 'string' ? requestIdentity : ''
 }
@@ -2085,6 +2149,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
   }
 
   if (costAccess) {
+    const hasProjectLedgerSummary = Object.hasOwn(sourceStates || {}, 'projectLedgerSummary')
     const requiredStates = [
       sourceStates?.projects,
       sourceStates?.laborWindow,
@@ -2094,6 +2159,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
       sourceStates?.fuel,
       sourceStates?.vehicleExpenses,
       sourceStates?.vehicleIssues,
+      ...(hasProjectLedgerSummary ? [sourceStates?.projectLedgerSummary] : []),
     ]
     const projectRows = readyProjectedArray(requiredStates[0])
     const laborWindow = readyProjectedObject(requiredStates[1])
@@ -2103,6 +2169,9 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
     const fuelRecords = readyProjectedArray(requiredStates[5])
     const vehicleExpenseRecords = readyProjectedArray(requiredStates[6])
     const vehicleIssueRecords = readyProjectedArray(requiredStates[7])
+    const projectLedgerSummary = hasProjectLedgerSummary
+      ? readyProjectedObject(requiredStates[8])
+      : null
     if ([
       projectRows,
       laborWindow,
@@ -2112,6 +2181,7 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
       fuelRecords,
       vehicleExpenseRecords,
       vehicleIssueRecords,
+      ...(!hasProjectLedgerSummary || projectLedgerSummary !== null ? [] : [null]),
     ].every((value) => value !== null)) {
       const activeProjectIds = [...new Set(projectRows
         .map((project) => project?.projectId)
@@ -2130,6 +2200,9 @@ export function buildHomeFinancialModels({ currentUser, selectedMonth, sourceSta
           vehicleIssueRecords,
           manualProjectCosts,
           operatingExpenses,
+          ...(hasProjectLedgerSummary
+            ? { projectLedgerSummary: { status: 'ready', data: projectLedgerSummary } }
+            : {}),
         })
         result.cost = isSafeCostAccountingAmount(model.companyMonthlyTotal?.total)
           ? { status: 'ready', data: model }
@@ -3321,6 +3394,12 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     currentUser,
     accountingAccess.projectCost,
   )
+  const projectLedgerSummaryState = useProjectLedgerSummaryLifecycle({
+    service: activeProjectCostLedgerService,
+    access: accountingAccess.projectCost,
+    actorFingerprint: projectCostActorFingerprint,
+    onAuthInvalid: onLogout,
+  })
 
   if (authorizedView === null) return null
 
@@ -3898,6 +3977,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     ...dashboardSourceStates,
     purchaseAccrual: warehouseAccountingSourceStates.purchaseAccrual,
     purchaseLedgerAccrual: warehouseAccountingSourceStates.purchaseLedgerAccrual,
+    projectLedgerSummary: projectLedgerSummaryState,
   }
   const handleDashboardNavigate = (targetView) => {
     const requestedRoute = getAdminRoute(targetView)
@@ -7533,9 +7613,23 @@ export function MonthlySummarySection({
     }
     return { status: 'ready', data: state.data }
   }
+  const resolveProjectLedgerSummarySource = (allowed) => {
+    if (!allowed) return { status: 'forbidden', data: null }
+    if (!Object.hasOwn(sourceStates || {}, 'projectLedgerSummary')) return null
+    const state = sourceStates.projectLedgerSummary
+    if (state?.stale === true) return { status: 'loading', data: null }
+    if (state?.status !== 'ready' || state.data === null ||
+        typeof state.data !== 'object' || Array.isArray(state.data)) {
+      return { status: state?.status === 'error' ? 'error' : 'loading', data: null }
+    }
+    return { status: 'ready', data: state.data }
+  }
 
   const laborWindowState = resolveLaborWindowSource(resolvedAccess.salary)
   const projectCostState = resolveArraySource('projectCosts', resolvedAccess.projectCost)
+  const projectLedgerSummaryState = resolveProjectLedgerSummarySource(
+    resolvedAccess.projectCost,
+  )
   const operatingExpenseState = resolveArraySource(
     'operatingExpenses', resolvedAccess.operatingExpense,
   )
@@ -7572,6 +7666,7 @@ export function MonthlySummarySection({
     fuelState,
     vehicleExpenseState,
     vehicleIssueState,
+    ...(projectLedgerSummaryState ? [projectLedgerSummaryState] : []),
   ]
   const allCostSourcesReady = costSourceStates.every((state) => state.status === 'ready')
   const unavailableLaborWindow = {
@@ -7600,12 +7695,16 @@ export function MonthlySummarySection({
         vehicleIssueRecords: vehicleIssueState.data || [],
         manualProjectCosts: projectCostState.data || [],
         operatingExpenses: operatingExpenseState.data || [],
+        ...(projectLedgerSummaryState
+          ? { projectLedgerSummary: projectLedgerSummaryState }
+          : {}),
       })
     } catch {
       costModelError = true
     }
   }
   const companyMonthlyTotal = costModel ? costModel.companyMonthlyTotal : null
+  const projectLedgerStatus = costModel?.projectLedger?.status || null
   const selectedComposition = costModel ? costModel.selectedComposition : null
   const pending = costModel ? costModel.pending : {
     manualLaborCosts: [],
@@ -7656,7 +7755,8 @@ export function MonthlySummarySection({
     purchasePaymentState.status === 'ready' &&
     purchaseAccounting?.currentPayable.status === 'ready'
   const visibleSourceFailures = costSourceStates.filter(
-    (state) => state.status === 'loading' || state.status === 'error',
+    (state) => state !== projectLedgerSummaryState &&
+      (state.status === 'loading' || state.status === 'error'),
   )
   const pendingDefinitions = [
     ['manualLaborCosts', '待核算手工人工费', 'amount'],
@@ -7678,6 +7778,15 @@ export function MonthlySummarySection({
       )}
       {visibleSourceFailures.some((state) => state.status === 'error') && (
         <EmptyState text="成本数据暂不可用" />
+      )}
+      {projectLedgerSummaryState?.status === 'loading' && (
+        <EmptyState text="项目成本明细账正在加载" />
+      )}
+      {projectLedgerSummaryState?.status === 'error' && (
+        <EmptyState text="项目成本明细账暂不可用" />
+      )}
+      {projectLedgerStatus === 'incomplete' && (
+        <EmptyState text="项目成本明细账数据不完整" />
       )}
       {costModelError && <EmptyState text="成本数据格式异常，暂不可用" />}
 
@@ -7734,6 +7843,14 @@ export function MonthlySummarySection({
           <div className="stat-card money">
             <strong>{formatYen(companyMonthlyTotal.operating)}</strong>
             <span>经营费用合计</span>
+          </div>
+        )}
+        {projectLedgerSummaryState && projectLedgerStatus !== 'ready' &&
+          resolvedAccess.operatingExpense && operatingExpenseState.status === 'ready' &&
+          companyMonthlyTotal && companyMonthlyTotal.companyOperating > 0 && (
+          <div className="stat-card money">
+            <strong>{formatYen(companyMonthlyTotal.companyOperating)}</strong>
+            <span>公司经营费用（不含项目）</span>
           </div>
         )}
         {completeTotalVisible && allCostSourcesReady && companyMonthlyTotal &&

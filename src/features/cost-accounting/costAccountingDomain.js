@@ -4,6 +4,7 @@ import {
   MAX_WAREHOUSE_MATERIAL_COST,
 } from './warehouseMaterialCostBridge.js'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from './fixedPointCurrency.js'
+import { normalizeLedgerSnapshot } from '../project-cost-ledger/projectCostLedgerDomain.js'
 
 const PENDING_MANUAL_TYPES = new Set(['人工费', '材料费', '工具费', '车辆费'])
 const CONFIRMED_MANUAL_TYPES = new Set(['外包费', '运输费', '其他费用'])
@@ -13,6 +14,18 @@ const MAX_IDENTIFIER_LENGTH = 500
 const MALFORMED_ROW = Symbol('malformed-row')
 const UNSUPPORTED_OUTPUT_DATA = Symbol('unsupported-output-data')
 const READY_LABOR_SOURCES = new Set(['formal', 'legacy'])
+const PROJECT_LEDGER_STATE_KEYS = Object.freeze(['status', 'data'])
+const PROJECT_LEDGER_STATES = new Set(['ready', 'loading', 'error', 'forbidden'])
+const LEDGER_CATEGORY_PART = Object.freeze({
+  人工费: 'labor',
+  材料费: 'purchase',
+  车辆费: 'vehicle',
+  工具费: 'manual',
+  外包费: 'manual',
+  运输费: 'manual',
+  经营费用: 'operating',
+  其他费用: 'manual',
+})
 
 const INPUT_KEYS = Object.freeze([
   'months',
@@ -27,6 +40,7 @@ const INPUT_KEYS = Object.freeze([
   'manualProjectCosts',
   'operatingExpenses',
 ])
+const INPUT_KEYS_WITH_PROJECT_LEDGER = Object.freeze([...INPUT_KEYS, 'projectLedgerSummary'])
 
 const LABOR_WINDOW_KEYS = Object.freeze([
   'monthly',
@@ -100,6 +114,26 @@ function safeYen(value) {
 
 function fixedCostUnits(value) {
   return toSignedFourDecimalUnits(value)
+}
+
+function ledgerSnapshotSummaryMatches(snapshot) {
+  const categoryUnits = new Map()
+  let totalUnits = 0n
+  for (const row of snapshot.rows) {
+    if (!Object.hasOwn(LEDGER_CATEGORY_PART, row.category)) return false
+    const units = BigInt(fixedCostUnits(row.effectiveAmount))
+    totalUnits += units
+    categoryUnits.set(row.category, (categoryUnits.get(row.category) || 0n) + units)
+  }
+  if (totalUnits !== BigInt(fixedCostUnits(snapshot.totalAmount)) ||
+      snapshot.categoryTotals.length !== categoryUnits.size) return false
+  const seen = new Set()
+  for (const total of snapshot.categoryTotals) {
+    if (seen.has(total.category) || !categoryUnits.has(total.category) ||
+        categoryUnits.get(total.category) !== BigInt(fixedCostUnits(total.amount))) return false
+    seen.add(total.category)
+  }
+  return true
 }
 
 export function isSafeCostAccountingAmount(value) {
@@ -310,7 +344,13 @@ function collectActiveRows(rows, { source, idFields, anomalies }) {
 }
 
 function normalizeInput(input) {
-  const snapshot = exactSnapshot(input, INPUT_KEYS, 'cost accounting input must use exact own data fields')
+  const hasProjectLedgerSummary = isPlainRecord(input) &&
+    Object.hasOwn(input, 'projectLedgerSummary')
+  const snapshot = exactSnapshot(
+    input,
+    hasProjectLedgerSummary ? INPUT_KEYS_WITH_PROJECT_LEDGER : INPUT_KEYS,
+    'cost accounting input must use exact own data fields',
+  )
   const months = snapshotArray(snapshot.months, 'months')
   const activeProjectIds = snapshotArray(snapshot.activeProjectIds, 'activeProjectIds')
   if (months.length === 0 || months.some((month) => normalizeMonth(month) !== month) ||
@@ -347,6 +387,27 @@ function normalizeInput(input) {
     projectCostRecords: warehouseCandidates,
     trackedPurchaseRecordKeys: [],
   })
+  let projectLedgerSummary = null
+  if (hasProjectLedgerSummary) {
+    const state = exactSnapshot(
+      snapshot.projectLedgerSummary,
+      PROJECT_LEDGER_STATE_KEYS,
+      'projectLedgerSummary must use exact own data fields',
+    )
+    if (!PROJECT_LEDGER_STATES.has(state.status) ||
+        (state.status === 'ready' ? state.data === null : state.data !== null)) {
+      throw new TypeError('projectLedgerSummary state is invalid')
+    }
+    if (state.status === 'ready') {
+      const data = normalizeLedgerSnapshot(state.data)
+      projectLedgerSummary = data.incompleteSources.length === 0 && data.page === 1 &&
+          data.totalRows === data.rows.length && ledgerSnapshotSummaryMatches(data)
+        ? { status: 'ready', data }
+        : { status: 'incomplete', data: null }
+    } else {
+      projectLedgerSummary = { status: state.status, data: null }
+    }
+  }
   return {
     ...snapshot,
     months,
@@ -364,6 +425,7 @@ function normalizeInput(input) {
     manualProjectCosts: manualProjectCosts.filter((row) => !warehouseCandidates.includes(row)),
     warehouseMaterialCosts: bridge.warehouseMaterialCosts,
     operatingExpenses: snapshotArray(snapshot.operatingExpenses, 'operatingExpenses'),
+    projectLedgerSummary,
   }
 }
 
@@ -375,6 +437,7 @@ function emptyCompanyMonth(month) {
     vehicle: 0,
     manual: 0,
     operating: 0,
+    companyOperating: 0,
     total: null,
     laborStatus: 'error',
     laborStale: false,
@@ -501,15 +564,23 @@ export function classifyManualProjectCosts(records = []) {
 
 export function buildCostAccountingReadModel(input) {
   const normalized = normalizeInput(input)
+  const ledgerProvided = normalized.projectLedgerSummary !== null
+  const ledgerReady = normalized.projectLedgerSummary?.status === 'ready'
   const anomalies = []
   const monthSet = new Set(normalized.months)
   const activeProjects = new Set(normalized.activeProjectIds)
   const companyByMonth = new Map(normalized.months.map((month) => [month, emptyCompanyMonth(month)]))
   const projectByMonth = new Map(normalized.months.map((month) => [
     month,
-    new Map(normalized.activeProjectIds.map((projectId) => [projectId, emptyProjectCost(null)])),
+    new Map(normalized.activeProjectIds.map((projectId) => [
+      projectId,
+      emptyProjectCost(ledgerProvided ? (ledgerReady ? 0 : null) : null),
+    ])),
   ]))
-  const lifetime = new Map(normalized.activeProjectIds.map((projectId) => [projectId, emptyProjectCost(null)]))
+  const lifetime = new Map(normalized.activeProjectIds.map((projectId) => [
+    projectId,
+    emptyProjectCost(ledgerProvided ? (ledgerReady ? 0 : null) : null),
+  ]))
   const incompleteMonthSet = new Set(normalized.laborWindow.incompleteMonths)
 
   const laborRows = new Map()
@@ -555,23 +626,28 @@ export function buildCostAccountingReadModel(input) {
     target.laborSource = laborSource
     target.laborPendingCount = safeYen(safeOwnValue(labor, 'pendingCount'))
     target.incomplete = false
-    for (const projectId of normalized.activeProjectIds) {
-      projectByMonth.get(month).get(projectId).labor = projectMap.values.get(projectId) || 0
+    if (!ledgerProvided) {
+      for (const projectId of normalized.activeProjectIds) {
+        projectByMonth.get(month).get(projectId).labor = projectMap.values.get(projectId) || 0
+      }
     }
   }
 
-  const lifetimeMap = normalized.laborWindow.lifetimeStatus === 'ready'
-    ? safeProjectMap(normalized.laborWindow.projectLaborLifetimeById)
-    : null
-  if (!lifetimeMap) {
-    anomaly(anomalies, 'laborWindow', 'lifetime', 'incomplete_labor_lifetime', '累计人工分摊不完整。')
-  } else {
-    for (const projectId of normalized.activeProjectIds) {
-      lifetime.get(projectId).labor = lifetimeMap.values.get(projectId) || 0
+  if (!ledgerProvided) {
+    const lifetimeMap = normalized.laborWindow.lifetimeStatus === 'ready'
+      ? safeProjectMap(normalized.laborWindow.projectLaborLifetimeById)
+      : null
+    if (!lifetimeMap) {
+      anomaly(anomalies, 'laborWindow', 'lifetime', 'incomplete_labor_lifetime', '累计人工分摊不完整。')
+    } else {
+      for (const projectId of normalized.activeProjectIds) {
+        lifetime.get(projectId).labor = lifetimeMap.values.get(projectId) || 0
+      }
     }
   }
 
   const addFact = ({ source, recordId, month, amount, category, projectId = null }) => {
+    if (ledgerProvided && projectId !== null) return
     const targets = []
     if (monthSet.has(month)) targets.push(companyByMonth.get(month))
     if (projectId !== null) {
@@ -581,6 +657,10 @@ export function buildCostAccountingReadModel(input) {
     let overflowed = false
     for (const target of targets) {
       if (!tryAdd(target, category, amount, source === 'warehouseMaterialCosts')) overflowed = true
+    }
+    if (projectId === null && category === 'operating' && monthSet.has(month) &&
+        !tryAdd(companyByMonth.get(month), 'companyOperating', amount)) {
+      overflowed = true
     }
     if (overflowed) {
       anomaly(anomalies, source, recordId, 'amount_overflow', '金额累计超出安全整数范围。')
@@ -710,6 +790,72 @@ export function buildCostAccountingReadModel(input) {
     )) pending.vehicleRepairEstimates.push(snapshot)
   }
 
+  let ledgerMonthlyTotal = null
+  let ledgerLifetimeTotal = null
+  if (ledgerReady) {
+    ledgerMonthlyTotal = 0
+    ledgerLifetimeTotal = 0
+    for (const row of normalized.projectLedgerSummary.data.rows) {
+      const category = LEDGER_CATEGORY_PART[row.category]
+      const month = monthOfDate(row.date)
+      const amount = row.effectiveAmount
+      const projectId = activeProjects.has(row.projectId) ? row.projectId : null
+      const lifetimeTotal = addSafeSignedCostAccountingAmounts(ledgerLifetimeTotal, amount)
+      if (lifetimeTotal === null) {
+        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目成本账本累计超出安全范围。')
+        ledgerLifetimeTotal = null
+        break
+      }
+      ledgerLifetimeTotal = lifetimeTotal
+      if (month === normalized.selectedMonth) {
+        ledgerMonthlyTotal = addSafeSignedCostAccountingAmounts(ledgerMonthlyTotal, amount)
+      }
+      if (!category || !month) continue
+      if (projectId !== null) {
+        if (monthSet.has(month) &&
+            !tryAdd(projectByMonth.get(month).get(projectId), category, amount, true)) {
+          anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目月度成本累计超出安全范围。')
+        }
+        if (!tryAdd(lifetime.get(projectId), category, amount, true)) {
+          anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目累计成本超出安全范围。')
+        }
+      }
+      if (monthSet.has(month) && category !== 'labor' &&
+          !tryAdd(companyByMonth.get(month), category, amount, true)) {
+        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '公司项目成本累计超出安全范围。')
+      }
+    }
+    if (ledgerMonthlyTotal === null) {
+      normalized.projectLedgerSummary = { status: 'error', data: null }
+    }
+  }
+
+  if (ledgerProvided && !ledgerReady) {
+    for (const row of companyByMonth.values()) {
+      row.purchase = null
+      row.vehicle = null
+      row.manual = null
+      row.operating = null
+      row.incomplete = true
+    }
+    for (const row of projectByMonth.values()) {
+      for (const value of row.values()) {
+        value.labor = null
+        value.purchase = null
+        value.vehicle = null
+        value.manual = null
+        value.operating = null
+      }
+    }
+    for (const value of lifetime.values()) {
+      value.labor = null
+      value.purchase = null
+      value.vehicle = null
+      value.manual = null
+      value.operating = null
+    }
+  }
+
   const monthlyByMonth = {}
   for (const month of normalized.months) {
     const row = companyByMonth.get(month)
@@ -766,7 +912,7 @@ export function buildCostAccountingReadModel(input) {
     scope: normalized.projectId,
     ...selectedParts,
     total: selectedTotal,
-    incomplete: selectedParts.labor === null,
+    incomplete: selectedTotal === null,
   }
 
   return {
@@ -774,6 +920,11 @@ export function buildCostAccountingReadModel(input) {
     projectLifetimeById,
     selectedComposition,
     companyMonthlyTotal,
+    projectLedger: {
+      status: normalized.projectLedgerSummary?.status || 'legacy',
+      monthlyTotal: ledgerMonthlyTotal,
+      lifetimeTotal: ledgerLifetimeTotal,
+    },
     pending,
     anomalies,
   }

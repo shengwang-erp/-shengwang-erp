@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createElement } from 'react'
+import { act, createElement } from 'react'
+import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
+import ExcelJS from 'exceljs'
 
 import { buildCostAccountingReadModel } from './costAccountingDomain.js'
 import { buildExecutiveDashboardReadModel } from '../executive-dashboard/executiveDashboardDomain.js'
 import { buildPurchaseAccountingReadModel } from '../purchase-accounting/purchaseAccountingDomain.js'
+import { createProjectCostWorkbook } from '../project-cost-ledger/projectCostLedgerExport.js'
+import { installWarehouseReactDom } from '../warehouse/warehouseReactDomTestUtils.js'
+
+const bootstrapDom = installWarehouseReactDom()
+const { createRoot } = await import('react-dom/client')
+bootstrapDom.cleanup()
 
 const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
 
@@ -46,7 +54,11 @@ async function loadAppModule() {
     server: { middlewareMode: true },
   })
   try {
-    return { module: await server.ssrLoadModule('/src/App.jsx'), error: null }
+    const module = await server.ssrLoadModule('/src/App.jsx')
+    const printModule = await server.ssrLoadModule(
+      '/src/features/project-cost-ledger/ProjectCostPrintSheet.jsx',
+    )
+    return { module, ProjectCostPrintSheet: printModule.default, error: null }
   } catch (error) {
     return { module: null, error }
   } finally {
@@ -59,6 +71,16 @@ function ready(data) {
     status: 'ready', data, code: '', message: '', stale: false,
     updatedAt: '2026-08-15T00:00:00.000Z',
   }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 const month = '2026-08'
@@ -110,7 +132,30 @@ const costInput = {
   manualProjectCosts: manualCosts, operatingExpenses: operating,
 }
 
+function accountingLedgerSnapshot() {
+  const allocations = [{ projectId: 'P1', amount: 250.125 }]
+  return {
+    status: 'ready', generatedAt: '2026-08-15T01:00:00.000Z', page: 1, pageSize: 100,
+    totalRows: 1, totalAmount: 250.125, adjustmentTotal: 50.125,
+    incompleteSources: [], categoryTotals: [{ category: '材料费', amount: 250.125 }],
+    rows: [{
+      sourceKey: 'warehouse:ACCOUNTING', sourceModule: 'warehouse',
+      sourceDocumentType: 'warehouse_stock_out', sourceDocumentId: 'ACCOUNTING',
+      projectId: 'P1', projectName: '共享成本项目', category: '材料费', date: '2026-08-11',
+      description: '会计调整后的仓库材料', originalAmount: 200, adjustmentAmount: 50.125,
+      effectiveAmount: 250.125, operator: '会计甲', adjusted: true, version: 2,
+      allocations, auditEvents: [],
+    }],
+  }
+}
+
 const loaded = await loadAppModule()
+
+function ProjectLedgerSummaryProbe(props) {
+  const state = loaded.module.useProjectLedgerSummaryLifecycle(props)
+  return createElement('output', null,
+    `${state.status}:${state.data?.rows?.[0]?.description || ''}`)
+}
 
 test('MonthlySummarySection delegates every cost total to buildCostAccountingReadModel', () => {
   const summary = sliceBetween(appSource, 'function MonthlySummarySection', '\nfunction AccountingRecordList')
@@ -126,6 +171,61 @@ test('MonthlySummarySection delegates every cost total to buildCostAccountingRea
     summary,
     /totalSalary\s*\+|totalPurchaseCost\s*\+|totalVehicleCost\s*\+|companyProjectCost/u,
   )
+})
+
+test('project ledger accounting summary is actor-isolated and never refills from a late account', async () => {
+  assert.ifError(loaded.error)
+  assert.equal(typeof loaded.module.useProjectLedgerSummaryLifecycle, 'function')
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const first = deferred()
+  const second = deferred()
+  let calls = 0
+  const access = { view: true, readLedger: true }
+  try {
+    await act(async () => { root.render(createElement(ProjectLedgerSummaryProbe, {
+      service: { list() { calls += 1; return first.promise } },
+      access, actorFingerprint: 'actor-a', onAuthInvalid() {},
+    })) })
+    assert.equal(calls, 1)
+    assert.match(container.textContent, /loading:/u)
+
+    await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
+      service: { list() { calls += 1; return second.promise } },
+      access, actorFingerprint: 'actor-b', onAuthInvalid() {},
+    })) }) })
+    assert.equal(calls, 2)
+    assert.doesNotMatch(container.textContent, /会计调整后的仓库材料/u)
+
+    second.resolve({
+      ...accountingLedgerSnapshot(),
+      rows: [{ ...accountingLedgerSnapshot().rows[0], description: '新账号账本' }],
+    })
+    await act(async () => {})
+    assert.match(container.textContent, /ready:新账号账本/u)
+
+    first.resolve({
+      ...accountingLedgerSnapshot(),
+      rows: [{ ...accountingLedgerSnapshot().rows[0], description: '旧账号机密' }],
+    })
+    await act(async () => {})
+    assert.match(container.textContent, /ready:新账号账本/u)
+    assert.doesNotMatch(container.textContent, /旧账号机密/u)
+
+    const callsBeforeDenied = calls
+    await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
+      service: { list() { calls += 1; return Promise.resolve(accountingLedgerSnapshot()) } },
+      access: { view: false, readLedger: false }, actorFingerprint: 'actor-b-denied',
+      onAuthInvalid() {},
+    })) }) })
+    assert.equal(calls, callsBeforeDenied)
+    assert.match(container.textContent, /forbidden:/u)
+    assert.doesNotMatch(container.textContent, /新账号账本/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
 })
 
 test('accounting project relations use an authorized projected project source', () => {
@@ -523,6 +623,101 @@ test('monthly summary renders only confirmed shared totals and separate pending 
     '待核算手工车辆费', '待核算维修估算',
   ]) assert.match(html, new RegExp(label, 'u'))
   assert.doesNotMatch(html, /<strong>¥650<\/strong><span>公司总成本<\/span>/u)
+})
+
+test('monthly accounting consumes the ready unified ledger once and blocks stale legacy fallback', () => {
+  assert.ifError(loaded.error)
+  const snapshot = accountingLedgerSnapshot()
+  const sourceStates = {
+    projects: ready(projects), laborWindow: ready(laborWindow),
+    purchaseAccrual: ready(purchases), purchaseLedgerAccrual: ready(purchases),
+    purchasePayments: ready([]), projectCosts: ready(manualCosts),
+    operatingExpenses: ready(operating), fuel: ready(fuel),
+    vehicleExpenses: ready(vehicleExpenses), vehicleIssues: ready(vehicleIssues),
+    projectLedgerSummary: ready(snapshot),
+  }
+  const props = {
+    access: {
+      salary: true, projectCost: true, operatingExpense: true,
+      purchaseAccrual: true, purchasePayments: true,
+    },
+    vehicleAccess: true, sourceStates, monthFilter: month, onMonthFilterChange() {},
+  }
+  const html = renderToStaticMarkup(createElement(loaded.module.MonthlySummarySection, props))
+
+  assert.match(html, /<strong>¥350\.125<\/strong><span>公司总成本<\/span>/u)
+  assert.doesNotMatch(html, /<strong>¥500<\/strong><span>公司总成本<\/span>/u)
+
+  const incomplete = renderToStaticMarkup(createElement(loaded.module.MonthlySummarySection, {
+    ...props,
+    sourceStates: {
+      ...sourceStates,
+      projectLedgerSummary: { status: 'loading', data: null, stale: false },
+    },
+  }))
+  assert.match(incomplete, /项目成本明细账正在加载/u)
+  assert.doesNotMatch(incomplete, />成本数据正在加载</u)
+  assert.doesNotMatch(incomplete, /公司经营费用（不含项目）/u)
+  assert.doesNotMatch(incomplete, /<span>公司总成本<\/span>/u)
+
+  const partial = renderToStaticMarkup(createElement(loaded.module.MonthlySummarySection, {
+    ...props,
+    sourceStates: {
+      ...sourceStates,
+      projectLedgerSummary: ready({
+        ...snapshot,
+        incompleteSources: ['仓库出库'],
+      }),
+      operatingExpenses: ready([
+        ...operating,
+        {
+          expenseRecordId: 'OE-COMPANY', projectId: '', allocateToProject: false,
+          amount: 75, date: '2026-08-12', expenseType: '办公室租金',
+        },
+      ]),
+    },
+  }))
+  assert.match(partial, /项目成本明细账数据不完整/u)
+  assert.match(partial, /<strong>¥75<\/strong><span>公司经营费用（不含项目）<\/span>/u)
+  assert.doesNotMatch(partial, /<span>公司总成本<\/span>/u)
+})
+
+test('accounting, print and Excel consume the same fixed-point project ledger total', () => {
+  const snapshot = accountingLedgerSnapshot()
+  const model = buildCostAccountingReadModel({
+    ...costInput,
+    projectLedgerSummary: { status: 'ready', data: snapshot },
+  })
+  const auditSnapshot = {
+    status: 'ready', generatedAt: snapshot.generatedAt,
+    events: [{
+      eventType: 'adjustment', sourceKey: 'warehouse:ACCOUNTING', sequenceNo: 1,
+      amountBefore: 200, amountAfter: 250.125, adjustmentAmount: 50.125,
+      allocationsBefore: null, allocationsAfter: null, reason: '发票差额',
+      actorName: '会计甲', createdAt: snapshot.generatedAt,
+    }],
+  }
+  const workbook = createProjectCostWorkbook(ExcelJS, snapshot, auditSnapshot, {
+    companyName: '生旺株式会社', projectName: '共享成本项目', dateRange: '2026-08',
+    generatedAt: snapshot.generatedAt,
+  })
+  const summarySheet = workbook.getWorksheet('分类汇总')
+  const excelTotal = summarySheet.getRows(1, summarySheet.rowCount)
+    .find((row) => row.getCell(1).value === '项目总计').getCell(2).value.result
+  assert.ifError(loaded.error)
+  const printHtml = renderToStaticMarkup(createElement(loaded.ProjectCostPrintSheet, {
+    ledgerSnapshot: snapshot,
+    auditSnapshot,
+    metadata: {
+      companyName: '生旺株式会社', projectName: '共享成本项目', dateRange: '2026-08',
+      generatedAt: snapshot.generatedAt,
+    },
+  }))
+
+  assert.equal(model.projectLedger.monthlyTotal, 250.125)
+  assert.equal(model.projectLedger.monthlyTotal, snapshot.totalAmount)
+  assert.equal(excelTotal, snapshot.totalAmount)
+  assert.match(printHtml, /￥250\.125/u)
 })
 
 test('monthly summary publishes no project-related zero while the project source is unavailable', () => {

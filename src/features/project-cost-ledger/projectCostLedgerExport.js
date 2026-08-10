@@ -275,6 +275,31 @@ function completeSnapshotFromPages(pages) {
   })
 }
 
+export async function loadCompleteProjectCostLedgerSnapshot({
+  service,
+  filters = {},
+  screenSnapshot = null,
+  isCurrent = () => true,
+}) {
+  if (typeof isCurrent !== 'function' || !isCurrent()) return null
+  if (typeof service?.list !== 'function') {
+    if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows) {
+      throw new TypeError('项目成本完整账本暂时不可用')
+    }
+    return screenSnapshot
+  }
+  const first = await service.list(reportListFilters(filters, 1))
+  if (!isCurrent()) return null
+  if (!Number.isSafeInteger(first?.totalRows) || first.totalRows < 0) {
+    throw new TypeError('项目成本完整账本首页无效')
+  }
+  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
+  const rest = await Promise.all(Array.from({ length: pageCount - 1 }, (_, index) =>
+    service.list(reportListFilters(filters, index + 2))))
+  if (!isCurrent()) return null
+  return completeSnapshotFromPages([first, ...rest])
+}
+
 export async function loadCompleteProjectCostReportSnapshot({
   service,
   filters = {},
@@ -296,16 +321,10 @@ export async function loadCompleteProjectCostReportSnapshot({
     })
   }
 
-  const first = await service.list(reportListFilters(filters, 1))
-  if (!isCurrent()) return null
-  if (!Number.isSafeInteger(first?.totalRows) || first.totalRows < 0) {
-    throw new TypeError('项目成本完整报表首页无效')
-  }
-  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
-  const rest = await Promise.all(Array.from({ length: pageCount - 1 }, (_, index) =>
-    service.list(reportListFilters(filters, index + 2))))
-  if (!isCurrent()) return null
-  const ledgerSnapshot = completeSnapshotFromPages([first, ...rest])
+  const ledgerSnapshot = await loadCompleteProjectCostLedgerSnapshot({
+    service, filters, screenSnapshot, isCurrent,
+  })
+  if (!ledgerSnapshot) return null
   if (ledgerSnapshot.incompleteSources.length > 0) {
     throw new TypeError('项目成本完整报表数据不完整')
   }
