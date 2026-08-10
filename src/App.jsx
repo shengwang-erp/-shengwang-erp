@@ -7018,6 +7018,7 @@ export function ProjectCostLedgerSection({
   const activeFingerprintRef = useRef(actorFingerprint)
   activeFingerprintRef.current = actorFingerprint
   const [ledgerState, setLedgerState] = useState(() => ({
+    identity: actorFingerprint,
     status: readAllowed ? 'idle' : 'forbidden',
     data: null,
     error: '',
@@ -7030,30 +7031,36 @@ export function ProjectCostLedgerSection({
     let active = true
 
     if (!readAllowed) {
-      setLedgerState({ status: 'forbidden', data: null, error: '' })
+      setLedgerState({ identity: fingerprint, status: 'forbidden', data: null, error: '' })
       return () => {
         active = false
         requestSequenceRef.current += 1
       }
     }
     if (!service || typeof service.list !== 'function') {
-      setLedgerState({ status: 'error', data: null, error: '项目成本服务暂时不可用' })
+      setLedgerState({
+        identity: fingerprint,
+        status: 'error',
+        data: null,
+        error: '项目成本服务暂时不可用',
+      })
       return () => {
         active = false
         requestSequenceRef.current += 1
       }
     }
 
-    setLedgerState({ status: 'loading', data: null, error: '' })
+    setLedgerState({ identity: fingerprint, status: 'loading', data: null, error: '' })
     void service.list({ page: 1, pageSize: 20 }).then((snapshot) => {
       if (!active || requestSequenceRef.current !== sequence ||
           activeFingerprintRef.current !== fingerprint) return
-      setLedgerState({ status: 'ready', data: snapshot, error: '' })
+      setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
     }).catch((error) => {
       if (!active || requestSequenceRef.current !== sequence ||
           activeFingerprintRef.current !== fingerprint) return
       if (error?.authInvalid) onAuthInvalid?.()
       setLedgerState({
+        identity: fingerprint,
         status: 'error',
         data: null,
         error: '项目成本服务暂时不可用，请稍后重试',
@@ -7066,18 +7073,24 @@ export function ProjectCostLedgerSection({
     }
   }, [actorFingerprint, onAuthInvalid, readAllowed, service])
 
+  const visibleLedgerState = !readAllowed
+    ? { status: 'forbidden', data: null, error: '' }
+    : ledgerState.identity === actorFingerprint
+      ? ledgerState
+      : { status: 'idle', data: null, error: '' }
+
   return (
     <section className="project-cost-ledger-lifecycle" data-project-count={projects.length}>
-      {ledgerState.status === 'idle' && <div className="empty-state">项目成本尚未读取</div>}
-      {ledgerState.status === 'loading' && <div className="empty-state">正在读取项目成本…</div>}
-      {ledgerState.status === 'forbidden' && <div className="empty-state">无权读取项目成本</div>}
-      {ledgerState.status === 'error' && (
-        <div className="empty-state" role="alert">项目成本读取失败：{ledgerState.error}</div>
+      {visibleLedgerState.status === 'idle' && <div className="empty-state">项目成本尚未读取</div>}
+      {visibleLedgerState.status === 'loading' && <div className="empty-state">正在读取项目成本…</div>}
+      {visibleLedgerState.status === 'forbidden' && <div className="empty-state">无权读取项目成本</div>}
+      {visibleLedgerState.status === 'error' && (
+        <div className="empty-state" role="alert">项目成本读取失败：{visibleLedgerState.error}</div>
       )}
-      {ledgerState.status === 'ready' && (
+      {visibleLedgerState.status === 'ready' && (
         <div className="project-cost-ledger-loaded">
-          <span>已加载 {ledgerState.data.totalRows} 条</span>
-          {ledgerState.data.rows.map((row) => (
+          <span>已加载 {visibleLedgerState.data.totalRows} 条</span>
+          {visibleLedgerState.data.rows.map((row) => (
             <span key={`${row.sourceKey}:${row.projectId}`}>{row.description}</span>
           ))}
         </div>

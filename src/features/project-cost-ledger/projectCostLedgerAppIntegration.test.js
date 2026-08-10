@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { act, createElement } from 'react'
+import { flushSync } from 'react-dom'
 import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
@@ -127,6 +128,23 @@ test('ledger component never requests while denied and drops a stale prior-accou
     await act(async () => {})
     assert.doesNotMatch(container.textContent, /旧账号机密/u)
     assert.match(container.textContent, /新账号数据/u)
+
+    const third = deferred()
+    const previousActEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      flushSync(() => { root.render(createElement(app.ProjectCostLedgerSection, {
+        service: { list() { calls += 1; return third.promise } },
+        access: ledgerAccess, projects: [], actorFingerprint: 'actor-c|project-cost-view',
+        onAuthInvalid() {},
+      })) })
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+    }
+    assert.doesNotMatch(container.textContent, /新账号数据/u)
+    assert.match(container.textContent, /项目成本尚未读取|正在读取项目成本/u)
+    third.resolve(ledgerSnapshot('第三账号数据'))
+    await act(async () => {})
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
