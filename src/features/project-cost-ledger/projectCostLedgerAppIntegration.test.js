@@ -334,6 +334,88 @@ test('project directory synchronously isolates actor and permission changes and 
   }
 })
 
+test('project directory ignores actor A captured create update delete and refresh mutations after actor B is ready', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const actorALoad = deferred()
+  const actorBLoad = deferred()
+  const createCompletion = deferred()
+  const updateCompletion = deferred()
+  const deleteCompletion = deferred()
+  const refreshCompletion = deferred()
+  let loadCalls = 0
+  let actorASetRows
+  const service = {
+    listProjects() {
+      loadCalls += 1
+      return loadCalls === 1 ? actorALoad.promise : actorBLoad.promise
+    },
+  }
+  const actor = (id) => ({
+    id, employeeId: id, tenantId: 'tenant-a',
+    effectivePermissionKeys: ['module.projects.view'],
+  })
+  function Probe({ currentUser }) {
+    const directory = app.useProjectDirectoryLifecycle({
+      service, currentUser, access: { view: true, full: true }, onFatalError() {},
+    })
+    if (currentUser.id === 'actor-a') actorASetRows = directory.setRows
+    return createElement('div', null,
+      createElement('span', null, directory.rawState.loading ? 'loading' : 'settled'),
+      createElement('span', null, `identity:${directory.rawState.identity}`),
+      ...directory.rows.map((row) => createElement(
+        'span', { key: row.projectId }, `${row.projectId}:${row.projectName}`,
+      )),
+    )
+  }
+
+  try {
+    await act(async () => { root.render(createElement(Probe, { currentUser: actor('actor-a') })) })
+    assert.equal(typeof actorASetRows, 'function')
+    const lateMutations = [
+      createCompletion.promise.then(() => actorASetRows((rows) => [
+        { projectId: 'P-A-CREATE', projectName: '旧账号新增' }, ...rows,
+      ])),
+      updateCompletion.promise.then(() => actorASetRows((rows) => rows.map((row) => (
+        row.projectId === 'P-B'
+          ? { ...row, projectName: '旧账号修改' }
+          : row
+      )))),
+      deleteCompletion.promise.then(() => actorASetRows((rows) => (
+        rows.filter((row) => row.projectId !== 'P-B')
+      ))),
+      refreshCompletion.promise.then(() => actorASetRows([
+        { projectId: 'P-A-REFRESH', projectName: '旧账号刷新' },
+      ])),
+    ]
+
+    await act(async () => {
+      flushSync(() => { root.render(createElement(Probe, { currentUser: actor('actor-b') })) })
+    })
+    actorBLoad.resolve([{ projectId: 'P-B', projectName: '新账号项目' }])
+    await act(async () => {})
+    assert.match(container.textContent, /settled.*actor-b.*P-B:新账号项目/u)
+
+    createCompletion.resolve()
+    updateCompletion.resolve()
+    deleteCompletion.resolve()
+    refreshCompletion.resolve()
+    await act(async () => { await Promise.all(lateMutations) })
+    actorALoad.resolve([{ projectId: 'P-A-LOAD', projectName: '旧账号响应' }])
+    await act(async () => {})
+
+    assert.match(container.textContent, /settled.*actor-b.*P-B:新账号项目/u)
+    assert.doesNotMatch(
+      container.textContent,
+      /loading|actor-a|P-A-CREATE|旧账号修改|P-A-REFRESH|P-A-LOAD/u,
+    )
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('ledger auth invalidation logs out and a failed source remains an error', async () => {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()

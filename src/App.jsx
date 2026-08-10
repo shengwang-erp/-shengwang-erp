@@ -2378,7 +2378,8 @@ export function useProjectDirectoryLifecycle({
 
   const setRows = useCallback((nextRows) => {
     setDirectoryState((current) => {
-      const rows = current.identity === identity ? current.rows : []
+      if (current.identity !== identity) return current
+      const rows = current.rows
       return {
         ...current,
         identity,
