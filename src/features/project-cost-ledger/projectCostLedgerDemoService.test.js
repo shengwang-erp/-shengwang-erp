@@ -42,6 +42,17 @@ test('demo adjustments are immediately visible, append-only and stale versions m
   assert.equal(eventStore.adjustments.length, 1)
 })
 
+test('demo atomic report returns one immutable complete ledger and matching audit token', async () => {
+  const { service } = createDemo()
+  const report = await service.report({ projectId: 'P1' })
+  assert.equal(report.status, 'ready')
+  assert.match(report.snapshotToken, /^[0-9a-f]{64}$/u)
+  assert.equal(report.ledgerSnapshot.totalRows, 2)
+  assert.equal(report.ledgerSnapshot.rows.length, 2)
+  assert.deepEqual(report.auditSnapshot.events, [])
+  assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
+})
+
 test('demo allocations replace the effective view and preserve immutable history', async () => {
   const { service, eventStore } = createDemo()
   await service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, adjustmentAmount: 100, reason: '增加运费' })
@@ -100,19 +111,14 @@ test('demo audit lists immutable adjustment and allocation history using documen
   assert.equal(Object.isFrozen(audit.events[0]), true)
 })
 
-test('demo accepts reallocation after an adjustment changed the prior allocation snapshot amount', async () => {
+test('demo rejects a new adjustment once allocation history exists and preserves both histories', async () => {
   const { service } = createDemo()
   await service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '初次分摊', allocations: [{ projectId: 'P1', amount: 200 }] })
-  await service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 2, adjustmentAmount: 100, reason: '增加成本' })
-  await service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 3, reason: '调整后重新分摊', allocations: [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }] })
-  const snapshot = await service.list({ page: 1, pageSize: 20 })
-  assert.deepEqual(snapshot.rows.filter(({ sourceKey }) => sourceKey === 'warehouse:SO-1').map(({ projectId, effectiveAmount }) => ({ projectId, effectiveAmount })), [
-    { projectId: 'P1', effectiveAmount: 100 }, { projectId: 'P2', effectiveAmount: 200 },
-  ])
-  const audit = await service.listAudit({})
-  const reallocation = audit.events.at(-1)
-  assert.deepEqual(reallocation.allocationsBefore, [{ projectId: 'P1', amount: 200 }])
-  assert.deepEqual(reallocation.allocationsAfter, [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }])
+  await assert.rejects(
+    service.adjust({ sourceKey: 'warehouse:SO-1', expectedVersion: 2, adjustmentAmount: 100, reason: '增加成本' }),
+    (error) => error.code === 'PROJECT_COST_LEDGER_ALLOCATION_ACTIVE',
+  )
+  assert.equal((await service.listAudit({})).events.length, 1)
 })
 
 test('demo supports signed first allocation after an adjustment reduces the source to zero', async () => {

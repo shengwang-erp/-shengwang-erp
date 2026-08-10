@@ -162,17 +162,21 @@ function auditEvent(sourceKey, { actorName = '会计甲', reason = '项目拆分
   }
 }
 
-test('complete report loader ignores a non-first screen page and collects every stable 100-row page', async () => {
-  const listCalls = []
-  const auditCalls = []
+test('complete report loader uses one atomic server snapshot even when legacy pages could be replaced with the same totals', async () => {
+  const reportCalls = []
   const service = {
-    async list(filters) {
-      listCalls.push({ ...filters })
-      return reportPage(filters.page)
-    },
-    async listAudit(filters) {
-      auditCalls.push({ ...filters })
-      return Object.freeze({ status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: Object.freeze([]) })
+    async list() { throw new Error('cross-transaction pagination must not be used') },
+    async listAudit() { throw new Error('separate audit read must not be used') },
+    async report(filters) {
+      reportCalls.push({ ...filters })
+      const complete = reportPage(1)
+      return Object.freeze({
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'b'.repeat(64),
+        ledgerSnapshot: Object.freeze({
+          ...complete, rows: Object.freeze(Array.from({ length: 205 }, (_, index) => reportRow(index + 1))),
+        }),
+        auditSnapshot: Object.freeze({ status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: Object.freeze([]) }),
+      })
     },
   }
   const screenPage = { ...reportPage(2), pageSize: 20, rows: reportPage(2).rows.slice(0, 20) }
@@ -182,8 +186,7 @@ test('complete report loader ignores a non-first screen page and collects every 
     screenAuditSnapshot: { status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z', events: [] },
     isCurrent: () => true,
   })
-  assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [[1, 100], [2, 100], [3, 100]])
-  assert.deepEqual(auditCalls, [{ projectId: 'P-1', dateFrom: '2026-08-01', dateTo: '2026-08-31' }])
+  assert.deepEqual(reportCalls, [{ projectId: 'P-1', dateFrom: '2026-08-01', dateTo: '2026-08-31' }])
   assert.equal(report.ledgerSnapshot.rows.length, 205)
   assert.equal(report.ledgerSnapshot.totalRows, 205)
   assert.equal(report.ledgerSnapshot.rows[0].sourceDocumentId, 'ROW-1')
@@ -192,12 +195,16 @@ test('complete report loader ignores a non-first screen page and collects every 
   assert.ok(Object.isFrozen(report.ledgerSnapshot.rows))
 })
 
-test('accounting summary loader collects every stable ledger page without requiring audit access', async () => {
-  const listCalls = []
+test('accounting summary loader consumes the same atomic server report', async () => {
+  const reportCalls = []
   const service = {
-    async list(filters) {
-      listCalls.push({ ...filters })
-      return reportPage(filters.page)
+    async report(filters) {
+      reportCalls.push({ ...filters })
+      return {
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'c'.repeat(64),
+        ledgerSnapshot: { ...reportPage(1), rows: Array.from({ length: 205 }, (_, index) => reportRow(index + 1)) },
+        auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] },
+      }
     },
   }
   const snapshot = await loadCompleteProjectCostLedgerSnapshot({
@@ -206,13 +213,24 @@ test('accounting summary loader collects every stable ledger page without requir
     isCurrent: () => true,
   })
 
-  assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [
-    [1, 100], [2, 100], [3, 100],
-  ])
+  assert.deepEqual(reportCalls, [{}])
   assert.equal(snapshot.totalRows, 205)
   assert.equal(snapshot.rows.length, 205)
   assert.ok(Object.isFrozen(snapshot))
   assert.ok(Object.isFrozen(snapshot.rows))
+})
+
+test('atomic report loader fails closed instead of falling back to equal-count equal-total pages', async () => {
+  let legacyCalls = 0
+  const service = {
+    async list() { legacyCalls += 1; return reportPage(1) },
+    async listAudit() { legacyCalls += 1; return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+  }
+  await assert.rejects(() => loadCompleteProjectCostReportSnapshot({
+    service, filters: {}, screenSnapshot: reportPage(1),
+    screenAuditSnapshot: { status: 'ready', events: [] }, isCurrent: () => true,
+  }), /原子|atomic|完整报表/iu)
+  assert.equal(legacyCalls, 0)
 })
 
 test('complete report loader rejects changed page totals and ledger-audit version gaps', async () => {
@@ -226,8 +244,13 @@ test('complete report loader rejects changed page totals and ledger-audit versio
   }), /完整|consistent|page/iu)
 
   const auditGapService = {
-    async list() { return reportPage(1, { totalRows: 1, version: 2 }) },
-    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+    async report() {
+      return {
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'd'.repeat(64),
+        ledgerSnapshot: reportPage(1, { totalRows: 1, version: 2 }),
+        auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] },
+      }
+    },
   }
   await assert.rejects(() => loadCompleteProjectCostReportSnapshot({
     service: auditGapService, filters: {}, screenSnapshot: reportPage(1, { totalRows: 1, version: 2 }),
@@ -240,11 +263,14 @@ test('complete report loader returns no partial snapshot after its generation be
   let release
   const blocked = new Promise((resolve) => { release = resolve })
   const service = {
-    async list({ page }) {
-      if (page === 2) await blocked
-      return reportPage(page)
+    async report() {
+      await blocked
+      return {
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'e'.repeat(64),
+        ledgerSnapshot: { ...reportPage(1), rows: Array.from({ length: 205 }, (_, index) => reportRow(index + 1)) },
+        auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] },
+      }
     },
-    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
   }
   const pending = loadCompleteProjectCostReportSnapshot({
     service, filters: {}, screenSnapshot: reportPage(2),
@@ -295,9 +321,12 @@ test('matched report audit keeps complete in-scope history and deeply freezes aw
 test('zero-row filtered report returns a frozen empty matched audit instead of broad project history', async () => {
   const outsideEvent = auditEvent('manual:FILTERED-OUT', { reason: '不应输出' })
   const service = {
-    async list() { return reportPage(1, { totalRows: 0 }) },
-    async listAudit() {
-      return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [outsideEvent] }
+    async report() {
+      return {
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', snapshotToken: 'f'.repeat(64),
+        ledgerSnapshot: { ...reportPage(1, { totalRows: 0 }), generatedAt: '2026-08-10T04:00:00.000Z' },
+        auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] },
+      }
     },
   }
   const report = await loadCompleteProjectCostReportSnapshot({

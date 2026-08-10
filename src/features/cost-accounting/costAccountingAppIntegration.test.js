@@ -151,6 +151,10 @@ function accountingLedgerSnapshot({ amount = 250.125, description = '会计调�
   }
 }
 
+function accountingLedgerReport(snapshot) {
+  return { ledgerSnapshot: snapshot }
+}
+
 const loaded = await loadAppModule()
 
 function ProjectLedgerSummaryProbe(props) {
@@ -225,7 +229,7 @@ test('project ledger accounting summary is actor-isolated and never refills from
   const access = { view: true, readLedger: true }
   try {
     await act(async () => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { list() { calls += 1; return first.promise } },
+      service: { report() { calls += 1; return first.promise } },
       access, actorFingerprint: 'actor-a', onAuthInvalid() {},
       capture(state) { actorAInvalidate = state.invalidate },
     })) })
@@ -233,24 +237,24 @@ test('project ledger accounting summary is actor-isolated and never refills from
     assert.match(container.textContent, /loading:/u)
 
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { list() { calls += 1; return second.promise } },
+      service: { report() { calls += 1; return second.promise } },
       access, actorFingerprint: 'actor-b', onAuthInvalid() {},
       capture(state) { currentInvalidate = state.invalidate },
     })) }) })
     assert.equal(calls, 2)
     assert.doesNotMatch(container.textContent, /会计调整后的仓库材料/u)
 
-    second.resolve({
+    second.resolve(accountingLedgerReport({
       ...accountingLedgerSnapshot(),
       rows: [{ ...accountingLedgerSnapshot().rows[0], description: '新账号账本' }],
-    })
+    }))
     await act(async () => {})
     assert.match(container.textContent, /ready:新账号账本/u)
 
-    first.resolve({
+    first.resolve(accountingLedgerReport({
       ...accountingLedgerSnapshot(),
       rows: [{ ...accountingLedgerSnapshot().rows[0], description: '旧账号机密' }],
-    })
+    }))
     await act(async () => {})
     assert.match(container.textContent, /ready:新账号账本/u)
     assert.doesNotMatch(container.textContent, /旧账号机密/u)
@@ -260,7 +264,7 @@ test('project ledger accounting summary is actor-isolated and never refills from
 
     const callsBeforeDenied = calls
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
-      service: { list() { calls += 1; return Promise.resolve(accountingLedgerSnapshot()) } },
+      service: { report() { calls += 1; return Promise.resolve(accountingLedgerReport(accountingLedgerSnapshot())) } },
       access: { view: false, readLedger: false }, actorFingerprint: 'actor-b-denied',
       onAuthInvalid() {},
     })) }) })
@@ -283,7 +287,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
   const sourceChange = deferred()
   const pending = [first, mutation, sourceChange]
   const service = {
-    list() {
+    report() {
       const request = pending.shift()
       assert.ok(request, 'unexpected duplicate project ledger summary load')
       return request.promise
@@ -302,7 +306,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.match(container.textContent, /home:loading:/u)
 
-    first.resolve(accountingLedgerSnapshot({ amount: 250.125, description: '初始账本' }))
+    first.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 250.125, description: '初始账本' })))
     await act(async () => {})
     assert.match(container.textContent, /¥350\.125/u)
     assert.match(container.textContent, /home:ready:350\.125/u)
@@ -311,7 +315,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     await act(async () => { latestState.invalidate() })
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.doesNotMatch(container.textContent, /¥350\.125|home:ready:350\.125/u)
-    mutation.resolve(accountingLedgerSnapshot({ amount: 400, description: '调整后账本' }))
+    mutation.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 400, description: '调整后账本' })))
     await act(async () => {})
     assert.match(container.textContent, /¥500/u)
     assert.match(container.textContent, /home:ready:500/u)
@@ -319,7 +323,7 @@ test('one actor-safe invalidation path refreshes both monthly and Home consumers
     await act(async () => { root.render(createElement(ProjectLedgerConsumerProbe, props(sourceB))) })
     assert.match(container.textContent, /项目成本明细账正在加载/u)
     assert.doesNotMatch(container.textContent, /home:ready:500/u)
-    sourceChange.resolve(accountingLedgerSnapshot({ amount: 450, description: '来源更新账本' }))
+    sourceChange.resolve(accountingLedgerReport(accountingLedgerSnapshot({ amount: 450, description: '来源更新账本' })))
     await act(async () => {})
     assert.match(container.textContent, /¥550/u)
     assert.match(container.textContent, /home:ready:550/u)

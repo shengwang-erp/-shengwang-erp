@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
-import { printProjectCostReport } from './projectCostLedgerExport.js'
+import { printProjectCostReport, sumProjectCostAmounts } from './projectCostLedgerExport.js'
 import { installWarehouseReactDom } from '../warehouse/warehouseReactDomTestUtils.js'
 
 const bootstrapDom = installWarehouseReactDom()
@@ -51,6 +51,22 @@ test('print sheet groups readable main rows, subtotals and an isolated audit app
   }
   assert.match(html, /project-cost-print-main-table/u)
   assert.match(html, /project-cost-print-audit-appendix/u)
+})
+
+test('print category subtotal uses exact four-decimal units at the safe boundary', () => {
+  assert.equal(sumProjectCostAmounts([900719925474.0991, -900719925474.099]), 0.0001)
+  const boundary = {
+    ...snapshot, totalRows: 2, totalAmount: 0.0001,
+    categoryTotals: [{ category: '其他费用', amount: 0.0001 }],
+    rows: [
+      { ...snapshot.rows[0], sourceKey: 'manual:max', category: '其他费用', effectiveAmount: 900719925474.0991 },
+      { ...snapshot.rows[1], sourceKey: 'manual:offset', category: '其他费用', effectiveAmount: -900719925474.099 },
+    ],
+  }
+  const html = renderToStaticMarkup(createElement(ProjectCostPrintSheet, {
+    ledgerSnapshot: boundary, auditSnapshot: { status: 'ready', events: [] }, metadata,
+  }))
+  assert.match(html, /其他费用小计[\s\S]*[¥￥]0\.0001/u)
 })
 
 test('named A4 landscape CSS repeats headers and keeps body text at least ten points', async () => {

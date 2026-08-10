@@ -21,6 +21,12 @@ const LEDGER_RESPONSE = {
   totalAmount: 100, adjustmentTotal: 0, incompleteSources: [],
 }
 
+const REPORT_RESPONSE = {
+  status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z',
+  snapshotToken: 'a'.repeat(64), ledgerSnapshot: { ...LEDGER_RESPONSE, pageSize: 100 },
+  auditSnapshot: { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', events: [] },
+}
+
 function clientReturning(result) {
   const calls = []
   return {
@@ -44,6 +50,30 @@ test('list sends only normalized own filters to the secure ledger RPC', async ()
   }]])
   assert.equal(result.rows[0].sourceKey, 'warehouse:SO-1')
   assert.equal(Object.isFrozen(result.rows[0]), true)
+})
+
+test('report uses one atomic secure RPC and validates its exact signed snapshot contract', async () => {
+  const { client, calls } = clientReturning({ data: REPORT_RESPONSE, error: null, status: 200 })
+  const service = createProjectCostLedgerService(client, { configured: true })
+  const result = await service.report({ projectId: 'P1', category: '材料费' })
+  assert.deepEqual(calls, [['export_project_cost_report_secure', {
+    p_filters: { projectId: 'P1', category: '材料费' },
+  }]])
+  assert.equal(result.snapshotToken, 'a'.repeat(64))
+  assert.equal(result.ledgerSnapshot.rows[0].sourceKey, 'warehouse:SO-1')
+  assert.ok(Object.isFrozen(result.auditSnapshot.events))
+
+  for (const hostile of [
+    { ...REPORT_RESPONSE, snapshotToken: 'short' },
+    { ...REPORT_RESPONSE, ledgerSnapshot: { ...REPORT_RESPONSE.ledgerSnapshot, page: 2 } },
+    { ...REPORT_RESPONSE, secret: 'supplier payload' },
+  ]) {
+    const candidate = clientReturning({ data: hostile, error: null, status: 200 })
+    await assert.rejects(
+      createProjectCostLedgerService(candidate.client, { configured: true }).report({}),
+      errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'),
+    )
+  }
 })
 
 test('requests reject unknown, inherited, accessor, sparse, oversized and invalid date input before RPC', async () => {
@@ -170,6 +200,8 @@ test('only documented own SQL hints map to safe errors and supplier details neve
     ['P0001', 'PROJECT_COST_LEDGER_VERSION_CONFLICT'],
     ['22023', 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED'],
     ['22023', 'PROJECT_COST_LEDGER_SOURCE_MISSING'],
+    ['22023', 'PROJECT_COST_LEDGER_ALLOCATION_ACTIVE'],
+    ['54000', 'PROJECT_COST_LEDGER_REPORT_TOO_LARGE'],
   ]
   for (const [sqlState, hint] of cases) {
     const { client } = clientReturning({ data: null, error: { code: sqlState, hint, message: 'select private_secret from payroll' }, status: 400 })

@@ -4,9 +4,9 @@
 迁移为唯一规范路径，并按目录内实际文件名排序执行，不可跳过或交换顺序。本功能的直接链为
 `202607140001`、`202607140002`、`202607140003`、`202607140004`、`202607150001`、
 `202607150003`、`202607160001`、`202607160002`、`202608080001`–`005`、
-`202608090001`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
+`202608090001`、`202608100002`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
 [supabase-schema.sql](./supabase-schema.sql) 包含 `202607140001` 历史基础快照和
-`202607160001` 考勤核算审查快照以及 `202608090001` 账本接口摘要；它仍不包含中间迁移的完整依赖，不能作为最终 bootstrap，
+`202607160001` 考勤核算审查快照以及 `202608090001`/`202608100002` 账本接口摘要；它仍不包含中间迁移的完整依赖，不能作为最终 bootstrap，
 也不能在已执行有序迁移的数据库上再次运行。
 
 `202607160001` 的逐字审查区域由 `ATTENDANCE ACCOUNTING REFERENCE SNAPSHOT` 与
@@ -511,6 +511,11 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 车辆维修不等待处理完成。工具丢失按工具原值计入项目毛成本，其他责任类型按维修费计入，
 员工赔偿是独立回收事实，不冲减项目毛费用。
 
+`202608100002` 为所有来源增加统一项目资格边界：显式项目绑定只有在 `projects` 记录当前为
+`active` 且未取消时才进入正常明细；已删除、已作废或不存在的绑定只进入安全的
+`incompleteSources`。工具责任费用还必须把 `allocateToProject` 明确设为 JSON `true`，缺失或
+`false` 代表公司费用，不进入项目账本，也不作为不完整项目来源。
+
 仓库生成的 `project_cost_records.payload.sourcePurchaseRecordKeys` 是防重复权威集合，但只有
 通过完整仓库事实验证的记录才能贡献权威采购键。验证覆盖正式 `WAREHOUSE-SO/MWO/SR`
 （及整单冲销 `WAREHOUSE-WR`）身份与来源类型、`costRecordId`、单据 UUID、有效项目/日期/
@@ -568,12 +573,18 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 
 客户端不得根据 SQL message 解析业务状态。公开账本 RPC 的语义失败保留 SQLSTATE，同时通过
 SQL `HINT` 返回固定安全码：`PROJECT_COST_LEDGER_INPUT_INVALID`、
-`PROJECT_COST_LEDGER_SOURCE_MISSING`、`PROJECT_COST_LEDGER_VERSION_CONFLICT` 或
-`PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED`。所有公开账本 RPC 的无效员工或权限不足分支保留
+`PROJECT_COST_LEDGER_SOURCE_MISSING`、`PROJECT_COST_LEDGER_VERSION_CONFLICT`、
+`PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED`、`PROJECT_COST_LEDGER_ALLOCATION_ACTIVE` 或
+`PROJECT_COST_LEDGER_REPORT_TOO_LARGE`。所有公开账本 RPC 的无效员工或权限不足分支保留
 SQLSTATE `42501`，并统一返回 `PROJECT_COST_LEDGER_ACCESS_DENIED` `HINT`，客户端无需解析可能变化
 的权限 message。手工请求 UUID 内容冲突的 message 仍为
 `PROJECT_COST_LEDGER_REQUEST_CONFLICT`，但 `HINT` 明确映射为既有的
 `PROJECT_COST_LEDGER_INPUT_INVALID`。
+
+打印、PDF 与 Excel 只调用一次 `export_project_cost_report_secure()`。该稳定 RPC 在同一数据库
+语句快照中取得完整账本与匹配审计，服务端固定每页 100 行、账本最多 5000 行、审计最多
+20000 条，并返回基于有序完整内容的 64 位十六进制 SHA-256 `snapshotToken`。客户端分页参数
+会被拒绝；超限使用 `PROJECT_COST_LEDGER_REPORT_TOO_LARGE`，不得改用跨页拼接或旧缓存。
 
 财务部默认具备项目成本查看、创建和调整权限。所有金额保持 `numeric(18,4)`，审计身份和时间
 不能由浏览器传入；账本三张表仍禁止浏览器和 `service_role` 直接写入。

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 
 import { projectCostDialogOutcome, safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
 import { toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
+import { useProjectCostModalA11y } from './useProjectCostModalA11y.js'
 
 const CATEGORY_OPTIONS = Object.freeze([
   '人工费', '材料费', '车辆费', '工具费', '外包费', '运输费', '经营费用', '其他费用',
@@ -81,17 +82,18 @@ export default function ProjectCostManualEntryDialog({
     }
   }
 
-  const cancel = () => {
+  const cancelOperation = () => {
     mountedRef.current = false
     operationRef.current += 1
     submitLatchRef.current = true
     onCancel?.()
   }
+  const modal = useProjectCostModalA11y({ open, submitting, onRequestClose: cancelOperation })
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
-      <section className="project-cost-dialog project-cost-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-manual-title">
-        <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button type="button" onClick={cancel} aria-label="关闭新增费用窗口">关闭</button></header>
+      <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog project-cost-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-manual-title">
+        <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭新增费用窗口">关闭</button></header>
         <form onSubmit={submit}>
           <div className="project-cost-dialog-form-grid">
             <label>项目
@@ -108,7 +110,7 @@ export default function ProjectCostManualEntryDialog({
           <label>录入原因<textarea value={form.reason} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('reason', event.target.value)} placeholder="说明新增或冲销依据，保存后自动留痕" /></label>
           {error && <div className="project-cost-dialog-error" role="alert">{error}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有新增项目成本的权限</div>}
-          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存费用'}</button></footer>
+          <footer><button type="button" onClick={modal.requestClose}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存费用'}</button></footer>
         </form>
       </section>
     </div>

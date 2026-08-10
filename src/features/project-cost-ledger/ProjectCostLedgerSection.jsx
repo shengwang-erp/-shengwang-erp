@@ -391,7 +391,7 @@ export default function ProjectCostLedgerSection({
   const filtersDirty = !sameFilters(draftFilters, appliedFilters)
   const completeSnapshotAvailable = Boolean(snapshot) && snapshot.page === 1 &&
     snapshot.rows.length === snapshot.totalRows
-  const completeLoaderAvailable = typeof service?.list === 'function' && typeof service?.listAudit === 'function'
+  const completeLoaderAvailable = typeof service?.report === 'function'
   const reportBlocked = filtersDirty || !snapshot || visibleState.status === 'loading' ||
     snapshot.incompleteSources.length > 0 || auditStatus !== 'ready' ||
     (!completeSnapshotAvailable && !completeLoaderAvailable)

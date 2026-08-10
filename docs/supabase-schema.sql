@@ -5794,3 +5794,29 @@ commit;
 -- gate: module.owner_dashboard.view plus sensitive.owner_dashboard_full_view,
 -- together with either module.project_costs.view or
 -- module.operating_expenses.view. No partial dashboard combination qualifies.
+
+-- PROJECT COST LEDGER HARDENING REVIEW SNAPSHOT
+-- Canonical executable DDL: 202608100002_project_cost_ledger_hardening.sql
+--
+-- private.private_project_cost_source_facts() now wraps the original typed
+-- source union with one authoritative project-eligibility boundary. Every
+-- explicit source project must resolve to an active, non-cancelled projects
+-- row. Deleted, void, cancelled, and nonexistent bindings remain safe
+-- incompleteSources rather than normal rows. Tool responsibility facts require
+-- payload.allocateToProject to be the JSON boolean true; missing/false records
+-- are company-scope costs and are absent from rows and incompleteSources.
+--
+-- create_project_cost_adjustment_secure() rejects any source that already has
+-- allocation history with SQLSTATE 22023 and the closed
+-- PROJECT_COST_LEDGER_ALLOCATION_ACTIVE hint. Source records and existing
+-- append-only events are unchanged.
+--
+-- public.export_project_cost_report_secure(p_filters jsonb default '{}') is a
+-- stable SECURITY DEFINER RPC with an empty search_path and closed grants. One
+-- statement snapshot returns the exact five-field report contract: status,
+-- generatedAt, snapshotToken, ledgerSnapshot, auditSnapshot. Ledger and audit
+-- share generatedAt; audit events are limited to sources in the complete
+-- ledger. Client pagination is rejected. The server caps ledger rows at 5000
+-- and audit events at 20000, returning SQLSTATE 54000 with
+-- PROJECT_COST_LEDGER_REPORT_TOO_LARGE. snapshotToken is the lowercase
+-- SHA-256 signature of the complete ordered ledger and audit content.

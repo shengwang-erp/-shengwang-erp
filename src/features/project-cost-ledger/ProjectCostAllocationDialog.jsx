@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { buildAllocationAmounts } from './projectCostLedgerDomain.js'
 import { projectCostDialogOutcome, safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
+import { useProjectCostModalA11y } from './useProjectCostModalA11y.js'
 
 function formatYen(value) {
   const number = Number(value)
@@ -176,17 +177,18 @@ export default function ProjectCostAllocationDialog({
     }
   }
 
-  const cancel = () => {
+  const cancelOperation = () => {
     mountedRef.current = false
     operationRef.current += 1
     submitLatchRef.current = true
     onCancel?.()
   }
+  const modal = useProjectCostModalA11y({ open: Boolean(row), submitting, onRequestClose: cancelOperation })
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
-      <section className="project-cost-dialog project-cost-allocation-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-allocation-title">
-        <header><div><small>拆分后以固定金额保存并自动留痕</small><h2 id="project-cost-allocation-title">拆分项目成本</h2></div><button type="button" onClick={cancel} aria-label="关闭拆分窗口">关闭</button></header>
+      <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog project-cost-allocation-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-allocation-title">
+        <header><div><small>拆分后以固定金额保存并自动留痕</small><h2 id="project-cost-allocation-title">拆分项目成本</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭拆分窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts"><article><span>当前最终金额</span><strong>{formatYen(row.effectiveAmount)}</strong></article><article><span>最多项目数</span><strong>100</strong></article></div>
         <form onSubmit={submit}>
           <label className="project-cost-allocation-mode">分摊方式
@@ -214,7 +216,7 @@ export default function ProjectCostAllocationDialog({
           </label>
           {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{refreshable && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有拆分项目成本的权限</div>}
-          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存拆分'}</button></footer>
+          <footer><button type="button" onClick={modal.requestClose}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存拆分'}</button></footer>
         </form>
       </section>
     </div>

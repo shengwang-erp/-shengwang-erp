@@ -2,6 +2,7 @@ import React from 'react'
 import { createPortal } from 'react-dom'
 
 import './projectCostLedgerPrint.css'
+import { sumProjectCostAmounts } from './projectCostLedgerExport.js'
 
 const SOURCE_LABELS = Object.freeze({
   purchase: '采购', warehouse: '仓库', labor: '人工', vehicle: '车辆', tool: '工具',
@@ -35,7 +36,7 @@ function groupRows(rows) {
 }
 
 function sumAmounts(rows) {
-  return rows.reduce((total, row) => total + Number(row.effectiveAmount || 0), 0)
+  return sumProjectCostAmounts(rows.map(({ effectiveAmount }) => effectiveAmount))
 }
 
 function allocationSummary(allocations) {

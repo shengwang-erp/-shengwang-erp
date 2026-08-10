@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
+import { useProjectCostModalA11y } from './useProjectCostModalA11y.js'
 
 const SAFE_ERROR_MESSAGES = Object.freeze({
   PROJECT_COST_LEDGER_VERSION_CONFLICT: '记录已被修改，请刷新后重试',
@@ -136,17 +137,18 @@ export default function ProjectCostAdjustmentDialog({
     }
   }
 
-  const cancel = () => {
+  const cancelOperation = () => {
     mountedRef.current = false
     operationRef.current += 1
     submitLatchRef.current = true
     onCancel?.()
   }
+  const modal = useProjectCostModalA11y({ open: Boolean(row), submitting, onRequestClose: cancelOperation })
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
-      <section className="project-cost-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-adjust-title">
-        <header><div><small>会计调整 · 原始业务记录不变</small><h2 id="project-cost-adjust-title">调整项目成本</h2></div><button type="button" onClick={cancel} aria-label="关闭调整窗口">关闭</button></header>
+      <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-adjust-title">
+        <header><div><small>会计调整 · 原始业务记录不变</small><h2 id="project-cost-adjust-title">调整项目成本</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭调整窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts">
           <article><span>原始金额</span><strong>{formatYen(row.originalAmount)}</strong></article>
           <article><span>累计会计调整</span><strong>{formatYen(row.adjustmentTotal ?? row.adjustmentAmount)}</strong></article>
@@ -163,7 +165,7 @@ export default function ProjectCostAdjustmentDialog({
           {row.allocationLocked && <div className="project-cost-dialog-error" role="alert">该费用已有项目分摊历史，直接调整会造成分摊失配。请使用“新增调整费用”分别补录或冲销。</div>}
           {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{refreshable && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有调整项目成本的权限</div>}
-          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存调整'}</button></footer>
+          <footer><button type="button" onClick={modal.requestClose}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存调整'}</button></footer>
         </form>
       </section>
     </div>

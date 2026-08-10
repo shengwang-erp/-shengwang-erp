@@ -114,6 +114,16 @@ function reportPageSnapshot(page, pageSize = 100, totalRows = 205) {
   })
 }
 
+function completeReportLedgerSnapshot(totalRows = 205) {
+  const first = reportPageSnapshot(1, 100, totalRows)
+  const pageCount = Math.max(1, Math.ceil(totalRows / 100))
+  return deepFreeze({
+    ...first,
+    rows: Array.from({ length: pageCount }, (_, index) =>
+      reportPageSnapshot(index + 1, 100, totalRows).rows).flat(),
+  })
+}
+
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const item of Object.values(value)) deepFreeze(item)
@@ -174,7 +184,7 @@ test('ready matching snapshots expose built-in Excel, print and PDF entries', ()
   const html = renderToStaticMarkup(createElement(ProjectCostLedgerSection, {
     access: ledgerAccess,
     projects: [{ projectId: 'P-1', projectName: '东京站项目' }],
-    service: { list() {}, listAudit() {} },
+    service: { list() {}, listAudit() {}, report() {} },
     initialSnapshot: ledgerSnapshot(),
     initialAuditSnapshot: auditSnapshot(),
   }))
@@ -225,21 +235,21 @@ test('print temporarily mounts the exact applied ledger and audit snapshots', as
   }
 })
 
-test('non-first screen page prints a complete reconciled all-page snapshot through an isolated body portal', async () => {
+test('non-first screen page prints one atomic complete snapshot through an isolated body portal', async () => {
   const currentSnapshot = reportPageSnapshot(2, 20)
   const currentAudit = deepFreeze({ status: 'ready', generatedAt: '2000-01-01T00:00:01.000Z', events: [] })
-  const listCalls = []
+  const reportCalls = []
   let received = null
   let layout = null
   const service = {
-    async list(filters) {
-      listCalls.push({ ...filters })
-      return reportPageSnapshot(filters.page, filters.pageSize)
-    },
-    async listAudit() {
+    async report(filters) {
+      reportCalls.push({ ...filters })
       return deepFreeze({
-        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z',
+        ledgerSnapshot: completeReportLedgerSnapshot(),
+        auditSnapshot: {
+          status: 'ready', generatedAt: '2000-01-01T00:00:00.000Z',
         events: [{ ...auditSnapshot().events[0], sourceKey: 'manual:FILTERED-OUT', reason: '打印不应泄露' }],
+        },
       })
     },
   }
@@ -267,7 +277,7 @@ test('non-first screen page prints a complete reconciled all-page snapshot throu
       button(container, '打印').click()
       for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve))
     })
-    assert.deepEqual(listCalls.map(({ page, pageSize }) => [page, pageSize]), [[1, 100], [2, 100], [3, 100]])
+    assert.deepEqual(reportCalls, [{}])
     assert.equal(received.snapshot.rows.length, 205)
     assert.equal(received.snapshot.totalRows, 205)
     assert.equal(received.auditSnapshot.events.length, 0)
@@ -283,16 +293,12 @@ test('non-first screen page prints a complete reconciled all-page snapshot throu
   }
 })
 
-test('actor replacement cancels an in-flight all-page export before any stale callback runs', async () => {
+test('actor replacement cancels an in-flight atomic export before any stale callback runs', async () => {
   let releaseFirst
   const firstPage = new Promise((resolve) => { releaseFirst = resolve })
   let exportCalls = 0
   const service = {
-    async list(filters) {
-      if (filters.page === 1) return firstPage
-      return reportPageSnapshot(filters.page, filters.pageSize)
-    },
-    async listAudit() { return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] } },
+    async report() { return firstPage },
   }
   const props = {
     service, access: ledgerAccess, projects: [], initialSnapshot: reportPageSnapshot(2, 20),
@@ -309,7 +315,10 @@ test('actor replacement cancels an in-flight all-page export before any stale ca
       await Promise.resolve()
     })
     await act(async () => { root.render(createElement(ProjectCostLedgerSection, { ...props, actorFingerprint: 'accountant-b' })) })
-    releaseFirst(reportPageSnapshot(1, 100))
+    releaseFirst({
+      ledgerSnapshot: completeReportLedgerSnapshot(),
+      auditSnapshot: { status: 'ready', generatedAt: '2000-01-01T00:00:00.000Z', events: [] },
+    })
     await act(async () => {
       for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setImmediate(resolve))
     })
@@ -324,6 +333,7 @@ test('actor replacement cancels an in-flight all-page export before any stale ca
 test('filters keep the last successful snapshot until applied, clear cleanly, and paginate at 20/50/100', async () => {
   const calls = []
   const service = {
+    async report() {},
     async list(filters) {
       calls.push({ ...filters })
       return ledgerSnapshot(filters)
@@ -434,6 +444,7 @@ test('real split rows use the latest full audit allocation without mutating froz
 test('incomplete source stays explicit, blocks reports, and retry preserves the applied filters', async () => {
   let calls = 0
   const service = {
+    async report() {},
     async list(filters) {
       calls += 1
       return ledgerSnapshot({ ...filters, incompleteSources: calls === 1 ? ['车辆费用', '仓库出库'] : [] })
@@ -490,6 +501,7 @@ test('audit failure never presents a complete split report and keeps export and 
 test('a late audit response from an older applied-filter request cannot refill the current split', async () => {
   const pendingAudits = []
   const service = {
+    async report() {},
     async list(filters) { return ledgerSnapshot(filters) },
     listAudit(filters) {
       return new Promise((resolve) => pendingAudits.push({ filters: { ...filters }, resolve }))
@@ -541,6 +553,7 @@ async function renderAuditIntegrityScenario({ snapshot, audits }) {
   const root = createRoot(container)
   await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
     service: {
+      async report() {},
       async list() { return snapshot },
       async listAudit() {
         const result = audits[Math.min(auditCall, audits.length - 1)]

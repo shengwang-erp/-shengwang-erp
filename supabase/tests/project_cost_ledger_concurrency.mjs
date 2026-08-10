@@ -267,6 +267,19 @@ export async function runProjectCostLedgerConcurrency(argv = process.argv.slice(
     fail(`expected one allocation success and one version conflict, received ${JSON.stringify(allocationResults)}`)
   }
 
+  const adjustmentAfterAllocation = await rpc(
+    target, tokenA, 'create_project_cost_adjustment_secure', {
+      p_source_key: data.allocationSourceKey,
+      p_expected_version: 2,
+      p_adjustment_amount: 1,
+      p_reason: '分摊后调整必须拒绝',
+    },
+  )
+  if (adjustmentAfterAllocation.ok || adjustmentAfterAllocation.body?.code !== '22023' ||
+      adjustmentAfterAllocation.body?.hint !== 'PROJECT_COST_LEDGER_ALLOCATION_ACTIVE') {
+    fail(`allocation-active adjustment did not fail safely: ${JSON.stringify(adjustmentAfterAllocation)}`)
+  }
+
   const audit = await rpc(target, tokenA, 'list_project_cost_audit_secure', {
     p_filters: {
       projectId: data.projectId, dateFrom: '2099-12-30', dateTo: '2099-12-30',

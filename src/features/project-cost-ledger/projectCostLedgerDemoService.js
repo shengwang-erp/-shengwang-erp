@@ -14,6 +14,7 @@ import {
   normalizeProjectCostAllocationRequest,
   normalizeProjectCostLedgerAuditFilters,
   normalizeProjectCostLedgerListFilters,
+  normalizeProjectCostLedgerReportFilters,
   normalizeProjectCostManualRequest,
   projectCostLedgerError,
   projectCostLedgerResponseNormalizers,
@@ -270,6 +271,49 @@ function currentAllocations(state) {
   return state.allocation?.allocations ?? [{ projectId: state.fact.projectId, amount: state.effectiveAmount }]
 }
 
+function activeFilters(normalized) {
+  return Object.fromEntries(Object.entries(normalized).filter(([key, value]) => {
+    if (['page', 'pageSize'].includes(key)) return false
+    if (['projectId', 'category', 'sourceModule'].includes(key) && ['', 'all'].includes(value)) return false
+    if (key === 'adjusted' && value === 'all') return false
+    return value !== ''
+  }))
+}
+
+function snapshotFromStates(states, normalized, generatedAt, { complete = false } = {}) {
+  const built = buildRows(states)
+  const filtered = applyLedgerFilters({ rows: built.rows }, activeFilters(normalized))
+  const summary = summarizeLedgerRows(filtered)
+  const page = complete ? 1 : normalized.page ?? 1
+  const pageSize = complete ? 100 : normalized.pageSize ?? 20
+  return normalizeLedgerSnapshot({
+    status: 'ready', generatedAt, page, pageSize, totalRows: filtered.length,
+    rows: complete ? filtered : paginateLedgerRows(filtered, page, pageSize),
+    categoryTotals: summary.categoryTotals, totalAmount: summary.totalAmount,
+    adjustmentTotal: summary.adjustmentTotal, incompleteSources: built.incompleteSources,
+  })
+}
+
+function auditFromStates(states, sourceKeys, generatedAt) {
+  const events = states.flatMap((state) => sourceKeys.has(state.fact.sourceKey)
+    ? state.events.map(auditDto)
+    : []).sort((left, right) => left.createdAt.localeCompare(right.createdAt) ||
+      left.sourceKey.localeCompare(right.sourceKey) || left.sequenceNo - right.sequenceNo ||
+      left.eventType.localeCompare(right.eventType))
+  return projectCostLedgerResponseNormalizers.listAudit({ status: 'ready', generatedAt, events })
+}
+
+async function reportToken(ledgerSnapshot, auditSnapshot) {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle || typeof globalThis.TextEncoder !== 'function') throw unavailable()
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    rows: ledgerSnapshot.rows, incompleteSources: ledgerSnapshot.incompleteSources,
+    events: auditSnapshot.events,
+  }))
+  const digest = await subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export function createProjectCostLedgerDemoService({ getSources, eventStore } = {}) {
   if (typeof getSources !== 'function') throw unavailable()
   const store = validateStore(eventStore)
@@ -277,22 +321,22 @@ export function createProjectCostLedgerDemoService({ getSources, eventStore } = 
   return Object.freeze({
     async list(filters = {}) {
       const normalized = normalizeProjectCostLedgerListFilters(filters)
-      const page = normalized.page ?? 1
-      const pageSize = normalized.pageSize ?? 20
-      const activeFilters = Object.fromEntries(Object.entries(normalized).filter(([key, value]) => {
-        if (['page', 'pageSize'].includes(key)) return false
-        if (['projectId', 'category', 'sourceModule'].includes(key) && ['', 'all'].includes(value)) return false
-        if (key === 'adjusted' && value === 'all') return false
-        return value !== ''
-      }))
-      const built = buildRows(currentStates(getSources, store))
-      const filtered = applyLedgerFilters({ rows: built.rows }, activeFilters)
-      const summary = summarizeLedgerRows(filtered)
-      return normalizeLedgerSnapshot({
-        status: 'ready', generatedAt: eventTime(), page, pageSize, totalRows: filtered.length,
-        rows: paginateLedgerRows(filtered, page, pageSize), categoryTotals: summary.categoryTotals,
-        totalAmount: summary.totalAmount, adjustmentTotal: summary.adjustmentTotal,
-        incompleteSources: built.incompleteSources,
+      return snapshotFromStates(currentStates(getSources, store), normalized, eventTime())
+    },
+
+    async report(filters = {}) {
+      const normalized = normalizeProjectCostLedgerReportFilters(filters)
+      const states = currentStates(getSources, store)
+      const generatedAt = eventTime()
+      const ledgerSnapshot = snapshotFromStates(states, normalized, generatedAt, { complete: true })
+      if (ledgerSnapshot.totalRows > 5000) throw projectCostLedgerError('PROJECT_COST_LEDGER_REPORT_TOO_LARGE')
+      const sourceKeys = new Set(ledgerSnapshot.rows.map(({ sourceKey }) => sourceKey))
+      const auditSnapshot = auditFromStates(states, sourceKeys, generatedAt)
+      if (auditSnapshot.events.length > 20000) throw projectCostLedgerError('PROJECT_COST_LEDGER_REPORT_TOO_LARGE')
+      return projectCostLedgerResponseNormalizers.report({
+        status: 'ready', generatedAt,
+        snapshotToken: await reportToken(ledgerSnapshot, auditSnapshot),
+        ledgerSnapshot, auditSnapshot,
       })
     },
 
@@ -312,6 +356,7 @@ export function createProjectCostLedgerDemoService({ getSources, eventStore } = 
       const value = normalizeProjectCostAdjustmentRequest(request)
       const state = findState(currentStates(getSources, store), value.sourceKey)
       assertVersion(state, value.expectedVersion)
+      if (state.allocation) throw projectCostLedgerError('PROJECT_COST_LEDGER_ALLOCATION_ACTIVE')
       const amountAfter = addMoney(state.effectiveAmount, value.adjustmentAmount)
       const event = freeze({
         eventType: 'adjustment', sourceKey: value.sourceKey, sequenceNo: state.version,

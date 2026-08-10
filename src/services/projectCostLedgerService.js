@@ -8,6 +8,7 @@ const SOURCE_MODULES = new Set(['', 'all', 'purchase', 'warehouse', 'labor', 've
 const STRICT_INSTANT_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u
 const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const FILTER_FIELDS = ['projectId', 'dateFrom', 'dateTo', 'category', 'sourceModule', 'adjusted', 'keyword', 'page', 'pageSize']
+const REPORT_FILTER_FIELDS = ['projectId', 'dateFrom', 'dateTo', 'category', 'sourceModule', 'adjusted', 'keyword']
 const AUDIT_FILTER_FIELDS = ['projectId', 'dateFrom', 'dateTo']
 const ADJUST_FIELDS = ['sourceKey', 'expectedVersion', 'adjustmentAmount', 'reason']
 const ALLOCATION_REQUEST_FIELDS = ['sourceKey', 'expectedVersion', 'reason', 'allocations']
@@ -21,6 +22,8 @@ const SAFE_MESSAGES = Object.freeze({
   PROJECT_COST_LEDGER_VERSION_CONFLICT: '记录已被修改，请刷新后重试',
   PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED: '项目分摊合计必须与当前成本一致',
   PROJECT_COST_LEDGER_SOURCE_MISSING: '原始费用记录已不可用，请刷新后重试',
+  PROJECT_COST_LEDGER_ALLOCATION_ACTIVE: '该费用已有项目分摊，请使用手工调整或冲销',
+  PROJECT_COST_LEDGER_REPORT_TOO_LARGE: '报表数据量过大，请缩小筛选范围后重试',
   AUTH_SESSION_INVALID: '登录已失效，请重新登录',
   PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE: '项目成本服务暂时不可用，请稍后重试',
 })
@@ -31,6 +34,8 @@ const TRUSTED_HINTS = new Map([
   ['PROJECT_COST_LEDGER_VERSION_CONFLICT', 'P0001'],
   ['PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED', '22023'],
   ['PROJECT_COST_LEDGER_SOURCE_MISSING', '22023'],
+  ['PROJECT_COST_LEDGER_ALLOCATION_ACTIVE', '22023'],
+  ['PROJECT_COST_LEDGER_REPORT_TOO_LARGE', '54000'],
 ])
 
 export class ProjectCostLedgerServiceError extends Error {
@@ -185,6 +190,10 @@ export function normalizeProjectCostLedgerAuditFilters(value = {}) {
   return normalizeFilters(value, true)
 }
 
+export function normalizeProjectCostLedgerReportFilters(value = {}) {
+  return normalizeFilters(objectFields(value, REPORT_FILTER_FIELDS), false)
+}
+
 export function normalizeProjectCostAdjustmentRequest(value) {
   const source = inputExactObject(value, ADJUST_FIELDS)
   return {
@@ -283,6 +292,26 @@ function normalizeAuditResponse(value) {
   return deepFreeze({ status: 'ready', generatedAt: validInstant(source.generatedAt), events })
 }
 
+function normalizeReportResponse(value) {
+  const source = exactObject(value, [
+    'status', 'generatedAt', 'snapshotToken', 'ledgerSnapshot', 'auditSnapshot',
+  ])
+  if (source.status !== 'ready' || typeof source.snapshotToken !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(source.snapshotToken)) throw unavailableError()
+  const ledgerSnapshot = normalizeListResponse(source.ledgerSnapshot)
+  const auditSnapshot = normalizeAuditResponse(source.auditSnapshot)
+  const generatedAt = validInstant(source.generatedAt)
+  if (ledgerSnapshot.page !== 1 || ledgerSnapshot.pageSize !== 100 ||
+      ledgerSnapshot.rows.length !== ledgerSnapshot.totalRows ||
+      ledgerSnapshot.generatedAt !== generatedAt || auditSnapshot.generatedAt !== generatedAt) {
+    throw unavailableError()
+  }
+  return deepFreeze({
+    status: 'ready', generatedAt, snapshotToken: source.snapshotToken,
+    ledgerSnapshot, auditSnapshot,
+  })
+}
+
 function safeRemoteError(error, responseStatus) {
   try {
     const codeValue = ownDataValue(error, 'code')
@@ -318,6 +347,7 @@ function normalizeListResponse(value) {
 export const projectCostLedgerResponseNormalizers = Object.freeze({
   list: normalizeListResponse,
   listAudit: normalizeAuditResponse,
+  report: normalizeReportResponse,
   adjust: normalizeAdjustmentResponse,
   replaceAllocations: normalizeAllocationResponse,
   createManual: normalizeManualResponse,
@@ -357,6 +387,11 @@ export function createProjectCostLedgerService(client, { configured } = {}) {
     },
     async listAudit(filters = {}) {
       return rpc('list_project_cost_audit_secure', { p_filters: normalizeProjectCostLedgerAuditFilters(filters) }, projectCostLedgerResponseNormalizers.listAudit)
+    },
+    async report(filters = {}) {
+      return rpc('export_project_cost_report_secure', {
+        p_filters: normalizeProjectCostLedgerReportFilters(filters),
+      }, projectCostLedgerResponseNormalizers.report)
     },
     async adjust(request) {
       const value = normalizeProjectCostAdjustmentRequest(request)

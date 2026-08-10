@@ -446,6 +446,43 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
   }
 })
 
+test('all three StrictMode dialogs focus, trap, escape, restore and inert background accessibly', async () => {
+  const cases = [
+    [ProjectCostAdjustmentDialog, { row: ledgerRow, allowed: true, async onSubmit() {}, async onSuccess() { return true } }],
+    [ProjectCostAllocationDialog, { row: ledgerRow, projects, allocations: ledgerRow.allocations, allowed: true, async onSubmit() {}, async onSuccess() { return true } }],
+    [ProjectCostManualEntryDialog, { open: true, projects, allowed: true, createRequestId: () => '11111111-1111-4111-8111-111111111111', async onSubmit() {}, async onSuccess() { return true } }],
+  ]
+  for (const [Component, baseProps] of cases) {
+    const dom = installWarehouseReactDom()
+    const background = dom.document.createElement('button')
+    background.textContent = '背景操作'
+    dom.document.body.appendChild(background)
+    background.focus()
+    const container = dom.createContainer()
+    const root = createRoot(container)
+    let cancelled = 0
+    try {
+      await act(async () => { root.render(createElement(StrictMode, null, createElement(Component, {
+        ...baseProps, onCancel() { cancelled += 1 },
+      }))) })
+      const dialog = elements(container, (element) => element.getAttribute?.('role') === 'dialog')[0]
+      assert.ok(dialog.contains(dom.document.activeElement), 'initial focus is inside the modal')
+      assert.equal(background.inert, true)
+      const focusables = dialog.querySelectorAll('button,input,select,textarea,[tabindex]')
+      focusables.at(-1).focus()
+      await act(async () => { dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Tab' })) })
+      assert.equal(dom.document.activeElement, focusables[0])
+      await act(async () => { dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Escape' })) })
+      assert.equal(cancelled, 1)
+      assert.equal(background.inert, false)
+      assert.equal(dom.document.activeElement, background)
+    } finally {
+      await act(async () => { root.unmount() })
+      dom.cleanup()
+    }
+  }
+})
+
 test('StrictMode section completes one allocation mutation and its guarded reload', async () => {
   let replaced = false
   let invalidationCalls = 0

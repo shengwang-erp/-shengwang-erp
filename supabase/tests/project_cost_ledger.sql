@@ -63,6 +63,13 @@ select has_function(
 select has_function(
   'public', 'list_project_cost_audit_secure', array['jsonb']
 );
+select has_function(
+  'public', 'export_project_cost_report_secure', array['jsonb']
+);
+select function_privs_are(
+  'public', 'export_project_cost_report_secure', array['jsonb'],
+  'authenticated', array['EXECUTE']
+);
 select function_privs_are(
   'public', 'list_project_cost_ledger_secure', array['jsonb'],
   'authenticated', array['EXECUTE']
@@ -75,7 +82,8 @@ select ok(
       ('create_project_cost_adjustment_secure(text,bigint,numeric,text)'::text, 'v'::text),
       ('replace_project_cost_allocations_secure(text,bigint,text,jsonb)', 'v'),
       ('create_manual_project_cost_secure(uuid,jsonb)', 'v'),
-      ('list_project_cost_audit_secure(jsonb)', 's')
+      ('list_project_cost_audit_secure(jsonb)', 's'),
+      ('export_project_cost_report_secure(jsonb)', 's')
     ) expected(signature, volatility)
     left join lateral (
       select procedure.*
@@ -522,6 +530,7 @@ insert into public.tool_responsibility_records(record_key, payload, status) valu
     "responsibilityRecordId":"LEDGER-TOOL","recordDate":"2026-08-08",
     "issueType":"丢失","toolValue":70,"repairCost":12,
     "compensationAmount":70,"compensationStatus":"已赔偿",
+    "allocateToProject":true,
     "projectId":"LEDGER-P-A","projectName":"甲项目",
     "toolName":"电钻","handlerEmployeeName":"工具管理员"
   }', 'active');
@@ -1274,12 +1283,12 @@ insert into public.tool_responsibility_records(record_key, payload, status) valu
   ('LEDGER-ROUND3-TOOL-TYPE', pg_catalog.jsonb_build_object(
     'responsibilityRecordId', 'LEDGER-ROUND3-TOOL-TYPE',
     'recordDate', '2099-02-05', 'issueType', 17, 'repairCost', 102,
-    'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
+    'allocateToProject', true, 'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
   ), 'active'),
   ('LEDGER-ROUND3-TOOL-PROJECT', pg_catalog.jsonb_build_object(
     'responsibilityRecordId', 'LEDGER-ROUND3-TOOL-PROJECT',
     'recordDate', '2099-02-05', 'issueType', '损坏', 'repairCost', 103,
-    'projectId', 17, 'projectName', '甲项目'
+    'allocateToProject', true, 'projectId', 17, 'projectName', '甲项目'
   ), 'active');
 insert into public.project_cost_records(record_key, payload, status) values
   ('LEDGER-ROUND3-LEGACY-SOURCE', pg_catalog.jsonb_build_object(
@@ -1395,6 +1404,209 @@ select ok(
     ]
    from round4_purchase_scope_snapshot),
   'legitimate non-project purchases remain outside the project ledger response'
+);
+
+insert into public.tool_responsibility_records(record_key, payload, status) values
+  ('LEDGER-TOOL-COMPANY-MISSING', pg_catalog.jsonb_build_object(
+    'responsibilityRecordId', 'LEDGER-TOOL-COMPANY-MISSING',
+    'recordDate', '2099-03-01', 'issueType', '损坏', 'repairCost', 41,
+    'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
+  ), 'active'),
+  ('LEDGER-TOOL-COMPANY-FALSE', pg_catalog.jsonb_build_object(
+    'responsibilityRecordId', 'LEDGER-TOOL-COMPANY-FALSE',
+    'recordDate', '2099-03-01', 'issueType', '损坏', 'repairCost', 42,
+    'allocateToProject', false, 'projectId', 'LEDGER-P-A', 'projectName', '甲项目'
+  ), 'active');
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table tool_company_scope_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-03-01","dateTo":"2099-03-01","pageSize":20}'
+) payload;
+reset role;
+select ok(
+  (select (payload->>'totalRows')::integer = 0
+      and payload->'rows' = '[]'::jsonb
+      and not payload->'incompleteSources' ?| array[
+        'tool-responsibility:LEDGER-TOOL-COMPANY-MISSING',
+        'tool-responsibility:LEDGER-TOOL-COMPANY-FALSE'
+      ]
+   from tool_company_scope_snapshot),
+  'tool responsibility costs require allocateToProject exactly true'
+);
+
+insert into public.projects(record_key, payload, status) values (
+  'LEDGER-P-INELIGIBLE',
+  '{"projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目","status":"进行中"}',
+  'active'
+);
+insert into public.purchase_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-PO', '{
+    "purchaseId":"LEDGER-INACTIVE-PO","purchaseDate":"2099-03-02",
+    "itemName":"失效项目采购","totalCost":11,"projectId":"LEDGER-P-INELIGIBLE",
+    "projectName":"失效项目","purchasePurpose":"项目使用","purchaseStatus":"正常"
+  }', 'active'
+);
+insert into public.project_cost_records(record_key, payload, status) values
+  ('WAREHOUSE-SO:a9800000-0000-4000-8000-000000000001', '{
+    "costRecordId":"WAREHOUSE-SO:a9800000-0000-4000-8000-000000000001",
+    "projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目","costType":"材料费",
+    "amount":12,"date":"2099-03-02","operator":"仓管","remark":"失效项目出库",
+    "sourceType":"warehouse","sourceDocumentId":"a9800000-0000-4000-8000-000000000001",
+    "sourceDocumentType":"warehouse_stock_out","sourcePurchaseRecordKeys":[],
+    "sourceStockOutIds":["a9800000-0000-4000-8000-000000000001"]
+  }', 'active'),
+  ('LEDGER-INACTIVE-LEGACY', '{
+    "costRecordId":"LEDGER-INACTIVE-LEGACY","projectId":"LEDGER-P-INELIGIBLE",
+    "projectName":"失效项目","costType":"其他费用","amount":19,
+    "date":"2099-03-02","operator":"旧经办","remark":"失效项目旧成本"
+  }', 'active');
+insert into public.attendance_day_resolutions(
+  resolution_id, employee_profile_id, work_date, schedule_required,
+  resolution_type, attendance_units, accounting_status, salary_type_snapshot,
+  base_salary_snapshot, daily_salary_snapshot, hourly_wage_snapshot,
+  suggested_project_cost, final_project_cost, resolution_note,
+  confirmed_by_employee_profile_id, confirmed_at
+) values (
+  'a9810000-0000-4000-8000-000000000001',
+  'a9200000-0000-4000-8000-000000000002', '2099-03-02', true,
+  'full_day', 1, 'confirmed', '日薪', 0, 13, 0, 13, 13, '失效项目人工',
+  'a9200000-0000-4000-8000-000000000001', statement_timestamp()
+);
+insert into public.attendance_project_allocations(
+  allocation_id, resolution_id, project_id, project_name_snapshot, amount,
+  allocation_note
+) values (
+  'a9820000-0000-4000-8000-000000000001',
+  'a9810000-0000-4000-8000-000000000001',
+  'LEDGER-P-INELIGIBLE', '失效项目', 13, '失效项目人工'
+);
+insert into public.fuel_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-FUEL', '{
+    "fuelRecordId":"LEDGER-INACTIVE-FUEL","fuelDate":"2099-03-02","fuelAmount":14,
+    "allocateToProject":true,"projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目"
+  }', 'active'
+);
+insert into public.vehicle_expense_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-VE', '{
+    "vehicleExpenseId":"LEDGER-INACTIVE-VE","expenseDate":"2099-03-02","amount":15,
+    "allocateToProject":true,"projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目"
+  }', 'active'
+);
+insert into public.vehicle_issue_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-VI', '{
+    "issueId":"LEDGER-INACTIVE-VI","issueDate":"2099-03-02","repairCost":16,
+    "allocateToProject":true,"projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目"
+  }', 'active'
+);
+insert into public.tool_responsibility_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-TOOL', '{
+    "responsibilityRecordId":"LEDGER-INACTIVE-TOOL","recordDate":"2099-03-02",
+    "issueType":"损坏","repairCost":17,"allocateToProject":true,
+    "projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目"
+  }', 'active'
+);
+insert into public.operating_expense_records(record_key, payload, status) values (
+  'LEDGER-INACTIVE-OE', '{
+    "expenseRecordId":"LEDGER-INACTIVE-OE","date":"2099-03-02","amount":18,
+    "allocateToProject":true,"projectId":"LEDGER-P-INELIGIBLE","projectName":"失效项目"
+  }', 'active'
+);
+insert into public.project_cost_manual_entries(
+  source_key, project_id, project_name, category, cost_date, original_amount,
+  description, operator, created_by_employee_profile_id, created_by_name
+) values (
+  'manual:a9830000-0000-4000-8000-000000000001',
+  'LEDGER-P-INELIGIBLE', '失效项目', '其他费用', '2099-03-02', 20,
+  '失效项目手工成本', '会计',
+  'a9200000-0000-4000-8000-000000000001', '成本会计'
+);
+set local session_replication_role = replica;
+update public.projects set status = 'deleted'
+where record_key = 'LEDGER-P-INELIGIBLE';
+set local session_replication_role = origin;
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table inactive_project_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-03-02","dateTo":"2099-03-02","pageSize":100}'
+) payload;
+reset role;
+select ok(
+  (select (payload->>'totalRows')::integer = 0 and payload->'rows' = '[]'::jsonb
+   from inactive_project_snapshot),
+  'no source bound to a deleted project enters ledger rows or totals'
+);
+select ok(
+  (select payload->'incompleteSources' @> '[
+    "purchase:LEDGER-INACTIVE-PO",
+    "warehouse:WAREHOUSE-SO:a9800000-0000-4000-8000-000000000001",
+    "labor:a9820000-0000-4000-8000-000000000001",
+    "vehicle-fuel:LEDGER-INACTIVE-FUEL",
+    "vehicle-expense:LEDGER-INACTIVE-VE",
+    "vehicle-issue:LEDGER-INACTIVE-VI",
+    "tool-responsibility:LEDGER-INACTIVE-TOOL",
+    "operating:LEDGER-INACTIVE-OE",
+    "legacy-manual:LEDGER-INACTIVE-LEGACY",
+    "manual:a9830000-0000-4000-8000-000000000001"
+  ]'::jsonb from inactive_project_snapshot),
+  'every source family marks an explicit deleted-project binding incomplete'
+);
+
+insert into public.purchase_records(record_key, payload, status) values (
+  'LEDGER-MISSING-PO', '{
+    "purchaseId":"LEDGER-MISSING-PO","purchaseDate":"2099-03-03",
+    "itemName":"不存在项目采购","totalCost":21,"projectId":"LEDGER-P-NEVER",
+    "projectName":"不存在项目","purchasePurpose":"项目使用","purchaseStatus":"正常"
+  }', 'active'
+);
+insert into public.project_cost_records(record_key, payload, status) values
+  ('WAREHOUSE-SO:a9840000-0000-4000-8000-000000000001', '{
+    "costRecordId":"WAREHOUSE-SO:a9840000-0000-4000-8000-000000000001",
+    "projectId":"LEDGER-P-NEVER","projectName":"不存在项目","costType":"材料费",
+    "amount":22,"date":"2099-03-03","sourceType":"warehouse",
+    "sourceDocumentId":"a9840000-0000-4000-8000-000000000001",
+    "sourceDocumentType":"warehouse_stock_out","sourcePurchaseRecordKeys":[],
+    "sourceStockOutIds":["a9840000-0000-4000-8000-000000000001"]
+  }', 'active'),
+  ('LEDGER-MISSING-LEGACY', '{
+    "costRecordId":"LEDGER-MISSING-LEGACY","projectId":"LEDGER-P-NEVER",
+    "projectName":"不存在项目","costType":"其他费用","amount":27,"date":"2099-03-03"
+  }', 'active');
+insert into public.fuel_records(record_key, payload, status) values (
+  'LEDGER-MISSING-FUEL', '{"fuelRecordId":"LEDGER-MISSING-FUEL","fuelDate":"2099-03-03","fuelAmount":23,"allocateToProject":true,"projectId":"LEDGER-P-NEVER"}', 'active'
+);
+insert into public.vehicle_expense_records(record_key, payload, status) values (
+  'LEDGER-MISSING-VE', '{"vehicleExpenseId":"LEDGER-MISSING-VE","expenseDate":"2099-03-03","amount":24,"allocateToProject":true,"projectId":"LEDGER-P-NEVER"}', 'active'
+);
+insert into public.vehicle_issue_records(record_key, payload, status) values (
+  'LEDGER-MISSING-VI', '{"issueId":"LEDGER-MISSING-VI","issueDate":"2099-03-03","repairCost":25,"allocateToProject":true,"projectId":"LEDGER-P-NEVER"}', 'active'
+);
+insert into public.tool_responsibility_records(record_key, payload, status) values (
+  'LEDGER-MISSING-TOOL', '{"responsibilityRecordId":"LEDGER-MISSING-TOOL","recordDate":"2099-03-03","issueType":"损坏","repairCost":26,"allocateToProject":true,"projectId":"LEDGER-P-NEVER"}', 'active'
+);
+insert into public.operating_expense_records(record_key, payload, status) values (
+  'LEDGER-MISSING-OE', '{"expenseRecordId":"LEDGER-MISSING-OE","date":"2099-03-03","amount":28,"allocateToProject":true,"projectId":"LEDGER-P-NEVER"}', 'active'
+);
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table missing_project_snapshot as
+select public.list_project_cost_ledger_secure(
+  '{"dateFrom":"2099-03-03","dateTo":"2099-03-03","pageSize":100}'
+) payload;
+reset role;
+select ok(
+  (select (payload->>'totalRows')::integer = 0 and payload->'incompleteSources' @> '[
+    "purchase:LEDGER-MISSING-PO",
+    "warehouse:WAREHOUSE-SO:a9840000-0000-4000-8000-000000000001",
+    "vehicle-fuel:LEDGER-MISSING-FUEL",
+    "vehicle-expense:LEDGER-MISSING-VE",
+    "vehicle-issue:LEDGER-MISSING-VI",
+    "tool-responsibility:LEDGER-MISSING-TOOL",
+    "operating:LEDGER-MISSING-OE",
+    "legacy-manual:LEDGER-MISSING-LEGACY"
+  ]'::jsonb from missing_project_snapshot),
+  'all JSON source families mark nonexistent explicit project bindings incomplete'
 );
 
 insert into public.projects(record_key, payload, status) values (
@@ -1574,6 +1786,22 @@ select lives_ok(
   )$$,
   'two-project split accepts percentage-derived fixed four-decimal amounts'
 );
+select is(
+  pg_temp.project_cost_error_hint($$select public.create_project_cost_adjustment_secure(
+    'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
+    4, 1.0000, '分摊后错误调整'
+  )$$),
+  'PROJECT_COST_LEDGER_ALLOCATION_ACTIVE',
+  'server rejects a new adjustment after allocation history exists'
+);
+reset role;
+select is(
+  (select pg_catalog.count(*) from public.project_cost_adjustment_events
+   where source_key = 'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001'),
+  2::bigint,
+  'allocation-active rejection leaves adjustment history unchanged'
+);
+set local role authenticated;
 select throws_ok(
   $$select public.replace_project_cost_allocations_secure(
     'warehouse:WAREHOUSE-SO:a9300000-0000-4000-8000-000000000001',
@@ -1821,6 +2049,61 @@ select is(
   (select payload from task3_manual_replay_before),
   'manual replay returns the original snapshot after project rename and deactivation'
 );
+
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table atomic_report_before as
+select public.export_project_cost_report_secure(
+  '{"projectId":"LEDGER-P-A","dateFrom":"2026-08-01","dateTo":"2026-08-10"}'
+) payload;
+reset role;
+select ok(
+  (select payload->>'status' = 'ready'
+      and payload->>'snapshotToken' ~ '^[0-9a-f]{64}$'
+      and payload->'ledgerSnapshot'->>'generatedAt' = payload->>'generatedAt'
+      and payload->'auditSnapshot'->>'generatedAt' = payload->>'generatedAt'
+      and pg_catalog.jsonb_array_length(payload->'ledgerSnapshot'->'rows')
+        = (payload->'ledgerSnapshot'->>'totalRows')::integer
+   from atomic_report_before),
+  'atomic report returns one complete signed ledger and matching audit snapshot'
+);
+select ok(
+  (select not exists (
+    select 1
+    from pg_catalog.jsonb_array_elements(payload->'auditSnapshot'->'events') event
+    where not exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(payload->'ledgerSnapshot'->'rows') row_value
+      where row_value->>'sourceKey' = event->>'sourceKey'
+    )
+  ) from atomic_report_before),
+  'atomic report audit cannot include filtered-out source details'
+);
+set local session_replication_role = replica;
+update public.purchase_records
+set payload = pg_catalog.jsonb_set(payload, '{itemName}', '"同额替换后的材料"')
+where record_key = 'LEDGER-PO-DIRECT';
+set local session_replication_role = origin;
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table atomic_report_after as
+select public.export_project_cost_report_secure(
+  '{"projectId":"LEDGER-P-A","dateFrom":"2026-08-01","dateTo":"2026-08-10"}'
+) payload;
+reset role;
+select isnt(
+  (select payload->>'snapshotToken' from atomic_report_after),
+  (select payload->>'snapshotToken' from atomic_report_before),
+  'ordered report signature changes for a same-count same-total source revision'
+);
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.export_project_cost_report_secure('{"page":2}')$$,
+  '22023', 'invalid project cost report filters',
+  'atomic report rejects client-controlled pagination'
+);
+reset role;
 select ok(
   (select pg_catalog.count(*) = 1
       and pg_catalog.min(project_name) = '幂等原项目'

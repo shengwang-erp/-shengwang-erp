@@ -7,7 +7,6 @@ const SOURCE_LABELS = Object.freeze({
   purchase: '采购', warehouse: '仓库', labor: '人工', vehicle: '车辆', tool: '工具',
   operating: '经营费用', manual: '手工费用',
 })
-const REPORT_PAGE_SIZE = 100
 const REPORT_FILTER_FIELDS = Object.freeze([
   'projectId', 'dateFrom', 'dateTo', 'category', 'sourceModule', 'keyword',
 ])
@@ -34,15 +33,20 @@ function reportMetadata(metadata, snapshot) {
   }
 }
 
-function moneySum(values) {
-  let units = 0
+export function sumProjectCostAmounts(values) {
+  let units = 0n
   for (const value of values) {
     const next = toSignedFourDecimalUnits(value)
-    if (next === null || !Number.isSafeInteger(units + next)) throw new TypeError('项目成本金额无效')
-    units += next
+    if (next === null) throw new TypeError('项目成本金额无效')
+    units += BigInt(next)
   }
-  return fromFourDecimalUnits(units)
+  if (units < BigInt(Number.MIN_SAFE_INTEGER) || units > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError('项目成本金额无效')
+  }
+  return fromFourDecimalUnits(Number(units))
 }
+
+const moneySum = sumProjectCostAmounts
 
 function safeCell(value) {
   return escapeProjectCostSpreadsheetText(value)
@@ -217,62 +221,13 @@ function matchedAuditSnapshot(ledgerSnapshot, broadAuditSnapshot) {
   })
 }
 
-function reportListFilters(filters, page) {
-  const result = { page, pageSize: REPORT_PAGE_SIZE }
+function atomicReportFilters(filters) {
+  const result = {}
   for (const field of REPORT_FILTER_FIELDS) {
     if (filters?.[field]) result[field] = filters[field]
   }
   if (filters?.adjusted && filters.adjusted !== 'all') result.adjusted = filters.adjusted
   return result
-}
-
-function reportAuditFilters(filters) {
-  const result = {}
-  for (const field of ['projectId', 'dateFrom', 'dateTo']) {
-    if (filters?.[field]) result[field] = filters[field]
-  }
-  return result
-}
-
-function samePageSummary(left, right) {
-  return left?.status === 'ready' && right?.status === 'ready' &&
-    left.totalRows === right.totalRows && left.totalAmount === right.totalAmount &&
-    left.adjustmentTotal === right.adjustmentTotal &&
-    JSON.stringify(left.categoryTotals) === JSON.stringify(right.categoryTotals) &&
-    JSON.stringify(left.incompleteSources) === JSON.stringify(right.incompleteSources)
-}
-
-function completeSnapshotFromPages(pages) {
-  const first = pages[0]
-  if (!first || !Number.isSafeInteger(first.totalRows) || first.totalRows < 0 ||
-      !Array.isArray(first.rows) || !Array.isArray(first.categoryTotals) ||
-      !Array.isArray(first.incompleteSources)) throw new TypeError('项目成本完整报表页无效')
-  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
-  if (pages.length !== pageCount) throw new TypeError('项目成本完整报表页数无效')
-  const rows = []
-  const rowKeys = new Set()
-  for (let index = 0; index < pages.length; index += 1) {
-    const page = pages[index]
-    const pageNumber = index + 1
-    const expectedRows = Math.max(0, Math.min(REPORT_PAGE_SIZE, first.totalRows - index * REPORT_PAGE_SIZE))
-    if (!samePageSummary(first, page) || page.page !== pageNumber || page.pageSize !== REPORT_PAGE_SIZE ||
-        !Array.isArray(page.rows) || page.rows.length !== expectedRows) {
-      throw new TypeError('项目成本完整报表分页不一致')
-    }
-    for (const row of page.rows) {
-      const key = `${row.sourceKey}:${row.projectId}`
-      if (rowKeys.has(key)) throw new TypeError('项目成本完整报表明细重复')
-      rowKeys.add(key)
-      rows.push(row)
-    }
-  }
-  if (rows.length !== first.totalRows) throw new TypeError('项目成本完整报表明细缺失')
-  return Object.freeze({
-    ...first,
-    page: 1,
-    pageSize: REPORT_PAGE_SIZE,
-    rows: Object.freeze(rows),
-  })
 }
 
 export async function loadCompleteProjectCostLedgerSnapshot({
@@ -282,22 +237,15 @@ export async function loadCompleteProjectCostLedgerSnapshot({
   isCurrent = () => true,
 }) {
   if (typeof isCurrent !== 'function' || !isCurrent()) return null
-  if (typeof service?.list !== 'function') {
+  if (typeof service?.report !== 'function') {
     if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows) {
-      throw new TypeError('项目成本完整账本暂时不可用')
+      throw new TypeError('项目成本原子完整报表暂时不可用')
     }
     return screenSnapshot
   }
-  const first = await service.list(reportListFilters(filters, 1))
+  const report = await service.report(atomicReportFilters(filters))
   if (!isCurrent()) return null
-  if (!Number.isSafeInteger(first?.totalRows) || first.totalRows < 0) {
-    throw new TypeError('项目成本完整账本首页无效')
-  }
-  const pageCount = Math.max(1, Math.ceil(first.totalRows / REPORT_PAGE_SIZE))
-  const rest = await Promise.all(Array.from({ length: pageCount - 1 }, (_, index) =>
-    service.list(reportListFilters(filters, index + 2))))
-  if (!isCurrent()) return null
-  return completeSnapshotFromPages([first, ...rest])
+  return deepFreezeReportValue(report.ledgerSnapshot)
 }
 
 export async function loadCompleteProjectCostReportSnapshot({
@@ -308,7 +256,7 @@ export async function loadCompleteProjectCostReportSnapshot({
   isCurrent = () => true,
 }) {
   if (typeof isCurrent !== 'function' || !isCurrent()) return null
-  const canRead = typeof service?.list === 'function' && typeof service?.listAudit === 'function'
+  const canRead = typeof service?.report === 'function'
   if (!canRead) {
     const auditStatus = reconcileProjectCostAuditSnapshots(screenSnapshot, screenAuditSnapshot).status
     if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows ||
@@ -321,15 +269,13 @@ export async function loadCompleteProjectCostReportSnapshot({
     })
   }
 
-  const ledgerSnapshot = await loadCompleteProjectCostLedgerSnapshot({
-    service, filters, screenSnapshot, isCurrent,
-  })
-  if (!ledgerSnapshot) return null
+  const atomicReport = await service.report(atomicReportFilters(filters))
+  if (!isCurrent()) return null
+  const ledgerSnapshot = atomicReport.ledgerSnapshot
   if (ledgerSnapshot.incompleteSources.length > 0) {
     throw new TypeError('项目成本完整报表数据不完整')
   }
-  const broadAuditSnapshot = await service.listAudit(reportAuditFilters(filters))
-  if (!isCurrent()) return null
+  const broadAuditSnapshot = atomicReport.auditSnapshot
   if (reconcileProjectCostAuditSnapshots(ledgerSnapshot, broadAuditSnapshot).status !== 'ready') {
     throw new TypeError('项目成本完整报表审计不一致')
   }
