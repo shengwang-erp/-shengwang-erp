@@ -50,17 +50,18 @@ function ledgerSnapshot({
         sourceDocumentType: 'warehouse_outflow', sourceDocumentId: 'OUT-001',
         projectId: 'P-1', projectName: '东京站项目', category: '材料费', date: '2026-08-09',
         description: `铜管｜快照-${suffix}-第${page}页-${pageSize}`,
-        originalAmount: 105000, adjustmentAmount: -5000, effectiveAmount: 100000,
+        originalAmount: 63000, adjustmentAmount: -3000, effectiveAmount: 60000,
         operator: '仓库管理员', adjusted: true, version: 2,
-        allocations: [
-          { projectId: 'P-1', amount: 60000 },
-          { projectId: 'P-2', amount: 40000 },
-        ],
-        auditEvents: [{
-          eventType: 'adjustment', amountBefore: 105000, amountAfter: 100000,
-          adjustmentAmount: -5000, reason: '供应商折扣', actorName: '会计甲',
-          createdAt: '2026-08-10T02:00:00.000Z', sequenceNo: 1,
-        }],
+        allocations: [{ projectId: 'P-1', amount: 60000 }], auditEvents: [],
+      },
+      {
+        sourceKey: 'warehouse:OUT-001', sourceModule: 'warehouse',
+        sourceDocumentType: 'warehouse_outflow', sourceDocumentId: 'OUT-001',
+        projectId: 'P-2', projectName: '', category: '材料费', date: '2026-08-09',
+        description: `铜管｜快照-${suffix}-第${page}页-${pageSize}`,
+        originalAmount: 42000, adjustmentAmount: -2000, effectiveAmount: 40000,
+        operator: '仓库管理员', adjusted: true, version: 2,
+        allocations: [{ projectId: 'P-2', amount: 40000 }], auditEvents: [],
       },
       {
         sourceKey: 'labor:LAB-001', sourceModule: 'labor',
@@ -72,6 +73,32 @@ function ledgerSnapshot({
       },
     ],
   }
+}
+
+function auditSnapshot({
+  secondProjectId = 'P-2', reason = '跨项目分摊', actorName = '会计甲',
+} = {}) {
+  return {
+    status: 'ready', generatedAt: '2026-08-10T03:00:01.000Z',
+    events: [{
+      eventType: 'allocation', sourceKey: 'warehouse:OUT-001', sequenceNo: 1,
+      amountBefore: 100000, amountAfter: 100000, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P-1', amount: 100000 }],
+      allocationsAfter: [
+        { projectId: 'P-1', amount: secondProjectId === 'P-2' ? 60000 : 70000 },
+        { projectId: secondProjectId, amount: secondProjectId === 'P-2' ? 40000 : 30000 },
+      ],
+      reason, actorName, createdAt: '2026-08-10T02:00:00.000Z',
+    }],
+  }
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const item of Object.values(value)) deepFreeze(item)
+    Object.freeze(value)
+  }
+  return value
 }
 
 function elements(root, predicate, result = []) {
@@ -129,7 +156,12 @@ test('filters keep the last successful snapshot until applied, clear cleanly, an
       calls.push({ ...filters })
       return ledgerSnapshot(filters)
     },
+    async listAudit(filters) {
+      auditCalls.push({ ...filters })
+      return auditSnapshot()
+    },
   }
+  const auditCalls = []
   let excelCount = 0
   let printCount = 0
   const dom = installWarehouseReactDom()
@@ -143,6 +175,7 @@ test('filters keep the last successful snapshot until applied, clear cleanly, an
       onExportExcel() { excelCount += 1 }, onExportPdf() {}, onPrint() { printCount += 1 },
     })) })
     assert.deepEqual(calls[0], { page: 1, pageSize: 20 })
+    assert.deepEqual(auditCalls[0], {})
     assert.match(container.textContent, /快照-全部-第1页-20/u)
 
     await change(field(container, '关键词搜索'), '铜管')
@@ -182,22 +215,44 @@ test('filters keep the last successful snapshot until applied, clear cleanly, an
   }
 })
 
-test('rows expand into source, allocation and automatic audit detail without mutating source records', async () => {
-  const service = { async list(filters) { return ledgerSnapshot(filters) } }
+test('real split rows use the latest full audit allocation without mutating frozen source records', async () => {
+  const fullSnapshot = ledgerSnapshot()
+  assert.equal(fullSnapshot.rows.filter(({ sourceKey }) => sourceKey === 'warehouse:OUT-001').length, 2)
+  assert.equal(fullSnapshot.rows.every(({ allocations }) => allocations.length === 1), true)
+  const snapshot = deepFreeze({
+    ...fullSnapshot,
+    rows: [fullSnapshot.rows[0], fullSnapshot.rows[2]],
+  })
+  const audit = deepFreeze(auditSnapshot())
+  const beforeSnapshot = structuredClone(snapshot)
+  const beforeAudit = structuredClone(audit)
+  const service = {
+    async list() { return snapshot },
+    async listAudit() { return audit },
+  }
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
   try {
     await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
-      service, access: ledgerAccess, projects: [], actorFingerprint: 'accountant-a',
+      service, access: ledgerAccess,
+      projects: [
+        { projectId: 'P-1', projectName: '东京站项目' },
+        { projectId: 'P-2', projectName: '横滨仓库项目' },
+      ],
+      actorFingerprint: 'accountant-a',
     })) })
-    assert.doesNotMatch(container.textContent, /供应商折扣/u)
+    assert.match(container.textContent, /已拆分（2个项目）/u)
+    assert.doesNotMatch(container.textContent, /跨项目分摊/u)
     await act(async () => { button(container, '展开').click() })
     assert.match(container.textContent, /warehouse:OUT-001/u)
-    assert.match(container.textContent, /P-1.*[¥￥]60,000/u)
-    assert.match(container.textContent, /供应商折扣/u)
+    assert.match(container.textContent, /东京站项目.*[¥￥]60,000/u)
+    assert.match(container.textContent, /横滨仓库项目.*[¥￥]40,000/u)
+    assert.match(container.textContent, /跨项目分摊/u)
     assert.match(container.textContent, /会计甲/u)
     assert.match(container.textContent, /收起/u)
+    assert.deepEqual(snapshot, beforeSnapshot)
+    assert.deepEqual(audit, beforeAudit)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()
@@ -211,6 +266,7 @@ test('incomplete source stays explicit, blocks reports, and retry preserves the 
       calls += 1
       return ledgerSnapshot({ ...filters, incompleteSources: calls === 1 ? ['车辆费用', '仓库出库'] : [] })
     },
+    async listAudit() { return auditSnapshot() },
   }
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
@@ -235,6 +291,77 @@ test('incomplete source stays explicit, blocks reports, and retry preserves the 
   }
 })
 
+test('audit failure never presents a complete split report and keeps export and print disabled', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service: {
+        async list() { return ledgerSnapshot() },
+        async listAudit() { throw new Error('audit unavailable') },
+      },
+      access: ledgerAccess, projects: [], actorFingerprint: 'accountant-a',
+      onExportExcel() {}, onExportPdf() {}, onPrint() {},
+    })) })
+    assert.match(container.textContent, /审计记录读取失败/u)
+    assert.match(container.textContent, /拆分状态待读取/u)
+    assert.doesNotMatch(container.textContent, /已拆分（2个项目）/u)
+    assert.equal(button(container, '导出 Excel').disabled, true)
+    assert.equal(button(container, '打印').disabled, true)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('a late audit response from an older applied-filter request cannot refill the current split', async () => {
+  const pendingAudits = []
+  const service = {
+    async list(filters) { return ledgerSnapshot(filters) },
+    listAudit(filters) {
+      return new Promise((resolve) => pendingAudits.push({ filters: { ...filters }, resolve }))
+    },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: ledgerAccess,
+      projects: [
+        { projectId: 'P-1', projectName: '东京站项目' },
+        { projectId: 'P-2', projectName: '旧项目' },
+        { projectId: 'P-3', projectName: '当前项目' },
+      ],
+      actorFingerprint: 'accountant-a',
+      onExportExcel() {}, onExportPdf() {}, onPrint() {},
+    })) })
+    assert.equal(pendingAudits.length, 1)
+    assert.equal(button(container, '导出 Excel').disabled, true)
+    await change(field(container, '关键词搜索'), '铜管')
+    await act(async () => { button(container, '应用筛选').click() })
+    assert.equal(pendingAudits.length, 2)
+    assert.deepEqual(pendingAudits[1].filters, {})
+    pendingAudits[1].resolve(auditSnapshot({ secondProjectId: 'P-3', reason: '当前审计' }))
+    await act(async () => {})
+    assert.match(container.textContent, /已拆分（2个项目）/u)
+    assert.equal(button(container, '导出 Excel').disabled, false)
+    await act(async () => { button(container, '展开').click() })
+    assert.match(container.textContent, /当前项目/u)
+    assert.match(container.textContent, /当前审计/u)
+    assert.doesNotMatch(container.textContent, /旧审计/u)
+    pendingAudits[0].resolve(auditSnapshot({ secondProjectId: 'P-2', reason: '旧审计' }))
+    await act(async () => {})
+    assert.match(container.textContent, /当前项目/u)
+    assert.match(container.textContent, /当前审计/u)
+    assert.doesNotMatch(container.textContent, /旧审计/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('black-gold CSS enforces the readable table dimensions without white or blue surfaces', async () => {
   const css = await readFile(new URL('./projectCostLedger.css', import.meta.url), 'utf8')
   assert.match(css, /\.project-cost-ledger-table\s*\{[^}]*min-width:\s*1380px[^}]*font-size:\s*15px/su)
@@ -245,4 +372,12 @@ test('black-gold CSS enforces the readable table dimensions without white or blu
   postcss.parse(css).walkRules((rule) => {
     for (const selector of rule.selectors) assert.match(selector.trim(), /^\.erp-black-gold\b/u)
   })
+})
+
+test('keyword help matches the secure SQL search scope', () => {
+  const html = renderToStaticMarkup(createElement(ProjectCostLedgerSection, {
+    access: ledgerAccess, initialSnapshot: ledgerSnapshot(),
+  }))
+  assert.match(html, /placeholder="单号、说明"/u)
+  assert.doesNotMatch(html, /placeholder="[^"]*经办人/u)
 })

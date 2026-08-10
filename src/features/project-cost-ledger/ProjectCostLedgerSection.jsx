@@ -46,6 +46,18 @@ function requestFilters(filters, page, pageSize) {
   return result
 }
 
+function auditRequestFilters(filters) {
+  const result = {}
+  for (const key of ['projectId', 'dateFrom', 'dateTo']) {
+    if (filters[key]) result[key] = filters[key]
+  }
+  return result
+}
+
+function filterIdentity(filters) {
+  return JSON.stringify(Object.keys(DEFAULT_FILTERS).map((key) => filters[key]))
+}
+
 function sameFilters(left, right) {
   return Object.keys(DEFAULT_FILTERS).every((key) => left[key] === right[key])
 }
@@ -82,6 +94,7 @@ export default function ProjectCostLedgerSection({
   access,
   projects = [],
   initialSnapshot = null,
+  initialAuditSnapshot = null,
   actorFingerprint = '',
   onAuthInvalid,
   onCreateManual,
@@ -105,24 +118,39 @@ export default function ProjectCostLedgerSection({
     data: readAllowed ? initialSnapshot : null,
     error: '',
   }))
+  const [auditState, setAuditState] = useState(() => ({
+    identity: actorFingerprint,
+    filterIdentity: filterIdentity(DEFAULT_FILTERS),
+    status: !readAllowed ? 'forbidden' : initialAuditSnapshot ? 'ready' : initialSnapshot ? 'error' : 'idle',
+    data: readAllowed ? initialAuditSnapshot : null,
+    error: initialSnapshot && !initialAuditSnapshot ? '项目成本审计记录暂时不可用' : '',
+  }))
 
   const load = useCallback(async (filters, page, pageSize, { replaceApplied = false } = {}) => {
     if (!readAllowed || !service || typeof service.list !== 'function') return false
     const sequence = requestSequenceRef.current + 1
     requestSequenceRef.current = sequence
     const fingerprint = actorFingerprint
+    const requestedFilterIdentity = filterIdentity(filters)
     setLedgerState((current) => ({
       identity: fingerprint, status: 'loading',
       data: current.identity === fingerprint ? current.data : null, error: '',
     }))
-    try {
-      const snapshot = await service.list(requestFilters(filters, page, pageSize))
+    setAuditState({
+      identity: fingerprint, filterIdentity: requestedFilterIdentity,
+      status: typeof service.listAudit === 'function' ? 'loading' : 'error', data: null,
+      error: typeof service.listAudit === 'function' ? '' : '项目成本审计记录暂时不可用',
+    })
+
+    let listSucceeded = false
+    const listPromise = Promise.resolve().then(() => service.list(requestFilters(filters, page, pageSize))).then((snapshot) => {
       if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
       setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
       if (replaceApplied) setAppliedFilters({ ...filters })
       if (isDefaultFilters(filters)) setProjectTotal(snapshot.totalAmount)
+      listSucceeded = true
       return true
-    } catch (error) {
+    }).catch((error) => {
       if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
       if (error?.authInvalid) onAuthInvalid?.()
       setLedgerState((current) => ({
@@ -130,64 +158,81 @@ export default function ProjectCostLedgerSection({
         error: '项目成本服务暂时不可用，请稍后重试',
       }))
       return false
-    }
+    })
+
+    const auditPromise = typeof service.listAudit === 'function'
+      ? Promise.resolve().then(() => service.listAudit(auditRequestFilters(filters))).then((snapshot) => {
+          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
+          setAuditState({
+            identity: fingerprint, filterIdentity: requestedFilterIdentity,
+            status: 'ready', data: snapshot, error: '',
+          })
+          return true
+        }).catch((error) => {
+          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
+          if (error?.authInvalid) onAuthInvalid?.()
+          setAuditState({
+            identity: fingerprint, filterIdentity: requestedFilterIdentity,
+            status: 'error', data: null, error: '项目成本审计记录暂时不可用，请稍后重试',
+          })
+          return false
+        })
+      : Promise.resolve(false)
+
+    await Promise.all([listPromise, auditPromise])
+    return listSucceeded
   }, [actorFingerprint, onAuthInvalid, readAllowed, service])
 
   useEffect(() => {
-    const sequence = requestSequenceRef.current + 1
-    requestSequenceRef.current = sequence
     const fingerprint = actorFingerprint
-    let active = true
     setDraftFilters({ ...DEFAULT_FILTERS })
     setAppliedFilters({ ...DEFAULT_FILTERS })
     setExpandedRows(new Set())
 
     if (!readAllowed) {
+      requestSequenceRef.current += 1
       setLedgerState({ identity: fingerprint, status: 'forbidden', data: null, error: '' })
+      setAuditState({
+        identity: fingerprint, filterIdentity: filterIdentity(DEFAULT_FILTERS),
+        status: 'forbidden', data: null, error: '',
+      })
       return () => {
-        active = false
         requestSequenceRef.current += 1
       }
     }
     if (initialSnapshot) {
+      requestSequenceRef.current += 1
       setProjectTotal(initialSnapshot.totalAmount)
       setLedgerState({ identity: fingerprint, status: 'ready', data: initialSnapshot, error: '' })
+      setAuditState({
+        identity: fingerprint, filterIdentity: filterIdentity(DEFAULT_FILTERS),
+        status: initialAuditSnapshot ? 'ready' : 'error', data: initialAuditSnapshot,
+        error: initialAuditSnapshot ? '' : '项目成本审计记录暂时不可用',
+      })
       return () => {
-        active = false
         requestSequenceRef.current += 1
       }
     }
     if (!service || typeof service.list !== 'function') {
+      requestSequenceRef.current += 1
       setLedgerState({
         identity: fingerprint, status: 'error', data: null,
         error: '项目成本服务暂时不可用，请稍后重试',
       })
+      setAuditState({
+        identity: fingerprint, filterIdentity: filterIdentity(DEFAULT_FILTERS),
+        status: 'error', data: null, error: '项目成本审计记录暂时不可用',
+      })
       return () => {
-        active = false
         requestSequenceRef.current += 1
       }
     }
 
-    setLedgerState({ identity: fingerprint, status: 'loading', data: null, error: '' })
-    void service.list({ page: 1, pageSize: 20 }).then((snapshot) => {
-      if (!active || requestSequenceRef.current !== sequence ||
-          activeFingerprintRef.current !== fingerprint) return
-      setProjectTotal(snapshot.totalAmount)
-      setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
-    }).catch((error) => {
-      if (!active || requestSequenceRef.current !== sequence ||
-          activeFingerprintRef.current !== fingerprint) return
-      if (error?.authInvalid) onAuthInvalid?.()
-      setLedgerState({
-        identity: fingerprint, status: 'error', data: null,
-        error: '项目成本服务暂时不可用，请稍后重试',
-      })
-    })
+    void load(DEFAULT_FILTERS, 1, 20, { replaceApplied: true })
     return () => {
-      active = false
       requestSequenceRef.current += 1
     }
-  }, [actorFingerprint, initialSnapshot, onAuthInvalid, readAllowed, service])
+  }, [actorFingerprint, initialAuditSnapshot, initialSnapshot, load, readAllowed, service])
 
   const visibleState = !readAllowed
     ? { status: 'forbidden', data: null, error: '' }
@@ -195,9 +240,33 @@ export default function ProjectCostLedgerSection({
       ? ledgerState
       : { status: 'idle', data: null, error: '' }
   const snapshot = visibleState.data
+  const appliedFilterIdentity = filterIdentity(appliedFilters)
+  const visibleAuditState = !readAllowed
+    ? { status: 'forbidden', data: null, error: '' }
+    : auditState.identity === actorFingerprint && auditState.filterIdentity === appliedFilterIdentity
+      ? auditState
+      : auditState.identity === actorFingerprint && visibleState.status === 'loading'
+        ? { status: 'loading', data: null, error: '' }
+        : { status: 'idle', data: null, error: '' }
+  const auditIndex = useMemo(() => {
+    const eventsBySource = new Map()
+    const latestAllocationBySource = new Map()
+    for (const event of visibleAuditState.data?.events ?? []) {
+      const events = eventsBySource.get(event.sourceKey)
+      if (events) events.push(event)
+      else eventsBySource.set(event.sourceKey, [event])
+      if (event.eventType !== 'allocation' || !Array.isArray(event.allocationsAfter)) continue
+      const previous = latestAllocationBySource.get(event.sourceKey)
+      if (!previous || event.sequenceNo > previous.sequenceNo ||
+          (event.sequenceNo === previous.sequenceNo && event.createdAt > previous.createdAt)) {
+        latestAllocationBySource.set(event.sourceKey, event)
+      }
+    }
+    return { eventsBySource, latestAllocationBySource }
+  }, [visibleAuditState.data])
   const filtersDirty = !sameFilters(draftFilters, appliedFilters)
   const reportBlocked = filtersDirty || !snapshot || visibleState.status === 'loading' ||
-    snapshot.incompleteSources.length > 0
+    snapshot.incompleteSources.length > 0 || visibleAuditState.status !== 'ready'
   const pageCount = snapshot ? Math.max(1, Math.ceil(snapshot.totalRows / snapshot.pageSize)) : 1
   const appliedLabel = useMemo(
     () => appliedFilterLabel(appliedFilters, projects),
@@ -206,7 +275,7 @@ export default function ProjectCostLedgerSection({
 
   const runReportAction = (callback) => {
     if (reportBlocked || typeof callback !== 'function') return
-    callback({ snapshot, filters: { ...appliedFilters } })
+    callback({ snapshot, auditSnapshot: visibleAuditState.data, filters: { ...appliedFilters } })
   }
 
   const updateDraft = (field, value) => {
@@ -282,7 +351,7 @@ export default function ProjectCostLedgerSection({
             <option value="all">全部记录</option><option value="adjusted">仅已调整</option><option value="unadjusted">仅未调整</option>
           </select>
         </label>
-        <label className="project-cost-ledger-keyword">关键词搜索<input value={draftFilters.keyword} onChange={(event) => updateDraft('keyword', event.target.value)} placeholder="单号、说明、经办人" /></label>
+        <label className="project-cost-ledger-keyword">关键词搜索<input value={draftFilters.keyword} onChange={(event) => updateDraft('keyword', event.target.value)} placeholder="单号、说明" /></label>
         <div className="project-cost-ledger-filter-actions">
           <button className="project-cost-ledger-primary" type="button" disabled={!filtersDirty || visibleState.status === 'loading'} onClick={handleApply}>应用筛选</button>
           <button type="button" disabled={visibleState.status === 'loading'} onClick={handleClear}>清除筛选</button>
@@ -301,6 +370,15 @@ export default function ProjectCostLedgerSection({
         <div className="project-cost-ledger-alert" role="alert">
           <span>项目成本读取失败：{visibleState.error}</span>
           <button type="button" onClick={() => load(appliedFilters, snapshot?.page ?? 1, snapshot?.pageSize ?? 20)}>重新读取</button>
+        </div>
+      )}
+      {snapshot && visibleAuditState.status === 'loading' && (
+        <div className="project-cost-ledger-state" role="status">正在读取项目成本审计…</div>
+      )}
+      {snapshot && ['idle', 'error'].includes(visibleAuditState.status) && (
+        <div className="project-cost-ledger-alert" role="alert">
+          <div><strong>审计记录读取失败，拆分状态暂不可确认</strong><span>{visibleAuditState.error || '请重新读取当前报表'}</span></div>
+          <button type="button" disabled={visibleState.status === 'loading'} onClick={() => load(appliedFilters, snapshot.page, snapshot.pageSize)}>重新读取审计</button>
         </div>
       )}
 
@@ -336,6 +414,10 @@ export default function ProjectCostLedgerSection({
                   const rowKey = `${row.sourceKey}:${row.projectId}:${index}`
                   const expanded = expandedRows.has(rowKey)
                   const categoryStart = index === 0 || snapshot.rows[index - 1].category !== row.category
+                  const sourceAuditEvents = auditIndex.eventsBySource.get(row.sourceKey) ?? []
+                  const latestAllocationEvent = auditIndex.latestAllocationBySource.get(row.sourceKey)
+                  const fullAllocations = latestAllocationEvent?.allocationsAfter ?? null
+                  const isSplit = visibleAuditState.status === 'ready' && fullAllocations?.length > 1
                   return (
                     <Fragment key={rowKey}>
                       <tr className={categoryStart ? 'project-cost-ledger-category-start' : ''}>
@@ -344,7 +426,11 @@ export default function ProjectCostLedgerSection({
                         <td className="project-cost-ledger-amount">{formatYen(row.originalAmount)}</td>
                         <td className="project-cost-ledger-amount">{formatYen(row.adjustmentAmount)}</td>
                         <td className="project-cost-ledger-amount project-cost-ledger-effective">{formatYen(row.effectiveAmount)}</td>
-                        <td>{row.allocations.length > 1 ? `已拆分（${row.allocations.length}个项目）` : row.projectName || projectName(projects, row.projectId)}</td>
+                        <td>{visibleAuditState.status !== 'ready'
+                          ? '拆分状态待读取'
+                          : isSplit
+                            ? `已拆分（${fullAllocations.length}个项目）`
+                            : row.projectName || projectName(projects, row.projectId)}</td>
                         <td>{row.operator || '—'}</td><td>{row.adjusted ? <span className="project-cost-ledger-adjusted">已调整</span> : '原始'}</td>
                         <td><div className="project-cost-ledger-row-actions">
                           <button type="button" onClick={() => toggleExpanded(rowKey)}>{expanded ? '收起' : '展开'}</button>
@@ -358,8 +444,14 @@ export default function ProjectCostLedgerSection({
                             <div><dt>来源键</dt><dd>{row.sourceKey}</dd></div><div><dt>单据类型</dt><dd>{row.sourceDocumentType}</dd></div>
                             <div><dt>版本</dt><dd>{row.version}</dd></div>
                           </dl></section>
-                          <section><h3>项目分摊</h3>{row.allocations.map((allocation) => <div className="project-cost-ledger-allocation" key={allocation.projectId}><span>{projectName(projects, allocation.projectId)}</span><strong>{formatYen(allocation.amount)}</strong></div>)}</section>
-                          <section><h3>自动审计记录</h3>{row.auditEvents.length === 0 ? <p>暂无会计调整</p> : <ol>{row.auditEvents.map((event, eventIndex) => <li key={`${event.sequenceNo ?? eventIndex}:${event.createdAt ?? ''}`}><strong>{auditDescription(event)}</strong><span>{event.reason || '—'}｜{event.actorName || '—'}｜{formatInstant(event.createdAt)}</span></li>)}</ol>}</section>
+                          <section><h3>项目分摊</h3>{visibleAuditState.status !== 'ready'
+                            ? <p>审计记录暂不可用，无法确认完整分摊</p>
+                            : (fullAllocations ?? row.allocations).map((allocation) => <div className="project-cost-ledger-allocation" key={allocation.projectId}><span>{projectName(projects, allocation.projectId)}</span><strong>{formatYen(allocation.amount)}</strong></div>)}</section>
+                          <section><h3>自动审计记录</h3>{visibleAuditState.status !== 'ready'
+                            ? <p>审计记录暂不可用</p>
+                            : sourceAuditEvents.length === 0
+                              ? <p>暂无会计调整</p>
+                              : <ol>{sourceAuditEvents.map((event, eventIndex) => <li key={`${event.sequenceNo ?? eventIndex}:${event.createdAt ?? ''}:${event.eventType ?? ''}`}><strong>{auditDescription(event)}</strong><span>{event.reason || '—'}｜{event.actorName || '—'}｜{formatInstant(event.createdAt)}</span></li>)}</ol>}</section>
                         </div>
                       </td></tr>}
                     </Fragment>
