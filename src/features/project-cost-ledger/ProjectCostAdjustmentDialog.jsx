@@ -48,9 +48,12 @@ export default function ProjectCostAdjustmentDialog({
   const mountedRef = useRef(true)
   const operationRef = useRef(0)
   const submitLatchRef = useRef(false)
-  useEffect(() => () => {
-    mountedRef.current = false
-    operationRef.current += 1
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      operationRef.current += 1
+    }
   }, [])
   const adjustmentAmount = amount === '' ? null : Number(amount)
   const amountUnits = toSignedFourDecimalUnits(adjustmentAmount)

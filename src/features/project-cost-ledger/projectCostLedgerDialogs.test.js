@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
@@ -386,6 +386,164 @@ function auditSnapshot({ version = 2, effectiveAmount = 900 } = {}) {
   return { status: 'ready', generatedAt: '2026-08-10T03:00:09.000Z', events }
 }
 
+function strictSection(props) {
+  return createElement(StrictMode, null, createElement(ProjectCostLedgerSection, props))
+}
+
+function strictSectionProps(service, actorFingerprint) {
+  return {
+    service,
+    access: { readLedger: true, createManual: true, adjust: true, allocate: true },
+    projects,
+    actorFingerprint,
+    initialSnapshot: ledgerSnapshot(),
+    initialAuditSnapshot: auditSnapshot(),
+  }
+}
+
+test('StrictMode section can cancel, reopen, submit and correlate an adjustment reload', async () => {
+  let adjusted = false
+  let adjustCalls = 0
+  let listCalls = 0
+  let auditCalls = 0
+  const service = {
+    async list() { listCalls += 1; return ledgerSnapshot({ version: 3, effectiveAmount: 890 }) },
+    async listAudit() { auditCalls += 1; return auditSnapshot({ version: 3, effectiveAmount: 890 }) },
+    async adjust(request) {
+      adjustCalls += 1
+      adjusted = true
+      return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 890 }
+    },
+    async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-adjustment'))) })
+    await act(async () => { button(container, '调整').click() })
+    await act(async () => { button(container, '取消').click() })
+    assert.doesNotMatch(container.textContent, /调整项目成本/u)
+
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '本次调整金额'), '-10')
+    await change(field(container, '调整原因'), 'StrictMode 调整')
+    await submitForm(container)
+    assert.equal(adjusted, true)
+    assert.equal(adjustCalls, 1)
+    assert.equal(listCalls, 1)
+    assert.equal(auditCalls, 1)
+    assert.doesNotMatch(container.textContent, /调整项目成本/u)
+    assert.equal(button(container, '收起')?.textContent, '收起')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('StrictMode section completes one allocation mutation and its guarded reload', async () => {
+  let replaced = false
+  let replaceCalls = 0
+  let listCalls = 0
+  let auditCalls = 0
+  const afterAudit = {
+    ...auditSnapshot(),
+    events: [...auditSnapshot().events, {
+      eventType: 'allocation', sourceKey: ledgerRow.sourceKey, sequenceNo: 2,
+      amountBefore: 900, amountAfter: 900, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P-1', amount: 900 }],
+      allocationsAfter: [{ projectId: 'P-1', amount: 900 }],
+      reason: 'StrictMode 分摊', actorName: '会计甲', createdAt: '2026-08-10T02:00:02.000Z',
+    }],
+  }
+  const service = {
+    async list() { listCalls += 1; return ledgerSnapshot({ version: 3, effectiveAmount: 900 }) },
+    async listAudit() { auditCalls += 1; return afterAudit },
+    async replaceAllocations(request) {
+      replaceCalls += 1
+      replaced = true
+      return { sourceKey: request.sourceKey, version: 3, allocations: request.allocations }
+    },
+    async adjust() {}, async createManual() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-allocation'))) })
+    await act(async () => { button(container, '拆分').click() })
+    await change(field(container, '调整原因'), 'StrictMode 分摊')
+    await submitForm(container)
+    assert.equal(replaced, true)
+    assert.equal(replaceCalls, 1)
+    assert.equal(listCalls, 1)
+    assert.equal(auditCalls, 1)
+    assert.doesNotMatch(container.textContent, /拆分项目成本/u)
+    assert.equal(button(container, '收起')?.textContent, '收起')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('StrictMode section completes one manual mutation and reloads the generated source', async () => {
+  let manualSourceKey = ''
+  let createCalls = 0
+  let listCalls = 0
+  let auditCalls = 0
+  const service = {
+    async list() {
+      listCalls += 1
+      const snapshot = ledgerSnapshot()
+      const manualRow = {
+        ...ledgerRow,
+        sourceKey: manualSourceKey,
+        sourceModule: 'manual', sourceDocumentType: 'manual_cost', sourceDocumentId: manualSourceKey.slice(7),
+        category: '其他费用', description: 'StrictMode 补录', originalAmount: 20,
+        adjustmentAmount: 0, effectiveAmount: 20, adjusted: false, version: 1,
+        allocations: [{ projectId: 'P-1', amount: 20 }],
+      }
+      return {
+        ...snapshot, totalRows: 2, totalAmount: 920,
+        categoryTotals: [...snapshot.categoryTotals, { category: '其他费用', amount: 20 }],
+        rows: [...snapshot.rows, manualRow],
+      }
+    },
+    async listAudit() { auditCalls += 1; return auditSnapshot() },
+    async createManual({ requestId }) {
+      createCalls += 1
+      manualSourceKey = `manual:${requestId}`
+      return { sourceKey: manualSourceKey }
+    },
+    async adjust() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-manual'))) })
+    await act(async () => { button(container, '新增调整费用').click() })
+    const manualDialog = elements(container, (element) => element.getAttribute?.('role') === 'dialog')[0]
+    await change(field(manualDialog, '项目'), 'P-1')
+    await change(field(manualDialog, '费用类别'), '其他费用')
+    await change(field(manualDialog, '日期'), '2026-08-10')
+    await change(field(manualDialog, '金额'), '20')
+    await change(field(manualDialog, '费用说明'), 'StrictMode 补录')
+    await change(field(manualDialog, '经办人'), '会计甲')
+    await change(field(manualDialog, '录入原因'), 'StrictMode 回归')
+    assert.equal(button(manualDialog, '保存费用').disabled, false)
+    await submitForm(manualDialog)
+    assert.equal(createCalls, 1)
+    assert.equal(listCalls, 1)
+    assert.equal(auditCalls, 1)
+    assert.equal(elements(container, (element) => element.getAttribute?.('role') === 'dialog').length, 0)
+    assert.equal(button(container, '收起')?.textContent, '收起')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('section keeps conflict drafts, refreshes safely, and reloads the applied snapshot plus matching audit before reopening detail', async () => {
   let version = 2
   let effectiveAmount = 900
@@ -646,15 +804,16 @@ test('late mutation completion after cancel or actor replacement cannot reload o
   const root = createRoot(container)
   const props = (actorFingerprint) => ({
     service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects, actorFingerprint,
+    initialSnapshot: ledgerSnapshot(), initialAuditSnapshot: auditSnapshot(),
   })
   try {
-    await act(async () => { root.render(createElement(ProjectCostLedgerSection, props('actor-old'))) })
+    await act(async () => { root.render(strictSection(props('actor-old'))) })
     await act(async () => { button(container, '调整').click() })
     await change(field(container, '本次调整金额'), '-10')
     await change(field(container, '调整原因'), '旧弹窗')
     await submitForm(container)
     await act(async () => { button(container, '取消').click() })
-    await act(async () => { root.render(createElement(ProjectCostLedgerSection, props('actor-new'))) })
+    await act(async () => { root.render(strictSection(props('actor-new'))) })
     await act(async () => {})
     await act(async () => { button(container, '调整').click() })
     await change(field(container, '调整原因'), '新弹窗')
@@ -680,13 +839,12 @@ test('cancelled mutation reload cannot enter loading or commit its late ledger, 
   const service = {
     async list() {
       listCalls += 1
-      if (listCalls === 1) return ledgerSnapshot()
       reloadStarted.resolve()
       return lateList.promise
     },
     async listAudit() {
       auditCalls += 1
-      return auditCalls === 1 ? auditSnapshot() : lateAudit.promise
+      return lateAudit.promise
     },
     async adjust(request) { return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 890 } },
     async createManual() {}, async replaceAllocations() {},
@@ -695,9 +853,10 @@ test('cancelled mutation reload cannot enter loading or commit its late ledger, 
   const container = dom.createContainer()
   const root = createRoot(container)
   try {
-    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+    await act(async () => { root.render(strictSection({
       service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
       actorFingerprint: 'accountant-cancel-load', onAuthInvalid() { authInvalidCalls += 1 },
+      initialSnapshot: ledgerSnapshot(), initialAuditSnapshot: auditSnapshot(),
     })) })
     await act(async () => { button(container, '调整').click() })
     await change(field(container, '本次调整金额'), '-10')
@@ -733,13 +892,12 @@ test('unmounted mutation reload drops late ledger, audit, and auth-invalid compl
   const service = {
     async list() {
       listCalls += 1
-      if (listCalls === 1) return ledgerSnapshot()
       reloadStarted.resolve()
       return lateList.promise
     },
     async listAudit() {
       auditCalls += 1
-      return auditCalls === 1 ? auditSnapshot() : lateAudit.promise
+      return lateAudit.promise
     },
     async adjust(request) { return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 890 } },
     async createManual() {}, async replaceAllocations() {},
@@ -747,9 +905,10 @@ test('unmounted mutation reload drops late ledger, audit, and auth-invalid compl
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
-  await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+  await act(async () => { root.render(strictSection({
     service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
     actorFingerprint: 'accountant-unmount-load', onAuthInvalid() { authInvalidCalls += 1 },
+    initialSnapshot: ledgerSnapshot(), initialAuditSnapshot: auditSnapshot(),
   })) })
   await act(async () => { button(container, '调整').click() })
   await change(field(container, '本次调整金额'), '-10')

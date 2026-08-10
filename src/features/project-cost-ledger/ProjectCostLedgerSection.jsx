@@ -338,10 +338,13 @@ export default function ProjectCostLedgerSection({
     return { snapshot: loadedSnapshot, auditSnapshot: loadedAuditSnapshot, auditIndex: loadedAuditIndex }
   }, [actorFingerprint, onAuthInvalid, readAllowed, service])
 
-  useEffect(() => () => {
-    mountedRef.current = false
-    activeDialogTokenRef.current = ''
-    dialogGenerationRef.current += 1
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      activeDialogTokenRef.current = ''
+      dialogGenerationRef.current += 1
+    }
   }, [])
 
   useEffect(() => {

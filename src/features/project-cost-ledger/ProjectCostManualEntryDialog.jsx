@@ -32,9 +32,12 @@ export default function ProjectCostManualEntryDialog({
   const mountedRef = useRef(true)
   const operationRef = useRef(0)
   const submitLatchRef = useRef(false)
-  useEffect(() => () => {
-    mountedRef.current = false
-    operationRef.current += 1
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      operationRef.current += 1
+    }
   }, [])
   if (!open) return null
 
