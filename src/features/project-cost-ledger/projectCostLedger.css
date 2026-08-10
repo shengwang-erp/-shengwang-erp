@@ -1,0 +1,386 @@
+.erp-black-gold .project-cost-ledger {
+  display: grid;
+  gap: 22px;
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .project-cost-ledger-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 22px;
+  border: 1px solid var(--erp-border-subtle);
+  border-top: 2px solid var(--erp-accent-gold);
+  border-radius: 14px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-ledger-actions > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.erp-black-gold .project-cost-ledger-actions strong {
+  color: var(--erp-accent-gold-soft);
+  font-size: 22px;
+}
+
+.erp-black-gold .project-cost-ledger-actions span,
+.erp-black-gold .project-cost-ledger-snapshot-label small,
+.erp-black-gold .project-cost-ledger-summary small {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .project-cost-ledger-action-buttons,
+.erp-black-gold .project-cost-ledger-filter-actions,
+.erp-black-gold .project-cost-ledger-row-actions,
+.erp-black-gold .project-cost-ledger-pagination > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.erp-black-gold .project-cost-ledger button {
+  min-height: 42px;
+  padding: 9px 15px;
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 9px;
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.erp-black-gold .project-cost-ledger button:hover:not(:disabled) {
+  border-color: var(--erp-accent-gold);
+  background: var(--erp-bg-hover);
+}
+
+.erp-black-gold .project-cost-ledger button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.erp-black-gold .project-cost-ledger .project-cost-ledger-primary {
+  color: var(--erp-bg-canvas);
+  border-color: var(--erp-accent-gold);
+  background: var(--erp-accent-gold);
+}
+
+.erp-black-gold .project-cost-ledger-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 14px;
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .project-cost-ledger-filters label,
+.erp-black-gold .project-cost-ledger-pagination label {
+  display: grid;
+  gap: 8px;
+  color: var(--erp-accent-gold-soft);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.erp-black-gold .project-cost-ledger-filters input,
+.erp-black-gold .project-cost-ledger-filters select,
+.erp-black-gold .project-cost-ledger-pagination select {
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 9px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  font: inherit;
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-ledger-keyword {
+  grid-column: span 2;
+}
+
+.erp-black-gold .project-cost-ledger-filter-actions {
+  align-items: end;
+}
+
+.erp-black-gold .project-cost-ledger-snapshot-label {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--erp-border-subtle);
+}
+
+.erp-black-gold .project-cost-ledger-snapshot-label strong {
+  color: var(--erp-status-warning);
+}
+
+.erp-black-gold .project-cost-ledger-state,
+.erp-black-gold .project-cost-ledger-alert {
+  padding: 18px 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-ledger-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-color: var(--erp-status-warning);
+}
+
+.erp-black-gold .project-cost-ledger-alert div {
+  display: grid;
+  gap: 5px;
+}
+
+.erp-black-gold .project-cost-ledger-alert strong {
+  color: var(--erp-status-warning);
+}
+
+.erp-black-gold .project-cost-ledger-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+.erp-black-gold .project-cost-ledger-summary article,
+.erp-black-gold .project-cost-ledger-categories article {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-ledger-summary span,
+.erp-black-gold .project-cost-ledger-categories span {
+  color: var(--erp-accent-gold-soft);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.erp-black-gold .project-cost-ledger-summary strong {
+  color: var(--erp-text-primary);
+  font-size: clamp(24px, 2.2vw, 32px);
+}
+
+.erp-black-gold .project-cost-ledger-categories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.erp-black-gold .project-cost-ledger-categories article {
+  padding: 15px 18px;
+}
+
+.erp-black-gold .project-cost-ledger-categories strong {
+  color: var(--erp-text-primary);
+  font-size: 19px;
+}
+
+.erp-black-gold .project-cost-ledger-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 14px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-ledger-table {
+  width: 100%;
+  min-width: 1380px;
+  border-collapse: collapse;
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-surface);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-ledger-table th,
+.erp-black-gold .project-cost-ledger-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--erp-border-subtle);
+  line-height: 1.55;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.erp-black-gold .project-cost-ledger-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-bg-elevated);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.erp-black-gold .project-cost-ledger-table tbody tr:hover > td {
+  background: var(--erp-bg-hover);
+}
+
+.erp-black-gold .project-cost-ledger-amount {
+  text-align: right;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.erp-black-gold .project-cost-ledger-effective {
+  color: var(--erp-text-primary);
+  font-size: 16px;
+}
+
+.erp-black-gold .project-cost-ledger-category-start td {
+  border-top: 2px solid var(--erp-border-gold-muted);
+  border-top-width: 2px;
+}
+
+.erp-black-gold .project-cost-ledger-description {
+  min-width: 210px;
+  max-width: 320px;
+}
+
+.erp-black-gold .project-cost-ledger-adjusted {
+  display: inline-flex;
+  padding: 4px 9px;
+  border: 1px solid var(--erp-accent-gold);
+  border-radius: 999px;
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-accent-gold-surface);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.erp-black-gold .project-cost-ledger-row-actions {
+  flex-wrap: nowrap;
+}
+
+.erp-black-gold .project-cost-ledger-row-actions button {
+  min-height: 36px;
+  padding: 6px 10px;
+}
+
+.erp-black-gold .project-cost-ledger-detail-row > td {
+  background: var(--erp-bg-elevated);
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(240px, 0.8fr) minmax(360px, 1.4fr);
+  gap: 18px;
+  padding: 8px 0;
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid section {
+  padding: 16px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 10px;
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid h3 {
+  margin: 0 0 12px;
+  color: var(--erp-accent-gold-soft);
+  font-size: 16px;
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid dl,
+.erp-black-gold .project-cost-ledger-detail-grid ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid dl div,
+.erp-black-gold .project-cost-ledger-allocation,
+.erp-black-gold .project-cost-ledger-detail-grid li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid dt,
+.erp-black-gold .project-cost-ledger-detail-grid p,
+.erp-black-gold .project-cost-ledger-detail-grid li span {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid dd,
+.erp-black-gold .project-cost-ledger-detail-grid p {
+  margin: 0;
+}
+
+.erp-black-gold .project-cost-ledger-detail-grid li {
+  flex-direction: column;
+  padding-left: 4px;
+}
+
+.erp-black-gold .project-cost-ledger-empty {
+  padding: 32px;
+  color: var(--erp-text-muted);
+  text-align: center;
+}
+
+.erp-black-gold .project-cost-ledger-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--erp-border-subtle);
+  border-radius: 12px;
+  background: var(--erp-bg-surface);
+  font-size: 15px;
+}
+
+.erp-black-gold .project-cost-ledger-pagination label {
+  grid-template-columns: auto 88px;
+  align-items: center;
+}
+
+@media (max-width: 1023px) {
+  .erp-black-gold .project-cost-ledger-actions,
+  .erp-black-gold .project-cost-ledger-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .erp-black-gold .project-cost-ledger-filters,
+  .erp-black-gold .project-cost-ledger-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .erp-black-gold .project-cost-ledger {
+    gap: 16px;
+  }
+
+  .erp-black-gold .project-cost-ledger-filters,
+  .erp-black-gold .project-cost-ledger-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .erp-black-gold .project-cost-ledger-keyword {
+    grid-column: auto;
+  }
+
+  .erp-black-gold .project-cost-ledger-action-buttons button,
+  .erp-black-gold .project-cost-ledger-filter-actions button {
+    flex: 1 1 140px;
+  }
+}

@@ -88,6 +88,8 @@ import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridg
 import { purchaseService } from './services/purchaseService.js'
 import { createProjectCostLedgerService } from './services/projectCostLedgerService.js'
 import { createProjectCostLedgerDemoService } from './features/project-cost-ledger/projectCostLedgerDemoService.js'
+import ProjectCostLedgerSection from './features/project-cost-ledger/ProjectCostLedgerSection.jsx'
+import './features/project-cost-ledger/projectCostLedger.css'
 import { createWarehouseService } from './services/warehouseService.js'
 import { createWarehouseConfirmationService } from './services/warehouseConfirmationService.js'
 import { createWarehouseMediaService } from './services/warehouseMediaService.js'
@@ -98,6 +100,7 @@ import {
 
 const WarehouseManagementPage = lazy(() => import('./features/warehouse/WarehouseManagementPage.jsx'))
 const WarehouseRequestPage = lazy(() => import('./features/warehouse/WarehouseRequestPage.jsx'))
+export { ProjectCostLedgerSection }
 import {
   classifyBusinessSourceError,
   toBusinessSourceState,
@@ -6821,13 +6824,6 @@ export function AccountingCostPage({
           onAuthInvalid={onProjectCostAuthInvalid}
           projects={projects}
           access={resolvedAccess.projectCost}
-          legacyProps={{
-            employees,
-            records: projectCostRecords,
-            setRecords: setProjectCostRecords,
-            saveRecord: saveManualProjectCost,
-            deleteRecord: deleteManualProjectCost,
-          }}
         />
       )}
       {visibleSection === 'operatingExpense' && (
@@ -7101,107 +7097,6 @@ function SalaryRecordsSection({ access, employees, records, setRecords }) {
         )}
       </div>
     </>
-  )
-}
-
-export function ProjectCostLedgerSection({
-  service,
-  access,
-  projects = [],
-  actorFingerprint = '',
-  onAuthInvalid,
-  legacyProps = null,
-}) {
-  const readAllowed = access?.readLedger ?? access?.view ?? false
-  const requestSequenceRef = useRef(0)
-  const activeFingerprintRef = useRef(actorFingerprint)
-  activeFingerprintRef.current = actorFingerprint
-  const [ledgerState, setLedgerState] = useState(() => ({
-    identity: actorFingerprint,
-    status: readAllowed ? 'idle' : 'forbidden',
-    data: null,
-    error: '',
-  }))
-
-  useEffect(() => {
-    const sequence = requestSequenceRef.current + 1
-    requestSequenceRef.current = sequence
-    const fingerprint = actorFingerprint
-    let active = true
-
-    if (!readAllowed) {
-      setLedgerState({ identity: fingerprint, status: 'forbidden', data: null, error: '' })
-      return () => {
-        active = false
-        requestSequenceRef.current += 1
-      }
-    }
-    if (!service || typeof service.list !== 'function') {
-      setLedgerState({
-        identity: fingerprint,
-        status: 'error',
-        data: null,
-        error: '项目成本服务暂时不可用',
-      })
-      return () => {
-        active = false
-        requestSequenceRef.current += 1
-      }
-    }
-
-    setLedgerState({ identity: fingerprint, status: 'loading', data: null, error: '' })
-    void service.list({ page: 1, pageSize: 20 }).then((snapshot) => {
-      if (!active || requestSequenceRef.current !== sequence ||
-          activeFingerprintRef.current !== fingerprint) return
-      setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
-    }).catch((error) => {
-      if (!active || requestSequenceRef.current !== sequence ||
-          activeFingerprintRef.current !== fingerprint) return
-      if (error?.authInvalid) onAuthInvalid?.()
-      setLedgerState({
-        identity: fingerprint,
-        status: 'error',
-        data: null,
-        error: '项目成本服务暂时不可用，请稍后重试',
-      })
-    })
-
-    return () => {
-      active = false
-      requestSequenceRef.current += 1
-    }
-  }, [actorFingerprint, onAuthInvalid, readAllowed, service])
-
-  const visibleLedgerState = !readAllowed
-    ? { status: 'forbidden', data: null, error: '' }
-    : ledgerState.identity === actorFingerprint
-      ? ledgerState
-      : { status: 'idle', data: null, error: '' }
-
-  return (
-    <section className="project-cost-ledger-lifecycle" data-project-count={projects.length}>
-      {visibleLedgerState.status === 'idle' && <div className="empty-state">项目成本尚未读取</div>}
-      {visibleLedgerState.status === 'loading' && <div className="empty-state">正在读取项目成本…</div>}
-      {visibleLedgerState.status === 'forbidden' && <div className="empty-state">无权读取项目成本</div>}
-      {visibleLedgerState.status === 'error' && (
-        <div className="empty-state" role="alert">项目成本读取失败：{visibleLedgerState.error}</div>
-      )}
-      {visibleLedgerState.status === 'ready' && (
-        <div className="project-cost-ledger-loaded">
-          <span>已加载 {visibleLedgerState.data.totalRows} 条</span>
-          {visibleLedgerState.data.rows.map((row) => (
-            <span key={`${row.sourceKey}:${row.projectId}`}>{row.description}</span>
-          ))}
-        </div>
-      )}
-      {legacyProps && !service && (
-        <ProjectCostSection
-          {...legacyProps}
-          access={access}
-          projects={projects}
-        />
-      )}
-    </section>
   )
 }
 
