@@ -123,6 +123,27 @@ test('audit accepts an old allocation snapshot followed by adjustment and curren
   assert.equal(result.events[0].allocationsAfter[1].amount, 200)
 })
 
+test('audit accepts only the legal single-zero default before a signed zero-total allocation', async () => {
+  const event = {
+    eventType: 'allocation', sourceKey: 'purchase:PO-1', sequenceNo: 2,
+    amountBefore: 0, amountAfter: 0, adjustmentAmount: 0,
+    allocationsBefore: [{ projectId: 'P1', amount: 0 }],
+    allocationsAfter: [{ projectId: 'P1', amount: 1 }, { projectId: 'P2', amount: -1 }],
+    reason: '归零后分摊', actorName: '会计', createdAt: '2026-08-10T01:00:00.000Z',
+  }
+  const valid = clientReturning({ data: { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', events: [event] }, error: null, status: 200 })
+  const result = await createProjectCostLedgerService(valid.client, { configured: true }).listAudit({})
+  assert.deepEqual(result.events[0].allocationsBefore, [{ projectId: 'P1', amount: 0 }])
+
+  for (const invalidEvent of [
+    { ...event, allocationsBefore: [{ projectId: 'P1', amount: 0 }, { projectId: 'P2', amount: 0 }] },
+    { ...event, allocationsAfter: [{ projectId: 'P1', amount: 0 }] },
+  ]) {
+    const invalid = clientReturning({ data: { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', events: [invalidEvent] }, error: null, status: 200 })
+    await assert.rejects(createProjectCostLedgerService(invalid.client, { configured: true }).listAudit({}), errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'))
+  }
+})
+
 test('only documented own SQL hints map to safe errors and supplier details never escape', async () => {
   const cases = [
     ['22023', 'PROJECT_COST_LEDGER_INPUT_INVALID'],

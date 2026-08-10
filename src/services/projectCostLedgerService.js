@@ -239,10 +239,12 @@ function normalizeManualResponse(value) {
   })
 }
 
-function normalizeAuditAllocations(value, { required = false } = {}) {
+function normalizeAuditAllocations(value, { required = false, allowSingleZero = false } = {}) {
   if (value === null) return null
-  const allocations = exactArray(value, { maximum: 100 }).map((item) => normalizeAllocation(item, { input: false, nonzero: true }))
+  const allocations = exactArray(value, { maximum: 100 }).map((item) => normalizeAllocation(item, { input: false, nonzero: !allowSingleZero }))
   if ((required && allocations.length === 0) || new Set(allocations.map(({ projectId }) => projectId)).size !== allocations.length) throw unavailableError()
+  if (allowSingleZero && allocations.some(({ amount }) => amount === 0) &&
+      !(allocations.length === 1 && allocations[0].amount === 0)) throw unavailableError()
   return allocations
 }
 
@@ -261,7 +263,7 @@ function normalizeAuditResponse(value) {
     const amountBefore = money(event.amountBefore, { input: false })
     const amountAfter = money(event.amountAfter, { input: false })
     const adjustmentAmount = money(event.adjustmentAmount, { input: false })
-    const allocationsBefore = normalizeAuditAllocations(event.allocationsBefore, { required: event.eventType === 'allocation' })
+    const allocationsBefore = normalizeAuditAllocations(event.allocationsBefore, { required: event.eventType === 'allocation', allowSingleZero: event.eventType === 'allocation' })
     const allocationsAfter = normalizeAuditAllocations(event.allocationsAfter, { required: event.eventType === 'allocation' })
     if (event.eventType === 'adjustment') {
       if (allocationsBefore !== null || allocationsAfter !== null || moneyUnits(amountBefore) + moneyUnits(adjustmentAmount) !== moneyUnits(amountAfter)) throw unavailableError()

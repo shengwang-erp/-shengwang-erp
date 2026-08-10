@@ -115,6 +115,22 @@ test('demo accepts reallocation after an adjustment changed the prior allocation
   assert.deepEqual(reallocation.allocationsAfter, [{ projectId: 'P1', amount: 100 }, { projectId: 'P2', amount: 200 }])
 })
 
+test('demo supports signed first allocation after an adjustment reduces the source to zero', async () => {
+  const { service } = createDemo()
+  await service.adjust({ sourceKey: 'purchase:PO-DIRECT', expectedVersion: 1, adjustmentAmount: -100, reason: '成本归零' })
+  await service.replaceAllocations({
+    sourceKey: 'purchase:PO-DIRECT', expectedVersion: 2, reason: '正负项目分摊',
+    allocations: [{ projectId: 'P1', amount: 1 }, { projectId: 'P2', amount: -1 }],
+  })
+  const rows = (await service.list({ sourceModule: 'purchase' })).rows.filter(({ sourceKey }) => sourceKey === 'purchase:PO-DIRECT')
+  assert.deepEqual(rows.map(({ projectId, effectiveAmount }) => ({ projectId, effectiveAmount })), [
+    { projectId: 'P1', effectiveAmount: 1 }, { projectId: 'P2', effectiveAmount: -1 },
+  ])
+  const allocation = (await service.listAudit({})).events.at(-1)
+  assert.deepEqual(allocation.allocationsBefore, [{ projectId: 'P1', amount: 0 }])
+  assert.deepEqual(allocation.allocationsAfter, [{ projectId: 'P1', amount: 1 }, { projectId: 'P2', amount: -1 }])
+})
+
 test('demo rejects unbalanced allocations and missing sources without appending events', async () => {
   const { service, eventStore } = createDemo()
   await assert.rejects(service.replaceAllocations({ sourceKey: 'warehouse:SO-1', expectedVersion: 1, reason: '错误分摊', allocations: [{ projectId: 'P1', amount: 199 }] }), (error) => error.code === 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED')
