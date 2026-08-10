@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
-import { safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
+import { projectCostDialogOutcome, safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
 import { toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
 const CATEGORY_OPTIONS = Object.freeze([
@@ -29,6 +29,13 @@ export default function ProjectCostManualEntryDialog({
   }))
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const mountedRef = useRef(true)
+  const operationRef = useRef(0)
+  const submitLatchRef = useRef(false)
+  useEffect(() => () => {
+    mountedRef.current = false
+    operationRef.current += 1
+  }, [])
   if (!open) return null
 
   const amount = form.amount === '' ? null : Number(form.amount)
@@ -41,26 +48,47 @@ export default function ProjectCostManualEntryDialog({
 
   const submit = async (event) => {
     event.preventDefault()
-    if (!valid || submitting) return
+    if (!valid || submitLatchRef.current) return
+    submitLatchRef.current = true
+    const operation = operationRef.current + 1
+    operationRef.current = operation
     setSubmitting(true)
     setError('')
     try {
       const request = { requestId, ...form, amount }
       const result = await onSubmit(request)
-      const refreshed = await onSuccess?.(result, { sourceKey: result?.sourceKey || `manual:${requestId}`, projectId: form.projectId })
-      if (refreshed === false) setError('费用已保存，但最新项目成本读取失败，请重新读取')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      const refreshed = projectCostDialogOutcome(await onSuccess?.(result, {
+        sourceKey: result?.sourceKey || `manual:${requestId}`, projectId: form.projectId,
+      }), '费用已保存，但最新项目成本读取失败，请重新读取')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      if (!refreshed.ok) {
+        const prefix = '费用已保存，但最新项目成本读取失败，请重新读取'
+        setError(refreshed.message === prefix ? prefix : `${prefix}：${refreshed.message}`)
+      }
     } catch (caught) {
+      if (!mountedRef.current || operationRef.current !== operation) return
       if (caught?.authInvalid) onAuthInvalid?.()
       setError(safeProjectCostDialogError(caught))
     } finally {
-      setSubmitting(false)
+      if (mountedRef.current && operationRef.current === operation) {
+        submitLatchRef.current = false
+        setSubmitting(false)
+      }
     }
+  }
+
+  const cancel = () => {
+    mountedRef.current = false
+    operationRef.current += 1
+    submitLatchRef.current = true
+    onCancel?.()
   }
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
       <section className="project-cost-dialog project-cost-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-manual-title">
-        <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button type="button" disabled={submitting} onClick={onCancel} aria-label="关闭新增费用窗口">关闭</button></header>
+        <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button type="button" onClick={cancel} aria-label="关闭新增费用窗口">关闭</button></header>
         <form onSubmit={submit}>
           <div className="project-cost-dialog-form-grid">
             <label>项目
@@ -77,7 +105,7 @@ export default function ProjectCostManualEntryDialog({
           <label>录入原因<textarea value={form.reason} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('reason', event.target.value)} placeholder="说明新增或冲销依据，保存后自动留痕" /></label>
           {error && <div className="project-cost-dialog-error" role="alert">{error}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有新增项目成本的权限</div>}
-          <footer><button type="button" disabled={submitting} onClick={onCancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存费用'}</button></footer>
+          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存费用'}</button></footer>
         </form>
       </section>
     </div>

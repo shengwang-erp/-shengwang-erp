@@ -1,7 +1,7 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
 import { buildAllocationAmounts } from './projectCostLedgerDomain.js'
-import { safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
+import { projectCostDialogOutcome, safeProjectCostDialogError } from './ProjectCostAdjustmentDialog.jsx'
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
 function formatYen(value) {
@@ -68,8 +68,16 @@ export default function ProjectCostAllocationDialog({
   const [drafts, setDrafts] = useState(() => initialDrafts(allocations))
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
-  const [conflict, setConflict] = useState(false)
+  const [errorCode, setErrorCode] = useState('')
+  const [refreshable, setRefreshable] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const mountedRef = useRef(true)
+  const operationRef = useRef(0)
+  const submitLatchRef = useRef(false)
+  useEffect(() => () => {
+    mountedRef.current = false
+    operationRef.current += 1
+  }, [])
   if (!row) return null
 
   const currentTotals = totals(row.effectiveAmount, mode, drafts)
@@ -105,43 +113,77 @@ export default function ProjectCostAllocationDialog({
 
   const submit = async (event) => {
     event.preventDefault()
-    if (!valid || submitting) return
+    if (!valid || submitLatchRef.current) return
+    submitLatchRef.current = true
+    const operation = operationRef.current + 1
+    operationRef.current = operation
     setSubmitting(true)
     setError('')
-    setConflict(false)
+    setErrorCode('')
+    setRefreshable(false)
     try {
       const result = await onSubmit({
-        sourceKey: row.sourceKey, expectedVersion: row.version, reason,
+        sourceKey: row.sourceKey, expectedVersion: row.expectedVersion ?? row.version, reason,
         allocations: fixedAllocations.map((allocation) => ({ ...allocation })),
       })
-      const refreshed = await onSuccess?.(result, { sourceKey: row.sourceKey, projectId: row.projectId })
-      if (refreshed === false) setError('拆分已保存，但最新项目成本读取失败，请重新读取')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      const refreshed = projectCostDialogOutcome(await onSuccess?.(result, {
+        sourceKey: row.sourceKey, projectId: row.projectId,
+        expectedVersion: row.expectedVersion ?? row.version,
+      }), '拆分已保存，但最新项目成本读取失败，请重新读取')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      if (!refreshed.ok) {
+        const prefix = '拆分已保存，但最新项目成本读取失败，请重新读取'
+        setError(refreshed.message === prefix ? prefix : `${prefix}：${refreshed.message}`)
+      }
     } catch (caught) {
+      if (!mountedRef.current || operationRef.current !== operation) return
       if (caught?.authInvalid) onAuthInvalid?.()
-      const isConflict = caught?.code === 'PROJECT_COST_LEDGER_VERSION_CONFLICT'
-      setConflict(isConflict)
+      setErrorCode(typeof caught?.code === 'string' ? caught.code : '')
+      setRefreshable(['PROJECT_COST_LEDGER_VERSION_CONFLICT', 'PROJECT_COST_LEDGER_SOURCE_MISSING'].includes(caught?.code))
       setError(safeProjectCostDialogError(caught))
     } finally {
-      setSubmitting(false)
+      if (mountedRef.current && operationRef.current === operation) {
+        submitLatchRef.current = false
+        setSubmitting(false)
+      }
     }
   }
 
   const refresh = async () => {
-    if (typeof onRefresh !== 'function' || submitting) return
+    if (typeof onRefresh !== 'function' || submitLatchRef.current) return
+    submitLatchRef.current = true
+    const operation = operationRef.current + 1
+    operationRef.current = operation
     setSubmitting(true)
     try {
-      const refreshed = await onRefresh({ sourceKey: row.sourceKey, projectId: row.projectId })
-      if (refreshed) { setConflict(false); setError('') }
-      else setError('最新项目成本读取失败，请稍后重试')
+      const refreshed = projectCostDialogOutcome(await onRefresh({
+        sourceKey: row.sourceKey, projectId: row.projectId,
+        expectedVersion: row.expectedVersion ?? row.version,
+        requireNewerVersion: errorCode === 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      }), '最新项目成本读取失败，请稍后重试')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      if (refreshed.ok) { setRefreshable(false); setErrorCode(''); setError('') }
+      else setError(refreshed.message)
     } finally {
-      setSubmitting(false)
+      if (mountedRef.current && operationRef.current === operation) {
+        submitLatchRef.current = false
+        setSubmitting(false)
+      }
     }
+  }
+
+  const cancel = () => {
+    mountedRef.current = false
+    operationRef.current += 1
+    submitLatchRef.current = true
+    onCancel?.()
   }
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
       <section className="project-cost-dialog project-cost-allocation-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-allocation-title">
-        <header><div><small>拆分后以固定金额保存并自动留痕</small><h2 id="project-cost-allocation-title">拆分项目成本</h2></div><button type="button" disabled={submitting} onClick={onCancel} aria-label="关闭拆分窗口">关闭</button></header>
+        <header><div><small>拆分后以固定金额保存并自动留痕</small><h2 id="project-cost-allocation-title">拆分项目成本</h2></div><button type="button" onClick={cancel} aria-label="关闭拆分窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts"><article><span>当前最终金额</span><strong>{formatYen(row.effectiveAmount)}</strong></article><article><span>最多项目数</span><strong>100</strong></article></div>
         <form onSubmit={submit}>
           <label className="project-cost-allocation-mode">分摊方式
@@ -158,7 +200,7 @@ export default function ProjectCostAllocationDialog({
               <button type="button" disabled={!allowed || submitting || drafts.length <= 1} onClick={() => setDrafts((current) => current.filter((_, draftIndex) => draftIndex !== index))}>删除</button>
             </div>)}
           </div>
-          <button type="button" disabled={!allowed || submitting || drafts.length >= 100} onClick={() => setDrafts((current) => [...current, { projectId: '', value: '' }])}>新增项目</button>
+          <button type="button" disabled={!allowed || submitting || drafts.length >= 100} onClick={() => setDrafts((current) => current.length >= 100 ? current : [...current, { projectId: '', value: '' }])}>新增项目</button>
           {!uniqueProjects && drafts.some(({ projectId }) => projectId) && <div className="project-cost-dialog-hint" role="alert">每个项目只能出现一次</div>}
           <div className="project-cost-allocation-totals" aria-live="polite">
             <article><span>已分摊</span><strong>{currentTotals.allocated === null ? '—' : formatYen(currentTotals.allocated)}</strong></article>
@@ -167,9 +209,9 @@ export default function ProjectCostAllocationDialog({
           <label>调整原因
             <textarea value={reason} disabled={!allowed || submitting} maxLength="2000" onChange={(event) => setReason(event.target.value)} placeholder="说明拆分依据，保存后自动留痕" />
           </label>
-          {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{conflict && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
+          {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{refreshable && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有拆分项目成本的权限</div>}
-          <footer><button type="button" disabled={submitting} onClick={onCancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存拆分'}</button></footer>
+          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存拆分'}</button></footer>
         </form>
       </section>
     </div>

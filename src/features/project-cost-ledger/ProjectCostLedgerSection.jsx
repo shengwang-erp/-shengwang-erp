@@ -3,6 +3,7 @@ import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } fr
 import ProjectCostAdjustmentDialog from './ProjectCostAdjustmentDialog.jsx'
 import ProjectCostAllocationDialog from './ProjectCostAllocationDialog.jsx'
 import ProjectCostManualEntryDialog from './ProjectCostManualEntryDialog.jsx'
+import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
 const DEFAULT_FILTERS = Object.freeze({
   projectId: '', dateFrom: '', dateTo: '', category: '', sourceModule: '',
@@ -151,6 +152,63 @@ function reconcileVisibleAudit(snapshot, auditSnapshot) {
   return { status: 'ready', eventsBySource, latestAllocationBySource }
 }
 
+function allocationTotalUnits(allocations) {
+  let total = 0
+  for (const allocation of allocations) {
+    const units = toSignedFourDecimalUnits(allocation?.amount)
+    if (typeof allocation?.projectId !== 'string' || !allocation.projectId || units === null ||
+        !Number.isSafeInteger(total + units)) return null
+    total += units
+  }
+  return total
+}
+
+export function buildProjectCostSourceDialogModel(snapshot, auditSnapshot, sourceKey) {
+  if (typeof sourceKey !== 'string' || !sourceKey) return null
+  const auditIndex = reconcileVisibleAudit(snapshot, auditSnapshot)
+  if (auditIndex.status !== 'ready') return null
+  const rows = snapshot?.rows?.filter((row) => row.sourceKey === sourceKey) ?? []
+  if (rows.length === 0) return null
+  const expectedVersion = rows[0].version
+  const events = auditIndex.eventsBySource.get(sourceKey) ?? []
+  let effectiveUnits
+  let adjustmentUnits = 0
+  let currentAllocations
+  const latestAllocation = auditIndex.latestAllocationBySource.get(sourceKey)
+
+  if (expectedVersion === 1) {
+    if (rows.length !== 1 || events.length !== 0) return null
+    effectiveUnits = toSignedFourDecimalUnits(rows[0].effectiveAmount)
+    currentAllocations = [{ projectId: rows[0].projectId, amount: rows[0].effectiveAmount }]
+  } else {
+    const latestEvent = events.at(-1)
+    effectiveUnits = toSignedFourDecimalUnits(latestEvent?.amountAfter)
+    for (const event of events) {
+      if (event.eventType !== 'adjustment') continue
+      const units = toSignedFourDecimalUnits(event.adjustmentAmount)
+      if (units === null || !Number.isSafeInteger(adjustmentUnits + units)) return null
+      adjustmentUnits += units
+    }
+    currentAllocations = latestAllocation?.allocationsAfter
+      ? latestAllocation.allocationsAfter.map((allocation) => ({ ...allocation }))
+      : [{ projectId: rows[0].projectId, amount: fromFourDecimalUnits(effectiveUnits) }]
+  }
+
+  if (effectiveUnits === null || !Number.isSafeInteger(effectiveUnits - adjustmentUnits) ||
+      !Array.isArray(currentAllocations) || currentAllocations.length === 0 ||
+      allocationTotalUnits(currentAllocations) !== effectiveUnits) return null
+  return {
+    sourceKey,
+    expectedVersion,
+    projectId: rows[0].projectId,
+    originalAmount: fromFourDecimalUnits(effectiveUnits - adjustmentUnits),
+    adjustmentTotal: fromFourDecimalUnits(adjustmentUnits),
+    effectiveAmount: fromFourDecimalUnits(effectiveUnits),
+    currentAllocations,
+    allocationLocked: Boolean(latestAllocation),
+  }
+}
+
 export default function ProjectCostLedgerSection({
   service,
   access,
@@ -174,6 +232,9 @@ export default function ProjectCostLedgerSection({
   const [actionHint, setActionHint] = useState('')
   const [projectTotal, setProjectTotal] = useState(() => initialSnapshot?.totalAmount ?? 0)
   const requestSequenceRef = useRef(0)
+  const mountedRef = useRef(true)
+  const dialogGenerationRef = useRef(0)
+  const activeDialogTokenRef = useRef('')
   const activeFingerprintRef = useRef(actorFingerprint)
   activeFingerprintRef.current = actorFingerprint
   const [ledgerState, setLedgerState] = useState(() => ({
@@ -190,69 +251,98 @@ export default function ProjectCostLedgerSection({
     error: initialSnapshot && !initialAuditSnapshot ? '项目成本审计记录暂时不可用' : '',
   }))
 
-  const load = useCallback(async (filters, page, pageSize, { replaceApplied = false } = {}) => {
+  const load = useCallback(async (filters, page, pageSize, { replaceApplied = false, guard = null } = {}) => {
     if (!readAllowed || !service || typeof service.list !== 'function') return false
+    if (guard && !guard()) return null
+    const guardedMutationLoad = typeof guard === 'function'
     const sequence = requestSequenceRef.current + 1
     requestSequenceRef.current = sequence
     const fingerprint = actorFingerprint
     const requestedFilterIdentity = filterIdentity(filters)
-    setLedgerState((current) => ({
-      identity: fingerprint, status: 'loading',
-      data: current.identity === fingerprint ? current.data : null, error: '',
-    }))
-    setAuditState({
-      identity: fingerprint, filterIdentity: requestedFilterIdentity,
-      status: typeof service.listAudit === 'function' ? 'loading' : 'error', data: null,
-      error: typeof service.listAudit === 'function' ? '' : '项目成本审计记录暂时不可用',
-    })
+    if (!guardedMutationLoad) {
+      setLedgerState((current) => ({
+        identity: fingerprint, status: 'loading',
+        data: current.identity === fingerprint ? current.data : null, error: '',
+      }))
+      setAuditState({
+        identity: fingerprint, filterIdentity: requestedFilterIdentity,
+        status: typeof service.listAudit === 'function' ? 'loading' : 'error', data: null,
+        error: typeof service.listAudit === 'function' ? '' : '项目成本审计记录暂时不可用',
+      })
+    }
 
     let listSucceeded = false
     let auditSucceeded = false
     let loadedSnapshot = null
     let loadedAuditSnapshot = null
     const listPromise = Promise.resolve().then(() => service.list(requestFilters(filters, page, pageSize))).then((snapshot) => {
-      if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
-      setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
-      if (replaceApplied) setAppliedFilters({ ...filters })
-      if (isDefaultFilters(filters)) setProjectTotal(snapshot.totalAmount)
+      if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint || (guard && !guard())) return false
+      if (!guardedMutationLoad) {
+        setLedgerState({ identity: fingerprint, status: 'ready', data: snapshot, error: '' })
+        if (replaceApplied) setAppliedFilters({ ...filters })
+        if (isDefaultFilters(filters)) setProjectTotal(snapshot.totalAmount)
+      }
       loadedSnapshot = snapshot
       listSucceeded = true
       return true
     }).catch((error) => {
-      if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
+      if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint || (guard && !guard())) return false
       if (error?.authInvalid) onAuthInvalid?.()
-      setLedgerState((current) => ({
-        identity: fingerprint, status: 'error', data: current.identity === fingerprint ? current.data : null,
-        error: '项目成本服务暂时不可用，请稍后重试',
-      }))
+      if (!guardedMutationLoad) {
+        setLedgerState((current) => ({
+          identity: fingerprint, status: 'error', data: current.identity === fingerprint ? current.data : null,
+          error: '项目成本服务暂时不可用，请稍后重试',
+        }))
+      }
       return false
     })
 
     const auditPromise = typeof service.listAudit === 'function'
       ? Promise.resolve().then(() => service.listAudit(auditRequestFilters(filters))).then((snapshot) => {
-          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
-          setAuditState({
-            identity: fingerprint, filterIdentity: requestedFilterIdentity,
-            status: 'ready', data: snapshot, error: '',
-          })
+          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint || (guard && !guard())) return false
+          if (!guardedMutationLoad) {
+            setAuditState({
+              identity: fingerprint, filterIdentity: requestedFilterIdentity,
+              status: 'ready', data: snapshot, error: '',
+            })
+          }
           loadedAuditSnapshot = snapshot
           auditSucceeded = true
           return true
         }).catch((error) => {
-          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint) return false
+          if (requestSequenceRef.current !== sequence || activeFingerprintRef.current !== fingerprint || (guard && !guard())) return false
           if (error?.authInvalid) onAuthInvalid?.()
-          setAuditState({
-            identity: fingerprint, filterIdentity: requestedFilterIdentity,
-            status: 'error', data: null, error: '项目成本审计记录暂时不可用，请稍后重试',
-          })
+          if (!guardedMutationLoad) {
+            setAuditState({
+              identity: fingerprint, filterIdentity: requestedFilterIdentity,
+              status: 'error', data: null, error: '项目成本审计记录暂时不可用，请稍后重试',
+            })
+          }
           return false
         })
       : Promise.resolve(false)
 
     await Promise.all([listPromise, auditPromise])
-    return listSucceeded && auditSucceeded &&
-      reconcileVisibleAudit(loadedSnapshot, loadedAuditSnapshot).status === 'ready'
+    if (!listSucceeded || !auditSucceeded) return null
+    const loadedAuditIndex = reconcileVisibleAudit(loadedSnapshot, loadedAuditSnapshot)
+    if (loadedAuditIndex.status !== 'ready') return null
+    if (guardedMutationLoad) {
+      if (!guard()) return null
+      setLedgerState({ identity: fingerprint, status: 'ready', data: loadedSnapshot, error: '' })
+      setAuditState({
+        identity: fingerprint, filterIdentity: requestedFilterIdentity,
+        status: 'ready', data: loadedAuditSnapshot, error: '',
+      })
+      if (isDefaultFilters(filters)) setProjectTotal(loadedSnapshot.totalAmount)
+    }
+    return { snapshot: loadedSnapshot, auditSnapshot: loadedAuditSnapshot, auditIndex: loadedAuditIndex }
   }, [actorFingerprint, onAuthInvalid, readAllowed, service])
+
+  useEffect(() => () => {
+    mountedRef.current = false
+    activeDialogTokenRef.current = ''
+    dialogGenerationRef.current += 1
+  }, [])
 
   useEffect(() => {
     const fingerprint = actorFingerprint
@@ -261,6 +351,8 @@ export default function ProjectCostLedgerSection({
     setExpandedRows(new Set())
     setDialogState(null)
     setActionHint('')
+    activeDialogTokenRef.current = ''
+    dialogGenerationRef.current += 1
 
     if (!readAllowed) {
       requestSequenceRef.current += 1
@@ -328,6 +420,13 @@ export default function ProjectCostLedgerSection({
     [snapshot, visibleAuditState.data, visibleAuditState.status],
   )
   const auditStatus = auditIndex.status
+  const visibleDialogState = dialogState?.actorFingerprint === actorFingerprint && readAllowed
+    ? dialogState
+    : null
+  const activeDialogToken = visibleDialogState
+    ? `${visibleDialogState.actorFingerprint}:${visibleDialogState.generation}`
+    : ''
+  activeDialogTokenRef.current = activeDialogToken
   const filtersDirty = !sameFilters(draftFilters, appliedFilters)
   const reportBlocked = filtersDirty || !snapshot || visibleState.status === 'loading' ||
     snapshot.incompleteSources.length > 0 || auditStatus !== 'ready'
@@ -377,41 +476,86 @@ export default function ProjectCostLedgerSection({
   const openManualDialog = () => {
     if (!access?.createManual || typeof service?.createManual !== 'function') return
     setActionHint('')
-    setDialogState({ type: 'manual' })
+    const generation = dialogGenerationRef.current + 1
+    dialogGenerationRef.current = generation
+    setDialogState({ type: 'manual', actorFingerprint, generation })
     onCreateManual?.()
   }
 
   const openAdjustmentDialog = (row) => {
     if (!access?.adjust || typeof service?.adjust !== 'function') return
+    const model = buildProjectCostSourceDialogModel(snapshot, visibleAuditState.data, row.sourceKey)
+    if (!model) {
+      setActionHint('这笔费用的来源级金额暂时无法安全确认，请重新读取审计后再操作')
+      return
+    }
     setActionHint('')
-    setDialogState({ type: 'adjustment', sourceKey: row.sourceKey, projectId: row.projectId, row })
+    const generation = dialogGenerationRef.current + 1
+    dialogGenerationRef.current = generation
+    setDialogState({ type: 'adjustment', actorFingerprint, generation, model })
     onAdjust?.(row)
   }
 
-  const openAllocationDialog = (row, allocations) => {
+  const openAllocationDialog = (row) => {
     if (!access?.allocate || typeof service?.replaceAllocations !== 'function' || auditStatus !== 'ready') return
+    const model = buildProjectCostSourceDialogModel(snapshot, visibleAuditState.data, row.sourceKey)
+    if (!model) {
+      setActionHint('这笔费用的来源级金额暂时无法安全确认，请重新读取审计后再操作')
+      return
+    }
     setActionHint('')
-    setDialogState({ type: 'allocation', sourceKey: row.sourceKey, projectId: row.projectId, row, allocations })
+    const generation = dialogGenerationRef.current + 1
+    dialogGenerationRef.current = generation
+    setDialogState({ type: 'allocation', actorFingerprint, generation, model })
     onAllocate?.(row)
   }
 
-  const reloadMutationSnapshot = useCallback(async (target, { close = false } = {}) => {
-    const loaded = await load(appliedFilters, snapshot?.page ?? 1, snapshot?.pageSize ?? 20)
-    if (!loaded) return false
-    if (target?.sourceKey) {
-      setExpandedRows(new Set([`${target.sourceKey}:${target.projectId || ''}`]))
-    }
-    if (close) setDialogState(null)
-    return true
-  }, [appliedFilters, load, snapshot?.page, snapshot?.pageSize])
+  const dialogTokenIsCurrent = useCallback((token) => mountedRef.current && token &&
+    activeDialogTokenRef.current === token && activeFingerprintRef.current === actorFingerprint,
+  [actorFingerprint])
 
-  const activeDialogRow = dialogState?.sourceKey
-    ? snapshot?.rows.find((row) => row.sourceKey === dialogState.sourceKey && row.projectId === dialogState.projectId) ||
-      snapshot?.rows.find((row) => row.sourceKey === dialogState.sourceKey) || dialogState.row
-    : null
-  const activeAllocationEvent = activeDialogRow
-    ? auditIndex.latestAllocationBySource.get(activeDialogRow.sourceKey)
-    : null
+  const closeDialog = useCallback((token) => {
+    if (token && !dialogTokenIsCurrent(token)) return
+    activeDialogTokenRef.current = ''
+    dialogGenerationRef.current += 1
+    setDialogState(null)
+  }, [dialogTokenIsCurrent])
+
+  const reloadMutationSnapshot = useCallback(async (target, {
+    close = false, result = null, requireNewerVersion = false, token,
+  } = {}) => {
+    if (!dialogTokenIsCurrent(token)) return { ok: false }
+    const loaded = await load(appliedFilters, snapshot?.page ?? 1, snapshot?.pageSize ?? 20, {
+      guard: () => dialogTokenIsCurrent(token),
+    })
+    if (!dialogTokenIsCurrent(token)) return { ok: false }
+    if (!loaded) return { ok: false, message: '最新项目成本与审计尚未同步，请稍后重试' }
+    if (result?.sourceKey !== undefined && result.sourceKey !== target?.sourceKey) {
+      return { ok: false, message: '保存结果与当前费用不一致，请重新读取后重试' }
+    }
+    const sourceKey = result?.sourceKey || target?.sourceKey
+    const refreshedRow = loaded.snapshot.rows.find((row) => row.sourceKey === sourceKey)
+    if (!refreshedRow) {
+      return { ok: false, message: '当前筛选未显示这笔费用，请调整筛选后重试' }
+    }
+    const refreshedModel = buildProjectCostSourceDialogModel(loaded.snapshot, loaded.auditSnapshot, sourceKey)
+    if (!refreshedModel) return { ok: false, message: '最新项目成本与审计尚未同步，请稍后重试' }
+    if (result?.version !== undefined && refreshedModel.expectedVersion !== result.version) {
+      return { ok: false, message: '保存结果尚未出现在最新明细中，请稍后重试' }
+    }
+    if (requireNewerVersion && refreshedModel.expectedVersion <= target.expectedVersion) {
+      return { ok: false, message: '最新版本尚未读取到，请稍后重试' }
+    }
+    if (!close) {
+      setDialogState((current) => current && `${current.actorFingerprint}:${current.generation}` === token
+        ? { ...current, model: refreshedModel }
+        : current)
+      return { ok: true, model: refreshedModel }
+    }
+    setExpandedRows(new Set([`${sourceKey}:${refreshedRow.projectId}`]))
+    closeDialog(token)
+    return { ok: true, model: refreshedModel }
+  }, [actorFingerprint, appliedFilters, closeDialog, dialogTokenIsCurrent, load, snapshot?.page, snapshot?.pageSize])
 
   return (
     <section className="project-cost-ledger" data-project-count={projects.length}>
@@ -546,7 +690,7 @@ export default function ProjectCostLedgerSection({
                         <td><div className="project-cost-ledger-row-actions">
                           <button type="button" onClick={() => toggleExpanded(rowKey)}>{expanded ? '收起' : '展开'}</button>
                           <button type="button" disabled={!access?.adjust || typeof service?.adjust !== 'function'} onClick={() => openAdjustmentDialog(row)}>调整</button>
-                          <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || auditStatus !== 'ready'} onClick={() => openAllocationDialog(row, fullAllocations ?? row.allocations)}>拆分</button>
+                          <button type="button" disabled={!access?.allocate || typeof service?.replaceAllocations !== 'function' || auditStatus !== 'ready'} onClick={() => openAllocationDialog(row)}>拆分</button>
                         </div></td>
                       </tr>
                       {expanded && <tr className="project-cost-ledger-detail-row"><td colSpan="12">
@@ -581,34 +725,34 @@ export default function ProjectCostLedgerSection({
         </>
       )}
 
-      {dialogState?.type === 'adjustment' && <ProjectCostAdjustmentDialog
-        row={activeDialogRow}
+      {visibleDialogState?.type === 'adjustment' && <ProjectCostAdjustmentDialog
+        row={visibleDialogState.model}
         allowed={Boolean(access?.adjust)}
         onSubmit={(request) => service.adjust(request)}
-        onRefresh={(target) => reloadMutationSnapshot(target)}
-        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
-        onCancel={() => setDialogState(null)}
-        onAuthInvalid={onAuthInvalid}
+        onRefresh={(target) => reloadMutationSnapshot(target, { requireNewerVersion: target.requireNewerVersion, token: activeDialogToken })}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true, result, token: activeDialogToken })}
+        onCancel={() => closeDialog(activeDialogToken)}
+        onAuthInvalid={() => dialogTokenIsCurrent(activeDialogToken) && onAuthInvalid?.()}
       />}
-      {dialogState?.type === 'allocation' && <ProjectCostAllocationDialog
-        row={activeDialogRow}
+      {visibleDialogState?.type === 'allocation' && <ProjectCostAllocationDialog
+        row={visibleDialogState.model}
         projects={projects}
-        allocations={activeAllocationEvent?.allocationsAfter ?? dialogState.allocations}
+        allocations={visibleDialogState.model.currentAllocations}
         allowed={Boolean(access?.allocate)}
         onSubmit={(request) => service.replaceAllocations(request)}
-        onRefresh={(target) => reloadMutationSnapshot(target)}
-        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
-        onCancel={() => setDialogState(null)}
-        onAuthInvalid={onAuthInvalid}
+        onRefresh={(target) => reloadMutationSnapshot(target, { requireNewerVersion: target.requireNewerVersion, token: activeDialogToken })}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true, result, token: activeDialogToken })}
+        onCancel={() => closeDialog(activeDialogToken)}
+        onAuthInvalid={() => dialogTokenIsCurrent(activeDialogToken) && onAuthInvalid?.()}
       />}
-      {dialogState?.type === 'manual' && <ProjectCostManualEntryDialog
+      {visibleDialogState?.type === 'manual' && <ProjectCostManualEntryDialog
         open
         projects={projects}
         allowed={Boolean(access?.createManual)}
         onSubmit={({ requestId, ...entry }) => service.createManual({ requestId, entry })}
-        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true })}
-        onCancel={() => setDialogState(null)}
-        onAuthInvalid={onAuthInvalid}
+        onSuccess={(result, target) => reloadMutationSnapshot(target, { close: true, result, token: activeDialogToken })}
+        onCancel={() => closeDialog(activeDialogToken)}
+        onAuthInvalid={() => dialogTokenIsCurrent(activeDialogToken) && onAuthInvalid?.()}
       />}
     </section>
   )

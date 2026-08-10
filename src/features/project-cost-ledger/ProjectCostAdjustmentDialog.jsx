@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 
 import { fromFourDecimalUnits, toSignedFourDecimalUnits } from '../cost-accounting/fixedPointCurrency.js'
 
@@ -6,11 +6,19 @@ const SAFE_ERROR_MESSAGES = Object.freeze({
   PROJECT_COST_LEDGER_VERSION_CONFLICT: '记录已被修改，请刷新后重试',
   PROJECT_COST_LEDGER_ACCESS_DENIED: '您没有操作项目成本的权限',
   PROJECT_COST_LEDGER_INPUT_INVALID: '请检查项目成本输入后重试',
+  PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED: '项目分摊合计必须与当前成本一致',
+  PROJECT_COST_LEDGER_SOURCE_MISSING: '原始费用记录已不可用，请刷新后重试',
   AUTH_SESSION_INVALID: '登录已失效，请重新登录',
 })
 
 export function safeProjectCostDialogError(error) {
   return SAFE_ERROR_MESSAGES[error?.code] || '项目成本服务暂时不可用，请稍后重试'
+}
+
+export function projectCostDialogOutcome(value, fallback) {
+  if (value === true || value?.ok === true) return { ok: true, message: '' }
+  if (typeof value?.message === 'string' && value.message) return { ok: false, message: value.message }
+  return { ok: false, message: fallback }
 }
 
 function formatYen(value) {
@@ -34,8 +42,16 @@ export default function ProjectCostAdjustmentDialog({
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
-  const [conflict, setConflict] = useState(false)
+  const [errorCode, setErrorCode] = useState('')
+  const [refreshable, setRefreshable] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const mountedRef = useRef(true)
+  const operationRef = useRef(0)
+  const submitLatchRef = useRef(false)
+  useEffect(() => () => {
+    mountedRef.current = false
+    operationRef.current += 1
+  }, [])
   const adjustmentAmount = amount === '' ? null : Number(amount)
   const amountUnits = toSignedFourDecimalUnits(adjustmentAmount)
   const afterAmount = useMemo(
@@ -44,55 +60,93 @@ export default function ProjectCostAdjustmentDialog({
   )
   if (!row) return null
 
-  const valid = allowed && typeof onSubmit === 'function' && amountUnits !== null && amountUnits !== 0 &&
+  const valid = allowed && !row.allocationLocked && typeof onSubmit === 'function' && amountUnits !== null && amountUnits !== 0 &&
     afterAmount !== null && reason.trim().length > 0 && reason === reason.trim()
 
   const submit = async (event) => {
     event.preventDefault()
-    if (!valid || submitting) return
+    if (!valid || submitLatchRef.current) return
+    submitLatchRef.current = true
+    const operation = operationRef.current + 1
+    operationRef.current = operation
     setSubmitting(true)
     setError('')
-    setConflict(false)
+    setErrorCode('')
+    setRefreshable(false)
     try {
       const result = await onSubmit({
         sourceKey: row.sourceKey,
-        expectedVersion: row.version,
+        expectedVersion: row.expectedVersion ?? row.version,
         adjustmentAmount,
         reason,
       })
-      const refreshed = await onSuccess?.(result, { sourceKey: row.sourceKey, projectId: row.projectId })
-      if (refreshed === false) setError('调整已保存，但最新项目成本读取失败，请重新读取')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      const refreshed = projectCostDialogOutcome(
+        await onSuccess?.(result, {
+          sourceKey: row.sourceKey, projectId: row.projectId,
+          expectedVersion: row.expectedVersion ?? row.version,
+        }),
+        '调整已保存，但最新项目成本读取失败，请重新读取',
+      )
+      if (!mountedRef.current || operationRef.current !== operation) return
+      if (!refreshed.ok) {
+        const prefix = '调整已保存，但最新项目成本读取失败，请重新读取'
+        setError(refreshed.message === prefix ? prefix : `${prefix}：${refreshed.message}`)
+      }
     } catch (caught) {
+      if (!mountedRef.current || operationRef.current !== operation) return
       if (caught?.authInvalid) onAuthInvalid?.()
-      const isConflict = caught?.code === 'PROJECT_COST_LEDGER_VERSION_CONFLICT'
-      setConflict(isConflict)
+      setErrorCode(typeof caught?.code === 'string' ? caught.code : '')
+      setRefreshable(['PROJECT_COST_LEDGER_VERSION_CONFLICT', 'PROJECT_COST_LEDGER_SOURCE_MISSING'].includes(caught?.code))
       setError(safeProjectCostDialogError(caught))
     } finally {
-      setSubmitting(false)
+      if (mountedRef.current && operationRef.current === operation) {
+        submitLatchRef.current = false
+        setSubmitting(false)
+      }
     }
   }
 
   const refresh = async () => {
-    if (typeof onRefresh !== 'function' || submitting) return
+    if (typeof onRefresh !== 'function' || submitLatchRef.current) return
+    submitLatchRef.current = true
+    const operation = operationRef.current + 1
+    operationRef.current = operation
     setSubmitting(true)
     try {
-      const refreshed = await onRefresh({ sourceKey: row.sourceKey, projectId: row.projectId })
-      if (refreshed) {
-        setConflict(false)
+      const refreshed = projectCostDialogOutcome(await onRefresh({
+        sourceKey: row.sourceKey, projectId: row.projectId,
+        expectedVersion: row.expectedVersion ?? row.version,
+        requireNewerVersion: errorCode === 'PROJECT_COST_LEDGER_VERSION_CONFLICT',
+      }), '最新项目成本读取失败，请稍后重试')
+      if (!mountedRef.current || operationRef.current !== operation) return
+      if (refreshed.ok) {
+        setRefreshable(false)
+        setErrorCode('')
         setError('')
-      } else setError('最新项目成本读取失败，请稍后重试')
+      } else setError(refreshed.message)
     } finally {
-      setSubmitting(false)
+      if (mountedRef.current && operationRef.current === operation) {
+        submitLatchRef.current = false
+        setSubmitting(false)
+      }
     }
+  }
+
+  const cancel = () => {
+    mountedRef.current = false
+    operationRef.current += 1
+    submitLatchRef.current = true
+    onCancel?.()
   }
 
   return (
     <div className="project-cost-dialog-backdrop" role="presentation">
       <section className="project-cost-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-adjust-title">
-        <header><div><small>会计调整 · 原始业务记录不变</small><h2 id="project-cost-adjust-title">调整项目成本</h2></div><button type="button" disabled={submitting} onClick={onCancel} aria-label="关闭调整窗口">关闭</button></header>
+        <header><div><small>会计调整 · 原始业务记录不变</small><h2 id="project-cost-adjust-title">调整项目成本</h2></div><button type="button" onClick={cancel} aria-label="关闭调整窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts">
           <article><span>原始金额</span><strong>{formatYen(row.originalAmount)}</strong></article>
-          <article><span>累计会计调整</span><strong>{formatYen(row.adjustmentAmount)}</strong></article>
+          <article><span>累计会计调整</span><strong>{formatYen(row.adjustmentTotal ?? row.adjustmentAmount)}</strong></article>
           <article><span>当前最终金额</span><strong>{formatYen(row.effectiveAmount)}</strong></article>
         </div>
         <form onSubmit={submit}>
@@ -103,9 +157,10 @@ export default function ProjectCostAdjustmentDialog({
             <textarea value={reason} disabled={!allowed || submitting} maxLength="2000" onChange={(event) => setReason(event.target.value)} placeholder="说明调整依据，保存后自动留痕" />
           </label>
           <div className="project-cost-dialog-preview" aria-live="polite"><span>调整后金额</span><strong>{afterAmount === null ? '—' : formatYen(afterAmount)}</strong></div>
-          {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{conflict && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
+          {row.allocationLocked && <div className="project-cost-dialog-error" role="alert">该费用已有项目分摊历史，直接调整会造成分摊失配。请使用“新增调整费用”分别补录或冲销。</div>}
+          {error && <div className="project-cost-dialog-error" role="alert"><span>{error}</span>{refreshable && <button type="button" disabled={submitting} onClick={refresh}>刷新最新记录</button>}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有调整项目成本的权限</div>}
-          <footer><button type="button" disabled={submitting} onClick={onCancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存调整'}</button></footer>
+          <footer><button type="button" onClick={cancel}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存调整'}</button></footer>
         </form>
       </section>
     </div>

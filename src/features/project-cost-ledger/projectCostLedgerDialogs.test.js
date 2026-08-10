@@ -27,6 +27,7 @@ const ProjectCostAdjustmentDialog = dialogs.default
 const ProjectCostAllocationDialog = allocationModule.default
 const ProjectCostManualEntryDialog = manualModule.default
 const ProjectCostLedgerSection = sectionModule.default
+const { buildProjectCostSourceDialogModel } = sectionModule
 
 const projects = [
   { projectId: 'P-1', projectName: '东京站项目' },
@@ -69,6 +70,13 @@ async function change(element, value) {
 async function submitForm(root) {
   const form = elements(root, (element) => element.nodeName === 'FORM')[0]
   await act(async () => { form.dispatchEvent(new TestEvent('submit')) })
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((next, fail) => { resolve = next; reject = fail })
+  return { promise, resolve, reject }
 }
 
 async function renderDialog(Component, props) {
@@ -139,6 +147,80 @@ test('allocation rejects duplicate projects and imbalance, then submits fixed am
   }
 })
 
+test('allocation never exceeds 100 rows even when add events are batched before disabled state renders', async () => {
+  const view = await renderDialog(ProjectCostAllocationDialog, {
+    row: ledgerRow, projects, allowed: true, allocations: ledgerRow.allocations,
+    async onSubmit() {}, async onSuccess() { return true }, onCancel() {},
+  })
+  try {
+    const add = button(view.container, '新增项目')
+    await act(async () => {
+      for (let index = 0; index < 120; index += 1) add.click()
+    })
+    assert.equal(elements(view.container, (element) => element.className === 'project-cost-allocation-row').length, 100)
+    assert.equal(button(view.container, '新增项目').disabled, true)
+  } finally {
+    await act(async () => { view.root.unmount() })
+    view.dom.cleanup()
+  }
+})
+
+test('a real 60/40 split builds one source-level dialog model and never treats the clicked share as the source total', async () => {
+  const snapshot = {
+    ...ledgerSnapshot({ version: 2, effectiveAmount: 100 }), totalRows: 2, adjustmentTotal: 0,
+    categoryTotals: [{ category: '材料费', amount: 100 }],
+    rows: [
+      { ...ledgerRow, version: 2, projectId: 'P-1', projectName: '东京站项目', originalAmount: 60, adjustmentAmount: 0, effectiveAmount: 60, adjusted: false, allocations: [{ projectId: 'P-1', amount: 60 }] },
+      { ...ledgerRow, version: 2, projectId: 'P-2', projectName: '横滨仓库项目', originalAmount: 40, adjustmentAmount: 0, effectiveAmount: 40, adjusted: false, allocations: [{ projectId: 'P-2', amount: 40 }] },
+    ],
+  }
+  const audit = {
+    status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z',
+    events: [{
+      eventType: 'allocation', sourceKey: ledgerRow.sourceKey, sequenceNo: 1,
+      amountBefore: 100, amountAfter: 100, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P-1', amount: 100 }],
+      allocationsAfter: [{ projectId: 'P-1', amount: 60 }, { projectId: 'P-2', amount: 40 }],
+      reason: '共同使用', actorName: '会计甲', createdAt: '2026-08-10T02:00:00.000Z',
+    }],
+  }
+  assert.deepEqual(buildProjectCostSourceDialogModel(snapshot, audit, ledgerRow.sourceKey), {
+    sourceKey: ledgerRow.sourceKey, expectedVersion: 2, projectId: 'P-1',
+    originalAmount: 100, adjustmentTotal: 0, effectiveAmount: 100,
+    currentAllocations: [{ projectId: 'P-1', amount: 60 }, { projectId: 'P-2', amount: 40 }],
+    allocationLocked: true,
+  })
+
+  const service = {
+    async list() { return snapshot }, async listAudit() { return audit },
+    async adjust() {}, async replaceAllocations() {}, async createManual() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true },
+      projects, actorFingerprint: 'accountant-split',
+    })) })
+    await act(async () => { button(container, '调整').click() })
+    assert.match(container.textContent, /当前最终金额.*[¥￥]100/u)
+    await change(field(container, '本次调整金额'), '-10')
+    assert.match(container.textContent, /调整后金额.*[¥￥]90/u)
+    assert.match(container.textContent, /已有项目分摊历史/u)
+    assert.equal(button(container, '保存调整').disabled, true)
+    await act(async () => { button(container, '取消').click() })
+
+    await act(async () => { button(container, '拆分').click() })
+    assert.match(container.textContent, /当前最终金额.*[¥￥]100/u)
+    assert.match(container.textContent, /已分摊.*[¥￥]100/u)
+    assert.match(container.textContent, /差额.*[¥￥]0/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('manual entry keeps one request id across a failed retry and only clears it on explicit cancel or success', async () => {
   const requestIds = []
   let attempts = 0
@@ -171,6 +253,109 @@ test('manual entry keeps one request id across a failed retry and only clears it
   } finally {
     await act(async () => { view.root.unmount() })
     view.dom.cleanup()
+  }
+})
+
+test('dialog submit latches synchronously and maps allocation and missing-source failures to safe actionable messages', async () => {
+  const pending = deferred()
+  let calls = 0
+  let refreshCalls = 0
+  const view = await renderDialog(ProjectCostAdjustmentDialog, {
+    row: ledgerRow, allowed: true,
+    async onSubmit() { calls += 1; return pending.promise },
+    async onSuccess() { return true }, onCancel() {},
+    async onRefresh() { refreshCalls += 1; return { ok: false, message: '请调整筛选后重试' } },
+  })
+  try {
+    await change(field(view.container, '本次调整金额'), '-10')
+    await change(field(view.container, '调整原因'), '双击保护')
+    const form = elements(view.container, (element) => element.nodeName === 'FORM')[0]
+    await act(async () => {
+      form.dispatchEvent(new TestEvent('submit'))
+      form.dispatchEvent(new TestEvent('submit'))
+    })
+    assert.equal(calls, 1)
+    pending.reject(Object.assign(new Error('unsafe'), { code: 'PROJECT_COST_LEDGER_SOURCE_MISSING' }))
+    await act(async () => {})
+    assert.match(view.container.textContent, /原始费用记录已不可用，请刷新后重试/u)
+    assert.doesNotMatch(view.container.textContent, /unsafe/u)
+    await act(async () => { button(view.container, '刷新最新记录').click() })
+    assert.equal(refreshCalls, 1)
+    assert.match(view.container.textContent, /请调整筛选后重试/u)
+  } finally {
+    await act(async () => { view.root.unmount() })
+    view.dom.cleanup()
+  }
+
+  const allocation = await renderDialog(ProjectCostAllocationDialog, {
+    row: ledgerRow, projects, allowed: true, allocations: ledgerRow.allocations,
+    async onSubmit() { throw Object.assign(new Error('private'), { code: 'PROJECT_COST_LEDGER_ALLOCATION_UNBALANCED' }) },
+    async onSuccess() { return true }, onCancel() {},
+  })
+  try {
+    await change(field(allocation.container, '调整原因'), '重新拆分')
+    await submitForm(allocation.container)
+    assert.match(allocation.container.textContent, /项目分摊合计必须与当前成本一致/u)
+  } finally {
+    await act(async () => { allocation.root.unmount() })
+    allocation.dom.cleanup()
+  }
+})
+
+test('allocation and manual dialogs also allow only one mutation and one success reload on double submit', async () => {
+  const allocationPending = deferred()
+  let allocationCalls = 0
+  let allocationReloads = 0
+  const allocation = await renderDialog(ProjectCostAllocationDialog, {
+    row: ledgerRow, projects, allowed: true, allocations: ledgerRow.allocations,
+    async onSubmit() { allocationCalls += 1; return allocationPending.promise },
+    async onSuccess() { allocationReloads += 1; return true }, onCancel() {},
+  })
+  try {
+    await change(field(allocation.container, '调整原因'), '同步锁')
+    const form = elements(allocation.container, (element) => element.nodeName === 'FORM')[0]
+    await act(async () => {
+      form.dispatchEvent(new TestEvent('submit'))
+      form.dispatchEvent(new TestEvent('submit'))
+    })
+    assert.equal(allocationCalls, 1)
+    allocationPending.resolve({ sourceKey: ledgerRow.sourceKey, version: 3, allocations: ledgerRow.allocations })
+    await act(async () => {})
+    assert.equal(allocationReloads, 1)
+  } finally {
+    await act(async () => { allocation.root.unmount() })
+    allocation.dom.cleanup()
+  }
+
+  const manualPending = deferred()
+  let manualCalls = 0
+  let manualReloads = 0
+  const manual = await renderDialog(ProjectCostManualEntryDialog, {
+    open: true, projects, allowed: true,
+    createRequestId: () => '22222222-2222-4222-8222-222222222222',
+    async onSubmit() { manualCalls += 1; return manualPending.promise },
+    async onSuccess() { manualReloads += 1; return true }, onCancel() {},
+  })
+  try {
+    await change(field(manual.container, '项目'), 'P-1')
+    await change(field(manual.container, '费用类别'), '其他费用')
+    await change(field(manual.container, '日期'), '2026-08-10')
+    await change(field(manual.container, '金额'), '20')
+    await change(field(manual.container, '费用说明'), '补录')
+    await change(field(manual.container, '经办人'), '会计甲')
+    await change(field(manual.container, '录入原因'), '同步锁')
+    const form = elements(manual.container, (element) => element.nodeName === 'FORM')[0]
+    await act(async () => {
+      form.dispatchEvent(new TestEvent('submit'))
+      form.dispatchEvent(new TestEvent('submit'))
+    })
+    assert.equal(manualCalls, 1)
+    manualPending.resolve({ sourceKey: 'manual:22222222-2222-4222-8222-222222222222' })
+    await act(async () => {})
+    assert.equal(manualReloads, 1)
+  } finally {
+    await act(async () => { manual.root.unmount() })
+    manual.dom.cleanup()
   }
 })
 
@@ -290,6 +475,294 @@ test('a successful mutation stays open when the refreshed audit is still behind 
     await act(async () => { root.unmount() })
     dom.cleanup()
   }
+})
+
+test('a mutation result never closes against an older but internally consistent ledger and audit pair', async () => {
+  let mutated = false
+  const service = {
+    async list() { return ledgerSnapshot({ version: 2, effectiveAmount: 900 }) },
+    async listAudit() { return auditSnapshot({ version: 2, effectiveAmount: 900 }) },
+    async adjust(request) {
+      mutated = true
+      return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 870 }
+    },
+    async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true },
+      projects, actorFingerprint: 'accountant-old-pair',
+    })) })
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '本次调整金额'), '-30')
+    await change(field(container, '调整原因'), '复核冲减')
+    await submitForm(container)
+    assert.equal(mutated, true)
+    assert.match(container.textContent, /调整已保存，但最新项目成本读取失败/u)
+    assert.match(container.textContent, /调整项目成本/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('manual success remains open when its source is hidden or missing from the refreshed applied snapshot', async () => {
+  const service = {
+    async list() { return ledgerSnapshot() }, async listAudit() { return auditSnapshot() },
+    async createManual(request) {
+      return {
+        sourceKey: `manual:${request.requestId}`, projectId: request.entry.projectId,
+        category: request.entry.category, date: request.entry.date, amount: request.entry.amount,
+        description: request.entry.description, operator: request.entry.operator, reason: request.entry.reason,
+        actorName: '会计甲', createdAt: '2026-08-10T03:00:00.000Z',
+      }
+    },
+    async adjust() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true },
+      projects, actorFingerprint: 'accountant-manual-missing',
+    })) })
+    await act(async () => { button(container, '新增调整费用').click() })
+    const manualDialog = elements(container, (element) => element.getAttribute?.('role') === 'dialog')[0]
+    await change(field(manualDialog, '项目'), 'P-1')
+    await change(field(manualDialog, '费用类别'), '其他费用')
+    await change(field(manualDialog, '日期'), '2026-08-10')
+    await change(field(manualDialog, '金额'), '-20')
+    await change(field(manualDialog, '费用说明'), '退款冲销')
+    await change(field(manualDialog, '经办人'), '会计甲')
+    await change(field(manualDialog, '录入原因'), '供应商退款')
+    await submitForm(manualDialog)
+    assert.match(container.textContent, /费用已保存，但最新项目成本读取失败/u)
+    assert.match(container.textContent, /新增调整费用/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('allocation success reopens the refreshed source first row when the formerly selected project was removed', async () => {
+  let replaced = false
+  const beforeAudit = {
+    status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z', events: [{
+      eventType: 'allocation', sourceKey: ledgerRow.sourceKey, sequenceNo: 1,
+      amountBefore: 900, amountAfter: 900, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P-1', amount: 900 }], allocationsAfter: [{ projectId: 'P-1', amount: 900 }],
+      reason: '首次归集', actorName: '会计甲', createdAt: '2026-08-10T02:00:01.000Z',
+    }],
+  }
+  const afterRow = { ...ledgerRow, version: 3, projectId: 'P-2', projectName: '横滨仓库项目', allocations: [{ projectId: 'P-2', amount: 900 }] }
+  const afterAudit = {
+    status: 'ready', generatedAt: '2026-08-10T03:00:01.000Z', events: [...beforeAudit.events, {
+      eventType: 'allocation', sourceKey: ledgerRow.sourceKey, sequenceNo: 2,
+      amountBefore: 900, amountAfter: 900, adjustmentAmount: 0,
+      allocationsBefore: [{ projectId: 'P-1', amount: 900 }], allocationsAfter: [{ projectId: 'P-2', amount: 900 }],
+      reason: '转归横滨', actorName: '会计甲', createdAt: '2026-08-10T02:00:02.000Z',
+    }],
+  }
+  const service = {
+    async list() { return replaced ? { ...ledgerSnapshot(), rows: [afterRow] } : ledgerSnapshot() },
+    async listAudit() { return replaced ? afterAudit : beforeAudit },
+    async replaceAllocations(request) {
+      replaced = true
+      return { sourceKey: request.sourceKey, version: 3, allocations: [{ projectId: 'P-2', amount: 900 }] }
+    },
+    async adjust() {}, async createManual() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
+      actorFingerprint: 'accountant-reallocate',
+    })) })
+    await act(async () => { button(container, '拆分').click() })
+    await change(field(container, '项目'), 'P-2')
+    await change(field(container, '调整原因'), '转归横滨')
+    await submitForm(container)
+    assert.doesNotMatch(container.textContent, /拆分项目成本/u)
+    assert.match(container.textContent, /横滨仓库项目/u)
+    assert.equal(button(container, '收起')?.textContent, '收起')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('conflict refresh keeps the draft and stale version when the applied filter no longer returns the target source', async () => {
+  let hidden = false
+  const empty = {
+    ...ledgerSnapshot(), totalRows: 0, totalAmount: 0, adjustmentTotal: 0,
+    categoryTotals: [], rows: [],
+  }
+  const service = {
+    async list() { return hidden ? empty : ledgerSnapshot() },
+    async listAudit() { return hidden ? { status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z', events: [] } : auditSnapshot() },
+    async adjust() {
+      hidden = true
+      throw Object.assign(new Error('private'), { code: 'PROJECT_COST_LEDGER_VERSION_CONFLICT' })
+    },
+    async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
+      actorFingerprint: 'accountant-filter-hidden',
+    })) })
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '本次调整金额'), '-30')
+    await change(field(container, '调整原因'), '复核冲减')
+    await submitForm(container)
+    await act(async () => { button(container, '刷新最新记录').click() })
+    assert.match(container.textContent, /当前筛选未显示这笔费用，请调整筛选后重试/u)
+    assert.equal(field(container, '本次调整金额').value, '-30')
+    assert.equal(field(container, '调整原因').value, '复核冲减')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('late mutation completion after cancel or actor replacement cannot reload or close the newly opened dialog', async () => {
+  const pending = deferred()
+  let listCalls = 0
+  const service = {
+    async list() { listCalls += 1; return ledgerSnapshot() }, async listAudit() { return auditSnapshot() },
+    async adjust() { return pending.promise }, async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const props = (actorFingerprint) => ({
+    service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects, actorFingerprint,
+  })
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, props('actor-old'))) })
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '本次调整金额'), '-10')
+    await change(field(container, '调整原因'), '旧弹窗')
+    await submitForm(container)
+    await act(async () => { button(container, '取消').click() })
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, props('actor-new'))) })
+    await act(async () => {})
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '调整原因'), '新弹窗')
+    const callsBeforeLate = listCalls
+    pending.resolve({ sourceKey: ledgerRow.sourceKey, version: 3, effectiveAmount: 890 })
+    await act(async () => {})
+    assert.equal(listCalls, callsBeforeLate)
+    assert.match(container.textContent, /调整项目成本/u)
+    assert.equal(field(container, '调整原因').value, '新弹窗')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('cancelled mutation reload cannot enter loading or commit its late ledger, audit, or auth effects', async () => {
+  const reloadStarted = deferred()
+  const lateList = deferred()
+  const lateAudit = deferred()
+  let listCalls = 0
+  let auditCalls = 0
+  let authInvalidCalls = 0
+  const service = {
+    async list() {
+      listCalls += 1
+      if (listCalls === 1) return ledgerSnapshot()
+      reloadStarted.resolve()
+      return lateList.promise
+    },
+    async listAudit() {
+      auditCalls += 1
+      return auditCalls === 1 ? auditSnapshot() : lateAudit.promise
+    },
+    async adjust(request) { return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 890 } },
+    async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+      service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
+      actorFingerprint: 'accountant-cancel-load', onAuthInvalid() { authInvalidCalls += 1 },
+    })) })
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '本次调整金额'), '-10')
+    await change(field(container, '调整原因'), '旧保存')
+    await submitForm(container)
+    await act(async () => { await reloadStarted.promise })
+    assert.doesNotMatch(container.textContent, /正在读取项目成本/u)
+    await act(async () => { button(container, '取消').click() })
+    await act(async () => { button(container, '调整').click() })
+    await change(field(container, '调整原因'), '新弹窗')
+    const staleSnapshot = ledgerSnapshot({ version: 3, effectiveAmount: 890 })
+    staleSnapshot.rows[0].description = '已取消操作的迟到数据'
+    lateList.resolve(staleSnapshot)
+    lateAudit.reject(Object.assign(new Error('expired'), { authInvalid: true }))
+    await act(async () => {})
+    assert.equal(authInvalidCalls, 0)
+    assert.doesNotMatch(container.textContent, /已取消操作的迟到数据/u)
+    assert.match(container.textContent, /调整项目成本/u)
+    assert.equal(field(container, '调整原因').value, '新弹窗')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('unmounted mutation reload drops late ledger, audit, and auth-invalid completions', async () => {
+  const reloadStarted = deferred()
+  const lateList = deferred()
+  const lateAudit = deferred()
+  let listCalls = 0
+  let auditCalls = 0
+  let authInvalidCalls = 0
+  const service = {
+    async list() {
+      listCalls += 1
+      if (listCalls === 1) return ledgerSnapshot()
+      reloadStarted.resolve()
+      return lateList.promise
+    },
+    async listAudit() {
+      auditCalls += 1
+      return auditCalls === 1 ? auditSnapshot() : lateAudit.promise
+    },
+    async adjust(request) { return { sourceKey: request.sourceKey, version: 3, effectiveAmount: 890 } },
+    async createManual() {}, async replaceAllocations() {},
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  await act(async () => { root.render(createElement(ProjectCostLedgerSection, {
+    service, access: { readLedger: true, createManual: true, adjust: true, allocate: true }, projects,
+    actorFingerprint: 'accountant-unmount-load', onAuthInvalid() { authInvalidCalls += 1 },
+  })) })
+  await act(async () => { button(container, '调整').click() })
+  await change(field(container, '本次调整金额'), '-10')
+  await change(field(container, '调整原因'), '卸载隔离')
+  await submitForm(container)
+  await act(async () => { await reloadStarted.promise })
+  await act(async () => { root.unmount() })
+  lateList.resolve(ledgerSnapshot({ version: 3, effectiveAmount: 890 }))
+  lateAudit.reject(Object.assign(new Error('expired'), { authInvalid: true }))
+  await act(async () => {})
+  assert.equal(authInvalidCalls, 0)
+  assert.equal(container.textContent, '')
+  dom.cleanup()
 })
 
 test('mutation controls remain disabled when the projected permission denies them', async () => {
