@@ -151,6 +151,16 @@ function reportPage(page, { totalRows = 205, version = 1 } = {}) {
   })
 }
 
+function auditEvent(sourceKey, { actorName = '会计甲', reason = '项目拆分' } = {}) {
+  return {
+    eventType: 'allocation', sourceKey, sequenceNo: 1,
+    amountBefore: 1, amountAfter: 1, adjustmentAmount: 0,
+    allocationsBefore: [{ projectId: 'P-1', amount: 1 }],
+    allocationsAfter: [{ projectId: 'P-1', amount: 1 }],
+    reason, actorName, createdAt: '2026-08-10T02:00:00.000Z',
+  }
+}
+
 test('complete report loader ignores a non-first screen page and collects every stable 100-row page', async () => {
   const listCalls = []
   const auditCalls = []
@@ -219,6 +229,63 @@ test('complete report loader returns no partial snapshot after its generation be
   current = false
   release()
   assert.equal(await pending, null)
+})
+
+test('matched report audit keeps complete in-scope history and deeply freezes away filter-out events', async () => {
+  const inScopeSource = 'manual:ROW-1'
+  const outsideSource = 'manual:FILTERED-OUT'
+  const broadAudit = {
+    status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z',
+    events: [
+      auditEvent(inScopeSource),
+      auditEvent(outsideSource, { actorName: '外部会计', reason: '筛选外秘密原因' }),
+    ],
+  }
+  const service = {
+    async list() { return reportPage(1, { totalRows: 1, version: 2 }) },
+    async listAudit() { return broadAudit },
+  }
+  const report = await loadCompleteProjectCostReportSnapshot({
+    service, filters: { category: '其他费用', sourceModule: 'manual', adjusted: 'adjusted', keyword: 'ROW-1' },
+    screenSnapshot: reportPage(1, { totalRows: 1, version: 2 }),
+    screenAuditSnapshot: broadAudit, isCurrent: () => true,
+  })
+  assert.equal(report.auditSnapshot.generatedAt, broadAudit.generatedAt)
+  assert.deepEqual(report.auditSnapshot.events.map(({ sourceKey }) => sourceKey), [inScopeSource])
+  assert.equal(JSON.stringify(report.auditSnapshot).includes('筛选外秘密原因'), false)
+  assert.equal(JSON.stringify(report.auditSnapshot).includes('外部会计'), false)
+  assert.ok(Object.isFrozen(report.auditSnapshot))
+  assert.ok(Object.isFrozen(report.auditSnapshot.events))
+  assert.ok(Object.isFrozen(report.auditSnapshot.events[0]))
+  assert.ok(Object.isFrozen(report.auditSnapshot.events[0].allocationsBefore))
+  assert.ok(Object.isFrozen(report.auditSnapshot.events[0].allocationsBefore[0]))
+  assert.equal(broadAudit.events.length, 2)
+
+  const workbook = createProjectCostWorkbook(ExcelJS, report.ledgerSnapshot, report.auditSnapshot, metadata)
+  const auditSheet = workbook.getWorksheet('调整记录')
+  assert.equal(auditSheet.rowCount, 7)
+  assert.equal(auditSheet.getCell('A7').value, inScopeSource)
+  assert.equal(String(auditSheet.getCell('I7').value).includes('秘密'), false)
+})
+
+test('zero-row filtered report returns a frozen empty matched audit instead of broad project history', async () => {
+  const outsideEvent = auditEvent('manual:FILTERED-OUT', { reason: '不应输出' })
+  const service = {
+    async list() { return reportPage(1, { totalRows: 0 }) },
+    async listAudit() {
+      return { status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [outsideEvent] }
+    },
+  }
+  const report = await loadCompleteProjectCostReportSnapshot({
+    service, filters: { keyword: '无匹配' }, screenSnapshot: reportPage(1, { totalRows: 0 }),
+    screenAuditSnapshot: { status: 'ready', generatedAt: '2026-08-10T03:00:00.000Z', events: [] },
+    isCurrent: () => true,
+  })
+  assert.deepEqual(report.auditSnapshot, {
+    status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [],
+  })
+  assert.ok(Object.isFrozen(report.auditSnapshot))
+  assert.ok(Object.isFrozen(report.auditSnapshot.events))
 })
 
 test('Excel download guard prevents stale output after asynchronous workbook generation', async () => {

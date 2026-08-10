@@ -209,7 +209,10 @@ test('print temporarily mounts the exact applied ledger and audit snapshots', as
       await new Promise((resolve) => setImmediate(resolve))
     })
     assert.equal(received.snapshot, currentSnapshot)
-    assert.equal(received.auditSnapshot, currentAudit)
+    assert.notEqual(received.auditSnapshot, currentAudit)
+    assert.deepEqual(received.auditSnapshot, currentAudit)
+    assert.ok(Object.isFrozen(received.auditSnapshot))
+    assert.ok(Object.isFrozen(received.auditSnapshot.events))
     assert.match(printBodyText, /材料费小计/u)
     assert.match(printBodyText, /调整记录附页/u)
     assert.deepEqual(received.filters, {
@@ -233,7 +236,12 @@ test('non-first screen page prints a complete reconciled all-page snapshot throu
       listCalls.push({ ...filters })
       return reportPageSnapshot(filters.page, filters.pageSize)
     },
-    async listAudit() { return deepFreeze({ status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z', events: [] }) },
+    async listAudit() {
+      return deepFreeze({
+        status: 'ready', generatedAt: '2026-08-10T04:00:00.000Z',
+        events: [{ ...auditSnapshot().events[0], sourceKey: 'manual:FILTERED-OUT', reason: '打印不应泄露' }],
+      })
+    },
   }
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
@@ -251,6 +259,7 @@ test('non-first screen page prints a complete reconciled all-page snapshot throu
           directBodyChild: printRoots[0]?.parentNode === dom.document.body,
           hasFirst: printRoots[0]?.textContent.includes('报表费用-1') === true,
           hasLast: printRoots[0]?.textContent.includes('报表费用-205') === true,
+          leakedAudit: printRoots[0]?.textContent.includes('打印不应泄露') === true,
         }
       },
     })) })
@@ -262,7 +271,9 @@ test('non-first screen page prints a complete reconciled all-page snapshot throu
     assert.equal(received.snapshot.rows.length, 205)
     assert.equal(received.snapshot.totalRows, 205)
     assert.equal(received.auditSnapshot.events.length, 0)
-    assert.deepEqual(layout, { count: 1, directBodyChild: true, hasFirst: true, hasLast: true })
+    assert.deepEqual(layout, {
+      count: 1, directBodyChild: true, hasFirst: true, hasLast: true, leakedAudit: false,
+    })
     assert.notEqual(received.metadata.generatedAt, currentSnapshot.generatedAt)
     assert.equal(received.metadata.ledgerGeneratedAt, '2000-01-01T00:00:00.000Z')
     assert.equal(elements(dom.document.body, (element) => element.className === 'project-cost-print-root').length, 0)

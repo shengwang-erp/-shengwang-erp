@@ -181,6 +181,42 @@ export function reconcileProjectCostAuditSnapshots(snapshot, auditSnapshot) {
   return { status: 'ready', eventsBySource, latestAllocationBySource }
 }
 
+function deepFreezeReportValue(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const key of Object.getOwnPropertyNames(value)) deepFreezeReportValue(value[key])
+    Object.freeze(value)
+  }
+  return value
+}
+
+function cloneAuditAllocations(allocations) {
+  return allocations === null
+    ? null
+    : allocations.map(({ projectId, amount }) => ({ projectId, amount }))
+}
+
+function matchedAuditSnapshot(ledgerSnapshot, broadAuditSnapshot) {
+  const sourceKeys = new Set(ledgerSnapshot.rows.map(({ sourceKey }) => sourceKey))
+  const events = broadAuditSnapshot.events.filter(({ sourceKey }) => sourceKeys.has(sourceKey)).map((event) => ({
+    eventType: event.eventType,
+    sourceKey: event.sourceKey,
+    sequenceNo: event.sequenceNo,
+    amountBefore: event.amountBefore,
+    amountAfter: event.amountAfter,
+    adjustmentAmount: event.adjustmentAmount,
+    allocationsBefore: cloneAuditAllocations(event.allocationsBefore),
+    allocationsAfter: cloneAuditAllocations(event.allocationsAfter),
+    reason: event.reason,
+    actorName: event.actorName,
+    createdAt: event.createdAt,
+  }))
+  return deepFreezeReportValue({
+    status: 'ready',
+    generatedAt: broadAuditSnapshot.generatedAt,
+    events,
+  })
+}
+
 function reportListFilters(filters, page) {
   const result = { page, pageSize: REPORT_PAGE_SIZE }
   for (const field of REPORT_FILTER_FIELDS) {
@@ -249,11 +285,15 @@ export async function loadCompleteProjectCostReportSnapshot({
   if (typeof isCurrent !== 'function' || !isCurrent()) return null
   const canRead = typeof service?.list === 'function' && typeof service?.listAudit === 'function'
   if (!canRead) {
+    const auditStatus = reconcileProjectCostAuditSnapshots(screenSnapshot, screenAuditSnapshot).status
     if (screenSnapshot?.page !== 1 || screenSnapshot?.rows?.length !== screenSnapshot?.totalRows ||
-        reconcileProjectCostAuditSnapshots(screenSnapshot, screenAuditSnapshot).status !== 'ready') {
+        auditStatus !== 'ready') {
       throw new TypeError('项目成本完整报表暂时不可用')
     }
-    return Object.freeze({ ledgerSnapshot: screenSnapshot, auditSnapshot: screenAuditSnapshot })
+    return Object.freeze({
+      ledgerSnapshot: screenSnapshot,
+      auditSnapshot: matchedAuditSnapshot(screenSnapshot, screenAuditSnapshot),
+    })
   }
 
   const first = await service.list(reportListFilters(filters, 1))
@@ -269,11 +309,12 @@ export async function loadCompleteProjectCostReportSnapshot({
   if (ledgerSnapshot.incompleteSources.length > 0) {
     throw new TypeError('项目成本完整报表数据不完整')
   }
-  const auditSnapshot = await service.listAudit(reportAuditFilters(filters))
+  const broadAuditSnapshot = await service.listAudit(reportAuditFilters(filters))
   if (!isCurrent()) return null
-  if (reconcileProjectCostAuditSnapshots(ledgerSnapshot, auditSnapshot).status !== 'ready') {
+  if (reconcileProjectCostAuditSnapshots(ledgerSnapshot, broadAuditSnapshot).status !== 'ready') {
     throw new TypeError('项目成本完整报表审计不一致')
   }
+  const auditSnapshot = matchedAuditSnapshot(ledgerSnapshot, broadAuditSnapshot)
   return Object.freeze({ ledgerSnapshot, auditSnapshot })
 }
 
