@@ -269,6 +269,8 @@ function normalizeAuditResponse(value) {
       if (allocationsBefore !== null || allocationsAfter !== null || moneyUnits(amountBefore) + moneyUnits(adjustmentAmount) !== moneyUnits(amountAfter)) throw unavailableError()
     } else {
       if (allocationsBefore === null || allocationsAfter === null || adjustmentAmount !== 0 || amountBefore !== amountAfter) throw unavailableError()
+      const hasDefaultZeroBefore = allocationsBefore.length === 1 && moneyUnits(allocationsBefore[0].amount) === 0n
+      if (hasDefaultZeroBefore && moneyUnits(amountBefore) !== 0n) throw unavailableError()
       const currentTotal = allocationsAfter.reduce((sum, allocation) => sum + moneyUnits(allocation.amount), 0n)
       if (currentTotal !== moneyUnits(amountBefore)) throw unavailableError()
     }

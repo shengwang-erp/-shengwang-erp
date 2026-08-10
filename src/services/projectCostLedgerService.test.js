@@ -144,6 +144,25 @@ test('audit accepts only the legal single-zero default before a signed zero-tota
   }
 })
 
+test('audit rejects a hostile single-zero prior allocation when amountBefore is nonzero', async () => {
+  const event = {
+    eventType: 'allocation', sourceKey: 'purchase:PO-1', sequenceNo: 2,
+    amountBefore: 100, amountAfter: 100, adjustmentAmount: 0,
+    allocationsBefore: [{ projectId: 'P1', amount: 0 }],
+    allocationsAfter: [{ projectId: 'P1', amount: 100 }],
+    reason: '伪造历史', actorName: '会计', createdAt: '2026-08-10T01:00:00.000Z',
+  }
+  const { client } = clientReturning({
+    data: { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z', events: [event] },
+    error: null,
+    status: 200,
+  })
+  await assert.rejects(
+    createProjectCostLedgerService(client, { configured: true }).listAudit({}),
+    errorCode('PROJECT_COST_LEDGER_SERVICE_UNAVAILABLE'),
+  )
+})
+
 test('only documented own SQL hints map to safe errors and supplier details never escape', async () => {
   const cases = [
     ['22023', 'PROJECT_COST_LEDGER_INPUT_INVALID'],
