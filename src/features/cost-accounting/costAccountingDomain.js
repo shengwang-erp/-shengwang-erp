@@ -14,6 +14,8 @@ const MAX_IDENTIFIER_LENGTH = 500
 const MALFORMED_ROW = Symbol('malformed-row')
 const UNSUPPORTED_OUTPUT_DATA = Symbol('unsupported-output-data')
 const READY_LABOR_SOURCES = new Set(['formal', 'legacy'])
+const LEDGER_COST_PARTS = Object.freeze(['labor', 'purchase', 'vehicle', 'manual', 'operating'])
+const MAX_SAFE_FIXED_UNITS = BigInt(Number.MAX_SAFE_INTEGER)
 const PROJECT_LEDGER_STATE_KEYS = Object.freeze(['status', 'data'])
 const PROJECT_LEDGER_STATES = new Set(['ready', 'loading', 'error', 'forbidden'])
 const LEDGER_CATEGORY_PART = Object.freeze({
@@ -114,6 +116,33 @@ function safeYen(value) {
 
 function fixedCostUnits(value) {
   return toSignedFourDecimalUnits(value)
+}
+
+function ledgerUnits(value) {
+  const units = fixedCostUnits(value)
+  return units === null ? null : BigInt(units)
+}
+
+function ledgerAmount(units) {
+  if (typeof units !== 'bigint' || units > MAX_SAFE_FIXED_UNITS ||
+      units < -MAX_SAFE_FIXED_UNITS) return null
+  return fromFourDecimalUnits(Number(units))
+}
+
+function ledgerUnitRow(value, parts = LEDGER_COST_PARTS) {
+  const result = {}
+  for (const part of parts) {
+    const units = ledgerUnits(value[part])
+    if (units === null) return null
+    result[part] = units
+  }
+  return result
+}
+
+function ledgerUnitTotal(parts) {
+  let total = 0n
+  for (const units of parts) total += units
+  return ledgerAmount(total)
 }
 
 function ledgerSnapshotSummaryMatches(snapshot) {
@@ -810,66 +839,97 @@ export function buildCostAccountingReadModel(input) {
     const nextLifetime = new Map([...lifetime].map(([projectId, row]) => [
       projectId, { ...row },
     ]))
-    let aggregationComplete = true
-    ledgerMonthlyTotal = 0
-    ledgerLifetimeTotal = 0
+    const companyUnitsByMonth = new Map([...nextCompanyByMonth].map(([month, row]) => [
+      month, ledgerUnitRow(row, ['purchase', 'vehicle', 'manual', 'operating']),
+    ]))
+    const projectUnitsByMonth = new Map([...nextProjectByMonth].map(([month, rows]) => [
+      month,
+      new Map([...rows].map(([projectId, row]) => [projectId, ledgerUnitRow(row)])),
+    ]))
+    const lifetimeUnits = new Map([...nextLifetime].map(([projectId, row]) => [
+      projectId, ledgerUnitRow(row),
+    ]))
+    let aggregationComplete = [...companyUnitsByMonth.values()].every(Boolean) &&
+      [...projectUnitsByMonth.values()].every((rows) => [...rows.values()].every(Boolean)) &&
+      [...lifetimeUnits.values()].every(Boolean)
+    if (!aggregationComplete) {
+      anomaly(anomalies, 'aggregation', 'initial', 'amount_overflow', '成本基础值超出固定精度范围。')
+    }
+    let ledgerMonthlyUnits = 0n
+    let ledgerLifetimeUnits = 0n
     for (const row of normalized.projectLedgerSummary.data.rows) {
+      if (!aggregationComplete) break
       const category = LEDGER_CATEGORY_PART[row.category]
       const month = monthOfDate(row.date)
-      const amount = row.effectiveAmount
       const projectId = row.projectId
-      const lifetimeTotal = addSafeSignedCostAccountingAmounts(ledgerLifetimeTotal, amount)
-      if (lifetimeTotal === null) {
-        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目成本账本累计超出安全范围。')
+      const amountUnits = ledgerUnits(row.effectiveAmount)
+      if (amountUnits === null) {
+        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目成本账本金额超出固定精度范围。')
         aggregationComplete = false
         break
       }
-      ledgerLifetimeTotal = lifetimeTotal
+      ledgerLifetimeUnits += amountUnits
       if (month === normalized.selectedMonth) {
-        const monthlyTotal = addSafeSignedCostAccountingAmounts(ledgerMonthlyTotal, amount)
-        if (monthlyTotal === null) {
-          anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目成本账本月度累计超出安全范围。')
-          aggregationComplete = false
-          break
-        }
-        ledgerMonthlyTotal = monthlyTotal
+        ledgerMonthlyUnits += amountUnits
       }
       if (monthSet.has(month)) {
-        if (!tryAdd(nextProjectByMonth.get(month).get(projectId), category, amount, true)) {
-          anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目月度成本累计超出安全范围。')
-          aggregationComplete = false
-          break
-        }
+        projectUnitsByMonth.get(month).get(projectId)[category] += amountUnits
       }
-      if (!tryAdd(nextLifetime.get(projectId), category, amount, true)) {
-        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '项目累计成本超出安全范围。')
-        aggregationComplete = false
-        break
-      }
+      lifetimeUnits.get(projectId)[category] += amountUnits
       if (monthSet.has(month) && category !== 'labor' &&
-          !tryAdd(nextCompanyByMonth.get(month), category, amount, true)) {
-        anomaly(anomalies, 'projectLedgerSummary', row.sourceKey, 'amount_overflow', '公司项目成本累计超出安全范围。')
-        aggregationComplete = false
-        break
+          companyUnitsByMonth.get(month)) {
+        companyUnitsByMonth.get(month)[category] += amountUnits
       }
     }
     if (aggregationComplete) {
-      for (const [month, row] of nextCompanyByMonth) {
-        if (row.salary !== null &&
-            sumCostParts([row.salary, row.purchase, row.vehicle, row.manual, row.operating]) === null) {
-          anomaly(anomalies, 'aggregation', month, 'amount_overflow', '公司月度成本合计超出安全范围。')
-          aggregationComplete = false
-          break
+      ledgerMonthlyTotal = ledgerAmount(ledgerMonthlyUnits)
+      ledgerLifetimeTotal = ledgerAmount(ledgerLifetimeUnits)
+      if (ledgerMonthlyTotal === null || ledgerLifetimeTotal === null) {
+        anomaly(anomalies, 'projectLedgerSummary', 'totals', 'amount_overflow', '项目成本账本汇总超出固定精度范围。')
+        aggregationComplete = false
+      }
+    }
+    if (aggregationComplete) {
+      for (const [month, units] of companyUnitsByMonth) {
+        const row = nextCompanyByMonth.get(month)
+        for (const part of ['purchase', 'vehicle', 'manual', 'operating']) {
+          const amount = ledgerAmount(units[part])
+          if (amount === null) {
+            anomaly(anomalies, 'aggregation', `${month}:${part}`, 'amount_overflow', '公司月度成本分类超出固定精度范围。')
+            aggregationComplete = false
+            break
+          }
+          row[part] = amount
+        }
+        if (!aggregationComplete) break
+        if (row.salary !== null) {
+          const salaryUnits = ledgerUnits(row.salary)
+          if (salaryUnits === null || ledgerUnitTotal([
+            salaryUnits, units.purchase, units.vehicle, units.manual, units.operating,
+          ]) === null) {
+            anomaly(anomalies, 'aggregation', month, 'amount_overflow', '公司月度成本合计超出固定精度范围。')
+            aggregationComplete = false
+            break
+          }
         }
       }
     }
     if (aggregationComplete) {
-      for (const [month, rows] of nextProjectByMonth) {
-        for (const [projectId, row] of rows) {
-          if (sumCostParts([
-            row.labor, row.purchase, row.vehicle, row.manual, row.operating,
-          ]) === null) {
-            anomaly(anomalies, 'aggregation', `${projectId}:${month}`, 'amount_overflow', '项目月度成本合计超出安全范围。')
+      for (const [month, rows] of projectUnitsByMonth) {
+        for (const [projectId, units] of rows) {
+          const row = nextProjectByMonth.get(month).get(projectId)
+          for (const part of LEDGER_COST_PARTS) {
+            const amount = ledgerAmount(units[part])
+            if (amount === null) {
+              anomaly(anomalies, 'aggregation', `${projectId}:${month}:${part}`, 'amount_overflow', '项目月度成本分类超出固定精度范围。')
+              aggregationComplete = false
+              break
+            }
+            row[part] = amount
+          }
+          if (!aggregationComplete) break
+          if (ledgerUnitTotal(LEDGER_COST_PARTS.map((part) => units[part])) === null) {
+            anomaly(anomalies, 'aggregation', `${projectId}:${month}`, 'amount_overflow', '项目月度成本合计超出固定精度范围。')
             aggregationComplete = false
             break
           }
@@ -878,11 +938,20 @@ export function buildCostAccountingReadModel(input) {
       }
     }
     if (aggregationComplete) {
-      for (const [projectId, row] of nextLifetime) {
-        if (sumCostParts([
-          row.labor, row.purchase, row.vehicle, row.manual, row.operating,
-        ]) === null) {
-          anomaly(anomalies, 'aggregation', projectId, 'amount_overflow', '项目累计成本合计超出安全范围。')
+      for (const [projectId, units] of lifetimeUnits) {
+        const row = nextLifetime.get(projectId)
+        for (const part of LEDGER_COST_PARTS) {
+          const amount = ledgerAmount(units[part])
+          if (amount === null) {
+            anomaly(anomalies, 'aggregation', `${projectId}:${part}`, 'amount_overflow', '项目累计成本分类超出固定精度范围。')
+            aggregationComplete = false
+            break
+          }
+          row[part] = amount
+        }
+        if (!aggregationComplete) break
+        if (ledgerUnitTotal(LEDGER_COST_PARTS.map((part) => units[part])) === null) {
+          anomaly(anomalies, 'aggregation', projectId, 'amount_overflow', '项目累计成本合计超出固定精度范围。')
           aggregationComplete = false
           break
         }

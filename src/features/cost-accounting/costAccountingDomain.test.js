@@ -568,6 +568,231 @@ test('ledger aggregation is atomic on overflow while the exact fixed-point bound
   assert.equal(boundary.companyMonthlyTotal.total, 300000)
 })
 
+test('positive and negative integer ledger totals accept the fixed-point edge and exact mixed cancellation', () => {
+  const edge = 900719925474
+  for (const sign of [1, -1]) {
+    const expected = sign * edge
+    const rows = [
+      ledgerRow({
+        sourceKey: `manual:EDGE-${sign}`, sourceDocumentId: `EDGE-${sign}`,
+        category: '材料费', effectiveAmount: expected,
+      }),
+      ledgerRow({
+        sourceKey: `manual:EDGE-PLUS-${sign}`, sourceDocumentId: `EDGE-PLUS-${sign}`,
+        category: '材料费', effectiveAmount: sign,
+      }),
+      ledgerRow({
+        sourceKey: `manual:EDGE-CANCEL-${sign}`, sourceDocumentId: `EDGE-CANCEL-${sign}`,
+        category: '材料费', effectiveAmount: -sign,
+      }),
+    ]
+    const model = buildCostAccountingReadModel(julyFixture({
+      laborWindow: laborWindow({
+        monthly: [{
+          ...laborWindow().monthly[0], salaryTotal: 0, projectLaborTotal: 0,
+          projectLaborById: { P1: 0 },
+        }],
+        projectLaborLifetimeById: { P1: 0 },
+      }),
+      projectLedgerSummary: readyLedgerSummary(rows, {
+        totalAmount: expected,
+        categoryTotals: [{ category: '材料费', amount: expected }],
+      }),
+      purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+      manualProjectCosts: [], operatingExpenses: [],
+    }))
+
+    assert.equal(model.projectLedger.status, 'ready')
+    assert.equal(model.projectLedger.monthlyTotal, expected)
+    assert.equal(model.projectLedger.lifetimeTotal, expected)
+    assert.equal(model.companyMonthlyTotal.purchase, expected)
+    assert.equal(model.companyMonthlyTotal.total, expected)
+    assert.equal(model.projectLifetimeById.P1.purchase, expected)
+    assert.equal(model.projectLifetimeById.P1.total, expected)
+  }
+})
+
+test('positive and negative integer one-yen month and company overflow fail atomically', () => {
+  const edge = 900719925474
+  for (const sign of [1, -1]) {
+    const rows = [
+      ledgerRow({
+        sourceKey: `manual:JULY-EDGE-${sign}`, sourceDocumentId: `JULY-EDGE-${sign}`,
+        projectId: 'P1', category: '材料费', effectiveAmount: sign * edge,
+      }),
+      ledgerRow({
+        sourceKey: `manual:JULY-ONE-${sign}`, sourceDocumentId: `JULY-ONE-${sign}`,
+        projectId: 'P2', category: '材料费', effectiveAmount: sign,
+      }),
+      ledgerRow({
+        sourceKey: `manual:AUG-EDGE-${sign}`, sourceDocumentId: `AUG-EDGE-${sign}`,
+        projectId: 'P1', category: '材料费', date: '2026-08-01',
+        effectiveAmount: -sign * edge,
+      }),
+      ledgerRow({
+        sourceKey: `manual:AUG-ONE-${sign}`, sourceDocumentId: `AUG-ONE-${sign}`,
+        projectId: 'P2', category: '材料费', date: '2026-08-01',
+        effectiveAmount: -sign,
+      }),
+    ]
+    const model = buildCostAccountingReadModel(julyFixture({
+      activeProjectIds: ['P1', 'P2'],
+      laborWindow: laborWindow({
+        monthly: [{
+          ...laborWindow().monthly[0], salaryTotal: 0, projectLaborTotal: 0,
+          projectLaborById: { P1: 0, P2: 0 },
+        }],
+        projectLaborLifetimeById: { P1: 0, P2: 0 },
+      }),
+      projectLedgerSummary: readyLedgerSummary(rows, {
+        totalAmount: 0,
+        categoryTotals: [{ category: '材料费', amount: 0 }],
+      }),
+      purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+      manualProjectCosts: [], operatingExpenses: [],
+    }))
+
+    assert.equal(model.projectLedger.status, 'incomplete')
+    assert.equal(model.projectLedger.monthlyTotal, null)
+    assert.equal(model.projectLedger.lifetimeTotal, null)
+    assert.equal(model.companyMonthlyTotal.purchase, null)
+    assert.equal(model.companyMonthlyTotal.total, null)
+    assert.equal(model.projectLifetimeById.P1.total, null)
+    assert.equal(model.projectLifetimeById.P2.total, null)
+  }
+})
+
+test('integer one-yen project-category overflow fails even when company and server category totals cancel', () => {
+  const edge = 900719925474
+  const rows = [
+    ledgerRow({
+      sourceKey: 'manual:P1-MATERIAL-EDGE', sourceDocumentId: 'P1-MATERIAL-EDGE',
+      projectId: 'P1', category: '材料费', effectiveAmount: edge,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-MATERIAL-EDGE', sourceDocumentId: 'P2-MATERIAL-EDGE',
+      projectId: 'P2', category: '材料费', effectiveAmount: -edge,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P1-MATERIAL-ONE', sourceDocumentId: 'P1-MATERIAL-ONE',
+      projectId: 'P1', category: '材料费', effectiveAmount: 1,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-MATERIAL-ONE', sourceDocumentId: 'P2-MATERIAL-ONE',
+      projectId: 'P2', category: '材料费', effectiveAmount: -1,
+    }),
+  ]
+  const model = buildCostAccountingReadModel(julyFixture({
+    activeProjectIds: ['P1', 'P2'],
+    laborWindow: laborWindow({
+      monthly: [{
+        ...laborWindow().monthly[0], salaryTotal: 0, projectLaborTotal: 0,
+        projectLaborById: { P1: 0, P2: 0 },
+      }],
+      projectLaborLifetimeById: { P1: 0, P2: 0 },
+    }),
+    projectLedgerSummary: readyLedgerSummary(rows, {
+      totalAmount: 0,
+      categoryTotals: [{ category: '材料费', amount: 0 }],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(model.projectLedger.status, 'incomplete')
+  assert.equal(model.companyMonthlyTotal.total, null)
+  assert.equal(model.projectLifetimeById.P1.purchase, null)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+  assert.equal(model.projectLifetimeById.P2.purchase, null)
+  assert.equal(model.projectLifetimeById.P2.total, null)
+})
+
+test('integer one-yen project total overflow fails when each category remains within the edge', () => {
+  const edge = 900719925474
+  const rows = [
+    ledgerRow({
+      sourceKey: 'manual:P1-MATERIAL', sourceDocumentId: 'P1-MATERIAL',
+      projectId: 'P1', category: '材料费', effectiveAmount: edge,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-MATERIAL', sourceDocumentId: 'P2-MATERIAL',
+      projectId: 'P2', category: '材料费', effectiveAmount: -edge,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P1-VEHICLE', sourceDocumentId: 'P1-VEHICLE',
+      projectId: 'P1', category: '车辆费', effectiveAmount: 1,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-VEHICLE', sourceDocumentId: 'P2-VEHICLE',
+      projectId: 'P2', category: '车辆费', effectiveAmount: -1,
+    }),
+  ]
+  const model = buildCostAccountingReadModel(julyFixture({
+    activeProjectIds: ['P1', 'P2'],
+    laborWindow: laborWindow({
+      monthly: [{
+        ...laborWindow().monthly[0], salaryTotal: 0, projectLaborTotal: 0,
+        projectLaborById: { P1: 0, P2: 0 },
+      }],
+      projectLaborLifetimeById: { P1: 0, P2: 0 },
+    }),
+    projectLedgerSummary: readyLedgerSummary(rows, {
+      totalAmount: 0,
+      categoryTotals: [
+        { category: '材料费', amount: 0 },
+        { category: '车辆费', amount: 0 },
+      ],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(model.projectLedger.status, 'incomplete')
+  assert.equal(model.companyMonthlyTotal.total, null)
+  assert.equal(model.projectLifetimeById.P1.purchase, null)
+  assert.equal(model.projectLifetimeById.P1.vehicle, null)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+  assert.equal(model.projectLifetimeById.P2.total, null)
+})
+
+test('ledger fixed-point validation fails closed without narrowing legacy integer accounting', () => {
+  const operatingExpenses = [{
+    operatingExpenseId: 'COMPANY-LARGE', date: '2026-07-08',
+    amount: Number.MAX_SAFE_INTEGER, allocateToProject: false,
+  }]
+  const zeroLabor = laborWindow({
+    monthly: [{
+      ...laborWindow().monthly[0], salaryTotal: 0, projectLaborTotal: 0,
+      projectLaborById: { P1: 0 },
+    }],
+    projectLaborLifetimeById: { P1: 0 },
+  })
+  const legacy = buildCostAccountingReadModel(julyFixture({
+    laborWindow: zeroLabor,
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses,
+  }))
+
+  assert.equal(legacy.projectLedger.status, 'legacy')
+  assert.equal(legacy.companyMonthlyTotal.operating, Number.MAX_SAFE_INTEGER)
+  assert.equal(legacy.companyMonthlyTotal.companyOperating, Number.MAX_SAFE_INTEGER)
+  assert.equal(legacy.companyMonthlyTotal.total, Number.MAX_SAFE_INTEGER)
+
+  const ledger = buildCostAccountingReadModel(julyFixture({
+    laborWindow: zeroLabor,
+    projectLedgerSummary: readyLedgerSummary([]),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses,
+  }))
+
+  assert.equal(ledger.projectLedger.status, 'incomplete')
+  assert.equal(ledger.projectLedger.monthlyTotal, null)
+  assert.equal(ledger.projectLedger.lifetimeTotal, null)
+  assert.equal(ledger.companyMonthlyTotal.operating, null)
+  assert.equal(ledger.companyMonthlyTotal.companyOperating, Number.MAX_SAFE_INTEGER)
+  assert.equal(ledger.companyMonthlyTotal.total, null)
+})
+
 test('confirmed warehouse receipt without an issue is inventory, not current project purchase cost', () => {
   const bridged = bridgeWarehouseMaterialCosts({
     purchaseRows: [{
