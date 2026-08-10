@@ -132,18 +132,20 @@ const costInput = {
   manualProjectCosts: manualCosts, operatingExpenses: operating,
 }
 
-function accountingLedgerSnapshot() {
-  const allocations = [{ projectId: 'P1', amount: 250.125 }]
+function accountingLedgerSnapshot({ amount = 250.125, description = '会计调整后的仓库材料' } = {}) {
+  const adjustmentAmount = 50.125
+  const originalAmount = Math.round((amount - adjustmentAmount) * 10000) / 10000
+  const allocations = [{ projectId: 'P1', amount }]
   return {
     status: 'ready', generatedAt: '2026-08-15T01:00:00.000Z', page: 1, pageSize: 100,
-    totalRows: 1, totalAmount: 250.125, adjustmentTotal: 50.125,
-    incompleteSources: [], categoryTotals: [{ category: '材料费', amount: 250.125 }],
+    totalRows: 1, totalAmount: amount, adjustmentTotal: adjustmentAmount,
+    incompleteSources: [], categoryTotals: [{ category: '材料费', amount }],
     rows: [{
       sourceKey: 'warehouse:ACCOUNTING', sourceModule: 'warehouse',
       sourceDocumentType: 'warehouse_stock_out', sourceDocumentId: 'ACCOUNTING',
       projectId: 'P1', projectName: '共享成本项目', category: '材料费', date: '2026-08-11',
-      description: '会计调整后的仓库材料', originalAmount: 200, adjustmentAmount: 50.125,
-      effectiveAmount: 250.125, operator: '会计甲', adjusted: true, version: 2,
+      description, originalAmount, adjustmentAmount,
+      effectiveAmount: amount, operator: '会计甲', adjusted: true, version: 2,
       allocations, auditEvents: [],
     }],
   }
@@ -153,8 +155,44 @@ const loaded = await loadAppModule()
 
 function ProjectLedgerSummaryProbe(props) {
   const state = loaded.module.useProjectLedgerSummaryLifecycle(props)
+  props.capture?.(state)
   return createElement('output', null,
     `${state.status}:${state.data?.rows?.[0]?.description || ''}`)
+}
+
+const summaryAccess = {
+  salary: true, projectCost: true, operatingExpense: true,
+  purchaseAccrual: true, purchasePayments: true,
+}
+
+const owner = {
+  id: 'owner-summary', employeeId: 'E-SUMMARY', employeeNumber: 'SW-000', name: '会计社长',
+  department: '总务部', position: '社长', employmentStatus: '在职', accountStatus: 'active',
+  mustChangePassword: false, effectivePermissionKeys: ['all'],
+}
+
+function ProjectLedgerConsumerProbe(props) {
+  const projectLedgerSummary = loaded.module.useProjectLedgerSummaryLifecycle(props)
+  props.capture?.(projectLedgerSummary)
+  const sourceStates = {
+    projects: ready(projects), laborWindow: ready(laborWindow),
+    purchaseAccrual: ready(purchases), purchaseLedgerAccrual: ready(purchases),
+    purchasePayments: ready([]), projectCosts: ready(manualCosts),
+    operatingExpenses: ready(operating), fuel: ready(fuel),
+    vehicleExpenses: ready(vehicleExpenses), vehicleIssues: ready(vehicleIssues),
+    projectLedgerSummary,
+  }
+  const home = loaded.module.buildHomeFinancialModels({
+    currentUser: owner, selectedMonth: month, sourceStates,
+  })
+  return createElement('div', null,
+    createElement(loaded.module.MonthlySummarySection, {
+      access: summaryAccess, vehicleAccess: true, sourceStates,
+      monthFilter: month, onMonthFilterChange() {},
+    }),
+    createElement('output', { 'data-kind': 'home-cost' },
+      `home:${home.cost.status}:${home.cost.data?.companyMonthlyTotal?.total ?? ''}`),
+  )
 }
 
 test('MonthlySummarySection delegates every cost total to buildCostAccountingReadModel', () => {
@@ -182,11 +220,14 @@ test('project ledger accounting summary is actor-isolated and never refills from
   const first = deferred()
   const second = deferred()
   let calls = 0
+  let actorAInvalidate = null
+  let currentInvalidate = null
   const access = { view: true, readLedger: true }
   try {
     await act(async () => { root.render(createElement(ProjectLedgerSummaryProbe, {
       service: { list() { calls += 1; return first.promise } },
       access, actorFingerprint: 'actor-a', onAuthInvalid() {},
+      capture(state) { actorAInvalidate = state.invalidate },
     })) })
     assert.equal(calls, 1)
     assert.match(container.textContent, /loading:/u)
@@ -194,6 +235,7 @@ test('project ledger accounting summary is actor-isolated and never refills from
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
       service: { list() { calls += 1; return second.promise } },
       access, actorFingerprint: 'actor-b', onAuthInvalid() {},
+      capture(state) { currentInvalidate = state.invalidate },
     })) }) })
     assert.equal(calls, 2)
     assert.doesNotMatch(container.textContent, /会计调整后的仓库材料/u)
@@ -212,6 +254,9 @@ test('project ledger accounting summary is actor-isolated and never refills from
     await act(async () => {})
     assert.match(container.textContent, /ready:新账号账本/u)
     assert.doesNotMatch(container.textContent, /旧账号机密/u)
+    assert.equal(actorAInvalidate(), false)
+    assert.equal(calls, 2)
+    assert.equal(typeof currentInvalidate, 'function')
 
     const callsBeforeDenied = calls
     await act(async () => { flushSync(() => { root.render(createElement(ProjectLedgerSummaryProbe, {
@@ -222,6 +267,62 @@ test('project ledger accounting summary is actor-isolated and never refills from
     assert.equal(calls, callsBeforeDenied)
     assert.match(container.textContent, /forbidden:/u)
     assert.doesNotMatch(container.textContent, /新账号账本/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('one actor-safe invalidation path refreshes both monthly and Home consumers for mutations and source changes', async () => {
+  assert.ifError(loaded.error)
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const first = deferred()
+  const mutation = deferred()
+  const sourceChange = deferred()
+  const pending = [first, mutation, sourceChange]
+  const service = {
+    list() {
+      const request = pending.shift()
+      assert.ok(request, 'unexpected duplicate project ledger summary load')
+      return request.promise
+    },
+  }
+  const access = { view: true, readLedger: true }
+  const sourceA = {}
+  const sourceB = {}
+  let latestState = null
+  const props = (sourceFingerprint) => ({
+    service, access, actorFingerprint: 'actor-refresh', sourceFingerprint,
+    onAuthInvalid() {}, capture(state) { latestState = state },
+  })
+  try {
+    await act(async () => { root.render(createElement(ProjectLedgerConsumerProbe, props(sourceA))) })
+    assert.match(container.textContent, /项目成本明细账正在加载/u)
+    assert.match(container.textContent, /home:loading:/u)
+
+    first.resolve(accountingLedgerSnapshot({ amount: 250.125, description: '初始账本' }))
+    await act(async () => {})
+    assert.match(container.textContent, /¥350\.125/u)
+    assert.match(container.textContent, /home:ready:350\.125/u)
+    assert.equal(typeof latestState.invalidate, 'function')
+
+    await act(async () => { latestState.invalidate() })
+    assert.match(container.textContent, /项目成本明细账正在加载/u)
+    assert.doesNotMatch(container.textContent, /¥350\.125|home:ready:350\.125/u)
+    mutation.resolve(accountingLedgerSnapshot({ amount: 400, description: '调整后账本' }))
+    await act(async () => {})
+    assert.match(container.textContent, /¥500/u)
+    assert.match(container.textContent, /home:ready:500/u)
+
+    await act(async () => { root.render(createElement(ProjectLedgerConsumerProbe, props(sourceB))) })
+    assert.match(container.textContent, /项目成本明细账正在加载/u)
+    assert.doesNotMatch(container.textContent, /home:ready:500/u)
+    sourceChange.resolve(accountingLedgerSnapshot({ amount: 450, description: '来源更新账本' }))
+    await act(async () => {})
+    assert.match(container.textContent, /¥550/u)
+    assert.match(container.textContent, /home:ready:550/u)
   } finally {
     await act(async () => { root.unmount() })
     dom.cleanup()

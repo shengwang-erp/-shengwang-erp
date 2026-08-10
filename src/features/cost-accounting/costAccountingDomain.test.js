@@ -420,6 +420,154 @@ test('a ready-labelled partial or arithmetically inconsistent ledger never publi
   }
 })
 
+test('a ledger row with an impossible calendar date makes the whole project composition incomplete', () => {
+  const row = ledgerRow({
+    sourceKey: 'manual:BAD-DATE', sourceDocumentId: 'BAD-DATE',
+    date: '2026-02-31', effectiveAmount: 10,
+  })
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: readyLedgerSummary([row]),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(model.projectLedger.status, 'incomplete')
+  assert.equal(model.projectLedger.monthlyTotal, null)
+  assert.equal(model.projectLedger.lifetimeTotal, null)
+  assert.equal(model.companyMonthlyTotal.manual, null)
+  assert.equal(model.companyMonthlyTotal.total, null)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+})
+
+test('a ledger row outside the authorized project set never contributes to a ready company or project total', () => {
+  const row = ledgerRow({
+    sourceKey: 'manual:UNKNOWN-PROJECT', sourceDocumentId: 'UNKNOWN-PROJECT',
+    projectId: 'P2', projectName: '未授权项目', effectiveAmount: 10,
+  })
+  const model = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: readyLedgerSummary([row]),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(model.projectLedger.status, 'incomplete')
+  assert.equal(model.projectLedger.monthlyTotal, null)
+  assert.equal(model.companyMonthlyTotal.manual, null)
+  assert.equal(model.companyMonthlyTotal.total, null)
+  assert.equal(model.projectLifetimeById.P1.total, null)
+})
+
+test('ledger aggregation is atomic on overflow while the exact fixed-point boundary stays ready', () => {
+  const maximum = 900719925474.0991
+  const overflowRows = [
+    ledgerRow({
+      sourceKey: 'manual:MAX-MATERIAL', sourceDocumentId: 'MAX-MATERIAL',
+      category: '材料费', effectiveAmount: maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:MAX-VEHICLE', sourceDocumentId: 'MAX-VEHICLE',
+      category: '车辆费', effectiveAmount: maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:MAX-REVERSAL', sourceDocumentId: 'MAX-REVERSAL',
+      category: '其他费用', effectiveAmount: -maximum,
+    }),
+  ]
+  const overflow = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: readyLedgerSummary(overflowRows, {
+      totalAmount: maximum,
+      categoryTotals: [
+        { category: '材料费', amount: maximum },
+        { category: '车辆费', amount: maximum },
+        { category: '其他费用', amount: -maximum },
+      ],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(overflow.projectLedger.status, 'incomplete')
+  assert.equal(overflow.projectLedger.monthlyTotal, null)
+  assert.equal(overflow.projectLedger.lifetimeTotal, null)
+  assert.equal(overflow.companyMonthlyTotal.purchase, null)
+  assert.equal(overflow.companyMonthlyTotal.vehicle, null)
+  assert.equal(overflow.companyMonthlyTotal.manual, null)
+  assert.equal(overflow.companyMonthlyTotal.total, null)
+  assert.equal(overflow.projectLifetimeById.P1.total, null)
+  assert.equal(overflow.anomalies.some(({ code }) => code === 'amount_overflow'), true)
+
+  const derivedOverflowRows = [
+    ledgerRow({
+      sourceKey: 'manual:P1-MATERIAL', sourceDocumentId: 'P1-MATERIAL',
+      projectId: 'P1', category: '材料费', effectiveAmount: maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-MANUAL', sourceDocumentId: 'P2-MANUAL',
+      projectId: 'P2', category: '其他费用', effectiveAmount: -maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P1-VEHICLE', sourceDocumentId: 'P1-VEHICLE',
+      projectId: 'P1', category: '车辆费', effectiveAmount: maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:P2-OPERATING', sourceDocumentId: 'P2-OPERATING',
+      projectId: 'P2', category: '经营费用', effectiveAmount: -maximum,
+    }),
+  ]
+  const derivedOverflow = buildCostAccountingReadModel(julyFixture({
+    activeProjectIds: ['P1', 'P2'],
+    laborWindow: laborWindow({
+      monthly: [{
+        ...laborWindow().monthly[0],
+        projectLaborById: { P1: 200000, P2: 0 },
+      }],
+      projectLaborLifetimeById: { P1: 300000, P2: 0 },
+    }),
+    projectLedgerSummary: readyLedgerSummary(derivedOverflowRows, {
+      totalAmount: 0,
+      categoryTotals: [
+        { category: '材料费', amount: maximum },
+        { category: '其他费用', amount: -maximum },
+        { category: '车辆费', amount: maximum },
+        { category: '经营费用', amount: -maximum },
+      ],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(derivedOverflow.projectLedger.status, 'incomplete')
+  assert.equal(derivedOverflow.projectLedger.monthlyTotal, null)
+  assert.equal(derivedOverflow.companyMonthlyTotal.total, null)
+  assert.equal(derivedOverflow.projectLifetimeById.P1.total, null)
+  assert.equal(derivedOverflow.projectLifetimeById.P2.total, null)
+
+  const boundaryRows = [
+    ledgerRow({
+      sourceKey: 'manual:BOUNDARY', sourceDocumentId: 'BOUNDARY',
+      category: '材料费', effectiveAmount: maximum,
+    }),
+    ledgerRow({
+      sourceKey: 'manual:BOUNDARY-REVERSAL', sourceDocumentId: 'BOUNDARY-REVERSAL',
+      category: '材料费', effectiveAmount: -maximum,
+    }),
+  ]
+  const boundary = buildCostAccountingReadModel(julyFixture({
+    projectLedgerSummary: readyLedgerSummary(boundaryRows, {
+      totalAmount: 0,
+      categoryTotals: [{ category: '材料费', amount: 0 }],
+    }),
+    purchaseRows: [], fuelRecords: [], vehicleExpenseRecords: [], vehicleIssueRecords: [],
+    manualProjectCosts: [], operatingExpenses: [],
+  }))
+
+  assert.equal(boundary.projectLedger.status, 'ready')
+  assert.equal(boundary.projectLedger.monthlyTotal, 0)
+  assert.equal(boundary.projectLedger.lifetimeTotal, 0)
+  assert.equal(boundary.projectLifetimeById.P1.total, 0)
+  assert.equal(boundary.companyMonthlyTotal.total, 300000)
+})
+
 test('confirmed warehouse receipt without an issue is inventory, not current project purchase cost', () => {
   const bridged = bridgeWarehouseMaterialCosts({
     purchaseRows: [{

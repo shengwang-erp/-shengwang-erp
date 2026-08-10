@@ -403,6 +403,7 @@ function strictSectionProps(service, actorFingerprint) {
 
 test('StrictMode section can cancel, reopen, submit and correlate an adjustment reload', async () => {
   let adjusted = false
+  let invalidationCalls = 0
   let adjustCalls = 0
   let listCalls = 0
   let auditCalls = 0
@@ -420,7 +421,10 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
   const container = dom.createContainer()
   const root = createRoot(container)
   try {
-    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-adjustment'))) })
+    await act(async () => { root.render(strictSection({
+      ...strictSectionProps(service, 'strict-adjustment'),
+      onLedgerInvalidated() { invalidationCalls += 1 },
+    })) })
     await act(async () => { button(container, '调整').click() })
     await act(async () => { button(container, '取消').click() })
     assert.doesNotMatch(container.textContent, /调整项目成本/u)
@@ -433,6 +437,7 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
     assert.equal(adjustCalls, 1)
     assert.equal(listCalls, 1)
     assert.equal(auditCalls, 1)
+    assert.equal(invalidationCalls, 1)
     assert.doesNotMatch(container.textContent, /调整项目成本/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
@@ -443,6 +448,7 @@ test('StrictMode section can cancel, reopen, submit and correlate an adjustment 
 
 test('StrictMode section completes one allocation mutation and its guarded reload', async () => {
   let replaced = false
+  let invalidationCalls = 0
   let replaceCalls = 0
   let listCalls = 0
   let auditCalls = 0
@@ -470,7 +476,10 @@ test('StrictMode section completes one allocation mutation and its guarded reloa
   const container = dom.createContainer()
   const root = createRoot(container)
   try {
-    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-allocation'))) })
+    await act(async () => { root.render(strictSection({
+      ...strictSectionProps(service, 'strict-allocation'),
+      onLedgerInvalidated() { invalidationCalls += 1 },
+    })) })
     await act(async () => { button(container, '拆分').click() })
     await change(field(container, '调整原因'), 'StrictMode 分摊')
     await submitForm(container)
@@ -478,6 +487,7 @@ test('StrictMode section completes one allocation mutation and its guarded reloa
     assert.equal(replaceCalls, 1)
     assert.equal(listCalls, 1)
     assert.equal(auditCalls, 1)
+    assert.equal(invalidationCalls, 1)
     assert.doesNotMatch(container.textContent, /拆分项目成本/u)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {
@@ -488,6 +498,7 @@ test('StrictMode section completes one allocation mutation and its guarded reloa
 
 test('StrictMode section completes one manual mutation and reloads the generated source', async () => {
   let manualSourceKey = ''
+  let invalidationCalls = 0
   let createCalls = 0
   let listCalls = 0
   let auditCalls = 0
@@ -521,7 +532,10 @@ test('StrictMode section completes one manual mutation and reloads the generated
   const container = dom.createContainer()
   const root = createRoot(container)
   try {
-    await act(async () => { root.render(strictSection(strictSectionProps(service, 'strict-manual'))) })
+    await act(async () => { root.render(strictSection({
+      ...strictSectionProps(service, 'strict-manual'),
+      onLedgerInvalidated() { invalidationCalls += 1 },
+    })) })
     await act(async () => { button(container, '新增调整费用').click() })
     const manualDialog = elements(container, (element) => element.getAttribute?.('role') === 'dialog')[0]
     await change(field(manualDialog, '项目'), 'P-1')
@@ -536,6 +550,7 @@ test('StrictMode section completes one manual mutation and reloads the generated
     assert.equal(createCalls, 1)
     assert.equal(listCalls, 1)
     assert.equal(auditCalls, 1)
+    assert.equal(invalidationCalls, 1)
     assert.equal(elements(container, (element) => element.getAttribute?.('role') === 'dialog').length, 0)
     assert.equal(button(container, '收起')?.textContent, '收起')
   } finally {

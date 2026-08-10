@@ -1939,6 +1939,7 @@ export function useProjectLedgerSummaryLifecycle({
   service,
   access,
   actorFingerprint,
+  sourceFingerprint,
   onAuthInvalid,
 }) {
   const canRead = Boolean(access?.readLedger ?? access?.view)
@@ -1947,8 +1948,19 @@ export function useProjectLedgerSummaryLifecycle({
   const onAuthInvalidRef = useRef(onAuthInvalid)
   onAuthInvalidRef.current = onAuthInvalid
   const requestSequenceRef = useRef(0)
+  const sourceFingerprintRef = useRef({
+    actorFingerprint,
+    value: sourceFingerprint,
+  })
+  const [refreshGeneration, setRefreshGeneration] = useState(0)
   const [state, setState] = useState(() =>
     initialProjectLedgerSummaryState(actorFingerprint, canRead))
+
+  const invalidate = useCallback(() => {
+    if (!canRead || activeIdentityRef.current !== actorFingerprint) return false
+    setRefreshGeneration((current) => current + 1)
+    return true
+  }, [actorFingerprint, canRead])
 
   useEffect(() => {
     const identity = actorFingerprint
@@ -1982,12 +1994,19 @@ export function useProjectLedgerSummaryLifecycle({
       active = false
       requestSequenceRef.current += 1
     }
-  }, [actorFingerprint, canRead, service])
+  }, [actorFingerprint, canRead, refreshGeneration, service])
+
+  useEffect(() => {
+    const previous = sourceFingerprintRef.current
+    sourceFingerprintRef.current = { actorFingerprint, value: sourceFingerprint }
+    if (previous.actorFingerprint !== actorFingerprint) return
+    if (!Object.is(previous.value, sourceFingerprint)) invalidate()
+  }, [actorFingerprint, invalidate, sourceFingerprint])
 
   if (state.identity !== actorFingerprint) {
-    return initialProjectLedgerSummaryState(actorFingerprint, canRead)
+    return { ...initialProjectLedgerSummaryState(actorFingerprint, canRead), invalidate }
   }
-  return { status: state.status, data: state.data }
+  return { status: state.status, data: state.data, invalidate }
 }
 
 function markLaborBridgeRetry(targetRef, requestIdentity) {
@@ -3394,10 +3413,22 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     currentUser,
     accountingAccess.projectCost,
   )
+  const projectLedgerSourceFingerprint = useMemo(() => ({}), [
+    projects,
+    purchaseRecords,
+    projectCostRecords,
+    laborRecords,
+    fuelRecords,
+    vehicleExpenseRecords,
+    vehicleIssueRecords,
+    toolResponsibilityRecords,
+    operatingExpenseRecords,
+  ])
   const projectLedgerSummaryState = useProjectLedgerSummaryLifecycle({
     service: activeProjectCostLedgerService,
     access: accountingAccess.projectCost,
     actorFingerprint: projectCostActorFingerprint,
+    sourceFingerprint: projectLedgerSourceFingerprint,
     onAuthInvalid: onLogout,
   })
 
@@ -4275,6 +4306,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         projectCostLedgerService={activeProjectCostLedgerService}
         projectCostActorFingerprint={projectCostActorFingerprint}
         onProjectCostAuthInvalid={onLogout}
+        onProjectCostLedgerInvalidated={projectLedgerSummaryState.invalidate}
         vehicleAccess={canAccessView(currentUser, 'vehicle')}
         sourceStates={accountingSourceStates}
         projects={projects}
@@ -6814,6 +6846,7 @@ export function AccountingCostPage({
   projectCostLedgerService,
   projectCostActorFingerprint,
   onProjectCostAuthInvalid,
+  onProjectCostLedgerInvalidated,
   vehicleAccess,
   sourceStates,
   projects,
@@ -6902,6 +6935,7 @@ export function AccountingCostPage({
           service={projectCostLedgerService}
           actorFingerprint={projectCostActorFingerprint}
           onAuthInvalid={onProjectCostAuthInvalid}
+          onLedgerInvalidated={onProjectCostLedgerInvalidated}
           projects={projects}
           access={resolvedAccess.projectCost}
         />

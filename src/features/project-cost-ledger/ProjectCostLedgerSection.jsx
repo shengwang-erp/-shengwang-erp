@@ -166,6 +166,7 @@ export default function ProjectCostLedgerSection({
   initialAuditSnapshot = null,
   actorFingerprint = '',
   onAuthInvalid,
+  onLedgerInvalidated,
   onCreateManual,
   onAdjust,
   onAllocate,
@@ -601,10 +602,11 @@ export default function ProjectCostLedgerSection({
         : current)
       return { ok: true, model: refreshedModel }
     }
+    onLedgerInvalidated?.()
     setExpandedRows(new Set([`${sourceKey}:${refreshedRow.projectId}`]))
     closeDialog(token)
     return { ok: true, model: refreshedModel }
-  }, [actorFingerprint, appliedFilters, closeDialog, dialogTokenIsCurrent, load, snapshot?.page, snapshot?.pageSize])
+  }, [actorFingerprint, appliedFilters, closeDialog, dialogTokenIsCurrent, load, onLedgerInvalidated, snapshot?.page, snapshot?.pageSize])
 
   return (
     <section className="project-cost-ledger" data-project-count={projects.length}>
