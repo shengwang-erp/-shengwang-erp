@@ -27,6 +27,16 @@ begin
       public.has_current_permission('module.accounting.view')
       and public.has_current_permission('module.operating_expenses.view')
     )
+    or (
+      public.has_current_permission('module.owner_dashboard.view')
+      and public.has_current_permission('sensitive.owner_dashboard_full_view')
+      and public.has_current_permission('module.project_costs.view')
+    )
+    or (
+      public.has_current_permission('module.owner_dashboard.view')
+      and public.has_current_permission('sensitive.owner_dashboard_full_view')
+      and public.has_current_permission('module.operating_expenses.view')
+    )
     or public.has_current_permission('module.vehicles.view')
     or (
       public.has_current_permission('module.tools.view')

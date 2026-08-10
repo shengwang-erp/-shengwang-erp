@@ -357,6 +357,39 @@ test('tool responsibility managers get project references without project module
   assert.equal(canAccessView(manager, 'projects'), false)
 })
 
+test('owner dashboard cost cards preserve both narrow project relation read chains', () => {
+  const dashboardProjectCost = [
+    'module.owner_dashboard.view',
+    'sensitive.owner_dashboard_full_view',
+    'module.project_costs.view',
+  ]
+  const dashboardOperatingExpense = [
+    'module.owner_dashboard.view',
+    'sensitive.owner_dashboard_full_view',
+    'module.operating_expenses.view',
+  ]
+
+  assert.deepEqual(
+    getProjectReferenceAccess(activeFinanceUser(dashboardProjectCost)),
+    { view: true, full: false },
+  )
+  assert.deepEqual(
+    getProjectReferenceAccess(activeFinanceUser(dashboardOperatingExpense)),
+    { view: true, full: false },
+  )
+  for (const keys of [dashboardProjectCost, dashboardOperatingExpense]) {
+    for (const missingKey of keys) {
+      assert.deepEqual(
+        getProjectReferenceAccess(activeFinanceUser(
+          keys.filter((key) => key !== missingKey),
+        )),
+        { view: false, full: false },
+        missingKey,
+      )
+    }
+  }
+})
+
 test('purchase sections separate accrual actions from payment sensitive actions', () => {
   const keys = [
     'module.purchases.view',

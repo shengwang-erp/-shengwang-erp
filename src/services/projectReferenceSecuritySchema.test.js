@@ -31,7 +31,8 @@ test('project reference RPC requires active employee and exact relation permissi
   for (const key of [
     'module.projects.view', 'module.purchases.view', 'module.accounting.view',
     'module.project_costs.view', 'module.operating_expenses.view', 'module.vehicles.view',
-    'module.tools.view', 'module.tools.update',
+    'module.tools.view', 'module.tools.update', 'module.owner_dashboard.view',
+    'sensitive.owner_dashboard_full_view',
   ]) assert.match(sql, new RegExp(`'${key.replaceAll('.', '\\.')}'`, 'i'), key)
   assert.match(
     sql,

@@ -235,6 +235,105 @@ test('tool-only manager follows the real App project-reference loader and can sa
   }
 })
 
+test('project directory synchronously isolates actor and permission changes and drops late responses', async () => {
+  assert.equal(typeof app.useProjectDirectoryLifecycle, 'function')
+  assert.equal(typeof app.createProjectDirectoryActorFingerprint, 'function')
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const first = deferred()
+  const second = deferred()
+  const reference = deferred()
+  const calls = []
+  const service = {
+    listProjects() {
+      calls.push('full')
+      return calls.length === 1 ? first.promise : second.promise
+    },
+    listProjectReferences() {
+      calls.push('reference')
+      return reference.promise
+    },
+  }
+  const fullAccess = { view: true, full: true }
+  const referenceAccess = { view: true, full: false }
+  const actor = (id, keys) => ({
+    id, employeeId: id, tenantId: 'tenant-a', effectivePermissionKeys: keys,
+  })
+  function Probe({ currentUser, access }) {
+    const directory = app.useProjectDirectoryLifecycle({
+      service, currentUser, access, onFatalError() {},
+    })
+    return createElement('div', null,
+      createElement('span', null, directory.rawState.loading ? 'loading' : 'settled'),
+      ...directory.rows.map((row) => createElement(
+        'span', { key: row.projectId }, JSON.stringify(row),
+      )),
+    )
+  }
+  const actorA = actor('actor-a', ['module.projects.view'])
+  const actorB = actor('actor-b', ['module.projects.view'])
+  try {
+    await act(async () => { root.render(createElement(Probe, {
+      currentUser: actorA, access: fullAccess,
+    })) })
+    assert.deepEqual(calls, ['full'])
+    first.resolve([{
+      projectId: 'P-1', projectName: '甲项目', status: '进行中', address: '',
+      contractAmount: 999,
+    }])
+    await act(async () => {})
+    assert.match(container.textContent, /contractAmount/u)
+
+    await act(async () => {
+      flushSync(() => { root.render(createElement(Probe, {
+        currentUser: actor('actor-a', [
+          'module.projects.view', 'sensitive.contract_amount_view',
+        ]),
+        access: fullAccess,
+      })) })
+      assert.match(container.textContent, /loading/u)
+      assert.doesNotMatch(container.textContent, /contractAmount/u)
+    })
+    assert.deepEqual(calls, ['full', 'full'])
+
+    await act(async () => {
+      flushSync(() => { root.render(createElement(Probe, {
+        currentUser: actorB, access: fullAccess,
+      })) })
+      assert.match(container.textContent, /loading/u)
+      assert.doesNotMatch(container.textContent, /contractAmount/u)
+    })
+    assert.deepEqual(calls, ['full', 'full', 'full'])
+
+    await act(async () => {
+      flushSync(() => { root.render(createElement(Probe, {
+        currentUser: actor('actor-b', ['module.tools.view', 'module.tools.update']),
+        access: referenceAccess,
+      })) })
+      assert.match(container.textContent, /loading/u)
+      assert.doesNotMatch(container.textContent, /contractAmount/u)
+    })
+    assert.deepEqual(calls, ['full', 'full', 'full', 'reference'])
+
+    second.resolve([{
+      projectId: 'P-OLD', projectName: '旧完整项目', status: '进行中', address: '',
+      contractAmount: 888,
+    }])
+    await act(async () => {})
+    assert.doesNotMatch(container.textContent, /旧完整项目|contractAmount/u)
+    reference.resolve([{
+      projectId: 'P-2', projectName: '乙项目', status: '进行中', address: '',
+    }])
+    await act(async () => {})
+    assert.match(container.textContent, /乙项目/u)
+    assert.doesNotMatch(container.textContent, /contractAmount/u)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('ledger auth invalidation logs out and a failed source remains an error', async () => {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()

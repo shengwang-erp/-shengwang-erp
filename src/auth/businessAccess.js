@@ -157,9 +157,15 @@ export function getProjectReferenceAccess(user) {
 
   const full = canAccessSafeUser(snapshot, 'projects')
   const accountingPage = canAccessSafeUser(snapshot, 'accounting')
+  const dashboardPage = canAccessSafeUser(snapshot, 'dashboard')
+  const dashboardFull = dashboardPage &&
+    canViewSensitive(snapshot, '查看老板驾驶舱全部数据')
   const relationView = full ||
     canAccessSafeUser(snapshot, 'purchase') ||
     (accountingPage && (
+      hasModule(snapshot, '项目成本') || hasModule(snapshot, '经营费用')
+    )) ||
+    (dashboardFull && (
       hasModule(snapshot, '项目成本') || hasModule(snapshot, '经营费用')
     )) ||
     canAccessSafeUser(snapshot, 'vehicle') ||

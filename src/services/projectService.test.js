@@ -69,3 +69,61 @@ test('project reference response rejects extra or malformed project data', async
     )
   }
 })
+
+test('project reference list rejects hostile, sparse, accessor and non-enumerable containers safely', async () => {
+  const valid = {
+    projectId: 'P001', projectName: '项目', status: '进行中', address: '',
+  }
+  const sparse = []
+  sparse.length = 1
+  const extra = [valid]
+  extra.extra = true
+  const accessor = []
+  Object.defineProperty(accessor, '0', { enumerable: true, get() { return valid } })
+  accessor.length = 1
+  const nonEnumerable = []
+  Object.defineProperty(nonEnumerable, '0', { enumerable: false, value: valid })
+  nonEnumerable.length = 1
+  const supplierErrors = [
+    new Error('own keys leak'),
+    new Error('descriptor leak'),
+    new Error('get leak'),
+    new Error('prototype leak'),
+  ]
+  const hostile = [
+    new Proxy([], { ownKeys() { throw supplierErrors[0] } }),
+    new Proxy([valid], { getOwnPropertyDescriptor() { throw supplierErrors[1] } }),
+    new Proxy([valid], { get(target, key, receiver) {
+      if (key === 'map') throw supplierErrors[2]
+      return Reflect.get(target, key, receiver)
+    } }),
+    new Proxy([valid], { getPrototypeOf() { throw supplierErrors[3] } }),
+  ]
+
+  for (const data of [sparse, extra, accessor, nonEnumerable, ...hostile]) {
+    const service = createProjectService({
+      rpc: async () => ({ data, error: null }),
+    }, { configured: true })
+    await assert.rejects(() => service.listProjectReferences(), (error) => {
+      assert.equal(error instanceof ProjectServiceError, true)
+      assert.equal(error.code, 'invalidResponse')
+      assert.equal(error.message, '项目数据操作失败')
+      assert.equal(supplierErrors.includes(error), false)
+      return true
+    })
+  }
+})
+
+test('project reference rows require four exact enumerable own data properties', async () => {
+  const row = {
+    projectId: 'P001', projectName: '项目', status: '进行中',
+  }
+  Object.defineProperty(row, 'address', { value: '', enumerable: false })
+  const service = createProjectService({
+    rpc: async () => ({ data: [row], error: null }),
+  }, { configured: true })
+  await assert.rejects(
+    () => service.listProjectReferences(),
+    (error) => error instanceof ProjectServiceError && error.code === 'invalidResponse',
+  )
+})

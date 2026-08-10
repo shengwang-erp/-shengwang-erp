@@ -5788,3 +5788,7 @@ commit;
 -- readers may execute it. Tool responsibility binding requires both
 -- module.tools.view and module.tools.update. Anonymous execution is revoked;
 -- only authenticated and service_role receive EXECUTE.
+-- The two owner-dashboard relation paths each preserve the original full-data
+-- gate: module.owner_dashboard.view plus sensitive.owner_dashboard_full_view,
+-- together with either module.project_costs.view or
+-- module.operating_expenses.view. No partial dashboard combination qualifies.

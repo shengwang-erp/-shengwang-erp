@@ -51,7 +51,8 @@ function validateProjectReference(value) {
       keys.some((key) => !PROJECT_REFERENCE_KEYS.includes(key)) ||
       PROJECT_REFERENCE_KEYS.some((key) => {
         const descriptor = descriptors[key]
-        return !descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string'
+        return !descriptor || descriptor.enumerable !== true ||
+          !('value' in descriptor) || typeof descriptor.value !== 'string'
       }) ||
       descriptors.projectId.value.trim() === '' ||
       descriptors.projectName.value.trim() === ''
@@ -60,6 +61,43 @@ function validateProjectReference(value) {
     return Object.fromEntries(PROJECT_REFERENCE_KEYS.map(
       (key) => [key, descriptors[key].value],
     ))
+  } catch (error) {
+    if (error instanceof ProjectServiceError) throw error
+    throw new ProjectServiceError('invalidResponse')
+  }
+}
+
+function validateProjectReferenceList(value) {
+  try {
+    if (
+      !Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype ||
+      value.map !== Array.prototype.map
+    ) throw new ProjectServiceError('invalidResponse')
+
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (Reflect.ownKeys(descriptors).some((key) => typeof key !== 'string')) {
+      throw new ProjectServiceError('invalidResponse')
+    }
+    const lengthDescriptor = descriptors.length
+    const length = lengthDescriptor && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : -1
+    if (
+      !Number.isSafeInteger(length) || length < 0 ||
+      lengthDescriptor.enumerable !== false ||
+      Object.keys(descriptors).length !== length + 1
+    ) throw new ProjectServiceError('invalidResponse')
+
+    const rows = []
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)]
+      if (!descriptor || descriptor.enumerable !== true || !('value' in descriptor)) {
+        throw new ProjectServiceError('invalidResponse')
+      }
+      rows.push(validateProjectReference(descriptor.value))
+    }
+    return rows
   } catch (error) {
     if (error instanceof ProjectServiceError) throw error
     throw new ProjectServiceError('invalidResponse')
@@ -93,8 +131,7 @@ export function createProjectService(client = supabase, { configured = isSupabas
     },
     async listProjectReferences() {
       const data = await call('list_project_references_secure', {})
-      if (!Array.isArray(data)) throw new ProjectServiceError('invalidResponse')
-      return data.map(validateProjectReference)
+      return validateProjectReferenceList(data)
     },
     async createProject(payload) {
       return validateProject(await call('create_project_secure', { p_payload: payload }))

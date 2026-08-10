@@ -165,25 +165,23 @@ test('valid zero-module profiles authenticate with every dead permission-gate st
 })
 
 test('legacy project startup clears stale data before any unauthorized list call', () => {
-  const projectStartup = sliceBetween(
+  const lifecycle = sliceBetween(
+    appSource,
+    'export function useProjectDirectoryLifecycle',
+    '\nexport function AuthenticatedApp',
+  )
+  assert.match(lifecycle, /createProjectDirectoryActorFingerprint\(currentUser, access\)/u)
+  assert.match(lifecycle, /if \(!access\?\.view\)[\s\S]*?rows: \[\]/u)
+  assert.match(
+    lifecycle,
+    /rows: \[\][\s\S]*?loadProjectDirectoryForAccess\(service, access\)/u,
+  )
+  assert.match(lifecycle, /requestSequenceRef\.current !== sequence/u)
+  assert.match(lifecycle, /activeIdentityRef\.current !== requestIdentity/u)
+  assert.match(
     authenticatedApp,
-    'const contractRevenueAccess',
-    "\n  useEffect(() => {\n    let active = true\n    if (!contractRevenueAccess.view)",
+    /useProjectDirectoryLifecycle\(\{[\s\S]*?service: projectService,[\s\S]*?currentUser,[\s\S]*?access: projectReferenceAccess/u,
   )
-  const permissionIndex = projectStartup.indexOf(
-    'const canViewProjects = projectReferenceAccess.view',
-  )
-  const earlyReturnIndex = projectStartup.indexOf('if (!canViewProjects)')
-  const clearIndex = projectStartup.indexOf('setStoredProjects([])', earlyReturnIndex)
-  const listIndex = projectStartup.indexOf(
-    'loadProjectDirectoryForAccess(projectService, projectReferenceAccess)',
-  )
-
-  assert.ok(permissionIndex >= 0)
-  assert.ok(earlyReturnIndex > permissionIndex)
-  assert.ok(clearIndex > earlyReturnIndex)
-  assert.ok(listIndex > clearIndex)
-  assert.match(projectStartup, /\}, \[canViewProjects, projectReferenceAccess\.full\]\)/u)
 })
 
 test('one attendance route passes only identity, auth invalidation, and Home navigation', () => {

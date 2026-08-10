@@ -141,7 +141,7 @@ test('accounting project relations use an authorized projected project source', 
   )
   assert.match(
     authenticated,
-    /loadProjectDirectoryForAccess\(projectService, projectReferenceAccess\)/u,
+    /useProjectDirectoryLifecycle\(\{[\s\S]*?service: projectService,[\s\S]*?access: projectReferenceAccess/u,
   )
   assert.match(projectProjection, /readAllowed:\s*projectRelationReadAccess/u)
 })

@@ -41,7 +41,12 @@ insert into auth.users(
   ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'reference-tool-viewer@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000003', 'authenticated', 'authenticated', 'reference-cost-viewer@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
   ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000004', 'authenticated', 'authenticated', 'reference-cost-accountant@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
-  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'reference-inactive@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'reference-inactive@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000006', 'authenticated', 'authenticated', 'reference-dashboard-project@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000007', 'authenticated', 'authenticated', 'reference-dashboard-no-sensitive@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000008', 'authenticated', 'authenticated', 'reference-dashboard-operating@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000009', 'authenticated', 'authenticated', 'reference-dashboard-no-page@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now()),
+  ('00000000-0000-0000-0000-000000000000', 'aa100000-0000-4000-8000-000000000010', 'authenticated', 'authenticated', 'reference-dashboard-no-cost@auth.invalid', '', now(), '{}'::jsonb, '{}'::jsonb, now(), now());
 
 insert into public.employee_profiles(
   id, employee_number, auth_user_id, name, department, position,
@@ -51,13 +56,26 @@ insert into public.employee_profiles(
   ('aa200000-0000-4000-8000-000000000002', 'SW-9802', 'aa100000-0000-4000-8000-000000000002', '工具只读人员', '后勤部', '主任', '在职', 'active', false),
   ('aa200000-0000-4000-8000-000000000003', 'SW-9803', 'aa100000-0000-4000-8000-000000000003', '成本缺页人员', '设计部', '设计师', '在职', 'active', false),
   ('aa200000-0000-4000-8000-000000000004', 'SW-9804', 'aa100000-0000-4000-8000-000000000004', '项目成本会计', '设计部', '会计', '在职', 'active', false),
-  ('aa200000-0000-4000-8000-000000000005', 'SW-9805', 'aa100000-0000-4000-8000-000000000005', '离职工具管理员', '后勤部', '总务部长', '离职', 'disabled', false);
+  ('aa200000-0000-4000-8000-000000000005', 'SW-9805', 'aa100000-0000-4000-8000-000000000005', '离职工具管理员', '后勤部', '总务部长', '离职', 'disabled', false),
+  ('aa200000-0000-4000-8000-000000000006', 'SW-9806', 'aa100000-0000-4000-8000-000000000006', '驾驶舱项目成本', '事务部', '部长', '在职', 'active', false),
+  ('aa200000-0000-4000-8000-000000000007', 'SW-9807', 'aa100000-0000-4000-8000-000000000007', '驾驶舱缺敏感权', '事务部', '小工', '在职', 'active', false),
+  ('aa200000-0000-4000-8000-000000000008', 'SW-9808', 'aa100000-0000-4000-8000-000000000008', '驾驶舱经营费用', '仓库管理部', '仓库管理员', '在职', 'active', false),
+  ('aa200000-0000-4000-8000-000000000009', 'SW-9809', 'aa100000-0000-4000-8000-000000000009', '驾驶舱缺页面权', '电商部', '仓库管理员', '在职', 'active', false),
+  ('aa200000-0000-4000-8000-000000000010', 'SW-9810', 'aa100000-0000-4000-8000-000000000010', '驾驶舱缺成本权', '营业部', '部长', '在职', 'active', false);
 
 insert into public.permission_grants(subject_type, subject_code, permission_key) values
   ('department', '后勤部', 'module.tools.view'),
   ('position', '总务部长', 'module.tools.update'),
   ('department', '设计部', 'module.project_costs.view'),
-  ('position', '会计', 'module.accounting.view')
+  ('position', '会计', 'module.accounting.view'),
+  ('department', '事务部', 'module.owner_dashboard.view'),
+  ('department', '事务部', 'module.project_costs.view'),
+  ('position', '部长', 'sensitive.owner_dashboard_full_view'),
+  ('department', '仓库管理部', 'module.owner_dashboard.view'),
+  ('department', '仓库管理部', 'module.operating_expenses.view'),
+  ('position', '仓库管理员', 'sensitive.owner_dashboard_full_view'),
+  ('department', '电商部', 'module.operating_expenses.view'),
+  ('department', '营业部', 'module.owner_dashboard.view')
 on conflict do nothing;
 
 insert into public.projects(record_key, payload, status) values (
@@ -113,6 +131,49 @@ select throws_ok(
   $$select public.list_project_references_secure()$$,
   '42501', 'active employee required',
   'inactive tool manager cannot read project references'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'aa100000-0000-4000-8000-000000000006', true);
+set local role authenticated;
+select lives_ok(
+  $$select public.list_project_references_secure()$$,
+  'owner dashboard full-data project-cost chain can read project references'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'aa100000-0000-4000-8000-000000000007', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_project_references_secure()$$,
+  '42501', 'project reference permission required',
+  'owner dashboard project-cost chain without sensitive full view is rejected'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'aa100000-0000-4000-8000-000000000008', true);
+set local role authenticated;
+select lives_ok(
+  $$select public.list_project_references_secure()$$,
+  'owner dashboard full-data operating-expense chain can read project references'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'aa100000-0000-4000-8000-000000000009', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_project_references_secure()$$,
+  '42501', 'project reference permission required',
+  'owner dashboard operating-expense chain without dashboard page is rejected'
+);
+reset role;
+
+select set_config('request.jwt.claim.sub', 'aa100000-0000-4000-8000-000000000010', true);
+set local role authenticated;
+select throws_ok(
+  $$select public.list_project_references_secure()$$,
+  '42501', 'project reference permission required',
+  'owner dashboard full-data chain without a relation cost module is rejected'
 );
 reset role;
 

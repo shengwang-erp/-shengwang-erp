@@ -2271,6 +2271,136 @@ export function loadProjectDirectoryForAccess(service, access) {
   return access.full ? service.listProjects() : service.listProjectReferences()
 }
 
+export function createProjectDirectoryActorFingerprint(currentUser, access) {
+  const permissionKeys = Array.isArray(currentUser?.effectivePermissionKeys)
+    ? [...new Set(currentUser.effectivePermissionKeys.filter(
+        (key) => typeof key === 'string',
+      ))].sort()
+    : []
+  return JSON.stringify([
+    typeof currentUser?.tenantId === 'string' ? currentUser.tenantId : '',
+    typeof currentUser?.id === 'string' ? currentUser.id : currentUser?.employeeId || '',
+    permissionKeys,
+    Boolean(access?.view),
+    Boolean(access?.full),
+  ])
+}
+
+function projectDirectoryRawState(identity, status) {
+  if (status === 'forbidden') {
+    return {
+      identity, loading: false, error: '无权读取该数据', code: 'ACCESS_DENIED',
+      source: 'blocked', updatedAt: null,
+    }
+  }
+  return {
+    identity, loading: status === 'loading', error: '', code: '',
+    source: 'project-service', updatedAt: null,
+  }
+}
+
+export function useProjectDirectoryLifecycle({
+  service,
+  currentUser,
+  access,
+  onFatalError,
+}) {
+  const identity = createProjectDirectoryActorFingerprint(currentUser, access)
+  const activeIdentityRef = useRef(identity)
+  activeIdentityRef.current = identity
+  const onFatalErrorRef = useRef(onFatalError)
+  onFatalErrorRef.current = onFatalError
+  const requestSequenceRef = useRef(0)
+  const [directoryState, setDirectoryState] = useState(() => ({
+    identity,
+    rows: [],
+    rawState: projectDirectoryRawState(identity, access?.view ? 'loading' : 'forbidden'),
+  }))
+
+  useEffect(() => {
+    const requestIdentity = identity
+    const sequence = requestSequenceRef.current + 1
+    requestSequenceRef.current = sequence
+    let active = true
+
+    if (!access?.view) {
+      setDirectoryState({
+        identity: requestIdentity,
+        rows: [],
+        rawState: projectDirectoryRawState(requestIdentity, 'forbidden'),
+      })
+      return () => {
+        active = false
+        requestSequenceRef.current += 1
+      }
+    }
+
+    setDirectoryState({
+      identity: requestIdentity,
+      rows: [],
+      rawState: projectDirectoryRawState(requestIdentity, 'loading'),
+    })
+    void loadProjectDirectoryForAccess(service, access).then((rows) => {
+      if (!active || requestSequenceRef.current !== sequence ||
+          activeIdentityRef.current !== requestIdentity) return
+      setDirectoryState({
+        identity: requestIdentity,
+        rows,
+        rawState: {
+          ...projectDirectoryRawState(requestIdentity, 'ready'),
+          updatedAt: new Date().toISOString(),
+        },
+      })
+    }).catch((error) => {
+      if (!active || requestSequenceRef.current !== sequence ||
+          activeIdentityRef.current !== requestIdentity) return
+      const classification = classifyBusinessSourceError(error)
+      setDirectoryState({
+        identity: requestIdentity,
+        rows: [],
+        rawState: {
+          identity: requestIdentity,
+          loading: false,
+          error: classification.message,
+          code: classification.code,
+          source: 'blocked',
+          updatedAt: null,
+        },
+      })
+      if (classification.fatal) onFatalErrorRef.current?.(error)
+    })
+
+    return () => {
+      active = false
+      requestSequenceRef.current += 1
+    }
+  }, [access?.full, access?.view, identity, service])
+
+  const setRows = useCallback((nextRows) => {
+    setDirectoryState((current) => {
+      const rows = current.identity === identity ? current.rows : []
+      return {
+        ...current,
+        identity,
+        rows: typeof nextRows === 'function' ? nextRows(rows) : nextRows,
+        rawState: { ...current.rawState, identity },
+      }
+    })
+  }, [identity])
+
+  if (directoryState.identity !== identity) {
+    return {
+      rows: [],
+      rawState: projectDirectoryRawState(
+        identity,
+        access?.view ? 'loading' : 'forbidden',
+      ),
+      setRows,
+    }
+  }
+  return { rows: directoryState.rows, rawState: directoryState.rawState, setRows }
+}
+
 export function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
@@ -2669,14 +2799,15 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     onWriteError: setPersistenceFailure,
   }
   const contractRevenueAccess = getContractRevenueAccess(currentUser)
-  const canViewProjects = projectReferenceAccess.view
-  const [storedProjects, setStoredProjects] = useState([])
-  const [projectRawState, setProjectRawState] = useState({
-    loading: canViewProjects,
-    error: '',
-    code: '',
-    source: 'project-service',
-    updatedAt: null,
+  const {
+    rows: storedProjects,
+    rawState: projectRawState,
+    setRows: setStoredProjects,
+  } = useProjectDirectoryLifecycle({
+    service: projectService,
+    currentUser,
+    access: projectReferenceAccess,
+    onFatalError: setPersistenceFailure,
   })
   const [projectContractChanges, setProjectContractChanges] = useState([])
   const [projectPaymentPlans, setProjectPaymentPlans] = useState([])
@@ -2688,45 +2819,6 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     source: 'contract-revenue-service',
     updatedAt: null,
   })
-  useEffect(() => {
-    let active = true
-    if (!canViewProjects) {
-      setStoredProjects([])
-      setProjectRawState({
-        loading: false,
-        error: '无权读取该数据',
-        code: 'ACCESS_DENIED',
-        source: 'blocked',
-        updatedAt: null,
-      })
-      return () => { active = false }
-    }
-    setProjectRawState((current) => ({ ...current, loading: true, error: '', code: '' }))
-    loadProjectDirectoryForAccess(projectService, projectReferenceAccess).then((rows) => {
-      if (!active) return
-      setStoredProjects(rows)
-      setProjectRawState({
-        loading: false,
-        error: '',
-        code: '',
-        source: 'project-service',
-        updatedAt: new Date().toISOString(),
-      })
-    }).catch((error) => {
-      if (!active) return
-      const classification = classifyBusinessSourceError(error)
-      setStoredProjects([])
-      setProjectRawState({
-        loading: false,
-        error: classification.message,
-        code: classification.code,
-        source: 'blocked',
-        updatedAt: null,
-      })
-      if (classification.fatal) setPersistenceFailure(error)
-    })
-    return () => { active = false }
-  }, [canViewProjects, projectReferenceAccess.full])
   useEffect(() => {
     let active = true
     if (!contractRevenueAccess.view) {
