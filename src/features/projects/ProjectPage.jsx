@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 
 import { buildProjectRevenueReadModel } from '../contract-revenue/contractRevenueCalculations.js'
-import { canCreate, canDelete, canEdit } from '../../utils/permissions.js'
+import LightweightProjectForm from './LightweightProjectForm.jsx'
 import ProjectLocationPicker from './ProjectLocationPicker.jsx'
 import {
+  PROJECT_TYPES,
   PROJECT_STATUS_OPTIONS,
   assignProjectEmployee,
   buildProjectPayload,
@@ -16,7 +17,13 @@ import {
   validateProjectForSave,
 } from './projectDomain.js'
 import { projectLocationService } from './projectLocationService.js'
-import { canViewProjectFinancials } from './projectPermissions.js'
+import {
+  canCreateTypedProject,
+  canDeleteTypedProject,
+  canEditTypedProject,
+  canManageMiraisyaSettlement,
+  canViewProjectFinancials,
+} from './projectPermissions.js'
 
 function formatYen(value) {
   const amount = Number(value)
@@ -176,6 +183,8 @@ export function ProjectPage({
   onUpdateProject,
   onDeleteProject,
   onOpenContractRevenue,
+  onOpenMiraisyaProject,
+  onOpenMiraisyaSettlement,
   onBack,
 }) {
   const [isFormOpen, setIsFormOpen] = useState(false)
@@ -197,10 +206,29 @@ export function ProjectPage({
     () => eligibleProjectAssignees(employeeDirectory, 'site'),
     [employeeDirectory],
   )
+  const standardProjects = useMemo(
+    () => (Array.isArray(projects) ? projects : []).filter((project) =>
+      normalizeProject(project).projectType === PROJECT_TYPES.STANDARD
+    ),
+    [projects],
+  )
+  const smallProjects = useMemo(
+    () => (Array.isArray(projects) ? projects : []).filter((project) =>
+      normalizeProject(project).projectType === PROJECT_TYPES.SMALL
+    ),
+    [projects],
+  )
+  const miraisyaProjects = useMemo(
+    () => (Array.isArray(projects) ? projects : []).filter((project) =>
+      normalizeProject(project).projectType === PROJECT_TYPES.MIRAISYA
+    ),
+    [projects],
+  )
   const canViewFinancials = canViewProjectFinancials(currentUser)
-  const canCreateProject = canCreate(currentUser, '工程项目')
-  const canUpdateProject = canEdit(currentUser, '工程项目')
-  const canDeleteProject = canDelete(currentUser, '工程项目')
+  const canCreateProject = canCreateTypedProject(currentUser)
+  const canUpdateProject = canEditTypedProject(currentUser)
+  const canDeleteProject = canDeleteTypedProject(currentUser)
+  const canManageSettlement = canManageMiraisyaSettlement(currentUser)
 
   const resetForm = () => {
     setForm(createEmptyProject())
@@ -209,8 +237,8 @@ export function ProjectPage({
     setIsFormOpen(false)
   }
 
-  const openCreateForm = () => {
-    setForm(createEmptyProject())
+  const openCreateForm = (projectType) => {
+    setForm(createEmptyProject(undefined, { projectType }))
     setEditingProjectId('')
     setError('')
     setIsFormOpen(true)
@@ -295,15 +323,55 @@ export function ProjectPage({
           <h1>工程项目</h1>
         </div>
         {canCreateProject ? (
-          <div className="page-action">
-            <button className="primary-button" type="button" onClick={openCreateForm}>
-              新增项目
+          <div className="page-action project-create-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => openCreateForm(PROJECT_TYPES.STANDARD)}
+            >
+              新增主项目
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => openCreateForm(PROJECT_TYPES.SMALL)}
+            >
+              新增小项目
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => openCreateForm(PROJECT_TYPES.MIRAISYA)}
+            >
+              新增未来社项目
             </button>
           </div>
         ) : null}
       </header>
 
-      {isFormOpen ? (
+      {canManageSettlement && typeof onOpenMiraisyaSettlement === 'function' ? (
+        <div className="project-settlement-action">
+          <button className="primary-button" type="button" onClick={onOpenMiraisyaSettlement}>
+            未来社月度结算
+          </button>
+        </div>
+      ) : null}
+
+      {isFormOpen && form.projectType !== PROJECT_TYPES.STANDARD ? (
+        <LightweightProjectForm
+          projectType={form.projectType}
+          value={form}
+          employees={employeeDirectory}
+          disabled={saving}
+          error={error}
+          editing={Boolean(editingProjectId)}
+          onChange={setForm}
+          onSubmit={handleSubmit}
+          onCancel={resetForm}
+        />
+      ) : null}
+
+      {isFormOpen && form.projectType === PROJECT_TYPES.STANDARD ? (
         <form className="form-panel project-form-panel" onSubmit={handleSubmit}>
           <div className="project-form-heading">
             <div>
@@ -469,80 +537,124 @@ export function ProjectPage({
 
       {listError ? <p className="project-form-error" role="alert">{listError}</p> : null}
 
-      <div className="record-list project-record-list">
-        {projects.length === 0 ? (
-          <div className="empty-state">暂无工程项目，请先新增项目</div>
-        ) : (
-          projects.map((rawProject) => {
-            const project = normalizeProject(rawProject)
-            const locationConfirmed = isProjectLocationConfirmed(project)
-            return (
-              <article className="record-card project-record-card" key={project.projectId}>
-                <div className="record-header">
-                  <div>
-                    <strong>{project.projectName}</strong>
-                    <span>{project.projectId}</span>
-                  </div>
-                  <span className={`status-badge ${project.status}`}>{project.status}</span>
-                </div>
+      <div className="project-type-groups">
+        {[
+          { projectType: PROJECT_TYPES.STANDARD, label: '主项目', records: standardProjects },
+          { projectType: PROJECT_TYPES.SMALL, label: '小项目', records: smallProjects },
+          { projectType: PROJECT_TYPES.MIRAISYA, label: '未来社项目', records: miraisyaProjects },
+        ].map((group) => (
+          <section className="project-type-section" key={group.projectType}>
+            <div className="project-type-heading">
+              <h2>{group.label}</h2>
+              <span>{group.records.length} 项</span>
+            </div>
+            <div className="record-list project-record-list">
+              {group.records.length === 0 ? (
+                <div className="empty-state">暂无{group.label}</div>
+              ) : group.records.map((rawProject) => {
+                const project = normalizeProject(rawProject)
+                const locationConfirmed = isProjectLocationConfirmed(project)
+                const lightweight = project.projectType !== PROJECT_TYPES.STANDARD
+                return (
+                  <article className="record-card project-record-card" key={project.projectId}>
+                    <div className="record-header">
+                      <div>
+                        <strong>{project.projectName}</strong>
+                        <span>{project.projectId}</span>
+                      </div>
+                      <span className={`status-badge ${project.status}`}>{project.status}</span>
+                    </div>
 
-                <dl className="detail-list project-master-details">
-                  <div><dt>客户</dt><dd>{project.customerName || '未填写'}</dd></div>
-                  <div><dt>地址</dt><dd>{project.address || '未填写'}</dd></div>
-                  <div>
-                    <dt>定位状态</dt>
-                    <dd className={locationConfirmed ? 'project-location-ok' : 'project-location-pending'}>
-                      {locationConfirmed ? '已确认' : '未确认'}
-                    </dd>
-                  </div>
-                  <div><dt>打卡范围</dt><dd>{project.attendanceRadiusMeters} 米</dd></div>
-                  <div><dt>设计担当</dt><dd>{project.designAssigneeName || '未分配'}</dd></div>
-                  <div><dt>现场担当</dt><dd>{project.siteAssigneeName || '未分配'}</dd></div>
-                  {!project.siteAssigneeName && project.manager ? (
-                    <div><dt>历史负责人</dt><dd>{project.manager}</dd></div>
-                  ) : null}
-                  <div><dt>开工日期</dt><dd>{project.startDate || '未填写'}</dd></div>
-                  <div><dt>工程结束日期</dt><dd>{project.endDate || '未结束'}</dd></div>
-                  {project.remark ? <div><dt>备注</dt><dd>{project.remark}</dd></div> : null}
-                </dl>
+                    <dl className="detail-list project-master-details">
+                      <div><dt>客户</dt><dd>{project.customerName || '未填写'}</dd></div>
+                      <div><dt>地址</dt><dd>{project.address || '未填写'}</dd></div>
+                      <div>
+                        <dt>定位状态</dt>
+                        <dd className={locationConfirmed ? 'project-location-ok' : 'project-location-pending'}>
+                          {locationConfirmed ? '已确认' : '未确认'}
+                        </dd>
+                      </div>
+                      {lightweight ? (
+                        <>
+                          <div><dt>施工日期</dt><dd>{project.startDate || '未填写'}</dd></div>
+                          <div><dt>工期</dt><dd>{project.durationType === 'half_day' ? '半天' : '全天'}</dd></div>
+                          <div><dt>负责人</dt><dd>{project.siteAssigneeName || '未分配'}</dd></div>
+                          <div>
+                            <dt>施工人员</dt>
+                            <dd>{project.workerAssignments.map((item) => item.name).join('、') || '未分配'}</dd>
+                          </div>
+                          {project.projectType === PROJECT_TYPES.SMALL ? (
+                            <div><dt>预计金额</dt><dd>{formatYen(project.expectedAmount)}</dd></div>
+                          ) : null}
+                          <div>
+                            <dt>结算状态</dt>
+                            <dd>{project.lightweightSettlementStatus === 'settled' ? '已结算' : '未结算'}</dd>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div><dt>打卡范围</dt><dd>{project.attendanceRadiusMeters} 米</dd></div>
+                          <div><dt>设计担当</dt><dd>{project.designAssigneeName || '未分配'}</dd></div>
+                          <div><dt>现场担当</dt><dd>{project.siteAssigneeName || '未分配'}</dd></div>
+                          {!project.siteAssigneeName && project.manager ? (
+                            <div><dt>历史负责人</dt><dd>{project.manager}</dd></div>
+                          ) : null}
+                          <div><dt>开工日期</dt><dd>{project.startDate || '未填写'}</dd></div>
+                          <div><dt>工程结束日期</dt><dd>{project.endDate || '未结束'}</dd></div>
+                        </>
+                      )}
+                      {project.remark ? <div><dt>备注</dt><dd>{project.remark}</dd></div> : null}
+                    </dl>
 
-                {canViewFinancials ? (
-                  <ProjectFinancialDetails
-                    project={rawProject}
-                    projectRevenueSnapshots={projectRevenueSnapshots}
-                  />
-                ) : null}
+                    {project.projectType === PROJECT_TYPES.STANDARD && canViewFinancials ? (
+                      <ProjectFinancialDetails
+                        project={rawProject}
+                        projectRevenueSnapshots={projectRevenueSnapshots}
+                      />
+                    ) : null}
 
-                <div className="record-actions">
-                  {canViewFinancials ? (
-                    <button
-                      className="primary-button"
-                      type="button"
-                      onClick={() => onOpenContractRevenue(project.projectId)}
-                    >
-                      合同收入
-                    </button>
-                  ) : null}
-                  {canUpdateProject ? (
-                    <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
-                      编辑
-                    </button>
-                  ) : null}
-                  {canDeleteProject ? (
-                    <button
-                      className="danger-button"
-                      type="button"
-                      onClick={() => handleDelete(project.projectId)}
-                      disabled={deletingProjectId === project.projectId}
-                    >
-                      {deletingProjectId === project.projectId ? '删除中…' : '删除'}
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            )
-          })
-        )}
+                    <div className="record-actions">
+                      {project.projectType === PROJECT_TYPES.STANDARD && canViewFinancials ? (
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={() => onOpenContractRevenue(project.projectId)}
+                        >
+                          合同收入
+                        </button>
+                      ) : null}
+                      {project.projectType === PROJECT_TYPES.MIRAISYA &&
+                      typeof onOpenMiraisyaProject === 'function' ? (
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={() => onOpenMiraisyaProject(project.projectId)}
+                        >
+                          收费与成本
+                        </button>
+                      ) : null}
+                      {canUpdateProject ? (
+                        <button className="ghost-button" type="button" onClick={() => handleEdit(project)}>
+                          编辑
+                        </button>
+                      ) : null}
+                      {canDeleteProject ? (
+                        <button
+                          className="danger-button"
+                          type="button"
+                          onClick={() => handleDelete(project.projectId)}
+                          disabled={deletingProjectId === project.projectId}
+                        >
+                          {deletingProjectId === project.projectId ? '删除中…' : '删除'}
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        ))}
       </div>
     </main>
   )

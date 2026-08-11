@@ -4609,6 +4609,48 @@ body {
   width: min(100%, 1080px);
 }
 
+.project-create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.project-settlement-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.project-type-groups {
+  display: grid;
+  gap: 22px;
+}
+
+.project-type-section {
+  display: grid;
+  gap: 10px;
+}
+
+.project-type-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+.project-type-heading h2 {
+  color: #172033;
+  font-size: 18px;
+}
+
+.project-type-heading span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .project-form-panel {
   padding: 20px;
   border-color: #d8e2f0;
@@ -4744,6 +4786,58 @@ body {
   line-height: 1.45;
 }
 
+.lightweight-worker-field {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.lightweight-worker-field legend {
+  margin-bottom: 8px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lightweight-worker-options {
+  display: grid;
+  max-height: 180px;
+  gap: 7px;
+  padding: 10px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+}
+
+.lightweight-worker-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.lightweight-worker-options input {
+  width: auto;
+}
+
+.lightweight-attachment-entry {
+  display: grid;
+  gap: 4px;
+  padding: 13px 14px;
+  color: #344054;
+  background: #f5f8fd;
+  border: 1px dashed #9db4d1;
+  border-radius: 9px;
+}
+
+.lightweight-attachment-entry span {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .project-record-card {
   overflow: hidden;
   border-color: #d8e2f0;
@@ -4847,6 +4941,16 @@ body {
 
   .project-directory-error button,
   .project-record-card .record-actions button {
+    width: 100%;
+  }
+
+  .project-create-actions,
+  .project-settlement-action {
+    width: 100%;
+  }
+
+  .project-create-actions button,
+  .project-settlement-action button {
     width: 100%;
   }
 }
