@@ -78,6 +78,7 @@ import {
   resolveDashboardBridgeMonth,
 } from './features/workbench/workbenchModel.js'
 import AuthGate from './auth/AuthGate'
+import AuthenticatedBusinessRuntime from './auth/AuthenticatedBusinessRuntime.jsx'
 import { employeeAdminService } from './services/employeeAdminService'
 import { permissionTemplateService } from './services/permissionTemplateService'
 import { initializeOriginalContractProject } from './features/contract-revenue/originalContract'
@@ -9784,11 +9785,17 @@ function App() {
   return (
     <AuthGate>
       {({ currentUser, onLogout, onRefreshCurrentUser }) => (
-        <AuthenticatedApp
-          currentUser={currentUser}
+        <AuthenticatedBusinessRuntime
+          actorId={currentUser.id}
           onLogout={onLogout}
-          onRefreshCurrentUser={onRefreshCurrentUser}
-        />
+          buildId={import.meta.env.VITE_ERP_BUILD_ID || 'unversioned'}
+        >
+          <AuthenticatedApp
+            currentUser={currentUser}
+            onLogout={onLogout}
+            onRefreshCurrentUser={onRefreshCurrentUser}
+          />
+        </AuthenticatedBusinessRuntime>
       )}
     </AuthGate>
   )
