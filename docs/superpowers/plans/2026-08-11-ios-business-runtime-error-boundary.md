@@ -26,8 +26,9 @@
 - Create `src/auth/businessRuntimeDiagnostic.test.js`: pure diagnostic projection and redaction tests.
 - Create `src/auth/BusinessRuntimeBoundary.jsx`: React error boundary and fallback recovery UI.
 - Create `src/auth/BusinessRuntimeBoundary.test.js`: real React crash, copy, reload, logout, fallback, and remount tests.
-- Modify `src/App.jsx`: mount the boundary inside `AuthGate` and key it by authenticated profile UUID.
-- Modify `src/auth/frontendAuthContract.test.js`: enforce the authentication/error-boundary placement and data-minimizing interface.
+- Create `src/auth/AuthenticatedBusinessRuntime.jsx`: mount the boundary with an actor-isolation key without passing profile data into it.
+- Create `src/auth/AuthenticatedBusinessRuntime.test.js`: prove real crash recovery and clean remount when the actor changes.
+- Modify `src/App.jsx`: mount the authenticated runtime scope inside `AuthGate`.
 - Modify `src/styles.css`: mobile-safe diagnostic panel, read-only details, and recovery actions.
 
 ### Task 1: Safe Runtime Diagnostic Projector
@@ -516,39 +517,103 @@ git commit -m "feat: show safe fallback for business UI crashes"
 ### Task 3: Authenticated Application Wiring and Account Isolation
 
 **Files:**
+- Create: `src/auth/AuthenticatedBusinessRuntime.jsx`
+- Create: `src/auth/AuthenticatedBusinessRuntime.test.js`
 - Modify: `src/App.jsx:9783-9797`
-- Modify: `src/auth/frontendAuthContract.test.js:1-110`
 
 **Interfaces:**
-- Consumes: `AuthGate` render values `currentUser`, `onLogout`, and `onRefreshCurrentUser`.
-- Produces: `BusinessRuntimeBoundary key={currentUser.id}` wrapping exactly one `AuthenticatedApp` instance.
+- `AuthenticatedBusinessRuntime` consumes `{ actorId, onLogout, buildId, children }` and passes only `onLogout`, `buildId`, and `children` to `BusinessRuntimeBoundary`.
+- Produces: `BusinessRuntimeBoundary key={actorId}` so changing authenticated profile UUID discards the previous error state.
+- `App` consumes `AuthGate` render values `currentUser`, `onLogout`, and `onRefreshCurrentUser` and passes only `currentUser.id` as `actorId` to the runtime scope.
 - Build version source: `import.meta.env.VITE_ERP_BUILD_ID || 'unversioned'` passed as `buildId`.
 
-- [ ] **Step 1: Extend the auth contract test and confirm RED**
+- [ ] **Step 1: Write the failing real-component integration test**
 
-Update `src/auth/frontendAuthContract.test.js` to load `BusinessRuntimeBoundary.jsx` and assert:
+Create `src/auth/AuthenticatedBusinessRuntime.test.js` using the same Vite server and `installWarehouseReactDom` pattern as Task 2. Load `/src/auth/AuthenticatedBusinessRuntime.jsx`, define a `BrokenView` that throws `new TypeError('Authenticated business render failed')`, and add this behavioral test:
 
 ```js
-test('authenticated business UI is isolated by a profile-keyed runtime boundary', () => {
-  assert.match(appSource, /import BusinessRuntimeBoundary from '\.\/auth\/BusinessRuntimeBoundary'/u)
-  assert.match(
-    appSource,
-    /<BusinessRuntimeBoundary[\s\S]*?key=\{currentUser\.id\}[\s\S]*?onLogout=\{onLogout\}[\s\S]*?<AuthenticatedApp/u,
-  )
-  assert.match(appSource, /buildId=\{import\.meta\.env\.VITE_ERP_BUILD_ID \|\| 'unversioned'\}/u)
-  assert.doesNotMatch(boundarySource, /currentUser|employeeNumber|accessToken|localStorage|sessionStorage/u)
+test('a new authenticated actor gets a clean business runtime after the previous actor crashes', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  let logouts = 0
+  const sensitiveProfile = {
+    name: '测试姓名', employeeNumber: 'SW-008', accessToken: 'secret-token',
+  }
+  const previousConsoleError = console.error
+  console.error = () => {}
+  try {
+    await act(async () => root.render(createElement(AuthenticatedBusinessRuntime, {
+      actorId: 'actor-a',
+      buildId: 'abcdef123456',
+      onLogout: async () => { logouts += 1 },
+      profileData: sensitiveProfile,
+    }, createElement(BrokenView, { profileData: sensitiveProfile }))))
+    assert.match(container.textContent, /系统页面发生错误/u)
+    const diagnostic = findElement(container, (node) => node.nodeName === 'TEXTAREA')
+    assert.match(diagnostic.value, /UI_RUNTIME_ERROR-abcdef123456/u)
+    assert.doesNotMatch(diagnostic.value, /测试姓名|SW-008|secret-token/u)
+    await act(async () => button(container, '退出登录').click())
+    assert.equal(logouts, 1)
+
+    await act(async () => root.render(createElement(AuthenticatedBusinessRuntime, {
+      actorId: 'actor-b',
+      buildId: 'abcdef123456',
+      onLogout: async () => { logouts += 1 },
+    }, createElement('p', null, 'new actor healthy'))))
+    assert.equal(container.textContent, 'new actor healthy')
+  } finally {
+    console.error = previousConsoleError
+    await act(async () => root.unmount())
+    dom.cleanup()
+  }
 })
 ```
+
+The test helper `findElement` must call `findWarehouseTestElement`, and `button` must locate a real `BUTTON` by visible label. The test asserts observable DOM and callback behavior; it must not inspect source text.
 
 Run:
 
 ```bash
-node --test src/auth/frontendAuthContract.test.js
+node --test src/auth/AuthenticatedBusinessRuntime.test.js
 ```
 
-Expected: FAIL because the boundary is not imported or mounted.
+Expected: FAIL because `AuthenticatedBusinessRuntime.jsx` does not exist.
 
-- [ ] **Step 2: Wire the boundary inside `AuthGate`**
+- [ ] **Step 2: Implement the minimal authenticated runtime scope**
+
+Create `src/auth/AuthenticatedBusinessRuntime.jsx`:
+
+```jsx
+import BusinessRuntimeBoundary from './BusinessRuntimeBoundary.jsx'
+
+export default function AuthenticatedBusinessRuntime({
+  actorId,
+  onLogout,
+  buildId,
+  children,
+}) {
+  return (
+    <BusinessRuntimeBoundary key={actorId} onLogout={onLogout} buildId={buildId}>
+      {children}
+    </BusinessRuntimeBoundary>
+  )
+}
+```
+
+Do not accept or forward a profile, employee object, permission array, session, storage value, URL, or arbitrary metadata.
+
+- [ ] **Step 3: Run the focused scope test and confirm GREEN**
+
+Run:
+
+```bash
+node --test src/auth/AuthenticatedBusinessRuntime.test.js
+```
+
+Expected: the real crash, logout, diagnostic privacy, and cross-actor remount test PASS.
+
+- [ ] **Step 4: Wire the runtime scope inside `AuthGate`**
 
 Modify the bottom of `src/App.jsx` to:
 
@@ -557,8 +622,8 @@ function App() {
   return (
     <AuthGate>
       {({ currentUser, onLogout, onRefreshCurrentUser }) => (
-        <BusinessRuntimeBoundary
-          key={currentUser.id}
+        <AuthenticatedBusinessRuntime
+          actorId={currentUser.id}
           onLogout={onLogout}
           buildId={import.meta.env.VITE_ERP_BUILD_ID || 'unversioned'}
         >
@@ -567,31 +632,16 @@ function App() {
             onLogout={onLogout}
             onRefreshCurrentUser={onRefreshCurrentUser}
           />
-        </BusinessRuntimeBoundary>
+        </AuthenticatedBusinessRuntime>
       )}
     </AuthGate>
   )
 }
 ```
 
-Add only the corresponding import near the existing `AuthGate` import. Do not move the boundary above `AuthGate` and do not pass `currentUser` into the boundary.
+Add only the corresponding import near the existing `AuthGate` import. Do not move the scope above `AuthGate`; pass `currentUser` only to `AuthenticatedApp`, never to `AuthenticatedBusinessRuntime`.
 
-- [ ] **Step 3: Add and run the cross-account remount test**
-
-In `BusinessRuntimeBoundary.test.js`, render the boundary with `key="actor-a"` and a throwing child, then rerender it with `key="actor-b"` and a healthy child. Assert the old diagnostic disappears and the healthy text is present:
-
-```js
-await act(async () => root.render(createElement(BusinessRuntimeBoundary, {
-  key: 'actor-a', onLogout() {},
-}, createElement(BrokenView))))
-assert.match(container.textContent, /系统页面发生错误/u)
-await act(async () => root.render(createElement(BusinessRuntimeBoundary, {
-  key: 'actor-b', onLogout() {},
-}, createElement('p', null, 'new actor healthy'))))
-assert.equal(container.textContent, 'new actor healthy')
-```
-
-- [ ] **Step 4: Run integration targets and confirm GREEN**
+- [ ] **Step 5: Run integration targets and confirm GREEN**
 
 Run:
 
@@ -599,6 +649,7 @@ Run:
 node --test \
   src/auth/businessRuntimeDiagnostic.test.js \
   src/auth/BusinessRuntimeBoundary.test.js \
+  src/auth/AuthenticatedBusinessRuntime.test.js \
   src/auth/frontendAuthContract.test.js \
   src/features/attendance/todayAttendanceAppIntegration.test.js \
   src/desktopAdminShell.test.js
@@ -606,10 +657,10 @@ node --test \
 
 Expected: all tests PASS and existing AuthGate/Desktop shell contracts remain intact.
 
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 6: Commit Task 3**
 
 ```bash
-git add src/App.jsx src/auth/BusinessRuntimeBoundary.test.js src/auth/frontendAuthContract.test.js
+git add src/App.jsx src/auth/AuthenticatedBusinessRuntime.jsx src/auth/AuthenticatedBusinessRuntime.test.js
 git commit -m "feat: isolate authenticated business runtime failures"
 ```
 
