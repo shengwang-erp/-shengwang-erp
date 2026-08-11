@@ -14,6 +14,7 @@ import {
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import ProjectPage from './features/projects/ProjectPage'
+import MiraisyaProjectPanel from './features/miraisya/MiraisyaProjectPanel.jsx'
 import {
   PROJECT_STATUS_OPTIONS,
   normalizeProject as normalizeProjectDomain,
@@ -83,6 +84,7 @@ import { previewLocalContractRevenueMigration } from './services/contractRevenue
 import { persistLegacyContractRevenueMigration } from './services/contractRevenueMigration.js'
 import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
+import { miraisyaBillingService } from './services/miraisyaBillingService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
 import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
 import { purchaseService } from './services/purchaseService.js'
@@ -2499,6 +2501,7 @@ export function useProjectDirectoryLifecycle({
 
 export function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
+  const [miraisyaProjectId, setMiraisyaProjectId] = useState('')
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
   useEffect(() => {
     if (authorizedView !== null && authorizedView !== currentView) {
@@ -3719,6 +3722,9 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   const contractRevenueProject = projects.find(
     (project) => project.projectId === contractRevenueProjectId,
   )
+  const miraisyaProject = projects.find(
+    (project) => project.projectId === miraisyaProjectId && project.projectType === 'miraisya',
+  )
 
   const openContractRevenue = (projectId) => {
     if (!handlePersonnelAwareNavigate('contractRevenue')) return
@@ -4160,6 +4166,16 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
   }
 
   if (authorizedView === 'projects') {
+    if (miraisyaProject) {
+      return renderInDesktopShell(
+        <MiraisyaProjectPanel
+          project={miraisyaProject}
+          billingService={miraisyaBillingService}
+          costLedgerService={activeProjectCostLedgerService}
+          onClose={() => setMiraisyaProjectId('')}
+        />,
+      )
+    }
     return renderInDesktopShell(
       <>
         {bridgeStatusNotice}
@@ -4174,6 +4190,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
           onUpdateProject={handleUpdateProject}
           onDeleteProject={handleDeleteProject}
           onOpenContractRevenue={openContractRevenue}
+          onOpenMiraisyaProject={setMiraisyaProjectId}
           onBack={() => handlePersonnelAwareNavigate('home')}
         />
       </>
