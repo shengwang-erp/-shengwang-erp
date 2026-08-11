@@ -53,9 +53,9 @@
     font-size: 18pt;
   }
 
-  .accounting-report-sheet h2 {
+  .accounting-report-sheet > section > h2 {
     margin: 8pt 0 4pt;
-    font-size: 10.5pt;
+    font-size: 12pt;
   }
 
   .accounting-report-sheet dl {

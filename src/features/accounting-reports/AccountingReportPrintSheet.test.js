@@ -42,6 +42,16 @@ const report = createAccountingReportModel({
   notes: ['本表仅供内部核对。'],
 })
 
+const emptyReport = createAccountingReportModel({
+  id: 'empty-payroll', title: '空工资记录表', generatedAt: '2026-08-11 09:35',
+  preparedBy: '会计甲', fileName: '空工资记录表', recordCount: 0,
+  sections: [{
+    id: 'empty-payroll', title: '工资明细', sheetName: '工资明细',
+    emptyText: '调用方自定义空文案',
+    columns: [{ key: 'name', label: '姓名' }], rows: [],
+  }],
+})
+
 function elements(root, predicate, result = []) {
   if (root?.nodeType === 1 && predicate(root)) result.push(root)
   for (const child of root?.childNodes ?? []) elements(child, predicate, result)
@@ -58,6 +68,17 @@ test('print sheet renders the frozen accounting model as a leadership-ready pape
   assert.match(html, /align-right/u)
 })
 
+test('money summaries are visibly classified for right alignment', () => {
+  const html = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report }))
+  assert.match(html, /accounting-report-summary"><h2>汇总<\/h2><table><tbody><tr><th>应发合计<\/th><td class="align-right">¥123,456<\/td>/u)
+})
+
+test('zero-row print sections always use the binding no-record wording', () => {
+  const html = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: emptyReport }))
+  assert.match(html, /当前筛选条件下无记录/u)
+  assert.doesNotMatch(html, /调用方自定义空文案/u)
+})
+
 test('print CSS selects named A4 pages, repeats headers, and stays independent of the ERP theme', async () => {
   const css = await readFile(new URL('./accountingReportPrint.css', import.meta.url), 'utf8')
   assert.match(css, /@page\s+accounting-report-landscape\s*\{[^}]*size:\s*A4 landscape/isu)
@@ -65,6 +86,7 @@ test('print CSS selects named A4 pages, repeats headers, and stays independent o
   assert.match(css, /\.accounting-report-sheet\s*\{[^}]*font-size:\s*10pt/isu)
   assert.match(css, /\.accounting-report-sheet\.landscape\s*\{[^}]*page:\s*accounting-report-landscape/isu)
   assert.match(css, /\.accounting-report-sheet\.portrait\s*\{[^}]*page:\s*accounting-report-portrait/isu)
+  assert.match(css, /\.accounting-report-sheet\s*>\s*section\s*>\s*h2\s*\{[^}]*font-size:\s*1[2-4]pt/isu)
   assert.match(css, /thead\s*\{[^}]*display:\s*table-header-group/isu)
   assert.match(css, /break-inside:\s*avoid/iu)
   assert.match(css, /body\.accounting-report-printing\s*>\s*:not\(\.accounting-report-print-root\)\s*\{[^}]*display:\s*none/isu)

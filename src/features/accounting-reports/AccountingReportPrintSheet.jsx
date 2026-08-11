@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom'
 import './accountingReportPrint.css'
 import { formatAccountingReportDisplayValue } from './accountingReportModel.js'
 
+const PRINT_EMPTY_SECTION_TEXT = '当前筛选条件下无记录'
+
 export default function AccountingReportPrintSheet({ report }) {
   if (!report) return null
 
@@ -23,7 +25,9 @@ export default function AccountingReportPrintSheet({ report }) {
         <h2>汇总</h2>
         <table><tbody>{report.summary.map(({ label, value, format }) => <tr key={label}>
           <th>{label}</th>
-          <td>{formatAccountingReportDisplayValue(value, format)}</td>
+          <td className={format === 'money' ? 'align-right' : undefined}>
+            {formatAccountingReportDisplayValue(value, format)}
+          </td>
         </tr>)}</tbody></table>
       </section>
 
@@ -32,7 +36,7 @@ export default function AccountingReportPrintSheet({ report }) {
         <table>
           <thead><tr>{section.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
           <tbody>{section.rows.length === 0
-            ? <tr><td colSpan={section.columns.length}>{section.emptyText}</td></tr>
+            ? <tr><td colSpan={section.columns.length}>{PRINT_EMPTY_SECTION_TEXT}</td></tr>
             : section.rows.map((row, index) => <tr key={`${section.id}:${index}`}>
               {section.columns.map((column) => <td className={`align-${column.align ?? 'left'}`} key={column.key}>
                 {formatAccountingReportDisplayValue(row[column.key], column.format)}
