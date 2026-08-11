@@ -24,6 +24,7 @@ import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import PurchaseAccountingSection from './features/purchase-accounting/PurchaseAccountingSection.jsx'
 import AccountingReportActions from './features/accounting-reports/AccountingReportActions.jsx'
+import { createMonthlySummaryReport } from './features/accounting-reports/monthlySummaryReport.js'
 import { createOperatingExpenseReport } from './features/accounting-reports/operatingExpenseReport.js'
 import { createSalaryReport } from './features/accounting-reports/salaryReport.js'
 import { createManualProjectCostPersistence } from './features/cost-accounting/projectCostPersistence.js'
@@ -7021,6 +7022,8 @@ export function AccountingCostPage({
           sourceStates={sourceStates}
           monthFilter={monthFilter}
           onMonthFilterChange={onMonthFilterChange}
+          reportPreparedBy={reportPreparedBy}
+          reportActionDependencies={reportActionDependencies}
         />
       )}
     </PageShell>
@@ -7802,6 +7805,8 @@ export function MonthlySummarySection({
   sourceStates,
   monthFilter,
   onMonthFilterChange,
+  reportPreparedBy,
+  reportActionDependencies,
 }) {
   const resolvedAccess = access || {
     salary: true,
@@ -7813,6 +7818,7 @@ export function MonthlySummarySection({
   const resolveArraySource = (key, allowed) => {
     if (!allowed) return { status: 'forbidden', data: null }
     const state = sourceStates?.[key]
+    if (state?.status === 'forbidden') return { status: 'forbidden', data: null }
     if (state?.stale === true) return { status: 'loading', data: null }
     if (state?.status !== 'ready' || !Array.isArray(state.data)) {
       return { status: state?.status === 'error' ? 'error' : 'loading', data: null }
@@ -7822,6 +7828,7 @@ export function MonthlySummarySection({
   const resolveLaborWindowSource = (allowed) => {
     if (!allowed) return { status: 'forbidden', data: null }
     const state = sourceStates?.laborWindow
+    if (state?.status === 'forbidden') return { status: 'forbidden', data: null }
     if (state?.stale === true) return { status: 'loading', data: null }
     if (state?.status !== 'ready' || state.data === null ||
         typeof state.data !== 'object' || Array.isArray(state.data)) {
@@ -7833,6 +7840,7 @@ export function MonthlySummarySection({
     if (!allowed) return { status: 'forbidden', data: null }
     if (!Object.hasOwn(sourceStates || {}, 'projectLedgerSummary')) return null
     const state = sourceStates.projectLedgerSummary
+    if (state?.status === 'forbidden') return { status: 'forbidden', data: null }
     if (state?.stale === true) return { status: 'loading', data: null }
     if (state?.status !== 'ready' || state.data === null ||
         typeof state.data !== 'object' || Array.isArray(state.data)) {
@@ -7981,10 +7989,150 @@ export function MonthlySummarySection({
     ['manualVehicleCosts', '待核算手工车辆费', 'amount'],
     ['vehicleRepairEstimates', '待核算维修估算', 'repairCost'],
   ]
+  const primaryCoreMetrics = [
+    ...(Number.isFinite(laborSalary)
+      ? [{ label: '本月工资发放', value: laborSalary, format: 'money' }]
+      : []),
+    ...(Number.isFinite(allocatedLabor)
+      ? [{ label: '本月项目人工分摊', value: allocatedLabor, format: 'money' }]
+      : []),
+    ...(Number.isFinite(unallocatedLabor)
+      ? [{ label: '本月未分摊人工成本', value: unallocatedLabor, format: 'money' }]
+      : []),
+    ...(Number.isFinite(laborSalary)
+      ? [{ label: '项目人工分摊率', value: allocationRate, format: 'percent' }]
+      : []),
+    ...(projectRelationsReady && purchaseLedgerAccrualState.status === 'ready'
+      ? [{ label: '本月采购确认成本', value: totalPurchaseCost, format: 'money' }]
+      : []),
+    ...(projectRelationsReady && vehicleAccess && fuelState.status === 'ready' &&
+      vehicleExpenseState.status === 'ready' && vehicleIssueState.status === 'ready' &&
+      companyMonthlyTotal && Number.isFinite(companyMonthlyTotal.vehicle)
+      ? [{ label: '车辆费用合计', value: companyMonthlyTotal.vehicle, format: 'money' }]
+      : []),
+    ...(projectRelationsReady && resolvedAccess.projectCost &&
+      projectCostState.status === 'ready' && companyMonthlyTotal &&
+      Number.isFinite(companyMonthlyTotal.manual)
+      ? [{ label: '已确认项目补充成本', value: companyMonthlyTotal.manual, format: 'money' }]
+      : []),
+    ...(projectRelationsReady && resolvedAccess.operatingExpense &&
+      operatingExpenseState.status === 'ready' && companyMonthlyTotal &&
+      Number.isFinite(companyMonthlyTotal.operating)
+      ? [{ label: '经营费用合计', value: companyMonthlyTotal.operating, format: 'money' }]
+      : []),
+    ...(projectLedgerSummaryState && projectLedgerStatus !== 'ready' &&
+      resolvedAccess.operatingExpense && operatingExpenseState.status === 'ready' &&
+      companyMonthlyTotal && companyMonthlyTotal.companyOperating > 0
+      ? [{
+        label: '公司经营费用（不含项目）',
+        value: companyMonthlyTotal.companyOperating,
+        format: 'money',
+      }]
+      : []),
+    ...(completeTotalVisible && allCostSourcesReady && companyMonthlyTotal &&
+      Number.isFinite(companyMonthlyTotal.total)
+      ? [{ label: '公司总成本', value: companyMonthlyTotal.total, format: 'money' }]
+      : []),
+  ]
+  const paymentCoreMetrics = [
+    ...(purchasePaymentVisible
+      ? [{ label: '当前采购应付余额', value: unpaidPurchaseCost, format: 'money' }]
+      : []),
+    ...(purchasePaymentVisible
+      ? [{ label: '本月采购付款现金流', value: monthPaymentCash, format: 'money' }]
+      : []),
+  ]
+  const coreMetrics = [...primaryCoreMetrics, ...paymentCoreMetrics]
+  const sourceMetrics = projectRelationsReady &&
+    purchaseLedgerAccrualState.status === 'ready'
+    ? [
+      ['中国采购', '中国采购金额'],
+      ['Amazon', 'Amazon 采购金额'],
+      ['Yahoo拍卖', 'Yahoo拍卖采购金额'],
+      ['东鹏株式会社', '东鹏株式会社采购金额'],
+    ].map(([source, label]) => ({
+      label,
+      value: purchaseBySource(source),
+      format: 'money',
+    }))
+    : []
+  const pendingMetrics = costModel
+    ? pendingDefinitions.filter(([key]) => (
+      projectRelationsReady && (key === 'vehicleRepairEstimates'
+        ? vehicleAccess && fuelState.status === 'ready' &&
+          vehicleExpenseState.status === 'ready' && vehicleIssueState.status === 'ready'
+        : resolvedAccess.projectCost && projectCostState.status === 'ready'
+      )
+    )).map(([key, label, amountField]) => {
+      const rows = pending[key]
+      return {
+        label,
+        value: rows.reduce((total, row) => total + toAmount(row?.[amountField]), 0),
+        format: 'money',
+        count: rows.length,
+      }
+    })
+    : []
+  const accountingScopeNote = costModel && selectedComposition
+    ? '公司总成本仅使用共享成本模型中的已确认口径；工资与项目人工分摊不重复计算，采购付款现金流不计入采购确认成本。'
+    : '已按当前账号可见的成本分类分别展示；数据不完整时不提供公司总成本。'
+  const reportSourceStatuses = {
+    projects: projectState.status,
+    laborWindow: laborWindowState.status,
+    projectCosts: projectCostState.status,
+    operatingExpenses: operatingExpenseState.status,
+    purchaseAccrual: purchaseAccrualState.status,
+    purchaseLedgerAccrual: purchaseLedgerAccrualState.status,
+    purchasePayments: purchasePaymentState.status,
+    fuel: fuelState.status,
+    vehicleExpenses: vehicleExpenseState.status,
+    vehicleIssues: vehicleIssueState.status,
+    ...(projectLedgerSummaryState
+      ? { projectLedgerSummary: projectLedgerSummaryState.status }
+      : {}),
+  }
+  const reportBlocked = Object.values(reportSourceStatuses).some(
+    (status) => status === 'loading' || status === 'error',
+  ) || costModelError || projectLedgerStatus === 'incomplete' || !costModel
+  const scopeLabel = Object.values(reportSourceStatuses).includes('forbidden')
+    ? '按当前账号可见范围'
+    : '完整成本范围'
+  let monthlySummaryReport = null
+  if (!reportBlocked) {
+    try {
+      monthlySummaryReport = createMonthlySummaryReport({
+        month: monthFilter,
+        coreMetrics,
+        sourceMetrics,
+        pendingMetrics,
+        notes: [accountingScopeNote],
+        preparedBy: reportPreparedBy,
+        scopeLabel,
+      })
+    } catch {
+      monthlySummaryReport = null
+    }
+  }
+  const monthlyReportIdentity = JSON.stringify({
+    month: monthFilter,
+    sourceStatuses: reportSourceStatuses,
+    coreMetrics,
+    sourceMetrics,
+    pendingMetrics,
+    preparedBy: reportPreparedBy,
+  })
 
   return (
     <>
-      <SectionTitle title="月度汇总" note={monthFilter} />
+      <div className="section-title-with-actions">
+        <SectionTitle title="月度汇总" note={monthFilter} />
+        <AccountingReportActions
+          report={monthlySummaryReport}
+          disabled={reportBlocked || !monthlySummaryReport}
+          contextIdentity={monthlyReportIdentity}
+          {...reportActionDependencies}
+        />
+      </div>
       <div className="filter-panel">
         <Field label="统计月份" type="month" value={monthFilter} onChange={onMonthFilterChange} />
       </div>
@@ -8007,131 +8155,36 @@ export function MonthlySummarySection({
       {costModelError && <EmptyState text="成本数据格式异常，暂不可用" />}
 
       <div className="stats-grid">
-        {Number.isFinite(laborSalary) && (
-          <div className="stat-card money">
-            <strong>{formatYen(laborSalary)}</strong>
-            <span>本月工资发放</span>
-          </div>
-        )}
-        {Number.isFinite(allocatedLabor) && (
-          <div className="stat-card money">
-            <strong>{formatYen(allocatedLabor)}</strong>
-            <span>本月项目人工分摊</span>
-          </div>
-        )}
-        {Number.isFinite(unallocatedLabor) && (
-          <div className="stat-card money">
-            <strong>{formatYen(unallocatedLabor)}</strong>
-            <span>本月未分摊人工成本</span>
-          </div>
-        )}
-        {Number.isFinite(laborSalary) && (
-          <div className="stat-card">
-            <strong>{formatPercent(allocationRate)}</strong>
-            <span>项目人工分摊率</span>
-          </div>
-        )}
-        {projectRelationsReady && purchaseLedgerAccrualState.status === 'ready' && (
-          <div className="stat-card money">
-            <strong>{formatYen(totalPurchaseCost)}</strong>
-            <span>本月采购确认成本</span>
-          </div>
-        )}
-        {projectRelationsReady && vehicleAccess && fuelState.status === 'ready' &&
-          vehicleExpenseState.status === 'ready' && vehicleIssueState.status === 'ready' &&
-          companyMonthlyTotal && Number.isFinite(companyMonthlyTotal.vehicle) && (
-          <div className="stat-card money">
-            <strong>{formatYen(companyMonthlyTotal.vehicle)}</strong>
-            <span>车辆费用合计</span>
-          </div>
-        )}
-        {projectRelationsReady && resolvedAccess.projectCost &&
-          projectCostState.status === 'ready' &&
-          companyMonthlyTotal && Number.isFinite(companyMonthlyTotal.manual) && (
-          <div className="stat-card money">
-            <strong>{formatYen(companyMonthlyTotal.manual)}</strong>
-            <span>已确认项目补充成本</span>
-          </div>
-        )}
-        {projectRelationsReady && resolvedAccess.operatingExpense &&
-          operatingExpenseState.status === 'ready' &&
-          companyMonthlyTotal && Number.isFinite(companyMonthlyTotal.operating) && (
-          <div className="stat-card money">
-            <strong>{formatYen(companyMonthlyTotal.operating)}</strong>
-            <span>经营费用合计</span>
-          </div>
-        )}
-        {projectLedgerSummaryState && projectLedgerStatus !== 'ready' &&
-          resolvedAccess.operatingExpense && operatingExpenseState.status === 'ready' &&
-          companyMonthlyTotal && companyMonthlyTotal.companyOperating > 0 && (
-          <div className="stat-card money">
-            <strong>{formatYen(companyMonthlyTotal.companyOperating)}</strong>
-            <span>公司经营费用（不含项目）</span>
-          </div>
-        )}
-        {completeTotalVisible && allCostSourcesReady && companyMonthlyTotal &&
-          Number.isFinite(companyMonthlyTotal.total) && (
-          <div className="stat-card money">
-            <strong>{formatYen(companyMonthlyTotal.total)}</strong>
-            <span>公司总成本</span>
-          </div>
-        )}
-        {projectRelationsReady && purchaseLedgerAccrualState.status === 'ready' && [
-          ['中国采购', '中国采购金额'],
-          ['Amazon', 'Amazon 采购金额'],
-          ['Yahoo拍卖', 'Yahoo拍卖采购金额'],
-          ['东鹏株式会社', '东鹏株式会社采购金额'],
-        ].map(([source, label]) => (
-          <div className="stat-card money" key={source}>
-            <strong>{formatYen(purchaseBySource(source))}</strong>
+        {coreMetrics.map(({ label, value, format }) => (
+          <div className={`stat-card ${format === 'money' ? 'money' : ''}`} key={label}>
+            <strong>{format === 'percent' ? formatPercent(value) : formatYen(value)}</strong>
             <span>{label}</span>
           </div>
         ))}
-        {purchasePaymentVisible && (
-          <div className="stat-card money">
-            <strong>{formatYen(unpaidPurchaseCost)}</strong>
-            <span>当前采购应付余额</span>
+        {sourceMetrics.map(({ label, value }) => (
+          <div className="stat-card money" key={label}>
+            <strong>{formatYen(value)}</strong>
+            <span>{label}</span>
           </div>
-        )}
-        {purchasePaymentVisible && (
-          <div className="stat-card money">
-            <strong>{formatYen(monthPaymentCash)}</strong>
-            <span>本月采购付款现金流</span>
-          </div>
-        )}
+        ))}
       </div>
 
       {costModel && (
         <>
           <SectionTitle title="待核算成本" note="不计入公司总成本" />
           <div className="stats-grid">
-            {pendingDefinitions.filter(([key]) => (
-              projectRelationsReady && (key === 'vehicleRepairEstimates'
-                ? vehicleAccess && fuelState.status === 'ready' &&
-                  vehicleExpenseState.status === 'ready' && vehicleIssueState.status === 'ready'
-                : resolvedAccess.projectCost && projectCostState.status === 'ready'
-              )
-            )).map(([key, label, amountField]) => {
-              const rows = pending[key]
-              const amount = rows.reduce(
-                (total, row) => total + toAmount(row?.[amountField]),
-                0,
-              )
-              return (
-                <div className="stat-card money" key={key}>
-                  <strong>{formatYen(amount)}</strong>
-                  <span>{label} · {rows.length} 项</span>
-                </div>
-              )
-            })}
+            {pendingMetrics.map(({ label, value, count }) => (
+              <div className="stat-card money" key={label}>
+                <strong>{formatYen(value)}</strong>
+                <span>{label} · {count} 项</span>
+              </div>
+            ))}
           </div>
         </>
       )}
 
       <div className="empty-state cost-note">
-        {costModel && selectedComposition
-          ? '公司总成本仅使用共享成本模型中的已确认口径；工资与项目人工分摊不重复计算，采购付款现金流不计入采购确认成本。'
-          : '已按当前账号可见的成本分类分别展示；数据不完整时不提供公司总成本。'}
+        {accountingScopeNote}
       </div>
     </>
   )

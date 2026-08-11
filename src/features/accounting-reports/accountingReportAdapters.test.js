@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createOperatingExpenseReport } from './operatingExpenseReport.js'
+import { createMonthlySummaryReport } from './monthlySummaryReport.js'
 import { createPurchaseAccountingReport } from './purchaseAccountingReport.js'
 import { createSalaryReport } from './salaryReport.js'
 import { escapeAccountingSpreadsheetText } from './accountingReportModel.js'
@@ -252,4 +253,70 @@ test('purchase adapter omits every payment-derived detail and summary field when
   assert.deepEqual(section(report, 'purchase-details').columns.map((column) => column.label), [
     '采购编号', '日期', '商品', '供应商', '项目', '采购来源', '采购成本', '发票状态',
   ])
+})
+
+test('monthly-summary adapter preserves supplied visible facts in four ordered portrait sections', () => {
+  const report = createMonthlySummaryReport({
+    month: '2026-08',
+    coreMetrics: [
+      { label: '本月工资发放', value: 123456, format: 'money' },
+      { label: '项目人工分摊率', value: 61, format: 'percent' },
+      { label: '公司总成本', value: 654321, format: 'money' },
+    ],
+    sourceMetrics: [
+      { label: '中国采购金额', value: 30000, format: 'money' },
+      { label: 'Amazon 采购金额', value: 45000, format: 'money' },
+    ],
+    pendingMetrics: [
+      { label: '待核算手工材料费', value: 9000, format: 'money', count: 2 },
+      { label: '待核算维修估算', value: 1500, format: 'money', count: 1 },
+    ],
+    notes: [
+      '公司总成本仅使用共享成本模型中的已确认口径；工资与项目人工分摊不重复计算，采购付款现金流不计入采购确认成本。',
+    ],
+    preparedBy: '财务部', generatedAt: '2026-08-11T09:00:00Z',
+    scopeLabel: '按当前账号可见范围',
+  })
+
+  assert.equal(report.orientation, 'portrait')
+  assert.deepEqual([...new Set(report.sections.map((item) => item.sheetName))], ['月度汇总'])
+  assert.deepEqual(report.sections.map((item) => item.title), [
+    '核心成本汇总', '采购来源汇总', '待核算成本', '数据口径说明',
+  ])
+  assert.deepEqual(report.filterLines, [
+    { label: '统计月份', value: '2026-08' },
+    { label: '统计范围', value: '按当前账号可见范围' },
+  ])
+  assert.deepEqual(section(report, 'monthly-core').rows, [
+    { item: '本月工资发放', value: 123456, format: 'money' },
+    { item: '项目人工分摊率', value: 61, format: 'percent' },
+    { item: '公司总成本', value: 654321, format: 'money' },
+  ])
+  assert.deepEqual(section(report, 'monthly-purchase-sources').rows, [
+    { item: '中国采购金额', value: 30000, format: 'money' },
+    { item: 'Amazon 采购金额', value: 45000, format: 'money' },
+  ])
+  assert.deepEqual(section(report, 'monthly-pending').rows, [
+    { item: '待核算手工材料费', amount: 9000, itemCount: 2 },
+    { item: '待核算维修估算', amount: 1500, itemCount: 1 },
+  ])
+  assert.deepEqual(section(report, 'monthly-notes').rows, [{
+    note: '公司总成本仅使用共享成本模型中的已确认口径；工资与项目人工分摊不重复计算，采购付款现金流不计入采购确认成本。',
+  }])
+  assert.match(report.notes.join('\n'), /工资与项目人工分摊不重复计算/u)
+})
+
+test('monthly-summary adapter never invents a company total outside the supplied visible metrics', () => {
+  const report = createMonthlySummaryReport({
+    month: '2026-08',
+    coreMetrics: [{ label: '本月工资发放', value: 100, format: 'money' }],
+    sourceMetrics: [], pendingMetrics: [], notes: [],
+    scopeLabel: '按当前账号可见范围',
+  })
+
+  assert.deepEqual(section(report, 'monthly-core').rows, [
+    { item: '本月工资发放', value: 100, format: 'money' },
+  ])
+  assert.doesNotMatch(JSON.stringify(report), /公司总成本/u)
+  assert.match(JSON.stringify(report), /按当前账号可见范围/u)
 })

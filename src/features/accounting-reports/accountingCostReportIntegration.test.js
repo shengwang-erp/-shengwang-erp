@@ -33,7 +33,7 @@ const server = await createServer({
   ssr: { noExternal: ['leaflet'] },
   server: { middlewareMode: true },
 })
-const { AccountingCostPage } = await server.ssrLoadModule('/src/App.jsx')
+const { AccountingCostPage, MonthlySummarySection } = await server.ssrLoadModule('/src/App.jsx')
 after(() => server.close())
 
 const salaryAccess = {
@@ -61,6 +61,83 @@ const projects = [
   { projectId: 'P-001', projectName: '新宿改造', address: '新宿' },
   { projectId: 'P-002', projectName: '涩谷改造', address: '涩谷' },
 ]
+
+function ready(data) {
+  return { status: 'ready', data, stale: false }
+}
+
+const monthlyAccess = {
+  salary: true, projectCost: true, operatingExpense: true,
+  purchaseAccrual: true, purchasePayments: true,
+}
+const monthlyLaborWindow = {
+  monthly: [{
+    month: '2026-08', status: 'ready', stale: false, salaryTotal: 100,
+    projectLaborTotal: 80, projectLaborById: { 'P-001': 80 }, source: 'formal', pendingCount: 0,
+  }],
+  projectLaborLifetimeById: { 'P-001': 80 },
+  lifetimeStatus: 'ready', lifetimeStale: false, incompleteMonths: [], staleMonths: [],
+}
+const monthlyPurchases = [{
+  purchaseId: 'PO-001', purchaseDate: '2026-08-01', projectId: 'P-001',
+  purchaseSource: 'Amazon', totalCost: 200, openingPaidAmount: 0,
+  purchaseStatus: '正常', invoiceStatus: '已取得',
+}]
+const monthlyManualCosts = [
+  { costRecordId: 'C-L', projectId: 'P-001', costType: '人工费', amount: 10, date: '2026-08-02' },
+  { costRecordId: 'C-M', projectId: 'P-001', costType: '材料费', amount: 20, date: '2026-08-03' },
+  { costRecordId: 'C-T', projectId: 'P-001', costType: '工具费', amount: 30, date: '2026-08-04' },
+  { costRecordId: 'C-V', projectId: 'P-001', costType: '车辆费', amount: 40, date: '2026-08-05' },
+  { costRecordId: 'C-O', projectId: 'P-001', costType: '外包费', amount: 100, date: '2026-08-06' },
+]
+const monthlyOperating = [{
+  expenseRecordId: 'OE-001', projectId: 'P-001', allocateToProject: true,
+  amount: 50, date: '2026-08-07', expenseType: '其他',
+}]
+const monthlyFuel = [{
+  fuelRecordId: 'F-001', projectId: 'P-001', allocateToProject: true,
+  fuelAmount: 30, fuelDate: '2026-08-08',
+  fuelDateSource: 'recorded', fuelDateLegacyInferred: false,
+  paymentMethod: '现金', paymentMethodSource: 'recorded', paymentMethodLegacyInferred: false,
+}]
+const monthlyVehicleExpenses = [{
+  vehicleExpenseId: 'VE-001', projectId: 'P-001', allocateToProject: true,
+  amount: 20, expenseDate: '2026-08-09', expenseType: '停车费',
+  expenseDateSource: 'recorded', expenseDateLegacyInferred: false,
+  paymentMethod: '现金', paymentMethodSource: 'recorded', paymentMethodLegacyInferred: false,
+}]
+const monthlyVehicleIssues = [{
+  issueId: 'VI-001', projectId: 'P-001', allocateToProject: true,
+  repairCost: 50, issueDate: '2026-08-10', severity: '一般', issueStatus: '未处理',
+}]
+
+function monthlySourceStates(overrides = {}) {
+  return {
+    projects: ready([{ projectId: 'P-001', projectName: '新宿改造', status: '进行中' }]),
+    laborWindow: ready(monthlyLaborWindow),
+    purchaseAccrual: ready(monthlyPurchases),
+    purchaseLedgerAccrual: ready(monthlyPurchases),
+    purchasePayments: ready([]),
+    projectCosts: ready(monthlyManualCosts),
+    operatingExpenses: ready(monthlyOperating),
+    fuel: ready(monthlyFuel),
+    vehicleExpenses: ready(monthlyVehicleExpenses),
+    vehicleIssues: ready(monthlyVehicleIssues),
+    ...overrides,
+  }
+}
+
+function monthlyProps(overrides = {}) {
+  return {
+    access: monthlyAccess,
+    vehicleAccess: true,
+    sourceStates: monthlySourceStates(),
+    monthFilter: '2026-08',
+    onMonthFilterChange() {},
+    reportPreparedBy: '系统管理员',
+    ...overrides,
+  }
+}
 
 function elements(root, predicate, result = []) {
   if (root?.nodeType === 1 && predicate(root)) result.push(root)
@@ -118,6 +195,22 @@ async function mount(props) {
 async function cleanup(scenario) {
   await act(async () => scenario.root.unmount())
   scenario.dom.cleanup()
+}
+
+async function mountMonthly(overrides = {}) {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const render = async (nextOverrides = {}) => {
+    await act(async () => {
+      root.render(createElement(MonthlySummarySection, monthlyProps({
+        ...overrides,
+        ...nextOverrides,
+      })))
+    })
+  }
+  await render()
+  return { dom, container, root, render }
 }
 
 test('salary actions retain and export the previous active month when clearing is attempted', async () => {
@@ -231,6 +324,136 @@ test('operating actions retain the active month and records follow the selected 
       detailRows(capturedReport, 'expense-details').map((row) => row.expenseRecordId),
       ['OE-002'],
     )
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
+test('monthly actions export the exact labels and values rendered by the shared metric arrays', async () => {
+  let capturedReport
+  const scenario = await mountMonthly({
+    reportActionDependencies: {
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    const expectedCore = [
+      ['本月工资发放', 100, '¥100'],
+      ['本月项目人工分摊', 80, '¥80'],
+      ['本月未分摊人工成本', 20, '¥20'],
+      ['项目人工分摊率', 80, '80%'],
+      ['本月采购确认成本', 200, '¥200'],
+      ['车辆费用合计', 50, '¥50'],
+      ['已确认项目补充成本', 100, '¥100'],
+      ['经营费用合计', 50, '¥50'],
+      ['公司总成本', 500, '¥500'],
+      ['当前采购应付余额', 200, '¥200'],
+      ['本月采购付款现金流', 0, '¥0'],
+    ]
+    const expectedSources = [
+      ['中国采购金额', 0, '¥0'],
+      ['Amazon 采购金额', 200, '¥200'],
+      ['Yahoo拍卖采购金额', 0, '¥0'],
+      ['东鹏株式会社采购金额', 0, '¥0'],
+    ]
+    for (const [label, _value, displayed] of [...expectedCore, ...expectedSources]) {
+      assert.match(scenario.container.textContent, new RegExp(`${displayed}${label}`, 'u'))
+    }
+
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    await act(async () => button(scenario.container, '导出 Excel').click())
+
+    assert.ok(capturedReport)
+    assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.deepEqual(detailRows(capturedReport, 'monthly-core').map((row) => [row.item, row.value]),
+      expectedCore.map(([label, value]) => [label, value]))
+    assert.deepEqual(
+      detailRows(capturedReport, 'monthly-purchase-sources').map((row) => [row.item, row.value]),
+      expectedSources.map(([label, value]) => [label, value]),
+    )
+    assert.deepEqual(detailRows(capturedReport, 'monthly-pending'), [
+      { item: '待核算手工人工费', amount: 10, itemCount: 1 },
+      { item: '待核算手工材料费', amount: 20, itemCount: 1 },
+      { item: '待核算手工工具费', amount: 30, itemCount: 1 },
+      { item: '待核算手工车辆费', amount: 40, itemCount: 1 },
+      { item: '待核算维修估算', amount: 50, itemCount: 1 },
+    ])
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
+test('monthly actions fail closed for unavailable, incomplete, and malformed allowed sources', async (t) => {
+  const incompleteLedger = ready({
+    status: 'ready', generatedAt: '2026-08-11T09:00:00Z', totalAmount: 250,
+    monthlyTotals: [{ month: '2026-08', amount: 250 }],
+    projectTotals: [{ projectId: 'P-001', amount: 250 }],
+    categoryTotals: [{ category: '材料费', amount: 250 }],
+    projectMonthCategoryTotals: [{
+      projectId: 'P-001', month: '2026-08', category: '材料费', amount: 250,
+    }],
+    incompleteSources: ['warehouse'],
+  })
+  const cases = [
+    ['loading', { laborWindow: { status: 'loading', data: null, stale: false } }],
+    ['error', { laborWindow: { status: 'error', data: null, stale: false } }],
+    ['stale', { laborWindow: { status: 'ready', data: monthlyLaborWindow, stale: true } }],
+    ['incomplete ledger', { projectLedgerSummary: incompleteLedger }],
+    ['model error', { laborWindow: ready({ ...monthlyLaborWindow, unexpected: true }) }],
+  ]
+
+  for (const [name, sourceOverride] of cases) {
+    await t.test(name, async () => {
+      const scenario = await mountMonthly({
+        sourceStates: monthlySourceStates(sourceOverride),
+        reportActionDependencies: { exportExcel() {}, printReport() {} },
+      })
+      try {
+        for (const label of ['导出 Excel', '导出 PDF', '打印']) {
+          assert.equal(button(scenario.container, label)?.disabled ?? true, true)
+        }
+      } finally {
+        await cleanup(scenario)
+      }
+    })
+  }
+})
+
+test('monthly actions omit forbidden source facts and export the remaining visible scope', async () => {
+  let capturedReport
+  const forbidden = { status: 'forbidden', data: null, stale: false }
+  const scenario = await mountMonthly({
+    access: {
+      salary: true, projectCost: false, operatingExpense: false,
+      purchaseAccrual: true, purchasePayments: true,
+    },
+    vehicleAccess: false,
+    sourceStates: monthlySourceStates({
+      purchaseAccrual: forbidden,
+      purchaseLedgerAccrual: forbidden,
+      purchasePayments: forbidden,
+    }),
+    reportActionDependencies: {
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    assert.doesNotMatch(scenario.container.textContent, /Amazon 采购金额|¥200/u)
+    await act(async () => button(scenario.container, '导出 Excel').click())
+
+    assert.ok(capturedReport)
+    assert.deepEqual(capturedReport.filterLines, [
+      { label: '统计月份', value: '2026-08' },
+      { label: '统计范围', value: '按当前账号可见范围' },
+    ])
+    assert.deepEqual(
+      detailRows(capturedReport, 'monthly-core').map((row) => row.item),
+      ['本月工资发放', '本月项目人工分摊', '本月未分摊人工成本', '项目人工分摊率'],
+    )
+    assert.deepEqual(detailRows(capturedReport, 'monthly-purchase-sources'), [])
   } finally {
     await cleanup(scenario)
   }
