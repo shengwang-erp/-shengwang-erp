@@ -240,6 +240,12 @@ function reportDetailRows(report) {
   return details.rows
 }
 
+function deferred() {
+  let resolve
+  const promise = new Promise((settle) => { resolve = settle })
+  return { promise, resolve }
+}
+
 function PurchaseAccountingHarness({ initialMonth = '', ...props }) {
   const [month, setMonth] = useState(initialMonth)
   return createElement(appLoaded.module.AccountingCostPage, {
@@ -271,18 +277,22 @@ async function mountPurchaseReport(overrides = {}) {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
-  await act(async () => {
-    root.render(createElement(PurchaseAccountingHarness, {
-      initialMonth: '',
-      purchaseRecords,
-      purchasePaymentRecords: paymentRecords,
-      paymentState: { status: 'ready', data: paymentRecords, stale: false },
-      accrualState: { status: 'ready', data: purchaseRecords, stale: false },
-      reportPreparedBy: '系统管理员',
-      ...overrides,
-    }))
-  })
-  return { dom, container, root }
+  const baseProps = {
+    initialMonth: '',
+    purchaseRecords,
+    purchasePaymentRecords: paymentRecords,
+    paymentState: { status: 'ready', data: paymentRecords, stale: false },
+    accrualState: { status: 'ready', data: purchaseRecords, stale: false },
+    reportPreparedBy: '系统管理员',
+    ...overrides,
+  }
+  const render = async (nextOverrides = {}) => {
+    await act(async () => {
+      root.render(createElement(PurchaseAccountingHarness, { ...baseProps, ...nextOverrides }))
+    })
+  }
+  await render()
+  return { dom, container, root, render }
 }
 
 async function cleanupMounted(scenario) {
@@ -499,6 +509,67 @@ test('ready purchase actions export the actually rendered month, project, source
     )
   } finally {
     await cleanupMounted(scenario)
+  }
+})
+
+test('report-output changes invalidate a delayed purchase Excel export before it can download', async (t) => {
+  const summaryPayments = payments.map((payment) => payment.paymentId === 'PP-AUG'
+    ? { ...payment, jpyAmount: 3500 }
+    : payment)
+  const anomalyPayments = payments.map((payment) => payment.paymentId === 'PP-ORPHAN'
+    ? { ...payment, paymentId: 'PP-ORPHAN-REFRESHED' }
+    : payment)
+  const cases = [
+    {
+      name: 'changed preparer',
+      rerender: { reportPreparedBy: '更新后制表人' },
+    },
+    {
+      name: 'summary-only refresh',
+      rerender: {
+        purchasePaymentRecords: summaryPayments,
+        paymentState: { status: 'ready', data: summaryPayments, stale: false },
+      },
+    },
+    {
+      name: 'anomaly-only refresh',
+      rerender: {
+        purchasePaymentRecords: anomalyPayments,
+        paymentState: { status: 'ready', data: anomalyPayments, stale: false },
+      },
+    },
+  ]
+
+  for (const scenarioCase of cases) {
+    await t.test(scenarioCase.name, async () => {
+      const release = deferred()
+      let downloads = 0
+      let staleGuard
+      const reportActionDependencies = {
+        exportExcel: async (_report, { outputGuard }) => {
+          staleGuard = outputGuard
+          await release.promise
+          if (outputGuard()) downloads += 1
+        },
+        printReport() {},
+      }
+      const scenario = await mountPurchaseReport({
+        initialMonth: '2026-08', reportActionDependencies,
+      })
+      try {
+        await act(async () => { button(scenario.container, '导出 Excel').click() })
+        assert.equal(staleGuard(), true)
+        await scenario.render({ ...scenarioCase.rerender, reportActionDependencies })
+        assert.equal(staleGuard(), false)
+        assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+        release.resolve()
+        await act(async () => { await release.promise })
+        assert.equal(downloads, 0)
+      } finally {
+        release.resolve()
+        await cleanupMounted(scenario)
+      }
+    })
   }
 })
 

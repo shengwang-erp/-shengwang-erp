@@ -193,6 +193,7 @@ export default function PurchaseAccountingSection({
       paidAmount: paymentVisible ? row.paidAmount : null,
       unpaidAmount: paymentVisible ? row.unpaidAmount : null,
     })),
+    reportOutput: report,
   })
 
   if (!accrualReady) {
