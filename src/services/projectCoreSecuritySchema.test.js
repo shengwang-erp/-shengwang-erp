@@ -6,6 +6,10 @@ const sql = await readFile(new URL(
   '../../supabase/migrations/202607150001_project_core_security.sql',
   import.meta.url,
 ), 'utf8').catch(() => '')
+const typedProjectSql = await readFile(new URL(
+  '../../supabase/migrations/202608110001_project_types_and_permissions.sql',
+  import.meta.url,
+), 'utf8').catch(() => '')
 
 test('project access is RPC-only and financial authorization is fixed', () => {
   assert.match(sql, /can_current_employee_view_project_financials/)
@@ -119,4 +123,50 @@ test('revenue ACLs, template guard, cleanup, and function grants are closed', ()
       new RegExp(`grant execute on function public\\.${signature} to authenticated, service_role`, 'i'),
     )
   }
+})
+
+test('typed project migration closes fields and enforces the approved identity matrix', () => {
+  for (const key of [
+    'projectType',
+    'durationType',
+    'workerAssignments',
+    'expectedAmount',
+    'lightweightSettlementStatus',
+  ]) {
+    assert.match(typedProjectSql, new RegExp(`'${key}'`), `missing typed field ${key}`)
+  }
+  assert.match(typedProjectSql, /'standard',\s*'small',\s*'miraisya'/)
+  assert.match(typedProjectSql, /'half_day',\s*'full_day'/)
+  assert.match(typedProjectSql, /'unsettled',\s*'settled'/)
+  assert.match(typedProjectSql, /株式会社未来舎サポート/)
+  assert.match(typedProjectSql, /department in \('后勤部', '财务部', '设计部', '总务部'\)/)
+  assert.match(typedProjectSql, /department = '财务部'/)
+  assert.match(typedProjectSql, /position = '社长'/)
+  assert.match(typedProjectSql, /employee_number = 'SW-000'/)
+  assert.match(typedProjectSql, /jsonb_array_elements\([^)]*workerAssignments[^)]*\)/)
+  assert.match(typedProjectSql, /9007199254740991/)
+})
+
+test('typed project public mutations wrap legacy RPCs and keep browser grants closed', () => {
+  for (const operation of ['create', 'update', 'soft_delete']) {
+    assert.match(
+      typedProjectSql,
+      new RegExp(`create or replace function public\\.${operation}_project_secure`, 'i'),
+    )
+  }
+  for (const signature of [
+    'create_project_secure\\(jsonb\\)',
+    'update_project_secure\\(text, jsonb\\)',
+    'soft_delete_project_secure\\(text\\)',
+  ]) {
+    assert.match(
+      typedProjectSql,
+      new RegExp(`revoke all on function public\\.${signature}\\s+from public, anon, authenticated, service_role`, 'i'),
+    )
+    assert.match(
+      typedProjectSql,
+      new RegExp(`grant execute on function public\\.${signature}\\s+to authenticated, service_role`, 'i'),
+    )
+  }
+  assert.doesNotMatch(typedProjectSql, /grant\s+(select|insert|update|delete).*public\.projects/i)
 })
