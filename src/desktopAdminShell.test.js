@@ -158,7 +158,7 @@ test('desktop shell renders only centrally authorized routes and falls back to H
 test('authenticated views share the desktop shell while login stays outside it', () => {
   assert.match(appSource, /import DesktopAdminShell from '\.\/DesktopAdminShell'/)
   assert.match(appSource, /const renderInDesktopShell\s*=\s*\(page\)\s*=>/)
-  assert.equal((authenticatedApp.match(/return renderInDesktopShell\(/g) || []).length, 18)
+  assert.equal((authenticatedApp.match(/return renderInDesktopShell\(/g) || []).length, 20)
   assert.match(appSource, /<AuthGate>[\s\S]*?<AuthenticatedApp/)
   assert.doesNotMatch(appSource, /if \(!currentUser\)[\s\S]*?<LoginPage/)
 

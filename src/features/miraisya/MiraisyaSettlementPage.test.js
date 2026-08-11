@@ -56,6 +56,9 @@ test('page implements server-authoritative monthly draft, confirm, unfreeze, his
 test('App wires the protected child route and returns safely to projects', () => {
   assert.match(appSource, /MiraisyaSettlementPage/)
   assert.match(appSource, /miraisyaSettlementService/)
+  assert.match(appSource, /downloadMiraisyaInvoice/)
+  assert.match(appSource, /getSettlementVersion/)
+  assert.match(appSource, /onDownload=\{handleMiraisyaInvoiceDownload\}/)
   assert.match(appSource, /authorizedView === 'miraisyaSettlement'/)
   assert.match(appSource, /handlePersonnelAwareNavigate\('miraisyaSettlement'\)/)
   assert.match(appSource, /handlePersonnelAwareNavigate\('projects'\)/)

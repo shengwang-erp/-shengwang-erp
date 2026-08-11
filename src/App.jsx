@@ -16,6 +16,7 @@ import ContractRevenueMigrationPanel from './features/contract-revenue/ContractR
 import ProjectPage from './features/projects/ProjectPage'
 import MiraisyaProjectPanel from './features/miraisya/MiraisyaProjectPanel.jsx'
 import MiraisyaSettlementPage from './features/miraisya/MiraisyaSettlementPage.jsx'
+import { downloadMiraisyaInvoice } from './features/miraisya/miraisyaInvoiceExport.js'
 import {
   PROJECT_STATUS_OPTIONS,
   normalizeProject as normalizeProjectDomain,
@@ -2504,6 +2505,11 @@ export function useProjectDirectoryLifecycle({
 export function AuthenticatedApp({ currentUser, onLogout }) {
   const [currentView, setCurrentView] = useState('home')
   const [miraisyaProjectId, setMiraisyaProjectId] = useState('')
+  const handleMiraisyaInvoiceDownload = useCallback((settlement) =>
+    downloadMiraisyaInvoice(settlement, {
+      getSettlementVersion: async (settlementId) =>
+        (await miraisyaSettlementService.get(settlementId)).version,
+    }), [])
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
   useEffect(() => {
     if (authorizedView !== null && authorizedView !== currentView) {
@@ -4172,6 +4178,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
       <MiraisyaSettlementPage
         currentUser={currentUser}
         service={miraisyaSettlementService}
+        onDownload={handleMiraisyaInvoiceDownload}
         onBack={() => handlePersonnelAwareNavigate('projects')}
         onAuthInvalid={onLogout}
       />,
