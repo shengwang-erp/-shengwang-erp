@@ -2570,6 +2570,29 @@ button:disabled {
   border-color: rgba(214, 142, 78, 0.5);
 }
 
+.business-runtime-error-code {
+  margin-top: 12px;
+  color: #f0c874;
+  overflow-wrap: anywhere;
+}
+
+.business-runtime-diagnostic {
+  width: 100%;
+  min-height: 180px;
+  margin-top: 12px;
+  padding: 12px;
+  resize: vertical;
+  color: #e8dcc2;
+  background: rgba(4, 4, 3, 0.72);
+  border: 1px solid rgba(210, 168, 81, 0.28);
+  border-radius: 8px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.business-runtime-actions {
+  grid-template-columns: 1fr;
+}
+
 @media (max-width: 520px) {
   .auth-panel {
     padding: 24px 20px;
