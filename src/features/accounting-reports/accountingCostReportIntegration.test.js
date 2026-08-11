@@ -66,6 +66,14 @@ function ready(data) {
   return { status: 'ready', data, stale: false }
 }
 
+function deferred() {
+  let resolve
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 const monthlyAccess = {
   salary: true, projectCost: true, operatingExpense: true,
   purchaseAccrual: true, purchasePayments: true,
@@ -456,5 +464,107 @@ test('monthly actions omit forbidden source facts and export the remaining visib
     assert.deepEqual(detailRows(capturedReport, 'monthly-purchase-sources'), [])
   } finally {
     await cleanup(scenario)
+  }
+})
+
+test('monthly blocked transitions invalidate a delayed export when visible facts stay unchanged', async (t) => {
+  const emptyLaborWindow = {
+    ...monthlyLaborWindow,
+    monthly: [],
+    projectLaborLifetimeById: {},
+  }
+  const ledgerSummary = (incompleteSources) => ready({
+    status: 'ready', generatedAt: '2026-08-11T09:00:00Z', totalAmount: 0,
+    monthlyTotals: [], projectTotals: [], categoryTotals: [],
+    projectMonthCategoryTotals: [], incompleteSources,
+  })
+  const cases = [
+    {
+      name: 'cost model error',
+      initial: {
+        access: {
+          salary: true, projectCost: false, operatingExpense: false,
+          purchaseAccrual: false, purchasePayments: false,
+        },
+        vehicleAccess: false,
+        sourceStates: monthlySourceStates({ laborWindow: ready(emptyLaborWindow) }),
+      },
+      blocked: {
+        sourceStates: monthlySourceStates({
+          laborWindow: ready({ ...emptyLaborWindow, unexpected: true }),
+        }),
+      },
+    },
+    {
+      name: 'incomplete project ledger',
+      initial: {
+        access: {
+          salary: true, projectCost: true, operatingExpense: false,
+          purchaseAccrual: false, purchasePayments: false,
+        },
+        vehicleAccess: false,
+        sourceStates: monthlySourceStates({
+          projects: { status: 'forbidden', data: null, stale: false },
+          laborWindow: ready(emptyLaborWindow),
+          projectCosts: ready([]),
+          projectLedgerSummary: ledgerSummary([]),
+        }),
+      },
+      blocked: {
+        sourceStates: monthlySourceStates({
+          projects: { status: 'forbidden', data: null, stale: false },
+          laborWindow: ready(emptyLaborWindow),
+          projectCosts: ready([]),
+          projectLedgerSummary: ledgerSummary(['warehouse']),
+        }),
+      },
+    },
+  ]
+
+  for (const scenarioCase of cases) {
+    await t.test(scenarioCase.name, async () => {
+      const release = deferred()
+      let downloads = 0
+      let staleGuard
+      const reportActionDependencies = {
+        exportExcel: async (_report, { outputGuard }) => {
+          staleGuard = outputGuard
+          await release.promise
+          if (outputGuard()) downloads += 1
+        },
+        printReport() {},
+      }
+      const scenario = await mountMonthly({
+        ...scenarioCase.initial,
+        reportActionDependencies,
+      })
+      try {
+        const visibleFacts = elements(scenario.container, (element) =>
+          element.nodeName === 'DIV' && element.className.includes('stat-card'))
+          .map((element) => element.textContent)
+        await act(async () => button(scenario.container, '导出 Excel').click())
+        assert.equal(staleGuard(), true)
+
+        await scenario.render({
+          ...scenarioCase.blocked,
+          reportActionDependencies,
+        })
+
+        assert.deepEqual(
+          elements(scenario.container, (element) =>
+            element.nodeName === 'DIV' && element.className.includes('stat-card'))
+            .map((element) => element.textContent),
+          visibleFacts,
+        )
+        assert.equal(button(scenario.container, '导出 Excel').disabled, true)
+        assert.equal(staleGuard(), false)
+        release.resolve()
+        await act(async () => { await release.promise })
+        assert.equal(downloads, 0)
+      } finally {
+        release.resolve()
+        await cleanup(scenario)
+      }
+    })
   }
 })

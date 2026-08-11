@@ -8116,10 +8116,14 @@ export function MonthlySummarySection({
   const monthlyReportIdentity = JSON.stringify({
     month: monthFilter,
     sourceStatuses: reportSourceStatuses,
+    reportBlocked,
+    costModelError,
+    projectLedgerStatus,
     coreMetrics,
     sourceMetrics,
     pendingMetrics,
     preparedBy: reportPreparedBy,
+    reportOutput: monthlySummaryReport,
   })
 
   return (
