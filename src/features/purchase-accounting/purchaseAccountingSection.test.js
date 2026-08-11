@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createElement } from 'react'
+import { act, createElement, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
 import { getDashboardSourceData } from '../../services/dashboardService.js'
+import {
+  findWarehouseTestElement,
+  installWarehouseReactDom,
+  TestEvent,
+} from '../warehouse/warehouseReactDomTestUtils.js'
+
+const bootstrapDom = installWarehouseReactDom()
+const { createRoot } = await import('react-dom/client')
+bootstrapDom.cleanup()
 
 const DASHBOARD_CURRENT_MONTH = '2026-08'
 const DASHBOARD_PRIOR_MONTH = '2026-07'
@@ -179,6 +188,108 @@ const payments = [
   },
 ]
 
+const reportPurchases = [
+  purchases[0],
+  {
+    ...purchases[1], purchaseId: 'PO-AUG-P1', projectId: 'P-1', projectName: '东京站现场',
+    purchaseSource: '中国采购', totalCost: 6000, openingPaidAmount: 0, paidAmount: 0,
+  },
+  {
+    ...purchases[1], purchaseId: 'PO-AUG-P2-CHINA', purchaseSource: '中国采购',
+    totalCost: 7000, openingPaidAmount: 0, paidAmount: 0,
+  },
+  purchases[1],
+  {
+    ...purchases[1], purchaseId: 'PO-AUG-AMAZON-UNPAID', totalCost: 4000,
+    openingPaidAmount: 0, paidAmount: 0,
+  },
+]
+
+function elements(root, predicate, result = []) {
+  if (root?.nodeType === 1 && predicate(root)) result.push(root)
+  for (const child of root?.childNodes ?? []) elements(child, predicate, result)
+  return result
+}
+
+function button(container, label) {
+  return findWarehouseTestElement(container, (element) =>
+    element.nodeName === 'BUTTON' && element.textContent.trim() === label)
+}
+
+function field(container, label) {
+  const wrapper = findWarehouseTestElement(container, (element) =>
+    element.nodeName === 'LABEL'
+    && element.children.some((child) => child.nodeName === 'SPAN' && child.textContent === label))
+  assert.ok(wrapper, `field ${label}`)
+  const control = elements(wrapper, (element) => ['INPUT', 'SELECT'].includes(element.nodeName))[0]
+  assert.ok(control, `control ${label}`)
+  return control
+}
+
+async function change(control, value) {
+  await act(async () => {
+    control.value = value
+    control.dispatchEvent(new TestEvent('input'))
+    control.dispatchEvent(new TestEvent('change'))
+  })
+}
+
+function reportDetailRows(report) {
+  const details = report.sections.find((section) => section.id === 'purchase-details')
+  assert.ok(details)
+  return details.rows
+}
+
+function PurchaseAccountingHarness({ initialMonth = '', ...props }) {
+  const [month, setMonth] = useState(initialMonth)
+  return createElement(appLoaded.module.AccountingCostPage, {
+    access: {
+      salary: { view: false }, projectCost: { view: false }, operatingExpense: { view: false },
+      purchaseAccounting: { view: true },
+      monthlySummary: {
+        salary: false, projectCost: false, operatingExpense: false,
+        purchaseAccrual: false, purchasePayments: false,
+      },
+    },
+    projects,
+    purchaseRecords: props.purchaseRecords,
+    purchasePaymentRecords: props.purchasePaymentRecords,
+    purchasePaymentState: props.paymentState,
+    sourceStates: { purchaseLedgerAccrual: props.accrualState },
+    monthFilter: month,
+    onMonthFilterChange: setMonth,
+    onBack() {},
+    reportPreparedBy: props.reportPreparedBy,
+    reportActionDependencies: props.reportActionDependencies,
+  })
+}
+
+async function mountPurchaseReport(overrides = {}) {
+  assert.ifError(appLoaded.error)
+  const paymentRecords = overrides.purchasePaymentRecords ?? payments
+  const purchaseRecords = overrides.purchaseRecords ?? reportPurchases
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  await act(async () => {
+    root.render(createElement(PurchaseAccountingHarness, {
+      initialMonth: '',
+      purchaseRecords,
+      purchasePaymentRecords: paymentRecords,
+      paymentState: { status: 'ready', data: paymentRecords, stale: false },
+      accrualState: { status: 'ready', data: purchaseRecords, stale: false },
+      reportPreparedBy: '系统管理员',
+      ...overrides,
+    }))
+  })
+  return { dom, container, root }
+}
+
+async function cleanupMounted(scenario) {
+  await act(async () => scenario.root.unmount())
+  scenario.dom.cleanup()
+}
+
 function renderSection(overrides = {}) {
   assert.ifError(loaded.error)
   assert.ok(loaded.module?.default)
@@ -246,12 +357,12 @@ test('renders read-only filters, anomaly guidance, and purchase detail rows', ()
     assert.match(html, new RegExp(`<th>${heading}</th>`, 'u'))
   }
 
-  assert.match(html, /PO-JUL/u)
   assert.match(html, /PO-AUG/u)
+  assert.doesNotMatch(html, /PO-JUL/u)
   assert.match(html, /孤立付款/u)
   assert.doesNotMatch(html, /采购付款缓存与流水不一致/u)
   assert.match(html, /采购数据更正请前往采购管理/u)
-  assert.doesNotMatch(html, /<button|保存|删除/u)
+  assert.doesNotMatch(html, /保存|删除/u)
 
   for (const className of [
     'filter-panel',
@@ -292,7 +403,7 @@ test('renders an empty detail state without mutation controls', () => {
   })
 
   assert.match(html, /暂无采购对账明细/u)
-  assert.doesNotMatch(html, /<button|保存|删除/u)
+  assert.doesNotMatch(html, /保存|删除/u)
 })
 
 test('forbidden payment state renders accrual only and exposes no payable inference', () => {
@@ -338,6 +449,94 @@ test('missing or stale payment state fails closed without payment-derived UI', (
       /付款状态|本月已记录付款|当前未付采购款|本月初始付款|异常付款数量/u,
     )
     assert.doesNotMatch(html, /¥3,000/u)
+  }
+})
+
+test('ready purchase actions export the actually rendered month, project, source, and payment-status result', async () => {
+  let capturedReport
+  const scenario = await mountPurchaseReport({
+    reportActionDependencies: {
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    for (const label of ['导出 Excel', '导出 PDF', '打印']) assert.ok(button(scenario.container, label))
+    assert.equal(elements(scenario.container, (element) => element.nodeName === 'TBODY')[0].children.length, 5)
+
+    await change(field(scenario.container, '统计月份'), '2026-08')
+    assert.equal(elements(scenario.container, (element) => element.nodeName === 'TBODY')[0].children.length, 4)
+    await change(field(scenario.container, '项目'), 'P-2')
+    assert.equal(elements(scenario.container, (element) => element.nodeName === 'TBODY')[0].children.length, 3)
+    await change(field(scenario.container, '数据来源'), 'Amazon')
+    assert.equal(elements(scenario.container, (element) => element.nodeName === 'TBODY')[0].children.length, 2)
+    await change(field(scenario.container, '付款状态'), '部分付款')
+    const visibleRows = elements(scenario.container, (element) => element.nodeName === 'TBODY')[0].children
+    assert.equal(visibleRows.length, 1)
+    assert.match(visibleRows[0].textContent, /PO-AUG/u)
+    assert.doesNotMatch(visibleRows[0].textContent, /PO-AUG-AMAZON-UNPAID/u)
+
+    await act(async () => button(scenario.container, '导出 Excel').click())
+    assert.ok(capturedReport, 'injected Excel action captures the real report')
+    assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.deepEqual(capturedReport.filterLines, [
+      { label: '统计月份', value: '2026-08' },
+      { label: '项目', value: '横滨仓库' },
+      { label: '数据来源', value: 'Amazon' },
+      { label: '付款状态', value: '部分付款' },
+    ])
+    assert.deepEqual(reportDetailRows(capturedReport).map((row) => row.purchaseId), ['PO-AUG'])
+    assert.deepEqual(capturedReport.summary, [
+      { label: '采购成本', value: 9000, format: 'money' },
+      { label: '付款现金', value: 0, format: 'money' },
+      { label: '未付余额', value: 7000, format: 'money' },
+      { label: '缺少发票', value: 2, format: 'number' },
+      { label: '异常数量', value: 1, format: 'number' },
+    ])
+    assert.deepEqual(
+      capturedReport.sections.find((section) => section.id === 'purchase-anomalies').rows,
+      [{ anomaly: '孤立付款（找不到对应采购单）：PP-ORPHAN（采购 PO-MISSING）' }],
+    )
+  } finally {
+    await cleanupMounted(scenario)
+  }
+})
+
+test('purchase exports remain available for ready accrual while omitting payment fields for an unavailable payment source', async () => {
+  let capturedReport
+  const scenario = await mountPurchaseReport({
+    initialMonth: '2026-08',
+    paymentState: { status: 'forbidden', data: null, stale: false },
+    reportActionDependencies: {
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    assert.ok(button(scenario.container, '导出 Excel'))
+    assert.equal(field(scenario.container, '统计月份').value, '2026-08')
+    assert.equal(elements(scenario.container, (element) =>
+      element.nodeName === 'LABEL' && element.textContent.includes('付款状态')).length, 0)
+    await act(async () => button(scenario.container, '导出 Excel').click())
+    assert.ok(capturedReport)
+    const details = capturedReport.sections.find((section) => section.id === 'purchase-details')
+    assert.ok(details)
+    assert.deepEqual(details.columns.map((column) => column.label), [
+      '采购编号', '日期', '商品', '供应商', '项目', '采购来源', '采购成本', '发票状态',
+    ])
+    assert.equal(details.rows.some((row) =>
+      Object.hasOwn(row, 'paidAmount')
+      || Object.hasOwn(row, 'unpaidAmount')
+      || Object.hasOwn(row, 'paymentStatus')), false)
+  } finally {
+    await cleanupMounted(scenario)
+  }
+})
+
+test('loading, error, and forbidden accrual states expose no report action', () => {
+  for (const status of ['loading', 'error', 'forbidden']) {
+    const html = renderSection({ accrualState: { status, data: null, stale: false } })
+    assert.doesNotMatch(html, /导出 Excel|导出 PDF|打印/u)
   }
 })
 
@@ -405,7 +604,7 @@ test('AuthenticatedApp purchase normalization preserves the opening snapshot for
   }
 
   const html = renderSection({
-    purchaseRecords: [normalizedPurchase],
+    purchaseRecords: [{ ...normalizedPurchase, purchaseDate: '2026-08-01' }],
     purchasePaymentRecords: [{
       paymentId: 'PP-NORMALIZED',
       purchaseId: 'PO-NORMALIZED',

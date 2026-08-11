@@ -1,5 +1,8 @@
 import { useMemo, useState } from 'react'
 
+import AccountingReportActions from '../accounting-reports/AccountingReportActions.jsx'
+import { createPurchaseAccountingReport } from '../accounting-reports/purchaseAccountingReport.js'
+import { isDateInMonth } from '../executive-dashboard/dashboardTime.js'
 import {
   buildPurchaseAccountingReadModel,
   filterPurchaseAccountingRows,
@@ -111,6 +114,8 @@ export default function PurchaseAccountingSection({
   accrualState,
   monthFilter = '',
   onMonthFilterChange = () => {},
+  reportPreparedBy = '',
+  reportActionDependencies,
 }) {
   const [projectFilter, setProjectFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
@@ -141,7 +146,9 @@ export default function PurchaseAccountingSection({
 
   const rows = useMemo(() => filterPurchaseAccountingRows(readModel.rows, {
     paymentStatus: paymentVisible ? paymentStatusFilter : '',
-  }), [readModel.rows, paymentStatusFilter, paymentVisible])
+  }).filter((row) => !monthFilter || isDateInMonth(row.purchaseDate, monthFilter)), [
+    readModel.rows, monthFilter, paymentStatusFilter, paymentVisible,
+  ])
 
   const availableProjects = useMemo(
     () => projectOptions(projects, effectivePurchaseRecords),
@@ -154,6 +161,39 @@ export default function PurchaseAccountingSection({
   const paymentAnomalyCount = readModel.anomalies.filter(
     (anomaly) => PAYMENT_ANOMALY_CODES.has(anomaly.code),
   ).length
+  const projectLabel = projectFilter
+    ? availableProjects.find((project) => project.projectId === projectFilter)?.projectName
+      || projectFilter
+    : ''
+  const report = useMemo(() => createPurchaseAccountingReport({
+    rows,
+    summary: readModel.summary,
+    anomalies: readModel.anomalies,
+    month: monthFilter,
+    projectLabel,
+    source: sourceFilter,
+    paymentStatus: paymentVisible ? paymentStatusFilter : '',
+    paymentVisible,
+    preparedBy: reportPreparedBy,
+  }), [
+    rows, readModel.summary, readModel.anomalies, monthFilter, projectLabel, sourceFilter,
+    paymentStatusFilter, paymentVisible, reportPreparedBy,
+  ])
+  const reportContextIdentity = JSON.stringify({
+    month: monthFilter,
+    project: projectFilter,
+    source: sourceFilter,
+    paymentStatus: paymentVisible ? paymentStatusFilter : '',
+    accrualReady,
+    accrualStatus: effectiveAccrualState?.status || '',
+    paymentVisible,
+    paymentSourceStatus: effectivePaymentState?.status || '',
+    rows: rows.map((row) => ({
+      purchaseId: row.purchaseId,
+      paidAmount: paymentVisible ? row.paidAmount : null,
+      unpaidAmount: paymentVisible ? row.unpaidAmount : null,
+    })),
+  })
 
   if (!accrualReady) {
     const notice = effectiveAccrualState?.status === 'forbidden'
@@ -223,6 +263,12 @@ export default function PurchaseAccountingSection({
           </label>
         )}
       </div>
+
+      <AccountingReportActions
+        report={report}
+        contextIdentity={reportContextIdentity}
+        {...reportActionDependencies}
+      />
 
       <div className="stats-grid">
         <div className="stat-card money">

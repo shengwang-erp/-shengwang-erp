@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createOperatingExpenseReport } from './operatingExpenseReport.js'
+import { createPurchaseAccountingReport } from './purchaseAccountingReport.js'
 import { createSalaryReport } from './salaryReport.js'
 import { escapeAccountingSpreadsheetText } from './accountingReportModel.js'
 
@@ -38,6 +39,21 @@ const expenseRecords = [
   {
     expenseRecordId: 'OE-003', date: '2026-07-03', expenseType: '材料补充', amount: 3000,
     allocateToProject: true, projectId: '', projectName: '', operator: '佐藤', remark: '未绑定项目也应保留',
+  },
+]
+
+const purchaseRows = [
+  {
+    purchaseId: 'PO-001', purchaseDate: '2026-08-03', itemName: '安全帽',
+    supplierName: 'Amazon Japan', projectId: 'P-002', projectName: '横浜仓库',
+    purchaseSource: 'Amazon', totalCost: 5000, paidAmount: 2000, unpaidAmount: 3000,
+    paymentStatus: '部分付款', invoiceStatus: '未取得',
+  },
+  {
+    purchaseId: 'PO-OUTSIDE-FILTER', purchaseDate: '2026-07-10', itemName: '电钻',
+    supplierName: '上海工具商', projectId: 'P-001', projectName: '东京站现场',
+    purchaseSource: '中国采购', totalCost: 10000, paidAmount: 3000, unpaidAmount: 7000,
+    paymentStatus: '部分付款', invoiceStatus: '已取得',
   },
 ]
 
@@ -162,4 +178,78 @@ test('operating-expense adapter keeps empty reports printable with unrestricted 
   assert.deepEqual(section(report, 'expense-category-summary').rows, [])
   assert.deepEqual(section(report, 'expense-project-summary').rows, [])
   assert.deepEqual(section(report, 'expense-details').rows, [])
+})
+
+test('purchase adapter preserves supplied rows and current reconciliation facts without filtering again', () => {
+  const report = createPurchaseAccountingReport({
+    rows: purchaseRows,
+    summary: {
+      monthPurchaseCost: 5000,
+      monthPaymentCash: 3000,
+      currentOutstanding: 10000,
+      missingInvoiceCount: 1,
+      anomalyCount: 2,
+    },
+    anomalies: [
+      { code: 'orphan_payment', paymentId: 'PP-ORPHAN', purchaseId: 'PO-MISSING' },
+      { code: 'overpayment', purchaseId: 'PO-OVER' },
+    ],
+    month: '2026-08', projectLabel: '横浜仓库', source: 'Amazon',
+    paymentStatus: '部分付款', paymentVisible: true,
+    preparedBy: '财务部', generatedAt: '2026-08-11T09:00:00Z',
+  })
+
+  assert.deepEqual([...new Set(report.sections.map((item) => item.sheetName))], [
+    '对账汇总', '对账明细',
+  ])
+  assert.equal(report.recordCount, 2)
+  assert.deepEqual(report.filterLines, [
+    { label: '统计月份', value: '2026-08' },
+    { label: '项目', value: '横浜仓库' },
+    { label: '数据来源', value: 'Amazon' },
+    { label: '付款状态', value: '部分付款' },
+  ])
+  assert.deepEqual(report.summary, [
+    { label: '采购成本', value: 5000, format: 'money' },
+    { label: '付款现金', value: 3000, format: 'money' },
+    { label: '未付余额', value: 10000, format: 'money' },
+    { label: '缺少发票', value: 1, format: 'number' },
+    { label: '异常数量', value: 2, format: 'number' },
+  ])
+  assert.deepEqual(section(report, 'purchase-details').columns.map((column) => column.label), [
+    '采购编号', '日期', '商品', '供应商', '项目', '采购来源', '采购成本', '已付', '未付', '付款状态', '发票状态',
+  ])
+  assert.deepEqual(
+    section(report, 'purchase-details').rows.map((row) => row.purchaseId),
+    ['PO-001', 'PO-OUTSIDE-FILTER'],
+  )
+  assert.deepEqual(section(report, 'purchase-anomalies').rows, [
+    { anomaly: '孤立付款（找不到对应采购单）：PP-ORPHAN（采购 PO-MISSING）' },
+    { anomaly: '采购存在超额付款：PO-OVER' },
+  ])
+})
+
+test('purchase adapter omits every payment-derived detail and summary field when payments are unavailable', () => {
+  const report = createPurchaseAccountingReport({
+    rows: purchaseRows.map(({ paidAmount: _paid, unpaidAmount: _unpaid, paymentStatus: _status, ...row }) => row),
+    summary: {
+      monthPurchaseCost: 5000,
+      monthPaymentCash: null,
+      currentOutstanding: null,
+      missingInvoiceCount: 1,
+      anomalyCount: 0,
+    },
+    anomalies: [], month: '', projectLabel: '', source: '', paymentStatus: '',
+    paymentVisible: false, preparedBy: '', generatedAt: '',
+  })
+
+  assert.deepEqual(report.filterLines, [
+    { label: '统计月份', value: '不限月份' },
+    { label: '项目', value: '全部项目' },
+    { label: '数据来源', value: '全部来源' },
+  ])
+  assert.deepEqual(report.summary.map((item) => item.label), ['采购成本', '缺少发票', '异常数量'])
+  assert.deepEqual(section(report, 'purchase-details').columns.map((column) => column.label), [
+    '采购编号', '日期', '商品', '供应商', '项目', '采购来源', '采购成本', '发票状态',
+  ])
 })

@@ -7010,6 +7010,8 @@ export function AccountingCostPage({
           accrualState={sourceStates.purchaseLedgerAccrual}
           monthFilter={monthFilter}
           onMonthFilterChange={onMonthFilterChange}
+          reportPreparedBy={reportPreparedBy}
+          reportActionDependencies={reportActionDependencies}
         />
       )}
       {visibleSection === 'monthlySummary' && (
