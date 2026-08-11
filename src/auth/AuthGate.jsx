@@ -7,7 +7,10 @@ import {
 } from '../services/employeeAuthService.js'
 import ChangeTemporaryPasswordPage from './ChangeTemporaryPasswordPage.jsx'
 import LoginPage from './LoginPage.jsx'
-import { runCoalescedSessionValidation } from './authGateSession.js'
+import {
+  isTerminalAuthError,
+  runCoalescedSessionValidation,
+} from './authGateSession.js'
 
 const localDemoMode = import.meta.env.DEV && import.meta.env.VITE_LOCAL_DEMO_MODE === 'true'
 const localDemoCredentials = import.meta.env.DEV
@@ -27,18 +30,7 @@ const localDemoUser = import.meta.env.DEV
     }
   : null
 
-const TERMINAL_AUTH_ERROR_CODES = new Set([
-  'ACCOUNT_DISABLED',
-  'ACCOUNT_UNAVAILABLE',
-  'AUTH_INVALID',
-  'AUTH_SESSION_INVALID',
-  'AUTH_TOKEN_INVALID',
-  'EMPLOYEE_INACTIVE',
-  'EMPLOYEE_NOT_LINKED',
-  'PASSWORD_STATE_SYNC_FAILED',
-])
-
-function AuthStatusPage({ title, message, kind = 'loading' }) {
+function AuthStatusPage({ title, message, kind = 'loading', children }) {
   return (
     <main className={`auth-shell auth-${kind}`}>
       <section className="auth-panel auth-status-panel" role="status" aria-live="polite">
@@ -50,6 +42,7 @@ function AuthStatusPage({ title, message, kind = 'loading' }) {
         <p>生旺株式会社 · ERP 数据中心</p>
         <h1>{title}</h1>
         <span>{message}</span>
+        {children}
       </section>
     </main>
   )
@@ -84,6 +77,11 @@ export default function AuthGate({
     }
   }, [authService])
 
+  const moveToValidationError = useCallback(() => {
+    validationVersion.current += 1
+    setGate({ status: 'validation-error', currentUser: null })
+  }, [])
+
   const performSessionValidation = useCallback(
     async (session) => {
       const currentValidation = validationVersion.current + 1
@@ -104,12 +102,14 @@ export default function AuthGate({
           passwordMode: currentUser.mustChangePassword ? 'forced' : null,
         })
         return currentUser
-      } catch {
-        if (validationVersion.current === currentValidation) await moveToLogin()
+      } catch (error) {
+        if (validationVersion.current !== currentValidation) return null
+        if (isTerminalAuthError(error)) await moveToLogin()
+        else moveToValidationError()
         return null
       }
     },
-    [authService, moveToLogin],
+    [authService, moveToLogin, moveToValidationError],
   )
 
   const validateSession = useCallback(
@@ -157,8 +157,10 @@ export default function AuthGate({
         if (isMounted) return validateSession(session)
         return null
       })
-      .catch(() => {
-        if (isMounted) void moveToLogin()
+      .catch((error) => {
+        if (!isMounted) return
+        if (isTerminalAuthError(error)) void moveToLogin()
+        else moveToValidationError()
       })
 
     return () => {
@@ -168,7 +170,46 @@ export default function AuthGate({
       for (const timer of pendingTimers) window.clearTimeout(timer)
       subscription?.unsubscribe()
     }
-  }, [authService, configured, moveToLogin, validateSession])
+  }, [
+    authService,
+    configured,
+    moveToLogin,
+    moveToValidationError,
+    validateSession,
+  ])
+
+  const onRefreshCurrentUser = useCallback(async () => {
+    if (localDemoMode) {
+      setGate({ status: 'authenticated', currentUser: localDemoUser })
+      return localDemoUser
+    }
+
+    let session
+    try {
+      session = await authService.getSession()
+    } catch (error) {
+      if (isTerminalAuthError(error)) await moveToLogin()
+      else moveToValidationError()
+      throw error
+    }
+
+    const currentUser = await validateSession(session)
+    if (!currentUser) {
+      throw new EmployeeAuthError(
+        'AUTH_SERVICE_UNAVAILABLE',
+        '认证服务暂不可用，请稍后重试',
+      )
+    }
+    return currentUser
+  }, [authService, moveToLogin, moveToValidationError, validateSession])
+
+  const handleRetryValidation = useCallback(async () => {
+    try {
+      await onRefreshCurrentUser()
+    } catch {
+      // The authentication boundary already selected retry or login state.
+    }
+  }, [onRefreshCurrentUser])
 
   const handleLogin = useCallback(
     async (credentials) => {
@@ -182,7 +223,7 @@ export default function AuthGate({
       }
       const session = await authService.loginWithEmployeeNumber(credentials)
       const currentUser = await validateSession(session)
-      if (!currentUser) throw new EmployeeAuthError('AUTH_SESSION_INVALID')
+      if (!currentUser) throw new EmployeeAuthError('AUTH_SERVICE_UNAVAILABLE')
     },
     [authService, validateSession],
   )
@@ -200,7 +241,7 @@ export default function AuthGate({
           )
         }
       } catch (error) {
-        if (TERMINAL_AUTH_ERROR_CODES.has(error?.code)) await moveToLogin()
+        if (isTerminalAuthError(error)) await moveToLogin()
         throw error
       }
     },
@@ -221,6 +262,21 @@ export default function AuthGate({
     return <AuthStatusPage title="正在确认登录状态" message="请稍候…" />
   }
 
+  if (gate.status === 'validation-error') {
+    return (
+      <AuthStatusPage
+        kind="validation-error"
+        title="认证服务暂不可用"
+        message="登录会话仍保留。请重新验证后继续使用 ERP。"
+      >
+        <div className="auth-account-actions">
+          <button className="auth-primary-button" type="button" onClick={handleRetryValidation}>重新验证</button>
+          <button className="auth-secondary-button" type="button" onClick={moveToLogin}>退出登录</button>
+        </div>
+      </AuthStatusPage>
+    )
+  }
+
   if (gate.status === 'login') {
     return <LoginPage onLogin={handleLogin} />
   }
@@ -238,5 +294,9 @@ export default function AuthGate({
 
   if (gate.status !== 'authenticated' || !gate.currentUser) return null
 
-  return children({ currentUser: gate.currentUser, onLogout: moveToLogin })
+  return children({
+    currentUser: gate.currentUser,
+    onLogout: moveToLogin,
+    onRefreshCurrentUser,
+  })
 }

@@ -25,6 +25,8 @@
 - Modify: `src/auth/authGateSession.test.js`
 - Modify: `src/auth/AuthGate.jsx`
 - Modify: `src/auth/frontendAuthContract.test.js`
+- Modify: `src/services/employeeAuthService.js`
+- Modify: `src/services/employeeAuthService.test.js`
 
 **Interfaces:**
 - Produces: `isTerminalAuthError(error): boolean`
@@ -49,9 +51,11 @@ test('only terminal authentication errors require session invalidation', () => {
 
 在 `src/auth/frontendAuthContract.test.js` 增加源码契约断言：可重试错误不得无条件调用 `moveToLogin`，必须渲染“认证服务暂不可用”“重新验证”“退出登录”，并向 children 暴露 `onRefreshCurrentUser`。
 
+在 `src/services/employeeAuthService.test.js` 增加服务边界测试：`getSession()` 或 `getCurrentEmployee()` 的网络异常及 5xx 必须返回 `AUTH_SERVICE_UNAVAILABLE`；401/403 与空或无效 profile 必须返回 `AUTH_SESSION_INVALID`。
+
 - [ ] **Step 2: 运行测试并确认 RED**
 
-Run: `node --test src/auth/authGateSession.test.js src/auth/frontendAuthContract.test.js`
+Run: `node --test src/auth/authGateSession.test.js src/auth/frontendAuthContract.test.js src/services/employeeAuthService.test.js`
 
 Expected: FAIL，原因是 `isTerminalAuthError`、`validation-error` 或 `onRefreshCurrentUser` 尚不存在。
 
@@ -80,16 +84,18 @@ export function isTerminalAuthError(error) {
 - 在 `validation-error` 状态渲染 fail-closed 状态页和两个按钮。
 - children render prop 改为 `{ currentUser, onLogout: moveToLogin, onRefreshCurrentUser }`。
 
+在 `employeeAuthService.js` 将浏览器认证供应商错误按可信状态分类：网络抛出和 5xx 映射为 `AUTH_SERVICE_UNAVAILABLE`，401/403 映射为 `AUTH_SESSION_INVALID`；profile 结构验证继续保持终止性失败。
+
 - [ ] **Step 4: 运行定向测试并确认 GREEN**
 
-Run: `node --test src/auth/authGateSession.test.js src/auth/frontendAuthContract.test.js`
+Run: `node --test src/auth/authGateSession.test.js src/auth/frontendAuthContract.test.js src/services/employeeAuthService.test.js`
 
 Expected: PASS。
 
 - [ ] **Step 5: 提交 Task 1**
 
 ```bash
-git add src/auth/authGateSession.js src/auth/authGateSession.test.js src/auth/AuthGate.jsx src/auth/frontendAuthContract.test.js
+git add src/auth/authGateSession.js src/auth/authGateSession.test.js src/auth/AuthGate.jsx src/auth/frontendAuthContract.test.js src/services/employeeAuthService.js src/services/employeeAuthService.test.js docs/superpowers/plans/2026-08-11-auth-session-refresh-after-save.md
 git commit -m "fix: preserve sessions on retryable auth validation"
 ```
 

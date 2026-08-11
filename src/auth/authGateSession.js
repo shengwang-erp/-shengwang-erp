@@ -1,3 +1,19 @@
+const TERMINAL_AUTH_ERROR_CODES = new Set([
+  'ACCOUNT_DISABLED',
+  'ACCOUNT_UNAVAILABLE',
+  'AUTH_INVALID',
+  'AUTH_SESSION_INVALID',
+  'AUTH_TOKEN_INVALID',
+  'EMPLOYEE_INACTIVE',
+  'EMPLOYEE_NOT_LINKED',
+  'PASSWORD_CHANGE_REQUIRED',
+  'PASSWORD_STATE_SYNC_FAILED',
+])
+
+export function isTerminalAuthError(error) {
+  return TERMINAL_AUTH_ERROR_CODES.has(error?.code)
+}
+
 export function runCoalescedSessionValidation(
   inFlightRef,
   session,

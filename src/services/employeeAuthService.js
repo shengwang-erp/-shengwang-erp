@@ -44,6 +44,13 @@ function authError(code) {
   return new EmployeeAuthError(code, SAFE_ERROR_MESSAGES[code])
 }
 
+function authReadError(result) {
+  const status = result?.status ?? result?.error?.status
+  return authError(status === 401 || status === 403
+    ? 'AUTH_SESSION_INVALID'
+    : 'AUTH_SERVICE_UNAVAILABLE')
+}
+
 function assertConfigured(client, configured) {
   if (!configured || !client) throw authError('CONFIGURATION_ERROR')
 }
@@ -218,10 +225,10 @@ export function createEmployeeAuthService(
     try {
       result = await client.auth.getSession()
     } catch {
-      throw authError('AUTH_SESSION_INVALID')
+      throw authError('AUTH_SERVICE_UNAVAILABLE')
     }
     const { data, error } = result ?? {}
-    if (error) throw authError('AUTH_SESSION_INVALID')
+    if (error) throw authReadError(result)
     return data?.session ?? null
   }
 
@@ -246,10 +253,10 @@ export function createEmployeeAuthService(
     try {
       result = await client.rpc('current_employee_profile')
     } catch {
-      throw authError('AUTH_SESSION_INVALID')
+      throw authError('AUTH_SERVICE_UNAVAILABLE')
     }
     const { data, error } = result ?? {}
-    if (error) throw authError('AUTH_SESSION_INVALID')
+    if (error) throw authReadError(result)
     return mapCurrentEmployee(data)
   }
 

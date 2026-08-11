@@ -47,7 +47,30 @@ test('AuthGate validates startup and every auth transition before mounting busin
   assert.match(authGateSource, /configuration-error/)
   assert.match(authGateSource, /await authService\.logout\(\)/)
   assert.match(authGateSource, /status !== 'authenticated'/)
-  assert.match(authGateSource, /children\(\{[\s\S]*currentUser:[\s\S]*onLogout:/)
+  assert.match(
+    authGateSource,
+    /children\(\{[\s\S]*currentUser:[\s\S]*onLogout:[\s\S]*onRefreshCurrentUser/,
+  )
+})
+
+test('retryable profile validation stays fail-closed without ending the session', () => {
+  const retryTransition = sliceBetween(
+    authGateSource,
+    'const moveToValidationError',
+    '\n\n  const performSessionValidation',
+  )
+  const validation = sliceBetween(
+    authGateSource,
+    'const performSessionValidation',
+    '\n\n  const validateSession',
+  )
+  assert.match(retryTransition, /status:\s*'validation-error'/)
+  assert.match(validation, /isTerminalAuthError\(error\)/)
+  assert.match(validation, /else moveToValidationError\(\)/)
+  assert.match(authGateSource, /认证服务暂不可用/)
+  assert.match(authGateSource, />重新验证</)
+  assert.match(authGateSource, />退出登录</)
+  assert.match(authGateSource, /const onRefreshCurrentUser/)
 })
 
 test('valid zero-module employees still mount business UI for always-available attendance', () => {
@@ -72,10 +95,10 @@ test('valid zero-module employees still mount business UI for always-available a
 })
 
 test('forced-password terminal account errors clear the session instead of keeping stale UI', () => {
-  assert.match(authGateSource, /TERMINAL_AUTH_ERROR_CODES/)
+  assert.match(authGateSource, /isTerminalAuthError/)
   assert.match(
     authGateSource,
-    /catch \(error\)[\s\S]*?TERMINAL_AUTH_ERROR_CODES\.has\(error\?\.code\)[\s\S]*?await moveToLogin\(\)/,
+    /catch \(error\)[\s\S]*?isTerminalAuthError\(error\)[\s\S]*?await moveToLogin\(\)/,
   )
 })
 

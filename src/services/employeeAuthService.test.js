@@ -281,6 +281,66 @@ test('current employee is freshly mapped from current_employee_profile', async (
   assert.deepEqual(calls.rpc, ['current_employee_profile'])
 })
 
+test('transient session and profile reads stay retryable while rejected credentials terminate', async () => {
+  const cases = [
+    {
+      action: 'getSession',
+      overrides: {
+        auth: {
+          getSession: async () => {
+            throw new Error('temporary browser storage failure')
+          },
+        },
+      },
+      code: 'AUTH_SERVICE_UNAVAILABLE',
+    },
+    {
+      action: 'getCurrentEmployee',
+      overrides: {
+        rpc: async () => {
+          throw new Error('temporary network failure')
+        },
+      },
+      code: 'AUTH_SERVICE_UNAVAILABLE',
+    },
+    {
+      action: 'getCurrentEmployee',
+      overrides: {
+        rpc: async () => ({
+          data: null,
+          error: { code: 'PGRST000', message: 'private upstream detail' },
+          status: 503,
+        }),
+      },
+      code: 'AUTH_SERVICE_UNAVAILABLE',
+    },
+    {
+      action: 'getCurrentEmployee',
+      overrides: {
+        rpc: async () => ({
+          data: null,
+          error: { code: 'PGRST301', message: 'private token detail' },
+          status: 401,
+        }),
+      },
+      code: 'AUTH_SESSION_INVALID',
+    },
+  ]
+
+  for (const entry of cases) {
+    const { client } = createClient(entry.overrides)
+    const service = createEmployeeAuthService(client, { configured: true })
+    await assert.rejects(
+      service[entry.action](),
+      (error) =>
+        error instanceof EmployeeAuthError &&
+        error.code === entry.code &&
+        !error.message.includes('private'),
+      `${entry.action}:${entry.code}`,
+    )
+  }
+})
+
 test('current employee rejects unknown, disabled, inactive, unlinked, and malformed profiles', async () => {
   const cases = [
     { data: [], code: 'AUTH_SESSION_INVALID' },

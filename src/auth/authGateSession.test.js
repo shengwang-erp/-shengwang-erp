@@ -1,9 +1,33 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { runCoalescedSessionValidation } from './authGateSession.js'
+import {
+  isTerminalAuthError,
+  runCoalescedSessionValidation,
+} from './authGateSession.js'
 
 const SESSION = Object.freeze({ access_token: 'same-access-token' })
+
+test('only terminal authentication errors require session invalidation', () => {
+  for (const code of [
+    'AUTH_INVALID',
+    'AUTH_SESSION_INVALID',
+    'AUTH_TOKEN_INVALID',
+    'ACCOUNT_DISABLED',
+    'ACCOUNT_UNAVAILABLE',
+    'EMPLOYEE_INACTIVE',
+    'EMPLOYEE_NOT_LINKED',
+    'PASSWORD_CHANGE_REQUIRED',
+    'PASSWORD_STATE_SYNC_FAILED',
+  ]) assert.equal(isTerminalAuthError({ code }), true, code)
+
+  assert.equal(
+    isTerminalAuthError({ code: 'AUTH_SERVICE_UNAVAILABLE' }),
+    false,
+  )
+  assert.equal(isTerminalAuthError(new Error('network unavailable')), false)
+  assert.equal(isTerminalAuthError(null), false)
+})
 
 test('simultaneous validation requests for one access token share one profile refresh', async () => {
   const inFlight = { current: null }
