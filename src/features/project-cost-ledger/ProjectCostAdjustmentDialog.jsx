@@ -147,7 +147,7 @@ export default function ProjectCostAdjustmentDialog({
   const modal = useProjectCostModalA11y({ open: Boolean(row), submitting, onRequestClose: cancelOperation })
 
   const content = (
-    <div className="project-cost-dialog-backdrop" role="presentation">
+    <div className="erp-black-gold project-cost-dialog-backdrop" role="presentation">
       <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-adjust-title">
         <header><div><small>会计调整 · 原始业务记录不变</small><h2 id="project-cost-adjust-title">调整项目成本</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭调整窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts">

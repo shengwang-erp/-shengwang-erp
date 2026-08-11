@@ -483,7 +483,11 @@ test('all three StrictMode dialogs focus, trap, escape, restore and inert backgr
         ...baseProps, onCancel() { cancelled += 1 },
       }))) })
       const dialog = elements(dom.document.body, (element) => element.getAttribute?.('role') === 'dialog')[0]
-      assert.equal(dialog.parentNode.parentNode, dom.document.body, 'modal portal is a direct body child')
+      const backdrop = dialog.parentNode
+      const backdropClasses = backdrop.className.split(/\s+/u)
+      assert.equal(backdrop.parentNode, dom.document.body, 'modal portal is a direct body child')
+      assert.ok(backdropClasses.includes('project-cost-dialog-backdrop'))
+      assert.ok(backdropClasses.includes('erp-black-gold'), 'portal root carries the black-gold theme')
       assert.ok(dialog.contains(dom.document.activeElement), 'initial focus is inside the modal')
       assert.equal(background.inert, true)
       assert.equal(container.inert, true, 'the production #root sibling is inert')

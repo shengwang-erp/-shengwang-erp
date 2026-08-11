@@ -671,6 +671,8 @@ test('version one source with no audit event is a complete ordinary project row'
 
 test('black-gold CSS enforces the readable table dimensions without white or blue surfaces', async () => {
   const css = await readFile(new URL('./projectCostLedger.css', import.meta.url), 'utf8')
+  assert.match(css, /\.erp-black-gold\.project-cost-dialog-backdrop\s*\{/u)
+  assert.match(css, /@media\s*\(max-width:\s*760px\)[\s\S]*?\.erp-black-gold\.project-cost-dialog-backdrop\s*\{/u)
   assert.match(css, /\.project-cost-ledger-table\s*\{[^}]*min-width:\s*1380px[^}]*font-size:\s*15px/su)
   assert.match(css, /\.project-cost-ledger-table th,\s*\n?\.erp-black-gold \.project-cost-ledger-table td\s*\{[^}]*padding:\s*12px 14px[^}]*line-height:\s*1\.55/su)
   assert.match(css, /\.project-cost-ledger-amount\s*\{[^}]*text-align:\s*right[^}]*font-weight:\s*700[^}]*white-space:\s*nowrap/su)

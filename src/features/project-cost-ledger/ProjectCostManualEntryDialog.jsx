@@ -92,7 +92,7 @@ export default function ProjectCostManualEntryDialog({
   const modal = useProjectCostModalA11y({ open, submitting, onRequestClose: cancelOperation })
 
   const content = (
-    <div className="project-cost-dialog-backdrop" role="presentation">
+    <div className="erp-black-gold project-cost-dialog-backdrop" role="presentation">
       <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog project-cost-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-manual-title">
         <header><div><small>费用保存后立即进入项目成本</small><h2 id="project-cost-manual-title">新增调整费用</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭新增费用窗口">关闭</button></header>
         <form onSubmit={submit}>

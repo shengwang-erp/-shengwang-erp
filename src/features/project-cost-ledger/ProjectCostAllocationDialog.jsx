@@ -187,7 +187,7 @@ export default function ProjectCostAllocationDialog({
   const modal = useProjectCostModalA11y({ open: Boolean(row), submitting, onRequestClose: cancelOperation })
 
   const content = (
-    <div className="project-cost-dialog-backdrop" role="presentation">
+    <div className="erp-black-gold project-cost-dialog-backdrop" role="presentation">
       <section ref={modal.dialogRef} tabIndex="-1" className="project-cost-dialog project-cost-allocation-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cost-allocation-title">
         <header><div><small>拆分后以固定金额保存并自动留痕</small><h2 id="project-cost-allocation-title">拆分项目成本</h2></div><button ref={modal.initialFocusRef} type="button" onClick={modal.requestClose} aria-label="关闭拆分窗口">关闭</button></header>
         <div className="project-cost-dialog-amounts"><article><span>当前最终金额</span><strong>{formatYen(row.effectiveAmount)}</strong></article><article><span>最多项目数</span><strong>100</strong></article></div>
