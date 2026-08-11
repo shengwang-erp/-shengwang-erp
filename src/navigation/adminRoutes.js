@@ -144,6 +144,16 @@ export const ADMIN_ROUTES = Object.freeze([
     normalizeTo: null,
   }),
   freezeRoute({
+    view: 'miraisyaSettlement',
+    label: '未来社月度结算',
+    iconText: '结',
+    moduleName: '工程项目',
+    desktop: false,
+    mobileTab: false,
+    menuOrder: null,
+    normalizeTo: null,
+  }),
+  freezeRoute({
     view: 'contractRevenue',
     label: '合同收入',
     iconText: '合',

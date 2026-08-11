@@ -36,6 +36,16 @@ const expectedDesktopRoutes = [
 
 const expectedChildAndMobileRoutes = [
   {
+    view: 'miraisyaSettlement',
+    label: '未来社月度结算',
+    iconText: '结',
+    moduleName: '工程项目',
+    desktop: false,
+    mobileTab: false,
+    menuOrder: null,
+    normalizeTo: null,
+  },
+  {
     view: 'contractRevenue',
     label: '合同收入',
     iconText: '合',
@@ -125,6 +135,7 @@ test('route lookup and normalization return detached immutable values', () => {
   }, TypeError)
 
   assert.equal(normalizeAdminView('contractRevenue'), 'projects')
+  assert.equal(normalizeAdminView('miraisyaSettlement'), 'miraisyaSettlement')
   assert.equal(normalizeAdminView('purchase'), 'purchase')
   assert.equal(normalizeAdminView('unknown'), 'home')
 })

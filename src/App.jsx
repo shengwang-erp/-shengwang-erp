@@ -15,6 +15,7 @@ import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import ProjectPage from './features/projects/ProjectPage'
 import MiraisyaProjectPanel from './features/miraisya/MiraisyaProjectPanel.jsx'
+import MiraisyaSettlementPage from './features/miraisya/MiraisyaSettlementPage.jsx'
 import {
   PROJECT_STATUS_OPTIONS,
   normalizeProject as normalizeProjectDomain,
@@ -85,6 +86,7 @@ import { persistLegacyContractRevenueMigration } from './services/contractRevenu
 import { supabase } from './lib/supabaseClient.js'
 import { projectService } from './services/projectService.js'
 import { miraisyaBillingService } from './services/miraisyaBillingService.js'
+import { miraisyaSettlementService } from './services/miraisyaSettlementService.js'
 import { laborAccountingService } from './services/laborAccountingService.js'
 import { createDashboardLaborBridgeLoader } from './services/dashboardLaborBridgeService.js'
 import { purchaseService } from './services/purchaseService.js'
@@ -4165,6 +4167,17 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
     )
   }
 
+  if (authorizedView === 'miraisyaSettlement') {
+    return renderInDesktopShell(
+      <MiraisyaSettlementPage
+        currentUser={currentUser}
+        service={miraisyaSettlementService}
+        onBack={() => handlePersonnelAwareNavigate('projects')}
+        onAuthInvalid={onLogout}
+      />,
+    )
+  }
+
   if (authorizedView === 'projects') {
     if (miraisyaProject) {
       return renderInDesktopShell(
@@ -4191,6 +4204,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
           onDeleteProject={handleDeleteProject}
           onOpenContractRevenue={openContractRevenue}
           onOpenMiraisyaProject={setMiraisyaProjectId}
+          onOpenMiraisyaSettlement={() => handlePersonnelAwareNavigate('miraisyaSettlement')}
           onBack={() => handlePersonnelAwareNavigate('home')}
         />
       </>

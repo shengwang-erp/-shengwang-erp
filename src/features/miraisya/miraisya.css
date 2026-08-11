@@ -89,6 +89,94 @@
   border-radius: 8px;
 }
 
+.miraisya-settlement-page { width: min(100%, 1180px); }
+
+.miraisya-settlement-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 260px)) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.miraisya-candidate-section,
+.miraisya-settlement-history { margin-bottom: 16px; }
+
+.miraisya-candidate-list,
+.miraisya-settlement-list { display: grid; gap: 10px; }
+
+.miraisya-candidate-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #5e4b27;
+  border-radius: 9px;
+}
+
+.miraisya-candidate-card.blocked { opacity: .72; }
+.miraisya-candidate-main { display: grid; gap: 4px; }
+.miraisya-candidate-main small,
+.miraisya-settlement-card small { color: #8f8160; }
+
+.miraisya-carry-badge {
+  padding: 4px 8px;
+  color: #f8d98c;
+  background: #32240a;
+  border: 1px solid #846118;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.miraisya-cost-blocker { grid-column: 2 / -1; color: #b65353; }
+.miraisya-carry-note { margin: 0 0 12px; color: #8f8160; }
+
+.miraisya-settlement-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #5e4b27;
+  border-radius: 10px;
+}
+
+.miraisya-settlement-card > header,
+.miraisya-settlement-card > header div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.miraisya-settlement-card > header { justify-content: space-between; }
+
+.miraisya-settlement-card dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.miraisya-settlement-card dl div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  background: #16130d;
+  border-radius: 8px;
+}
+
+.miraisya-settlement-card dt { color: #cdbb8d; font-size: 12px; }
+.miraisya-settlement-card dd { margin: 0; color: #fff; font-weight: 700; }
+
+.miraisya-settlement-actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.miraisya-void-reason { min-width: 240px; flex: 1; }
+.miraisya-void-note { margin: 0; color: #8f8160; }
+
 @media (max-width: 900px) {
   .miraisya-summary-grid,
   .miraisya-cost-categories {
@@ -111,4 +199,10 @@
     align-items: stretch;
     flex-direction: column;
   }
+
+  .miraisya-settlement-filters,
+  .miraisya-candidate-card,
+  .miraisya-settlement-card dl { grid-template-columns: 1fr; }
+
+  .miraisya-cost-blocker { grid-column: auto; }
 }
