@@ -14,6 +14,18 @@ const defaultCopy = (text) => {
   return globalThis.navigator.clipboard.writeText(text)
 }
 
+function ownComponentStack(info) {
+  if (typeof info !== 'object' || info === null) return ''
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(info, 'componentStack')
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor.value
+      : ''
+  } catch {
+    return ''
+  }
+}
+
 export function detectBusinessRuntime() {
   const userAgent = typeof globalThis.navigator?.userAgent === 'string'
     ? globalThis.navigator.userAgent
@@ -28,27 +40,41 @@ export function detectBusinessRuntime() {
 }
 
 export default class BusinessRuntimeBoundary extends Component {
-  state = { error: null, diagnostic: null, copyStatus: '' }
+  state = { hasError: false, error: null, diagnostic: null, copyStatus: '' }
 
   static getDerivedStateFromError(error) {
-    return { error, diagnostic: null, copyStatus: '' }
+    return { hasError: true, error, diagnostic: null, copyStatus: '' }
   }
 
   componentDidCatch(error, info) {
     this.setState({
-      diagnostic: this.createDiagnostic(error, info?.componentStack),
+      diagnostic: this.createDiagnostic(error, ownComponentStack(info)),
     })
   }
 
   createDiagnostic(error, componentStack = '') {
-    const now = this.props.now || defaultNow
-    const runtime = this.props.runtime || detectBusinessRuntime
+    const now = typeof this.props.now === 'function' ? this.props.now : defaultNow
+    const runtime = typeof this.props.runtime === 'function'
+      ? this.props.runtime
+      : detectBusinessRuntime
+    let occurredAt = 'unknown'
+    let detectedRuntime = null
+    try {
+      occurredAt = now()
+    } catch {
+      occurredAt = 'unknown'
+    }
+    try {
+      detectedRuntime = runtime()
+    } catch {
+      detectedRuntime = null
+    }
     return buildBusinessRuntimeDiagnostic({
       error,
       componentStack,
       buildId: this.props.buildId,
-      occurredAt: now(),
-      runtime: runtime(),
+      occurredAt,
+      runtime: detectedRuntime,
     })
   }
 
@@ -77,17 +103,19 @@ export default class BusinessRuntimeBoundary extends Component {
   }
 
   render() {
-    if (!this.state.error) return this.props.children
+    if (!this.state.hasError) return this.props.children
     const diagnostic = this.currentDiagnostic()
     const diagnosticText = formatBusinessRuntimeDiagnostic(diagnostic)
     return (
       <main className="auth-shell business-runtime-error-shell">
-        <section className="auth-panel auth-status-panel" role="alert">
+        <section className="auth-panel auth-status-panel">
           <img className="auth-brand-mark" src="/sw-erp-logo.jpg" alt="生旺株式会社标志" />
           <p>生旺株式会社 · ERP 数据中心</p>
-          <h1>系统页面发生错误</h1>
-          <span>业务界面已安全停止。请复制诊断信息后重新加载，或退出登录。</span>
-          <strong className="business-runtime-error-code">{diagnostic.code}</strong>
+          <div className="business-runtime-error-summary" role="alert">
+            <h1>系统页面发生错误</h1>
+            <span>业务界面已安全停止。请复制诊断信息后重新加载，或退出登录。</span>
+            <strong className="business-runtime-error-code">{diagnostic.code}</strong>
+          </div>
           <textarea
             className="business-runtime-diagnostic"
             aria-label="诊断信息"

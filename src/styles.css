@@ -2576,6 +2576,19 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.business-runtime-error-summary {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.business-runtime-error-summary > span {
+  display: block;
+  margin-top: 7px;
+  color: #a99b82;
+  font-size: 14px;
+}
+
 .business-runtime-diagnostic {
   width: 100%;
   min-height: 180px;

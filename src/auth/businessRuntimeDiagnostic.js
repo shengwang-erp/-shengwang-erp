@@ -1,25 +1,37 @@
-const MESSAGE_LIMIT = 320
-const STACK_LIMIT = 2400
 const BUILD_ID_PATTERN = /^[a-zA-Z0-9._-]{1,64}$/u
-const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`\)\]}]+/giu
+const SAFE_COMPONENT_FRAME_PATTERN = /^\s*at\s+([A-Za-z_$][A-Za-z0-9_$]{0,63})(?=[\s(]|$)/u
+const MAX_COMPONENT_NAMES = 12
+const ERROR_NAMES = new Set([
+  'Error',
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'URIError',
+  'EvalError',
+])
+const PLATFORMS = new Set(['iOS', 'Other'])
+const BROWSERS = new Set(['Safari Web App', 'Chrome iOS', 'Firefox iOS', 'Web Browser'])
+const BUILT_DIAGNOSTICS = new WeakSet()
+
+function ownDataValue(object, key, fallback) {
+  if ((typeof object !== 'object' || object === null) && typeof object !== 'function') {
+    return fallback
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key)
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor.value
+      : fallback
+  } catch {
+    return fallback
+  }
+}
 
 function bounded(value, limit, fallback = '') {
   return typeof value === 'string' && value.trim()
     ? value.trim().slice(0, limit)
     : fallback
-}
-
-function redact(value) {
-  return value
-    .replace(URL_PATTERN, '[REDACTED_URL]')
-    .replace(/\bSW-\d{3,}\b/giu, '[REDACTED_EMPLOYEE]')
-    .replace(/\bBearer\s+[^\s]+/giu, 'Bearer [REDACTED_TOKEN]')
-    .replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[REDACTED_TOKEN]')
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '[REDACTED_EMAIL]')
-}
-
-function redactedBounded(value, limit, fallback) {
-  return bounded(redact(typeof value === 'string' ? value : ''), limit, fallback)
 }
 
 function safeBuildId(value) {
@@ -34,37 +46,87 @@ function safeOccurredAt(value) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : 'unknown'
 }
 
+function safeErrorName(error) {
+  let current = error
+  for (let depth = 0; depth < 4 && current !== null; depth += 1) {
+    const name = ownDataValue(current, 'name', '')
+    if (typeof name === 'string' && ERROR_NAMES.has(name)) return name
+    if ((typeof current !== 'object' || current === null) && typeof current !== 'function') break
+    try {
+      current = Object.getPrototypeOf(current)
+    } catch {
+      break
+    }
+  }
+  return 'Error'
+}
+
+function fingerprintMessage(value) {
+  const message = typeof value === 'string' ? value : ''
+  let hash = 0x811c9dc5
+  for (let index = 0; index < message.length; index += 1) {
+    hash ^= message.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `fingerprint:${hash.toString(16).padStart(8, '0')}`
+}
+
+function safeComponentStack(value) {
+  if (typeof value !== 'string') return 'Unavailable'
+  const names = []
+  for (const line of value.split(/\r?\n/u)) {
+    const match = SAFE_COMPONENT_FRAME_PATTERN.exec(line)
+    if (match) names.push(match[1])
+    if (names.length === MAX_COMPONENT_NAMES) break
+  }
+  return names.length > 0 ? names.join('\n') : 'Unavailable'
+}
+
+function safePlatform(value) {
+  return typeof value === 'string' && PLATFORMS.has(value) ? value : 'Other'
+}
+
+function safeBrowser(value) {
+  return typeof value === 'string' && BROWSERS.has(value) ? value : 'Web Browser'
+}
+
 export function buildBusinessRuntimeDiagnostic(input = {}) {
-  const buildId = safeBuildId(input.buildId)
-  const errorName = redactedBounded(input.error?.name, 80, 'Error')
-  const message = redactedBounded(input.error?.message, MESSAGE_LIMIT, 'Unknown render failure')
-  const componentStack = redactedBounded(input.componentStack, STACK_LIMIT, 'Unavailable')
-  const platform = bounded(input.runtime?.platform, 40, 'Unknown')
-  const browser = bounded(input.runtime?.browser, 40, 'Unknown')
-  return Object.freeze({
+  const error = ownDataValue(input, 'error', null)
+  const runtimeInput = ownDataValue(input, 'runtime', null)
+  const buildId = safeBuildId(ownDataValue(input, 'buildId', ''))
+  const runtime = Object.freeze({
+    platform: safePlatform(ownDataValue(runtimeInput, 'platform', '')),
+    browser: safeBrowser(ownDataValue(runtimeInput, 'browser', '')),
+  })
+  const diagnostic = Object.freeze({
     category: 'UI_RUNTIME_ERROR',
     code: `UI_RUNTIME_ERROR-${buildId}`,
     buildId,
-    occurredAt: safeOccurredAt(input.occurredAt),
-    errorName,
-    message,
-    componentStack,
-    runtime: Object.freeze({ platform, browser }),
+    occurredAt: safeOccurredAt(ownDataValue(input, 'occurredAt', '')),
+    errorName: safeErrorName(error),
+    message: fingerprintMessage(ownDataValue(error, 'message', '')),
+    componentStack: safeComponentStack(ownDataValue(input, 'componentStack', '')),
+    runtime,
   })
+  BUILT_DIAGNOSTICS.add(diagnostic)
+  return diagnostic
 }
 
 export function formatBusinessRuntimeDiagnostic(diagnostic) {
-  return JSON.stringify(buildBusinessRuntimeDiagnostic({
+  if (BUILT_DIAGNOSTICS.has(diagnostic)) return JSON.stringify(diagnostic, null, 2)
+  const runtime = ownDataValue(diagnostic, 'runtime', null)
+  const projected = buildBusinessRuntimeDiagnostic({
     error: {
-      name: diagnostic?.errorName,
-      message: diagnostic?.message,
+      name: ownDataValue(diagnostic, 'errorName', ''),
+      message: ownDataValue(diagnostic, 'message', ''),
     },
-    componentStack: diagnostic?.componentStack,
-    buildId: diagnostic?.buildId,
-    occurredAt: diagnostic?.occurredAt,
+    componentStack: ownDataValue(diagnostic, 'componentStack', ''),
+    buildId: ownDataValue(diagnostic, 'buildId', ''),
+    occurredAt: ownDataValue(diagnostic, 'occurredAt', ''),
     runtime: {
-      platform: diagnostic?.runtime?.platform,
-      browser: diagnostic?.runtime?.browser,
+      platform: ownDataValue(runtime, 'platform', ''),
+      browser: ownDataValue(runtime, 'browser', ''),
     },
-  }), null, 2)
+  })
+  return JSON.stringify(projected, null, 2)
 }
