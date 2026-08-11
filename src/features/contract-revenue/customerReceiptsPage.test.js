@@ -104,7 +104,7 @@ test('App adds single-record create and void callbacks to service-authoritative 
   assert.match(appSource, /onVoidCustomerReceipt=\{handleVoidCustomerReceipt\}/)
   assert.match(
     appSource,
-    /\[projects, projectContractChanges, projectPaymentPlans, projectReceipts\]/,
+    /\[\s*projects,\s*projectContractChanges,\s*projectPaymentPlans,\s*projectReceipts,\s*contractRevenueAccess\.view,?\s*\]/,
   )
   assert.match(serviceSource, /createProjectReceipt: \(input\) =>\s*createRecord\(/)
   assert.match(serviceSource, /voidProjectReceipt: \(input, details\) =>\s*voidRecord\(/)

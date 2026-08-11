@@ -70,7 +70,10 @@ test('App saves each plan with create or update service in service-authoritative
   assert.match(appSource, /paymentPlans=\{projectPaymentPlans\}/)
   assert.match(appSource, /receipts=\{projectReceipts\}/)
   assert.match(appSource, /onSavePaymentPlan=\{handleSavePaymentPlan\}/)
-  assert.match(appSource, /\[projects, projectContractChanges, projectPaymentPlans, projectReceipts\]/)
+  assert.match(
+    appSource,
+    /\[\s*projects,\s*projectContractChanges,\s*projectPaymentPlans,\s*projectReceipts,\s*contractRevenueAccess\.view,?\s*\]/,
+  )
 })
 
 test('payment plan page has no hard-delete or void workflow', () => {

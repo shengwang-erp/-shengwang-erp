@@ -50,7 +50,7 @@ test('migration and historical review refresh local project and receipt state wi
   assert.match(appSource, /onHistoricalReview=\{handleHistoricalContractReview\}/)
   assert.match(
     appSource,
-    /\[projects, projectContractChanges, projectPaymentPlans, projectReceipts\]/,
+    /\[\s*projects,\s*projectContractChanges,\s*projectPaymentPlans,\s*projectReceipts,\s*contractRevenueAccess\.view,?\s*\]/,
   )
 })
 

@@ -73,7 +73,10 @@ test('App persists create and void as single records in service-authoritative st
   assert.match(appSource, /await persistContractChange\(input\)/)
   assert.match(appSource, /await persistVoidContractChange\(record, details\)/)
   assert.match(appSource, /setProjectContractChanges\(/)
-  assert.match(appSource, /\[projects, projectContractChanges, projectPaymentPlans, projectReceipts\]/)
+  assert.match(
+    appSource,
+    /\[\s*projects,\s*projectContractChanges,\s*projectPaymentPlans,\s*projectReceipts,\s*contractRevenueAccess\.view,?\s*\]/,
+  )
   assert.match(appSource, /contractChanges=\{projectContractChanges\}/)
   assert.match(appSource, /onCreateContractChange=\{handleCreateContractChange\}/)
   assert.match(appSource, /onVoidContractChange=\{handleVoidContractChange\}/)
