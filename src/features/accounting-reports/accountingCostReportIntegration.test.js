@@ -120,7 +120,7 @@ async function cleanup(scenario) {
   scenario.dom.cleanup()
 }
 
-test('salary actions export the report produced by the active month and employee filters', async () => {
+test('salary actions retain and export the previous active month when clearing is attempted', async () => {
   let capturedReport
   const records = [
     {
@@ -153,7 +153,10 @@ test('salary actions export the report produced by the active month and employee
     for (const label of ['导出 Excel', '导出 PDF', '打印']) {
       assert.ok(button(scenario.container, label), `button ${label}`)
     }
-    await change(field(scenario.container, '按月份筛选'), '2026-07')
+    const monthInput = field(scenario.container, '按月份筛选')
+    await change(monthInput, '2026-07')
+    await change(monthInput, '')
+    assert.equal(monthInput.value, '2026-07')
     await change(field(scenario.container, '按员工姓名筛选'), '员工乙')
     await act(async () => button(scenario.container, '导出 Excel').click())
 
@@ -172,19 +175,19 @@ test('salary actions export the report produced by the active month and employee
   }
 })
 
-test('operating actions and records follow the selected project allocation scope', async () => {
+test('operating actions retain the active month and records follow the selected project scope', async () => {
   let capturedReport
   const records = [
     {
-      expenseRecordId: 'OE-001', date: '2026-08-01', expenseType: '交通费', amount: 1000,
+      expenseRecordId: 'OE-001', date: '2026-07-01', expenseType: '交通费', amount: 1000,
       allocateToProject: false, projectId: '', projectName: '', operator: '员工甲', remark: '',
     },
     {
-      expenseRecordId: 'OE-002', date: '2026-08-02', expenseType: '交通费', amount: 2000,
+      expenseRecordId: 'OE-002', date: '2026-07-02', expenseType: '交通费', amount: 2000,
       allocateToProject: true, projectId: 'P-001', projectName: '新宿改造', operator: '员工甲', remark: '',
     },
     {
-      expenseRecordId: 'OE-003', date: '2026-08-03', expenseType: '交通费', amount: 3000,
+      expenseRecordId: 'OE-003', date: '2026-07-03', expenseType: '交通费', amount: 3000,
       allocateToProject: true, projectId: 'P-002', projectName: '涩谷改造', operator: '员工乙', remark: '',
     },
   ]
@@ -202,6 +205,10 @@ test('operating actions and records follow the selected project allocation scope
     for (const label of ['导出 Excel', '导出 PDF', '打印']) {
       assert.ok(button(scenario.container, label), `button ${label}`)
     }
+    const monthInput = field(scenario.container, '按月份筛选')
+    await change(monthInput, '2026-07')
+    await change(monthInput, '')
+    assert.equal(monthInput.value, '2026-07')
     await change(field(scenario.container, '费用归属'), 'project')
     await change(field(scenario.container, '项目'), 'P-001')
 
@@ -215,6 +222,7 @@ test('operating actions and records follow the selected project allocation scope
     await act(async () => button(scenario.container, '导出 Excel').click())
     assert.ok(capturedReport, 'Excel action receives the real operating-expense report')
     assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.deepEqual(capturedReport.filterLines[0], { label: '费用月份', value: '2026-07' })
     assert.deepEqual(capturedReport.filterLines.slice(2), [
       { label: '费用归属', value: '项目费用' },
       { label: '项目', value: '新宿改造' },

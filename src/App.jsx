@@ -7202,7 +7202,14 @@ function SalaryRecordsSection({
       )}
 
       <div className="filter-panel">
-        <Field label="按月份筛选" type="month" value={monthFilter} onChange={setMonthFilter} />
+        <Field
+          label="按月份筛选"
+          type="month"
+          value={monthFilter}
+          onChange={setMonthFilter}
+          rejectEmpty
+          required
+        />
         <Field
           label="按员工姓名筛选"
           value={employeeFilter}
@@ -7702,7 +7709,14 @@ function OperatingExpenseSection({
       )}
 
       <div className="filter-panel">
-        <Field label="按月份筛选" type="month" value={monthFilter} onChange={setMonthFilter} />
+        <Field
+          label="按月份筛选"
+          type="month"
+          value={monthFilter}
+          onChange={setMonthFilter}
+          rejectEmpty
+          required
+        />
         <OptionField
           label="费用类型"
           value={typeFilter}
@@ -9867,17 +9881,26 @@ function Field({
   onChange,
   placeholder,
   required = false,
+  rejectEmpty = false,
   disabled = false,
   min,
   step,
 }) {
+  const handleChange = (event) => {
+    if (rejectEmpty && !event.target.value) {
+      event.target.value = value
+      return
+    }
+    onChange(event.target.value)
+  }
+
   return (
     <label className="field">
       <span>{label}</span>
       {type === 'textarea' ? (
         <textarea
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={handleChange}
           placeholder={placeholder}
           required={required}
           disabled={disabled}
@@ -9887,7 +9910,7 @@ function Field({
         <input
           type={type}
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={handleChange}
           placeholder={placeholder}
           required={required}
           disabled={disabled}
