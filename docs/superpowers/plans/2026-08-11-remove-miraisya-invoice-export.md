@@ -128,10 +128,10 @@ Expected: all focused tests pass and no test imports the deleted exporter.
 Run:
 
 ```bash
-rg -n "downloadMiraisyaInvoice|handleMiraisyaInvoiceDownload|onDownload|请求书下载|miraisya-invoice-template|miraisyaInvoiceExport" src public
+rg -n "downloadMiraisyaInvoice|handleMiraisyaInvoiceDownload|onDownload|请求书下载|miraisya-invoice-template|miraisyaInvoiceExport" src public -g '!**/*.test.js'
 ```
 
-Expected: no matches.
+Expected: no production-code matches; the page test retains only negative regression assertions for these names.
 
 - [ ] **Step 2: Run the full automated test suite**
 
@@ -141,7 +141,7 @@ Run:
 npm test
 ```
 
-Expected: 1,691 tests pass with zero failures.
+Expected: 1,688 tests pass with zero failures after the three exporter tests are removed.
 
 - [ ] **Step 3: Run the production build and diff validation**
 

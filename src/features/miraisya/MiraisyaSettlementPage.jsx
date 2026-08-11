@@ -17,7 +17,6 @@ function statusLabel(status) {
 export default function MiraisyaSettlementPage({
   currentUser,
   service,
-  onDownload,
   onBack,
   onAuthInvalid,
 }) {
@@ -123,19 +122,6 @@ export default function MiraisyaSettlementPage({
     }
   }
 
-  const download = async (settlement) => {
-    if (typeof onDownload !== 'function') return
-    setBusy(`download:${settlement.id}`)
-    setError('')
-    try {
-      await onDownload(settlement)
-    } catch (operationError) {
-      handleError(operationError)
-    } finally {
-      setBusy('')
-    }
-  }
-
   if (!canManage) {
     return (
       <main className="app-shell page-shell miraisya-settlement-page">
@@ -209,7 +195,6 @@ export default function MiraisyaSettlementPage({
                   <label className="field miraisya-void-reason"><span>解冻原因</span><input value={voidReasons[settlement.id] || ''} onChange={(event) => setVoidReasons((current) => ({ ...current, [settlement.id]: event.target.value }))} disabled={busy !== ''} /></label>
                   <button className="danger-button" type="button" onClick={() => voidSettlement(settlement)} disabled={busy !== ''}>解冻并重新结算</button>
                 </> : null}
-                <button className="ghost-button" type="button" onClick={() => download(settlement)} disabled={busy !== '' || typeof onDownload !== 'function'}>请求书下载</button>
               </div>
               {settlement.voidReason ? <p className="miraisya-void-note">解冻记录：{settlement.voidReason}</p> : null}
             </article>

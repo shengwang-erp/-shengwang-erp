@@ -34,7 +34,7 @@ test('selection summary includes carry-forward totals and blocks incomplete cost
   assert.equal(buildSettlementSelectionSummary(candidates, ['p1']).canCreateDraft, true)
 })
 
-test('page implements server-authoritative monthly draft, confirm, unfreeze, history, and download', () => {
+test('page keeps monthly draft, confirm, unfreeze, and history without request-form download', () => {
   for (const expression of [
     /service\.listCandidates\(month\)/,
     /service\.list\(month\)/,
@@ -42,13 +42,13 @@ test('page implements server-authoritative monthly draft, confirm, unfreeze, his
     /service\.confirm\(/,
     /service\.void\(/,
     /await reload\(\)/,
-    /onDownload\(settlement\)/,
   ]) assert.match(source, expression)
 
   for (const copy of [
     '未来社月度结算', '结算月份', '顺延项目', '生成结算草稿', '确认冻结',
-    '解冻并重新结算', '解冻原因', '历史结算', '请求书下载',
+    '解冻并重新结算', '解冻原因', '历史结算',
   ]) assert.match(source, new RegExp(copy, 'u'), copy)
+  assert.doesNotMatch(source, /onDownload|请求书下载/u)
   assert.match(source, /canManageMiraisyaSettlement\(currentUser\)/)
   assert.match(source, /disabled=\{[^}]*busy/)
 })
@@ -56,9 +56,7 @@ test('page implements server-authoritative monthly draft, confirm, unfreeze, his
 test('App wires the protected child route and returns safely to projects', () => {
   assert.match(appSource, /MiraisyaSettlementPage/)
   assert.match(appSource, /miraisyaSettlementService/)
-  assert.match(appSource, /downloadMiraisyaInvoice/)
-  assert.match(appSource, /getSettlementVersion/)
-  assert.match(appSource, /onDownload=\{handleMiraisyaInvoiceDownload\}/)
+  assert.doesNotMatch(appSource, /downloadMiraisyaInvoice|handleMiraisyaInvoiceDownload/u)
   assert.match(appSource, /authorizedView === 'miraisyaSettlement'/)
   assert.match(appSource, /handlePersonnelAwareNavigate\('miraisyaSettlement'\)/)
   assert.match(appSource, /handlePersonnelAwareNavigate\('projects'\)/)
