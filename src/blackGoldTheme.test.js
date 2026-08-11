@@ -244,6 +244,22 @@ test('black-gold overrides legacy light module, purchase table, and project form
   assert.equal(radiusHelp.get('color'), 'var(--erp-text-muted)')
 })
 
+test('shared accounting entries retain black-gold surfaces outside the accounting page', () => {
+  const grid = declarationsFor('.erp-black-gold .accounting-entry-grid')
+  assert.equal(grid.get('border-color'), 'var(--erp-border-subtle)')
+  assert.equal(grid.get('background'), 'var(--erp-bg-elevated)')
+
+  const entry = declarationsFor('.erp-black-gold .accounting-entry')
+  assert.equal(entry.get('border-color'), 'transparent')
+  assert.equal(entry.get('color'), 'var(--erp-text-secondary)')
+  assert.equal(entry.get('background'), 'transparent')
+
+  const activeEntry = declarationsFor('.erp-black-gold .accounting-entry.active')
+  assert.equal(activeEntry.get('border-color'), 'var(--erp-border-gold-muted)')
+  assert.equal(activeEntry.get('color'), 'var(--erp-accent-gold-soft)')
+  assert.equal(activeEntry.get('background'), 'var(--erp-accent-gold-surface)')
+})
+
 test('accounting labels are gold while monetary values remain white', () => {
   for (const selector of [
     '.erp-black-gold .accounting-cost-page .subsection-title h2',
