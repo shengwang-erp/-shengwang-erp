@@ -339,6 +339,22 @@ test('renders order cost, payment cash, current payable, and source notice', () 
   assert.match(html, /数据来源：采购管理/u)
 })
 
+test('purchase accounting places the unified report toolbar before filters', () => {
+  const html = renderSection({
+    projects,
+    purchaseRecords: purchases,
+    purchasePaymentRecords: payments,
+  })
+  assert.match(html, /采购对账报表/u)
+  const toolbar = html.indexOf('accounting-report-toolbar')
+  const filters = html.indexOf('filter-panel')
+  const stats = html.indexOf('stats-grid')
+  assert.ok(toolbar >= 0)
+  assert.ok(filters > toolbar)
+  assert.ok(stats > filters)
+  assert.equal((html.match(/<h2 id="purchase-accounting-title">/gu) || []).length, 0)
+})
+
 test('missing, stale, or forbidden accrual state fails closed before rendering purchase facts', () => {
   for (const accrualState of [
     undefined,

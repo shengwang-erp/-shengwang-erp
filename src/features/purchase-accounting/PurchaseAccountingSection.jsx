@@ -260,11 +260,14 @@ export default function PurchaseAccountingSection({
   }
 
   return (
-    <section aria-labelledby="purchase-accounting-title">
-      <div className="subsection-title">
-        <h2 id="purchase-accounting-title">采购对账</h2>
-        <span>{monthFilter}</span>
-      </div>
+    <section aria-label="采购对账报表">
+      <AccountingReportActions
+        title="采购对账报表"
+        report={report}
+        disabled={paymentReportBlocked}
+        contextIdentity={reportContextIdentity}
+        {...reportActionDependencies}
+      />
 
       <div className="filter-panel">
         <label className="field">
@@ -319,13 +322,6 @@ export default function PurchaseAccountingSection({
             : '采购付款数据正在加载'}
         </div>
       )}
-
-      <AccountingReportActions
-        report={report}
-        disabled={paymentReportBlocked}
-        contextIdentity={reportContextIdentity}
-        {...reportActionDependencies}
-      />
 
       <div className="stats-grid">
         <div className="stat-card money">
