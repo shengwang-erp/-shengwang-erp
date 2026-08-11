@@ -63,6 +63,19 @@ test('redacts credentials before applying field bounds', () => {
   assert.doesNotMatch(text, /person@exampl/u)
 })
 
+test('redacts URLs from error messages and component source stacks before formatting', () => {
+  const messageUrl = 'https://erp.example.test/orders/42?access_token=private-token'
+  const sourceUrl = 'https://cdn.example.test/assets/InvoicePage.jsx:18:7'
+  const diagnostic = buildBusinessRuntimeDiagnostic({
+    error: new Error(`Invoice view failed at ${messageUrl}`),
+    componentStack: `\n    at InvoicePage (${sourceUrl})`,
+  })
+  const text = formatBusinessRuntimeDiagnostic(diagnostic)
+
+  assert.doesNotMatch(text, /erp\.example\.test|cdn\.example\.test|private-token/u)
+  assert.match(text, /\[REDACTED_URL\]/u)
+})
+
 test('formatter projects only approved diagnostic fields from untrusted input', () => {
   const text = formatBusinessRuntimeDiagnostic({
     buildId: 'abcdef123456',

@@ -36,6 +36,10 @@ function BrokenView() {
   throw new TypeError('BrokenView render failed')
 }
 
+function UrlBrokenView() {
+  throw new TypeError('Invoice request failed at https://erp.example.test/orders/42?access_token=private-token')
+}
+
 function findElement(root, predicate) {
   return findWarehouseTestElement(root, predicate)
 }
@@ -104,6 +108,20 @@ test('copy, reload and logout use only injected recovery adapters', async () => 
   assert.match(copied[0], /UI_RUNTIME_ERROR/u)
   assert.equal(reloads, 1)
   assert.equal(logouts, 1)
+})
+
+test('removes URL-bearing diagnostics from the fallback textarea and clipboard', async () => {
+  const copied = []
+  const view = await renderBoundary(createElement(UrlBrokenView), {
+    copyText: async (text) => copied.push(text),
+  })
+  const field = findElement(view.container, (node) => node.nodeName === 'TEXTAREA')
+  await click(view.container, '复制诊断信息')
+
+  assert.doesNotMatch(field.value, /erp\.example\.test|private-token|file:\/\//u)
+  assert.equal(copied.length, 1)
+  assert.doesNotMatch(copied[0], /erp\.example\.test|private-token|file:\/\//u)
+  assert.match(copied[0], /\[REDACTED_URL\]/u)
 })
 
 test('clipboard rejection keeps selectable read-only diagnostics visible', async () => {

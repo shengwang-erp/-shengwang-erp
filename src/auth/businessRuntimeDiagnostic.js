@@ -1,6 +1,7 @@
 const MESSAGE_LIMIT = 320
 const STACK_LIMIT = 2400
 const BUILD_ID_PATTERN = /^[a-zA-Z0-9._-]{1,64}$/u
+const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`\)\]}]+/giu
 
 function bounded(value, limit, fallback = '') {
   return typeof value === 'string' && value.trim()
@@ -10,6 +11,7 @@ function bounded(value, limit, fallback = '') {
 
 function redact(value) {
   return value
+    .replace(URL_PATTERN, '[REDACTED_URL]')
     .replace(/\bSW-\d{3,}\b/giu, '[REDACTED_EMPLOYEE]')
     .replace(/\bBearer\s+[^\s]+/giu, 'Bearer [REDACTED_TOKEN]')
     .replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[REDACTED_TOKEN]')
