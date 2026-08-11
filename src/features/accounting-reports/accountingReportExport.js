@@ -2,6 +2,7 @@ import {
   escapeAccountingSpreadsheetText,
   formatAccountingReportDisplayValue,
   formatAccountingReportFileName,
+  resolveAccountingReportCell,
 } from './accountingReportModel.js'
 
 export const ACCOUNTING_REPORT_MONEY_FORMAT = '¥#,##0;[Red]-¥#,##0'
@@ -21,13 +22,15 @@ const THIN_GRAY_BORDER = Object.freeze({
 })
 
 function writeCell(cell, value, format = 'text') {
-  if ((format === 'money' || format === 'number') && Number.isFinite(Number(value))) {
+  if ((format === 'money' || format === 'number' || format === 'percent') &&
+      Number.isFinite(Number(value))) {
     cell.value = Number(value)
   } else {
     cell.value = escapeAccountingSpreadsheetText(formatAccountingReportDisplayValue(value, format))
   }
   if (format === 'money') cell.numFmt = ACCOUNTING_REPORT_MONEY_FORMAT
   if (format === 'number') cell.numFmt = '#,##0.####;[Red]-#,##0.####'
+  if (format === 'percent') cell.numFmt = '0.####"%"'
 }
 
 function mergeTextRow(sheet, rowNumber, columnCount, value, style = {}) {
@@ -76,10 +79,11 @@ function writeSection(sheet, section, startRow) {
   for (const data of section.rows) {
     for (const [index, column] of section.columns.entries()) {
       const cell = sheet.getCell(rowNumber, index + 1)
-      writeCell(cell, data[column.key], column.format)
+      const resolvedCell = resolveAccountingReportCell(data, column)
+      writeCell(cell, resolvedCell.value, resolvedCell.format)
       cell.border = THIN_GRAY_BORDER
       cell.alignment = {
-        horizontal: column.align ?? (column.format === 'money' || column.format === 'number' ? 'right' : 'left'),
+        horizontal: resolvedCell.align,
         vertical: 'center',
         wrapText: true,
       }
@@ -90,7 +94,16 @@ function writeSection(sheet, section, startRow) {
   return { nextRow: rowNumber, headerRow }
 }
 
-function configurePrintLayout(sheet, columnCount, firstHeaderRow, lastRow, sectionCount, orientation) {
+function configurePrintLayout(
+  sheet,
+  columnCount,
+  firstHeaderRow,
+  safeMetadataEndRow,
+  lastRow,
+  sectionCount,
+  orientation,
+) {
+  const repeatedRowEnd = sectionCount === 1 ? firstHeaderRow : safeMetadataEndRow
   sheet.pageSetup = {
     paperSize: PAPER_A4,
     orientation,
@@ -98,7 +111,7 @@ function configurePrintLayout(sheet, columnCount, firstHeaderRow, lastRow, secti
     fitToWidth: 1,
     fitToHeight: 0,
     margins: { left: 0.3, right: 0.3, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
-    printTitlesRow: `1:${firstHeaderRow}`,
+    printTitlesRow: `1:${repeatedRowEnd}`,
     printArea: `A1:${sheet.getColumn(columnCount).letter}${lastRow}`,
   }
   sheet.views = [{ state: 'frozen', ySplit: firstHeaderRow }]
@@ -138,7 +151,9 @@ export function createAccountingReportWorkbook(ExcelJS, report) {
     }
     rowNumber = mergeTextRow(sheet, rowNumber, columnCount, `生成时间：${report.generatedAt}`)
     rowNumber = mergeTextRow(sheet, rowNumber, columnCount, `制表人：${report.preparedBy}`)
+    rowNumber = mergeTextRow(sheet, rowNumber, columnCount, `记录数：${report.recordCount}`)
     rowNumber = mergeTextRow(sheet, rowNumber, columnCount, report.editableNotice)
+    const safeMetadataEndRow = rowNumber - 1
     for (const summary of report.summary) {
       rowNumber = mergeTextRow(sheet, rowNumber, columnCount,
         `${summary.label}：${formatAccountingReportDisplayValue(summary.value, summary.format)}`)
@@ -155,7 +170,15 @@ export function createAccountingReportWorkbook(ExcelJS, report) {
         font: { color: { argb: COLORS.text } },
       })
     }
-    configurePrintLayout(sheet, columnCount, firstHeaderRow, rowNumber - 1, sections.length, report.orientation)
+    configurePrintLayout(
+      sheet,
+      columnCount,
+      firstHeaderRow,
+      safeMetadataEndRow,
+      rowNumber - 1,
+      sections.length,
+      report.orientation,
+    )
   }
   return workbook
 }

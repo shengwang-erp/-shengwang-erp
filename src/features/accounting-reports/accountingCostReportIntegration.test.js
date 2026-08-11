@@ -61,6 +61,11 @@ const projects = [
   { projectId: 'P-001', projectName: '新宿改造', address: '新宿' },
   { projectId: 'P-002', projectName: '涩谷改造', address: '涩谷' },
 ]
+const OUTPUT_TIMESTAMP = '2026-08-12T03:04:05.678Z'
+
+function outputNow() {
+  return new Date(OUTPUT_TIMESTAMP)
+}
 
 function ready(data) {
   return { status: 'ready', data, stale: false }
@@ -187,6 +192,10 @@ async function mount(props) {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
+  const sourceStates = props.sourceStates ?? {
+    salaryRecords: ready(props.salaryRecords ?? []),
+    operatingExpenseRecords: ready(props.operatingExpenseRecords ?? []),
+  }
   await act(async () => {
     root.render(createElement(AccountingCostPage, {
       projects,
@@ -194,11 +203,166 @@ async function mount(props) {
       setSalaryRecords() {},
       setOperatingExpenseRecords() {},
       onBack() {},
+      sourceStates,
       ...props,
     }))
   })
   return { dom, container, root }
 }
+
+test('salary report actions fail closed by source readiness without exposing fallback rows', async (t) => {
+  const sensitiveRecord = {
+    salaryRecordId: 'SR-SENSITIVE', salaryMonth: '2026-08', employeeId: 'E-001',
+    employeeName: '社外秘员', baseSalary: 900000, workDays: 22, overtimePay: 0,
+    bonus: 0, deduction: 0, netSalary: 900000, createdAt: '2026-08-31', remark: '',
+  }
+  const cases = [
+    ['loading', { status: 'loading', data: null, stale: false }, /工资数据正在加载/u],
+    ['error', { status: 'error', data: null, stale: false }, /工资数据暂不可用/u],
+    ['stale', { status: 'ready', data: [sensitiveRecord], stale: true }, /工资数据正在加载/u],
+    ['forbidden', { status: 'forbidden', data: null, stale: false }, /工资数据当前不可见/u],
+  ]
+
+  for (const [name, salaryState, reason] of cases) {
+    await t.test(name, async () => {
+      const scenario = await mount({
+        access: salaryAccess,
+        salaryRecords: [sensitiveRecord],
+        operatingExpenseRecords: [],
+        sourceStates: {
+          salaryRecords: salaryState,
+          operatingExpenseRecords: ready([]),
+        },
+        reportPreparedBy: '系统管理员',
+        reportActionDependencies: { exportExcel() {}, printReport() {} },
+      })
+      try {
+        assert.match(scenario.container.textContent, reason)
+        assert.doesNotMatch(scenario.container.textContent, /社外秘员|SR-SENSITIVE/u)
+        for (const label of ['导出 Excel', '导出 PDF', '打印']) {
+          assert.equal(button(scenario.container, label)?.disabled ?? true, true)
+        }
+      } finally {
+        await cleanup(scenario)
+      }
+    })
+  }
+})
+
+test('salary ready-zero source keeps actions enabled and exports an explicit empty report', async () => {
+  let capturedReport
+  const scenario = await mount({
+    access: salaryAccess,
+    salaryRecords: [],
+    operatingExpenseRecords: [],
+    sourceStates: { salaryRecords: ready([]), operatingExpenseRecords: ready([]) },
+    reportPreparedBy: '系统管理员',
+    reportActionDependencies: {
+      now: outputNow,
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    await act(async () => button(scenario.container, '导出 Excel').click())
+    assert.equal(capturedReport.recordCount, 0)
+    assert.deepEqual(detailRows(capturedReport, 'salary-details'), [])
+    assert.equal(
+      capturedReport.sections.find((section) => section.id === 'salary-details').emptyText,
+      '当前筛选条件下无记录',
+    )
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
+test('operating report actions fail closed by source readiness without exposing fallback rows', async (t) => {
+  const sensitiveRecord = {
+    expenseRecordId: 'OE-SENSITIVE', date: '2026-08-01', expenseType: '机密费用', amount: 88000,
+    allocateToProject: false, projectId: '', projectName: '', operator: '社外秘员', remark: '',
+  }
+  const cases = [
+    ['loading', { status: 'loading', data: null, stale: false }, /经营费用数据正在加载/u],
+    ['error', { status: 'error', data: null, stale: false }, /经营费用数据暂不可用/u],
+    ['stale', { status: 'ready', data: [sensitiveRecord], stale: true }, /经营费用数据正在加载/u],
+    ['forbidden', { status: 'forbidden', data: null, stale: false }, /经营费用数据当前不可见/u],
+  ]
+
+  for (const [name, operatingState, reason] of cases) {
+    await t.test(name, async () => {
+      const scenario = await mount({
+        access: operatingAccess,
+        salaryRecords: [],
+        operatingExpenseRecords: [sensitiveRecord],
+        sourceStates: {
+          salaryRecords: ready([]),
+          operatingExpenseRecords: operatingState,
+        },
+        reportPreparedBy: '系统管理员',
+        reportActionDependencies: { exportExcel() {}, printReport() {} },
+      })
+      try {
+        assert.match(scenario.container.textContent, reason)
+        assert.doesNotMatch(scenario.container.textContent, /机密费用|OE-SENSITIVE|社外秘员/u)
+        for (const label of ['导出 Excel', '导出 PDF', '打印']) {
+          assert.equal(button(scenario.container, label)?.disabled ?? true, true)
+        }
+      } finally {
+        await cleanup(scenario)
+      }
+    })
+  }
+})
+
+test('operating ready-zero source keeps report actions enabled', async () => {
+  let capturedReport
+  const scenario = await mount({
+    access: operatingAccess,
+    salaryRecords: [],
+    operatingExpenseRecords: [],
+    sourceStates: { salaryRecords: ready([]), operatingExpenseRecords: ready([]) },
+    reportPreparedBy: '系统管理员',
+    reportActionDependencies: {
+      exportExcel: async (report) => { capturedReport = report },
+      printReport() {},
+    },
+  })
+  try {
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    await act(async () => button(scenario.container, '导出 Excel').click())
+    assert.equal(capturedReport.recordCount, 0)
+    assert.deepEqual(detailRows(capturedReport, 'expense-details'), [])
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
+test('operating report readiness stays independent from the monthly-summary projection', async () => {
+  const record = {
+    expenseRecordId: 'OE-DIRECT', date: '2026-08-01', expenseType: '交通费', amount: 1200,
+    allocateToProject: false, projectId: '', projectName: '', operator: '员工甲', remark: '',
+  }
+  const scenario = await mount({
+    access: operatingAccess,
+    salaryRecords: [],
+    operatingExpenseRecords: [record],
+    sourceStates: {
+      salaryRecords: ready([]),
+      operatingExpenses: { status: 'forbidden', data: null, stale: false },
+      operatingExpenseRecords: ready([record]),
+    },
+    reportPreparedBy: '系统管理员',
+    reportActionDependencies: { exportExcel() {}, printReport() {} },
+  })
+  try {
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    assert.match(scenario.container.textContent, /OE-DIRECT|交通费/u)
+    assert.doesNotMatch(scenario.container.textContent, /经营费用数据当前不可见/u)
+  } finally {
+    await cleanup(scenario)
+  }
+})
 
 async function cleanup(scenario) {
   await act(async () => scenario.root.unmount())
@@ -246,6 +410,7 @@ test('salary actions retain and export the previous active month when clearing i
     operatingExpenseRecords: [],
     reportPreparedBy: '系统管理员',
     reportActionDependencies: {
+      now: outputNow,
       exportExcel: async (report) => { capturedReport = report },
       printReport() {},
     },
@@ -263,6 +428,9 @@ test('salary actions retain and export the previous active month when clearing i
 
     assert.ok(capturedReport, 'Excel action receives the real salary report')
     assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.equal(capturedReport.generatedAt, OUTPUT_TIMESTAMP)
+    assert.equal(capturedReport.recordCount, 1)
+    assert.equal(capturedReport.fileName, '工资报表_2026-07_2026-08-12')
     assert.deepEqual(capturedReport.filterLines, [
       { label: '工资月份', value: '2026-07' },
       { label: '员工', value: '员工乙' },
@@ -298,6 +466,7 @@ test('operating actions retain the active month and records follow the selected 
     operatingExpenseRecords: records,
     reportPreparedBy: '系统管理员',
     reportActionDependencies: {
+      now: outputNow,
       exportExcel: async (report) => { capturedReport = report },
       printReport() {},
     },
@@ -323,6 +492,9 @@ test('operating actions retain the active month and records follow the selected 
     await act(async () => button(scenario.container, '导出 Excel').click())
     assert.ok(capturedReport, 'Excel action receives the real operating-expense report')
     assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.equal(capturedReport.generatedAt, OUTPUT_TIMESTAMP)
+    assert.equal(capturedReport.recordCount, 1)
+    assert.equal(capturedReport.fileName, '经营费用报表_2026-07_2026-08-12')
     assert.deepEqual(capturedReport.filterLines[0], { label: '费用月份', value: '2026-07' })
     assert.deepEqual(capturedReport.filterLines.slice(2), [
       { label: '费用归属', value: '项目费用' },
@@ -341,6 +513,7 @@ test('monthly actions export the exact labels and values rendered by the shared 
   let capturedReport
   const scenario = await mountMonthly({
     reportActionDependencies: {
+      now: outputNow,
       exportExcel: async (report) => { capturedReport = report },
       printReport() {},
     },
@@ -374,6 +547,9 @@ test('monthly actions export the exact labels and values rendered by the shared 
 
     assert.ok(capturedReport)
     assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.equal(capturedReport.generatedAt, OUTPUT_TIMESTAMP)
+    assert.ok(capturedReport.recordCount > 0)
+    assert.equal(capturedReport.fileName, '月度成本汇总_2026-08_2026-08-12')
     assert.deepEqual(detailRows(capturedReport, 'monthly-core').map((row) => [row.item, row.value]),
       expectedCore.map(([label, value]) => [label, value]))
     assert.deepEqual(

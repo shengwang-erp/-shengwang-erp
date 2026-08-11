@@ -17,6 +17,11 @@ bootstrapDom.cleanup()
 
 const DASHBOARD_CURRENT_MONTH = '2026-08'
 const DASHBOARD_PRIOR_MONTH = '2026-07'
+const OUTPUT_TIMESTAMP = '2026-08-12T03:04:05.678Z'
+
+function outputNow() {
+  return new Date(OUTPUT_TIMESTAMP)
+}
 
 const appSource = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
 const componentSource = await readFile(
@@ -449,7 +454,7 @@ test('forbidden payment state renders accrual only and exposes no payable infere
   assert.doesNotMatch(html, /PP-MUST-NOT-BE-USED/u)
 })
 
-test('missing or stale payment state fails closed without payment-derived UI', () => {
+test('missing or stale payment state fails closed with a clear loading reason', () => {
   for (const paymentState of [undefined, {
     status: 'ready', data: payments, stale: true,
   }]) {
@@ -459,13 +464,84 @@ test('missing or stale payment state fails closed without payment-derived UI', (
       /付款状态|本月已记录付款|当前未付采购款|本月初始付款|异常付款数量/u,
     )
     assert.doesNotMatch(html, /¥3,000/u)
+    assert.match(html, /采购付款数据正在加载/u)
   }
 })
 
-test('ready purchase actions export the actually rendered month, project, source, and payment-status result', async () => {
+test('payment readiness blocks authorized non-ready exports but permits ready and forbidden sources', async (t) => {
+  const cases = [
+    {
+      name: 'loading',
+      state: { status: 'loading', data: null, stale: false },
+      blocked: true,
+      reason: /采购付款数据正在加载/u,
+    },
+    {
+      name: 'error',
+      state: { status: 'error', data: null, stale: false },
+      blocked: true,
+      reason: /采购付款数据暂不可用/u,
+    },
+    {
+      name: 'stale',
+      state: { status: 'ready', data: payments, stale: true },
+      blocked: true,
+      reason: /采购付款数据正在加载/u,
+    },
+    {
+      name: 'forbidden',
+      state: { status: 'forbidden', data: null, stale: false },
+      blocked: false,
+      reason: null,
+    },
+    {
+      name: 'ready',
+      state: { status: 'ready', data: payments, stale: false },
+      blocked: false,
+      reason: null,
+    },
+    {
+      name: 'ready-zero',
+      state: { status: 'ready', data: [], stale: false },
+      paymentRecords: [],
+      blocked: false,
+      reason: null,
+    },
+  ]
+
+  for (const scenarioCase of cases) {
+    await t.test(scenarioCase.name, async () => {
+      let exports = 0
+      const scenario = await mountPurchaseReport({
+        initialMonth: '2026-08',
+        paymentState: scenarioCase.state,
+        ...(Object.hasOwn(scenarioCase, 'paymentRecords')
+          ? { purchasePaymentRecords: scenarioCase.paymentRecords }
+          : {}),
+        reportActionDependencies: {
+          exportExcel: async () => { exports += 1 },
+          printReport() {},
+        },
+      })
+      try {
+        for (const label of ['导出 Excel', '导出 PDF', '打印']) {
+          assert.equal(button(scenario.container, label).disabled, scenarioCase.blocked)
+        }
+        if (scenarioCase.reason) assert.match(scenario.container.textContent, scenarioCase.reason)
+        await act(async () => button(scenario.container, '导出 Excel').click())
+        assert.equal(exports, scenarioCase.blocked ? 0 : 1)
+      } finally {
+        await cleanupMounted(scenario)
+      }
+    })
+  }
+})
+
+test('payment-status report facts match the filtered cohort without changing screen reconciliation', async () => {
   let capturedReport
   const scenario = await mountPurchaseReport({
     reportActionDependencies: {
+      now: outputNow,
       exportExcel: async (report) => { capturedReport = report },
       printReport() {},
     },
@@ -485,10 +561,17 @@ test('ready purchase actions export the actually rendered month, project, source
     assert.equal(visibleRows.length, 1)
     assert.match(visibleRows[0].textContent, /PO-AUG/u)
     assert.doesNotMatch(visibleRows[0].textContent, /PO-AUG-AMAZON-UNPAID/u)
+    assert.match(scenario.container.textContent, /¥9,000本月采购确认成本/u)
+    assert.match(scenario.container.textContent, /¥7,000当前未付采购款/u)
+    assert.match(scenario.container.textContent, /2未取得发票数量/u)
+    assert.match(scenario.container.textContent, /孤立付款/u)
 
     await act(async () => button(scenario.container, '导出 Excel').click())
     assert.ok(capturedReport, 'injected Excel action captures the real report')
     assert.equal(capturedReport.preparedBy, '系统管理员')
+    assert.equal(capturedReport.generatedAt, OUTPUT_TIMESTAMP)
+    assert.equal(capturedReport.recordCount, 1)
+    assert.equal(capturedReport.fileName, '采购对账报表_2026-08_2026-08-12')
     assert.deepEqual(capturedReport.filterLines, [
       { label: '统计月份', value: '2026-08' },
       { label: '项目', value: '横滨仓库' },
@@ -497,15 +580,15 @@ test('ready purchase actions export the actually rendered month, project, source
     ])
     assert.deepEqual(reportDetailRows(capturedReport).map((row) => row.purchaseId), ['PO-AUG'])
     assert.deepEqual(capturedReport.summary, [
-      { label: '采购成本', value: 9000, format: 'money' },
+      { label: '采购成本', value: 5000, format: 'money' },
       { label: '付款现金', value: 0, format: 'money' },
-      { label: '未付余额', value: 7000, format: 'money' },
-      { label: '缺少发票', value: 2, format: 'number' },
-      { label: '异常数量', value: 1, format: 'number' },
+      { label: '未付余额', value: 3000, format: 'money' },
+      { label: '缺少发票', value: 1, format: 'number' },
+      { label: '异常数量', value: 0, format: 'number' },
     ])
     assert.deepEqual(
       capturedReport.sections.find((section) => section.id === 'purchase-anomalies').rows,
-      [{ anomaly: '孤立付款（找不到对应采购单）：PP-ORPHAN（采购 PO-MISSING）' }],
+      [],
     )
   } finally {
     await cleanupMounted(scenario)
@@ -513,12 +596,17 @@ test('ready purchase actions export the actually rendered month, project, source
 })
 
 test('report-output changes invalidate a delayed purchase Excel export before it can download', async (t) => {
-  const summaryPayments = payments.map((payment) => payment.paymentId === 'PP-AUG'
-    ? { ...payment, jpyAmount: 3500 }
+  const visiblePayment = {
+    paymentId: 'PP-VISIBLE', purchaseId: 'PO-AUG', paymentDate: '2026-07-31', jpyAmount: 500,
+  }
+  const initialSummaryPayments = [...payments, visiblePayment]
+  const summaryPayments = initialSummaryPayments.map((payment) => payment.paymentId === 'PP-VISIBLE'
+    ? { ...payment, paymentDate: '2026-08-10' }
     : payment)
-  const anomalyPayments = payments.map((payment) => payment.paymentId === 'PP-ORPHAN'
-    ? { ...payment, paymentId: 'PP-ORPHAN-REFRESHED' }
-    : payment)
+  const anomalyPayments = [...payments, {
+    paymentId: 'PP-INVALID-VISIBLE', purchaseId: 'PO-AUG',
+    paymentDate: '2026-08-10', jpyAmount: 'invalid',
+  }]
   const cases = [
     {
       name: 'changed preparer',
@@ -526,6 +614,10 @@ test('report-output changes invalidate a delayed purchase Excel export before it
     },
     {
       name: 'summary-only refresh',
+      initial: {
+        purchasePaymentRecords: initialSummaryPayments,
+        paymentState: { status: 'ready', data: initialSummaryPayments, stale: false },
+      },
       rerender: {
         purchasePaymentRecords: summaryPayments,
         paymentState: { status: 'ready', data: summaryPayments, stale: false },
@@ -554,7 +646,7 @@ test('report-output changes invalidate a delayed purchase Excel export before it
         printReport() {},
       }
       const scenario = await mountPurchaseReport({
-        initialMonth: '2026-08', reportActionDependencies,
+        initialMonth: '2026-08', reportActionDependencies, ...scenarioCase.initial,
       })
       try {
         await act(async () => { button(scenario.container, '导出 Excel').click() })

@@ -6,6 +6,10 @@ import test, { after } from 'node:test'
 import { createServer } from 'vite'
 
 import { createAccountingReportModel } from './accountingReportModel.js'
+import { createMonthlySummaryReport } from './monthlySummaryReport.js'
+import { createOperatingExpenseReport } from './operatingExpenseReport.js'
+import { createPurchaseAccountingReport } from './purchaseAccountingReport.js'
+import { createSalaryReport } from './salaryReport.js'
 import { installWarehouseReactDom } from '../warehouse/warehouseReactDomTestUtils.js'
 
 const bootstrapDom = installWarehouseReactDom()
@@ -90,10 +94,105 @@ test('print CSS selects named A4 pages, repeats headers, and stays independent o
   assert.match(css, /thead\s*\{[^}]*display:\s*table-header-group/isu)
   assert.match(css, /break-inside:\s*avoid/iu)
   assert.match(css, /body\.accounting-report-printing\s*>\s*:not\(\.accounting-report-print-root\)\s*\{[^}]*display:\s*none/isu)
-  assert.match(css, /\.accounting-report-page-number::after\s*\{[^}]*content:\s*"第 " counter\(page\) " 页"/isu)
+  assert.equal((css.match(/@bottom-center\s*\{/gu) || []).length, 2)
+  assert.match(css, /content:\s*"第 " counter\(page\) " 页 \/ 共 " counter\(pages\) " 页"/u)
+  assert.doesNotMatch(css, /accounting-report-page-number/u)
   assert.doesNotMatch(css, /visibility:\s*hidden|position:\s*(?:absolute|fixed)/iu)
   assert.doesNotMatch(css, /#(?:c69a45|d6a84b|b88736)/iu)
   assert.doesNotMatch(css, /background(?:-color)?:\s*#(?:000|000000|171513)/iu)
+})
+
+test('real four-adapter print markup formats and aligns values and preserves proportional widths', () => {
+  const salary = createSalaryReport({
+    records: [{
+      salaryRecordId: 'SR-1', salaryMonth: '2026-08', employeeId: 'E-1', employeeName: '社员甲',
+      baseSalary: 300000, workDays: 22, overtimePay: 10000, bonus: 5000,
+      deduction: 1000, netSalary: 314000, createdAt: '2026-08-31', remark: '长备注',
+    }],
+    month: '2026-08', preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+  const operating = createOperatingExpenseReport({
+    records: [{
+      expenseRecordId: 'OE-1', date: '2026-08-01', expenseType: '交通费', amount: 1200,
+      allocateToProject: false, operator: '社员甲', remark: '电车费',
+    }],
+    month: '2026-08', preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+  const purchase = createPurchaseAccountingReport({
+    rows: [{
+      purchaseId: 'PO-1', purchaseDate: '2026-08-02', itemName: '材料', supplierName: '供应商',
+      projectName: '项目甲', purchaseSource: 'Amazon', totalCost: 5000,
+      paidAmount: 2000, unpaidAmount: 3000, paymentStatus: '部分付款', invoiceStatus: '未取得',
+    }],
+    summary: {
+      monthPurchaseCost: 5000, monthPaymentCash: 2000, currentOutstanding: 3000,
+      missingInvoiceCount: 1, anomalyCount: 0,
+    },
+    anomalies: [], month: '2026-08', paymentVisible: true,
+    preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+  const monthly = createMonthlySummaryReport({
+    month: '2026-08',
+    coreMetrics: [
+      { label: '公司总成本', value: 654321, format: 'money' },
+      { label: '项目人工分摊率', value: 80, format: 'percent' },
+    ],
+    sourceMetrics: [], pendingMetrics: [], notes: [],
+    preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+
+  const salaryHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: salary }))
+  assert.match(salaryHtml, /<td class="align-right">¥300,000<\/td>/u)
+  assert.match(salaryHtml, /<td class="align-center">2026-08-31<\/td>/u)
+  const detailTable = salaryHtml.match(/<h2>工资明细<\/h2><table>([\s\S]*?)<\/table>/u)?.[1] || ''
+  const widths = [...detailTable.matchAll(/<col style="width:([^%]+)%"\/>/gu)]
+    .map((match) => Number(match[1]))
+  assert.equal(widths.length, 11)
+  assert.ok(widths.at(-1) > widths[1] * 2)
+
+  const operatingHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: operating }))
+  assert.match(operatingHtml, /<td class="align-center">2026-08-01<\/td>/u)
+  assert.match(operatingHtml, /<td class="align-right">¥1,200<\/td>/u)
+
+  const purchaseHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: purchase }))
+  assert.match(purchaseHtml, /<td class="align-left">采购成本<\/td><td class="align-right">¥5,000<\/td>/u)
+  assert.match(purchaseHtml, /<td class="align-center">部分付款<\/td>/u)
+  assert.match(purchaseHtml, /<td class="align-center">未取得<\/td>/u)
+
+  const monthlyHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: monthly }))
+  assert.match(monthlyHtml, /<td class="align-left">公司总成本<\/td><td class="align-right">¥654,321<\/td>/u)
+  assert.match(monthlyHtml, /<td class="align-left">项目人工分摊率<\/td><td class="align-right">80%<\/td>/u)
+})
+
+test('forced-multipage salary and monthly markup retain named pages, repeated tables, and signature-only footers', () => {
+  const salary = createSalaryReport({
+    records: Array.from({ length: 80 }, (_, index) => ({
+      salaryRecordId: `SR-${index + 1}`, salaryMonth: '2026-08', employeeId: `E-${index + 1}`,
+      employeeName: `社员${index + 1}`, baseSalary: 1000, workDays: 20,
+      overtimePay: 0, bonus: 0, deduction: 0, netSalary: 1000,
+      createdAt: '2026-08-31', remark: '跨页验证',
+    })),
+    month: '2026-08', preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+  const monthly = createMonthlySummaryReport({
+    month: '2026-08',
+    coreMetrics: Array.from({ length: 60 }, (_, index) => ({
+      label: `成本指标${index + 1}`, value: index + 1, format: 'money',
+    })),
+    sourceMetrics: [], pendingMetrics: [], notes: ['强制多页结构验证'],
+    preparedBy: '会计甲', generatedAt: '2026-08-12T03:04:05.678Z',
+  })
+
+  const salaryHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: salary }))
+  const monthlyHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: monthly }))
+  assert.match(salaryHtml, /accounting-report-sheet landscape/u)
+  assert.match(monthlyHtml, /accounting-report-sheet portrait/u)
+  assert.equal((salaryHtml.match(/SR-\d+/gu) || []).length, 80)
+  assert.equal((monthlyHtml.match(/成本指标\d+/gu) || []).length, 120)
+  for (const html of [salaryHtml, monthlyHtml]) {
+    assert.match(html, /<footer><span>制表人：会计甲<\/span><span>复核人：<\/span><span>审批人：<\/span><\/footer>/u)
+    assert.doesNotMatch(html, /accounting-report-page-number/u)
+  }
 })
 
 test('print sheet portals a normal-flow root directly under body and removes it on unmount', async () => {

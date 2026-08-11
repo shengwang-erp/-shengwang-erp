@@ -13,7 +13,7 @@ const baseDetailColumns = [
 const paymentDetailColumns = [
   { key: 'paidAmount', label: '已付', width: 14, format: 'money' },
   { key: 'unpaidAmount', label: '未付', width: 14, format: 'money' },
-  { key: 'paymentStatus', label: '付款状态', width: 14 },
+  { key: 'paymentStatus', label: '付款状态', width: 14, align: 'center' },
 ]
 
 const anomalyLabels = {
@@ -105,9 +105,9 @@ export function createPurchaseAccountingReport({
         id: 'purchase-summary', title: '对账汇总', sheetName: '对账汇总',
         columns: [
           { key: 'item', label: '汇总项目', width: 22 },
-          { key: 'value', label: '数值', width: 18 },
+          { key: 'value', label: '数值', width: 18, formatKey: 'format' },
         ],
-        rows: reportSummary.map(({ label, value }) => ({ item: label, value })),
+        rows: reportSummary.map(({ label, value, format }) => ({ item: label, value, format })),
       },
       {
         id: 'purchase-anomalies', title: '异常明细', sheetName: '对账汇总',
@@ -119,7 +119,7 @@ export function createPurchaseAccountingReport({
         columns: [
           ...baseDetailColumns,
           ...(paymentVisible ? paymentDetailColumns : []),
-          { key: 'invoiceStatus', label: '发票状态', width: 14 },
+          { key: 'invoiceStatus', label: '发票状态', width: 14, align: 'center' },
         ],
         rows: reportRows,
       },

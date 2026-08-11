@@ -107,6 +107,43 @@ function anomalyText(group) {
     : `${label}：${group.count} 条`
 }
 
+function finiteAmount(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function reportFactsForRows(rows, readModel, month, paymentVisible) {
+  const purchaseIds = new Set(rows.map((row) => row.purchaseId))
+  const anomalies = readModel.anomalies.filter((anomaly) => {
+    const purchaseId = anomaly?.purchaseId || anomaly?.record?.purchaseId
+    return typeof purchaseId === 'string' && purchaseIds.has(purchaseId.trim())
+  })
+  const cashPayments = paymentVisible
+    ? readModel.cashPaymentRows.filter((payment) => (
+      purchaseIds.has(payment.purchaseId) && (!month || isDateInMonth(payment.paymentDate, month))
+    ))
+    : []
+  return {
+    summary: {
+      monthPurchaseCost: rows.reduce(
+        (total, row) => total + finiteAmount(row.totalCost), 0,
+      ),
+      monthOpeningPaid: paymentVisible
+        ? rows.reduce((total, row) => total + finiteAmount(row.openingPaidAmount), 0)
+        : null,
+      monthPaymentCash: paymentVisible
+        ? cashPayments.reduce((total, payment) => total + finiteAmount(payment.jpyAmount), 0)
+        : null,
+      currentOutstanding: paymentVisible
+        ? rows.reduce((total, row) => total + finiteAmount(row.unpaidAmount), 0)
+        : null,
+      missingInvoiceCount: rows.filter((row) => row.invoiceStatus === '未取得').length,
+      anomalyCount: anomalies.length,
+    },
+    anomalies,
+  }
+}
+
 export default function PurchaseAccountingSection({
   projects = [],
   purchasePaymentRecords = [],
@@ -142,13 +179,21 @@ export default function PurchaseAccountingSection({
     sourceFilter,
   ])
 
-  const paymentVisible = readModel.currentPayable.status === 'ready'
+  const paymentForbidden = effectivePaymentState?.status === 'forbidden'
+  const paymentVisible = effectivePaymentState?.status === 'ready' &&
+    Array.isArray(effectivePaymentState.data) &&
+    readModel.currentPayable.status === 'ready'
+  const paymentReportBlocked = !paymentForbidden && !paymentVisible
 
   const rows = useMemo(() => filterPurchaseAccountingRows(readModel.rows, {
     paymentStatus: paymentVisible ? paymentStatusFilter : '',
   }).filter((row) => !monthFilter || isDateInMonth(row.purchaseDate, monthFilter)), [
     readModel.rows, monthFilter, paymentStatusFilter, paymentVisible,
   ])
+  const reportFacts = useMemo(
+    () => reportFactsForRows(rows, readModel, monthFilter, paymentVisible),
+    [monthFilter, paymentVisible, readModel, rows],
+  )
 
   const availableProjects = useMemo(
     () => projectOptions(projects, effectivePurchaseRecords),
@@ -165,10 +210,10 @@ export default function PurchaseAccountingSection({
     ? availableProjects.find((project) => project.projectId === projectFilter)?.projectName
       || projectFilter
     : ''
-  const report = useMemo(() => createPurchaseAccountingReport({
+  const report = useMemo(() => paymentReportBlocked ? null : createPurchaseAccountingReport({
     rows,
-    summary: readModel.summary,
-    anomalies: readModel.anomalies,
+    summary: reportFacts.summary,
+    anomalies: reportFacts.anomalies,
     month: monthFilter,
     projectLabel,
     source: sourceFilter,
@@ -176,8 +221,8 @@ export default function PurchaseAccountingSection({
     paymentVisible,
     preparedBy: reportPreparedBy,
   }), [
-    rows, readModel.summary, readModel.anomalies, monthFilter, projectLabel, sourceFilter,
-    paymentStatusFilter, paymentVisible, reportPreparedBy,
+    rows, reportFacts, monthFilter, projectLabel, sourceFilter,
+    paymentStatusFilter, paymentVisible, paymentReportBlocked, reportPreparedBy,
   ])
   const reportContextIdentity = JSON.stringify({
     month: monthFilter,
@@ -187,6 +232,7 @@ export default function PurchaseAccountingSection({
     accrualReady,
     accrualStatus: effectiveAccrualState?.status || '',
     paymentVisible,
+    paymentReportBlocked,
     paymentSourceStatus: effectivePaymentState?.status || '',
     rows: rows.map((row) => ({
       purchaseId: row.purchaseId,
@@ -265,8 +311,18 @@ export default function PurchaseAccountingSection({
         )}
       </div>
 
+      {paymentReportBlocked && (
+        <div className="empty-state cost-note" role="status">
+          {effectivePaymentState?.status === 'error' ||
+            effectivePaymentState?.status === 'ready'
+            ? '采购付款数据暂不可用'
+            : '采购付款数据正在加载'}
+        </div>
+      )}
+
       <AccountingReportActions
         report={report}
+        disabled={paymentReportBlocked}
         contextIdentity={reportContextIdentity}
         {...reportActionDependencies}
       />

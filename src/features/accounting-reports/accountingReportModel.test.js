@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   ACCOUNTING_REPORT_EDITABLE_NOTICE,
   createAccountingReportModel,
+  createAccountingReportOutputSnapshot,
   escapeAccountingSpreadsheetText,
   formatAccountingReportDisplayValue,
   formatAccountingReportFileName,
@@ -47,6 +48,23 @@ test('report contract is immutable, formula-safe, and keeps a zero-row section',
   assert.equal(report.sections[0].emptyText, '当前筛选条件下无记录')
   assert.ok(Object.isFrozen(report.sections[0].columns))
   assert.equal(formatAccountingReportFileName('工资/记录:2026-08'), '工资_记录_2026-08')
+})
+
+test('one immutable output snapshot owns its generation timestamp and filename date', () => {
+  const report = createAccountingReportModel(reportInput({ generatedAt: '', fileName: '工资记录_2026-08' }))
+  const snapshot = createAccountingReportOutputSnapshot(
+    report,
+    new Date('2026-08-12T03:04:05.678Z'),
+  )
+
+  assert.notEqual(snapshot, report)
+  assert.equal(report.generatedAt, '')
+  assert.equal(report.fileName, '工资记录_2026-08')
+  assert.equal(snapshot.generatedAt, '2026-08-12T03:04:05.678Z')
+  assert.equal(snapshot.fileName, '工资记录_2026-08_2026-08-12')
+  assert.equal(snapshot.preparedBy, '管理员')
+  assert.equal(snapshot.recordCount, 1)
+  assert.ok(Object.isFrozen(snapshot.sections[0].rows))
 })
 
 test('report model clones and recursively freezes every consumer-visible value', () => {

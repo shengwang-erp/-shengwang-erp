@@ -2,7 +2,7 @@ import { createAccountingReportModel } from './accountingReportModel.js'
 
 const detailColumns = [
   { key: 'salaryRecordId', label: '工资编号', width: 16 },
-  { key: 'salaryMonth', label: '工资月份', width: 12 },
+  { key: 'salaryMonth', label: '工资月份', width: 12, align: 'center' },
   { key: 'employeeName', label: '员工', width: 20 },
   { key: 'baseSalary', label: '基本工资', width: 14, format: 'money' },
   { key: 'workDays', label: '出勤天数', width: 12, format: 'number' },

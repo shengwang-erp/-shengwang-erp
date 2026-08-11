@@ -5,7 +5,7 @@ const detailColumns = [
   { key: 'date', label: '日期', width: 14, format: 'date' },
   { key: 'expenseType', label: '费用类别', width: 16 },
   { key: 'amount', label: '金额', width: 14, format: 'money' },
-  { key: 'allocation', label: '费用归属', width: 14 },
+  { key: 'allocation', label: '费用归属', width: 14, align: 'center' },
   { key: 'projectName', label: '项目', width: 24 },
   { key: 'operator', label: '经办人', width: 16 },
   { key: 'remark', label: '备注', width: 28 },

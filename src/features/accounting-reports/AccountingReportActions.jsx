@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 
 import './accountingReportActions.css'
 import AccountingReportPrintSheet from './AccountingReportPrintSheet.jsx'
+import { createAccountingReportOutputSnapshot } from './accountingReportModel.js'
 import {
   exportAccountingReportXlsx,
   printAccountingReport,
@@ -16,6 +17,7 @@ export default function AccountingReportActions({
   onError,
   exportExcel = exportAccountingReportXlsx,
   printReport = printAccountingReport,
+  now = () => new Date(),
 }) {
   const [operation, setOperation] = useState(null)
   const mountedRef = useRef(true)
@@ -27,9 +29,12 @@ export default function AccountingReportActions({
   onErrorRef.current = onError
   printReportRef.current = printReport
 
-  useEffect(() => () => {
-    mountedRef.current = false
-    generationRef.current += 1
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      generationRef.current += 1
+    }
   }, [])
 
   useEffect(() => {
@@ -49,7 +54,8 @@ export default function AccountingReportActions({
     const outputGuard = () => isCurrent(generation, identity)
     setOperation({ type: 'excel', generation, identity })
     try {
-      await exportExcel(report, { outputGuard })
+      const outputReport = createAccountingReportOutputSnapshot(report, now())
+      await exportExcel(outputReport, { outputGuard })
     } catch {
       if (outputGuard()) onErrorRef.current?.(ERROR_MESSAGE)
     } finally {
@@ -61,7 +67,17 @@ export default function AccountingReportActions({
     if (disabled || !report || operation) return
     const generation = generationRef.current + 1
     generationRef.current = generation
-    setOperation({ type, generation, identity: contextRef.current })
+    try {
+      const outputReport = createAccountingReportOutputSnapshot(report, now())
+      setOperation({
+        type,
+        generation,
+        identity: contextRef.current,
+        report: outputReport,
+      })
+    } catch {
+      if (isCurrent(generation, contextRef.current)) onErrorRef.current?.(ERROR_MESSAGE)
+    }
   }
 
   useEffect(() => {
@@ -89,6 +105,8 @@ export default function AccountingReportActions({
       </span>
       <button type="button" disabled={blocked} onClick={() => beginPrint('print')}>打印</button>
     </div>
-    {operation && operation.type !== 'excel' && <AccountingReportPrintSheet report={report} />}
+    {operation && operation.type !== 'excel' && (
+      <AccountingReportPrintSheet report={operation.report} />
+    )}
   </>
 }

@@ -2,9 +2,22 @@ import React from 'react'
 import { createPortal } from 'react-dom'
 
 import './accountingReportPrint.css'
-import { formatAccountingReportDisplayValue } from './accountingReportModel.js'
+import {
+  accountingReportAlignment,
+  formatAccountingReportDisplayValue,
+  resolveAccountingReportCell,
+} from './accountingReportModel.js'
 
 const PRINT_EMPTY_SECTION_TEXT = '当前筛选条件下无记录'
+
+function proportionalWidth(columns, column) {
+  const weights = columns.map((item) => (
+    Number.isFinite(Number(item.width)) && Number(item.width) > 0 ? Number(item.width) : 12
+  ))
+  const total = weights.reduce((sum, weight) => sum + weight, 0)
+  const index = columns.indexOf(column)
+  return `${((weights[index] / total) * 100).toFixed(4)}%`
+}
 
 export default function AccountingReportPrintSheet({ report }) {
   if (!report) return null
@@ -25,7 +38,7 @@ export default function AccountingReportPrintSheet({ report }) {
         <h2>汇总</h2>
         <table><tbody>{report.summary.map(({ label, value, format }) => <tr key={label}>
           <th>{label}</th>
-          <td className={format === 'money' ? 'align-right' : undefined}>
+          <td className={`align-${accountingReportAlignment(format)}`}>
             {formatAccountingReportDisplayValue(value, format)}
           </td>
         </tr>)}</tbody></table>
@@ -34,13 +47,19 @@ export default function AccountingReportPrintSheet({ report }) {
       {report.sections.map((section) => <section key={section.id}>
         <h2>{section.title}</h2>
         <table>
+          <colgroup>{section.columns.map((column) => (
+            <col key={column.key} style={{ width: proportionalWidth(section.columns, column) }} />
+          ))}</colgroup>
           <thead><tr>{section.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
           <tbody>{section.rows.length === 0
             ? <tr><td colSpan={section.columns.length}>{PRINT_EMPTY_SECTION_TEXT}</td></tr>
             : section.rows.map((row, index) => <tr key={`${section.id}:${index}`}>
-              {section.columns.map((column) => <td className={`align-${column.align ?? 'left'}`} key={column.key}>
-                {formatAccountingReportDisplayValue(row[column.key], column.format)}
-              </td>)}
+              {section.columns.map((column) => {
+                const cell = resolveAccountingReportCell(row, column)
+                return <td className={`align-${cell.align}`} key={column.key}>
+                  {formatAccountingReportDisplayValue(cell.value, cell.format)}
+                </td>
+              })}
             </tr>)}</tbody>
         </table>
       </section>)}
@@ -50,7 +69,6 @@ export default function AccountingReportPrintSheet({ report }) {
         <span>制表人：{report.preparedBy}</span>
         <span>复核人：</span>
         <span>审批人：</span>
-        <span className="accounting-report-page-number" />
       </footer>
     </article>
   )

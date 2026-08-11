@@ -3,6 +3,8 @@ export const ACCOUNTING_REPORT_EDITABLE_NOTICE =
 
 const EMPTY_SECTION_TEXT = '当前筛选条件下无记录'
 const ORIENTATIONS = new Set(['portrait', 'landscape'])
+const CELL_FORMATS = new Set(['money', 'number', 'percent', 'date', 'text'])
+const CELL_ALIGNMENTS = new Set(['left', 'center', 'right'])
 
 /**
  * @typedef {Object} AccountingReportColumn
@@ -11,6 +13,7 @@ const ORIENTATIONS = new Set(['portrait', 'landscape'])
  * @property {number} [width]
  * @property {'left'|'center'|'right'} [align]
  * @property {'money'|'number'|'percent'|'date'|'text'} [format]
+ * @property {string} [formatKey] Row property containing this cell's format.
  */
 
 /**
@@ -148,6 +151,53 @@ export function createAccountingReportModel(input) {
     throw new TypeError('recordCount must be a non-negative safe integer')
   }
   return deepFreeze(report)
+}
+
+/**
+ * Stamps one immutable report at the output boundary. The filename date is
+ * derived from the same instant written into the report header.
+ */
+export function createAccountingReportOutputSnapshot(report, generatedAt = new Date()) {
+  const timestamp = generatedAt instanceof Date
+    ? new Date(generatedAt.getTime())
+    : new Date(generatedAt)
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new TypeError('generatedAt must be a valid date')
+  }
+  const generatedAtText = timestamp.toISOString()
+  const generationDate = generatedAtText.slice(0, 10)
+  const baseFileName = formatAccountingReportFileName(report?.fileName)
+  const dateSuffix = `_${generationDate}`
+  return createAccountingReportModel({
+    ...report,
+    generatedAt: generatedAtText,
+    fileName: baseFileName.endsWith(dateSuffix)
+      ? baseFileName
+      : `${baseFileName}${dateSuffix}`,
+  })
+}
+
+export function accountingReportAlignment(format = 'text', align) {
+  if (CELL_ALIGNMENTS.has(align)) return align
+  if (format === 'money' || format === 'number' || format === 'percent') return 'right'
+  if (format === 'date') return 'center'
+  return 'left'
+}
+
+export function resolveAccountingReportCell(row, column) {
+  const keyedFormat = typeof column?.formatKey === 'string'
+    ? row?.[column.formatKey]
+    : undefined
+  const cellFormat = row?.formats && typeof row.formats === 'object'
+    ? row.formats[column?.key]
+    : undefined
+  const format = [cellFormat, keyedFormat, column?.format]
+    .find((candidate) => CELL_FORMATS.has(candidate)) || 'text'
+  return {
+    value: row?.[column?.key],
+    format,
+    align: accountingReportAlignment(format, column?.align),
+  }
 }
 
 export function formatAccountingReportDisplayValue(value, format = 'text') {

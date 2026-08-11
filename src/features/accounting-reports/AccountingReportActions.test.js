@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test, { after } from 'node:test'
 import { createServer } from 'vite'
@@ -56,20 +56,90 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-async function mount(props = {}) {
+async function mount(props = {}, { strict = false } = {}) {
   const dom = installWarehouseReactDom()
   const container = dom.createContainer()
   const root = createRoot(container)
   const render = async (overrides = {}) => {
     await act(async () => {
-      root.render(createElement(AccountingReportActions, {
+      const actions = createElement(AccountingReportActions, {
         report, contextIdentity: 'context-a', ...props, ...overrides,
-      }))
+      })
+      root.render(strict ? createElement(StrictMode, null, actions) : actions)
     })
   }
   await render()
   return { dom, container, root, render }
 }
+
+test('StrictMode Excel invokes once, clears pending, and keeps its guard current', async () => {
+  let calls = 0
+  let capturedGuard
+  const scenario = await mount({
+    exportExcel: async (_currentReport, { outputGuard }) => {
+      calls += 1
+      capturedGuard = outputGuard
+      assert.equal(outputGuard(), true)
+    },
+    printReport() {},
+  }, { strict: true })
+  try {
+    await act(async () => { button(scenario.container, '导出 Excel').click() })
+    assert.equal(calls, 1)
+    assert.equal(capturedGuard(), true)
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
+test('StrictMode PDF and print each invoke once after mounting and clear pending', async () => {
+  for (const label of ['导出 PDF', '打印']) {
+    let calls = 0
+    const scenario = await mount({
+      exportExcel() {},
+      printReport: () => {
+        calls += 1
+        assert.ok(portalRoot(scenario.dom.document), 'print sheet is mounted')
+      },
+    }, { strict: true })
+    try {
+      await act(async () => { button(scenario.container, label).click() })
+      assert.equal(calls, 1)
+      assert.equal(portalRoot(scenario.dom.document), null)
+      assert.equal(button(scenario.container, label).disabled, false)
+    } finally {
+      await cleanup(scenario)
+    }
+  }
+})
+
+test('StrictMode still invalidates a stale Excel guard after a context change', async () => {
+  const release = deferred()
+  let downloads = 0
+  let capturedGuard
+  const scenario = await mount({
+    exportExcel: async (_currentReport, { outputGuard }) => {
+      capturedGuard = outputGuard
+      await release.promise
+      if (outputGuard()) downloads += 1
+    },
+    printReport() {},
+  }, { strict: true })
+  try {
+    await act(async () => { button(scenario.container, '导出 Excel').click() })
+    assert.equal(capturedGuard(), true)
+    await scenario.render({ contextIdentity: 'context-b' })
+    assert.equal(capturedGuard(), false)
+    assert.equal(button(scenario.container, '导出 Excel').disabled, false)
+    release.resolve()
+    await act(async () => { await release.promise })
+    assert.equal(downloads, 0)
+  } finally {
+    release.resolve()
+    await cleanup(scenario)
+  }
+})
 
 async function cleanup(scenario) {
   await act(async () => { scenario.root.unmount() })
@@ -105,11 +175,16 @@ test('disabled state blocks every report output action', async () => {
   }
 })
 
-test('Excel receives the current frozen model and an output guard while all actions are pending', async () => {
+test('Excel receives one click-time frozen snapshot and an output guard while all actions are pending', async () => {
   const completion = deferred()
   let received
   let guard
+  let nowCalls = 0
   const scenario = await mount({
+    now: () => {
+      nowCalls += 1
+      return new Date('2026-08-12T03:04:05.678Z')
+    },
     exportExcel: async (currentReport, options) => {
       received = currentReport
       guard = options.outputGuard
@@ -119,8 +194,14 @@ test('Excel receives the current frozen model and an output guard while all acti
   })
   try {
     await act(async () => { button(scenario.container, '导出 Excel').click() })
-    assert.equal(received, report)
+    assert.notEqual(received, report)
     assert.equal(Object.isFrozen(received), true)
+    assert.equal(nowCalls, 1)
+    assert.equal(report.generatedAt, '2026-08-11 10:00')
+    assert.equal(received.generatedAt, '2026-08-12T03:04:05.678Z')
+    assert.equal(received.fileName, '月度会计汇总_2026-08-12')
+    assert.equal(received.preparedBy, '会计甲')
+    assert.equal(received.recordCount, 1)
     assert.equal(typeof guard, 'function')
     assert.equal(guard(), true)
     for (const label of ['导出 Excel', '导出 PDF', '打印']) {
@@ -134,21 +215,28 @@ test('Excel receives the current frozen model and an output guard while all acti
   }
 })
 
-test('PDF and print mount the sheet before invoking the shared print dependency', async () => {
+test('PDF and print mount their click-time snapshot before invoking the shared print dependency', async () => {
   for (const label of ['导出 PDF', '打印']) {
     let calls = 0
+    let nowCalls = 0
     const scenario = await mount({
       exportExcel() {},
+      now: () => {
+        nowCalls += 1
+        return new Date('2026-08-12T03:04:05.678Z')
+      },
       printReport: () => {
         calls += 1
         const root = portalRoot(scenario.dom.document)
         assert.ok(root, 'print sheet is mounted')
         assert.match(root.textContent, /月度会计汇总/u)
+        assert.match(root.textContent, /2026-08-12T03:04:05\.678Z/u)
       },
     })
     try {
       await act(async () => { button(scenario.container, label).click() })
       assert.equal(calls, 1)
+      assert.equal(nowCalls, 1)
       assert.equal(portalRoot(scenario.dom.document), null)
     } finally {
       await cleanup(scenario)

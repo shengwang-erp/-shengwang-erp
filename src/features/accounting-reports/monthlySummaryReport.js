@@ -52,7 +52,7 @@ export function createMonthlySummaryReport({
         id: 'monthly-core', title: '核心成本汇总', sheetName: '月度汇总',
         columns: [
           { key: 'item', label: '汇总项目', width: 28 },
-          { key: 'value', label: '数值', width: 18, align: 'right' },
+          { key: 'value', label: '数值', width: 18, align: 'right', formatKey: 'format' },
         ],
         rows: coreRows,
       },

@@ -1,11 +1,25 @@
 @page accounting-report-landscape {
   size: A4 landscape;
-  margin: 10mm 9mm 12mm;
+  margin: 10mm 9mm 14mm;
+
+  @bottom-center {
+    content: "第 " counter(page) " 页 / 共 " counter(pages) " 页";
+    color: #555;
+    font-family: "Yu Gothic", "Noto Sans CJK JP", sans-serif;
+    font-size: 9pt;
+  }
 }
 
 @page accounting-report-portrait {
   size: A4 portrait;
-  margin: 11mm 10mm 13mm;
+  margin: 11mm 10mm 15mm;
+
+  @bottom-center {
+    content: "第 " counter(page) " 页 / 共 " counter(pages) " 页";
+    color: #555;
+    font-family: "Yu Gothic", "Noto Sans CJK JP", sans-serif;
+    font-size: 9pt;
+  }
 }
 
 .accounting-report-print-root {
@@ -133,13 +147,10 @@
 
   .accounting-report-sheet footer {
     display: grid;
-    grid-template-columns: repeat(3, 1fr) auto;
+    grid-template-columns: repeat(3, 1fr);
     gap: 12pt;
     margin-top: 14pt;
     break-inside: avoid;
   }
 
-  .accounting-report-page-number::after {
-    content: "第 " counter(page) " 页";
-  }
 }

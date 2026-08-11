@@ -4024,6 +4024,14 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
   }
   const accountingSourceStates = {
     ...dashboardSourceStates,
+    salaryRecords: projectPersistentSource(salaryRawState, {
+      readAllowed: accountingReadAccess.salary,
+      data: salaryRecords,
+    }),
+    operatingExpenseRecords: projectPersistentSource(operatingExpenseRawState, {
+      readAllowed: accountingReadAccess.operatingExpense,
+      data: operatingExpenseRecords,
+    }),
     purchaseAccrual: warehouseAccountingSourceStates.purchaseAccrual,
     purchaseLedgerAccrual: warehouseAccountingSourceStates.purchaseLedgerAccrual,
     projectLedgerSummary: projectLedgerSummaryState,
@@ -6976,6 +6984,7 @@ export function AccountingCostPage({
           access={resolvedAccess.salary}
           employees={employees}
           records={salaryRecords}
+          sourceState={sourceStates?.salaryRecords}
           setRecords={setSalaryRecords}
           reportPreparedBy={reportPreparedBy}
           reportActionDependencies={reportActionDependencies}
@@ -6996,6 +7005,7 @@ export function AccountingCostPage({
           projects={projects}
           employees={employees}
           records={operatingExpenseRecords}
+          sourceState={sourceStates?.operatingExpenseRecords}
           setRecords={setOperatingExpenseRecords}
           access={resolvedAccess.operatingExpense}
           reportPreparedBy={reportPreparedBy}
@@ -7030,10 +7040,35 @@ export function AccountingCostPage({
   )
 }
 
+function resolveAccountingReportSource(sourceState) {
+  if (sourceState?.status === 'forbidden') {
+    return { status: 'forbidden', data: [] }
+  }
+  if (sourceState?.stale === true) {
+    return { status: 'loading', data: [] }
+  }
+  if (sourceState?.status === 'ready' && Array.isArray(sourceState.data)) {
+    return { status: 'ready', data: sourceState.data }
+  }
+  return {
+    status: sourceState?.status === 'error' || sourceState?.status === 'ready'
+      ? 'error'
+      : 'loading',
+    data: [],
+  }
+}
+
+function accountingReportSourceNotice(label, status) {
+  if (status === 'forbidden') return `${label}数据当前不可见`
+  if (status === 'error') return `${label}数据暂不可用`
+  return `${label}数据正在加载`
+}
+
 function SalaryRecordsSection({
   access,
   employees,
   records,
+  sourceState,
   setRecords,
   reportPreparedBy,
   reportActionDependencies,
@@ -7042,6 +7077,8 @@ function SalaryRecordsSection({
   const [editingId, setEditingId] = useState('')
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
   const [employeeFilter, setEmployeeFilter] = useState('')
+  const reportSource = resolveAccountingReportSource(sourceState)
+  const sourceReady = reportSource.status === 'ready'
   const previewSalary = calculateNetSalary(form)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
 
@@ -7079,25 +7116,36 @@ function SalaryRecordsSection({
     resetForm()
   }
 
-  const filteredRecords = useMemo(() => records.filter((record) => {
+  const filteredRecords = useMemo(() => reportSource.data.filter((record) => {
     const monthMatched = monthFilter ? record.salaryMonth === monthFilter : true
     const employeeMatched = employeeFilter
       ? record.employeeName.includes(employeeFilter.trim())
       : true
     return monthMatched && employeeMatched
-  }), [employeeFilter, monthFilter, records])
-  const salaryReport = useMemo(() => createSalaryReport({
+  }), [employeeFilter, monthFilter, reportSource.data])
+  const salaryReport = useMemo(() => sourceReady ? createSalaryReport({
     records: filteredRecords,
     month: monthFilter,
     employee: employeeFilter,
     preparedBy: reportPreparedBy,
-  }), [employeeFilter, filteredRecords, monthFilter, reportPreparedBy])
+  }) : null, [employeeFilter, filteredRecords, monthFilter, reportPreparedBy, sourceReady])
   const salaryReportIdentity = useMemo(() => JSON.stringify({
     monthFilter,
     employeeFilter,
     reportPreparedBy,
+    sourceStatus: reportSource.status,
+    sourceUpdatedAt: sourceState?.updatedAt || null,
     records: filteredRecords,
-  }), [employeeFilter, filteredRecords, monthFilter, reportPreparedBy])
+    reportOutput: salaryReport,
+  }), [
+    employeeFilter,
+    filteredRecords,
+    monthFilter,
+    reportPreparedBy,
+    reportSource.status,
+    salaryReport,
+    sourceState?.updatedAt,
+  ])
 
   return (
     <>
@@ -7105,10 +7153,14 @@ function SalaryRecordsSection({
         <SectionTitle title="工资记录" note="公司级成本" />
         <AccountingReportActions
           report={salaryReport}
+          disabled={!sourceReady}
           contextIdentity={salaryReportIdentity}
           {...reportActionDependencies}
         />
       </div>
+      {!sourceReady && (
+        <EmptyState text={accountingReportSourceNotice('工资', reportSource.status)} />
+      )}
       {(access.create || (editingId && access.update)) && (
         <form className="form-panel" onSubmit={handleSubmit}>
         <EmployeeSelect
@@ -7526,6 +7578,7 @@ function OperatingExpenseSection({
   projects,
   employees,
   records,
+  sourceState,
   setRecords,
   reportPreparedBy,
   reportActionDependencies,
@@ -7536,6 +7589,8 @@ function OperatingExpenseSection({
   const [typeFilter, setTypeFilter] = useState('')
   const [allocationScopeFilter, setAllocationScopeFilter] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
+  const reportSource = resolveAccountingReportSource(sourceState)
+  const sourceReady = reportSource.status === 'ready'
   const selectedProject = projects.find((project) => project.projectId === form.projectId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
 
@@ -7583,7 +7638,7 @@ function OperatingExpenseSection({
     resetForm()
   }
 
-  const filteredRecords = useMemo(() => records.filter((record) => {
+  const filteredRecords = useMemo(() => reportSource.data.filter((record) => {
     const monthMatched = monthFilter ? monthFromDate(record.date) === monthFilter : true
     const typeMatched = typeFilter ? record.expenseType === typeFilter : true
     const scopeMatched = allocationScopeFilter === 'project'
@@ -7593,9 +7648,9 @@ function OperatingExpenseSection({
         : true
     const projectMatched = projectFilter ? record.projectId === projectFilter : true
     return monthMatched && typeMatched && scopeMatched && projectMatched
-  }), [allocationScopeFilter, monthFilter, projectFilter, records, typeFilter])
+  }), [allocationScopeFilter, monthFilter, projectFilter, reportSource.data, typeFilter])
   const selectedFilterProject = projects.find((project) => project.projectId === projectFilter)
-  const operatingExpenseReport = useMemo(() => createOperatingExpenseReport({
+  const operatingExpenseReport = useMemo(() => sourceReady ? createOperatingExpenseReport({
     records: filteredRecords,
     month: monthFilter,
     expenseType: typeFilter,
@@ -7607,13 +7662,14 @@ function OperatingExpenseSection({
     projectId: projectFilter,
     projectName: selectedFilterProject?.projectName || '',
     preparedBy: reportPreparedBy,
-  }), [
+  }) : null, [
     allocationScopeFilter,
     filteredRecords,
     monthFilter,
     projectFilter,
     reportPreparedBy,
     selectedFilterProject?.projectName,
+    sourceReady,
     typeFilter,
   ])
   const operatingExpenseReportIdentity = useMemo(() => JSON.stringify({
@@ -7622,13 +7678,19 @@ function OperatingExpenseSection({
     allocationScopeFilter,
     projectFilter,
     reportPreparedBy,
+    sourceStatus: reportSource.status,
+    sourceUpdatedAt: sourceState?.updatedAt || null,
     records: filteredRecords,
+    reportOutput: operatingExpenseReport,
   }), [
     allocationScopeFilter,
     filteredRecords,
     monthFilter,
+    operatingExpenseReport,
     projectFilter,
     reportPreparedBy,
+    reportSource.status,
+    sourceState?.updatedAt,
     typeFilter,
   ])
 
@@ -7638,10 +7700,14 @@ function OperatingExpenseSection({
         <SectionTitle title="经营费用" note="公司日常费用" />
         <AccountingReportActions
           report={operatingExpenseReport}
+          disabled={!sourceReady}
           contextIdentity={operatingExpenseReportIdentity}
           {...reportActionDependencies}
         />
       </div>
+      {!sourceReady && (
+        <EmptyState text={accountingReportSourceNotice('经营费用', reportSource.status)} />
+      )}
       {(access.create || (editingId && access.update)) && (
         <form className="form-panel" onSubmit={handleSubmit}>
         <div className="form-grid">
