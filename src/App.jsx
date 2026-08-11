@@ -23,6 +23,9 @@ import TodayAttendancePage from './features/attendance/TodayAttendancePage.jsx'
 import LaborAccountingPage from './features/labor-accounting/LaborAccountingPage.jsx'
 import useLaborAlertCount from './features/labor-accounting/useLaborAlertCount.js'
 import PurchaseAccountingSection from './features/purchase-accounting/PurchaseAccountingSection.jsx'
+import AccountingReportActions from './features/accounting-reports/AccountingReportActions.jsx'
+import { createOperatingExpenseReport } from './features/accounting-reports/operatingExpenseReport.js'
+import { createSalaryReport } from './features/accounting-reports/salaryReport.js'
 import { createManualProjectCostPersistence } from './features/cost-accounting/projectCostPersistence.js'
 import ExecutiveDashboardPage from './features/executive-dashboard/ExecutiveDashboardPage.jsx'
 import { buildExecutiveDashboardReadModel } from './features/executive-dashboard/executiveDashboardDomain.js'
@@ -4340,6 +4343,7 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
     return renderInDesktopShell(
       <AccountingCostPage
         access={accountingAccess}
+        reportPreparedBy={currentUser.name || currentUser.employeeId || '当前用户'}
         projectCostLedgerService={activeProjectCostLedgerService}
         projectCostActorFingerprint={projectCostActorFingerprint}
         onProjectCostAuthInvalid={onLogout}
@@ -6880,6 +6884,8 @@ function ToolResponsibilityList({ records }) {
 
 export function AccountingCostPage({
   access,
+  reportPreparedBy,
+  reportActionDependencies,
   projectCostLedgerService,
   projectCostActorFingerprint,
   onProjectCostAuthInvalid,
@@ -6965,7 +6971,14 @@ export function AccountingCostPage({
       </div>
 
       {visibleSection === 'salary' && (
-        <SalaryRecordsSection access={resolvedAccess.salary} employees={employees} records={salaryRecords} setRecords={setSalaryRecords} />
+        <SalaryRecordsSection
+          access={resolvedAccess.salary}
+          employees={employees}
+          records={salaryRecords}
+          setRecords={setSalaryRecords}
+          reportPreparedBy={reportPreparedBy}
+          reportActionDependencies={reportActionDependencies}
+        />
       )}
       {visibleSection === 'projectCost' && (
         <ProjectCostLedgerSection
@@ -6984,6 +6997,8 @@ export function AccountingCostPage({
           records={operatingExpenseRecords}
           setRecords={setOperatingExpenseRecords}
           access={resolvedAccess.operatingExpense}
+          reportPreparedBy={reportPreparedBy}
+          reportActionDependencies={reportActionDependencies}
         />
       )}
       {visibleSection === 'purchaseAccounting' && (
@@ -7010,7 +7025,14 @@ export function AccountingCostPage({
   )
 }
 
-function SalaryRecordsSection({ access, employees, records, setRecords }) {
+function SalaryRecordsSection({
+  access,
+  employees,
+  records,
+  setRecords,
+  reportPreparedBy,
+  reportActionDependencies,
+}) {
   const [form, setForm] = useState(createEmptySalaryForm)
   const [editingId, setEditingId] = useState('')
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
@@ -7052,17 +7074,36 @@ function SalaryRecordsSection({ access, employees, records, setRecords }) {
     resetForm()
   }
 
-  const filteredRecords = records.filter((record) => {
+  const filteredRecords = useMemo(() => records.filter((record) => {
     const monthMatched = monthFilter ? record.salaryMonth === monthFilter : true
     const employeeMatched = employeeFilter
       ? record.employeeName.includes(employeeFilter.trim())
       : true
     return monthMatched && employeeMatched
-  })
+  }), [employeeFilter, monthFilter, records])
+  const salaryReport = useMemo(() => createSalaryReport({
+    records: filteredRecords,
+    month: monthFilter,
+    employee: employeeFilter,
+    preparedBy: reportPreparedBy,
+  }), [employeeFilter, filteredRecords, monthFilter, reportPreparedBy])
+  const salaryReportIdentity = useMemo(() => JSON.stringify({
+    monthFilter,
+    employeeFilter,
+    reportPreparedBy,
+    records: filteredRecords,
+  }), [employeeFilter, filteredRecords, monthFilter, reportPreparedBy])
 
   return (
     <>
-      <SectionTitle title="工资记录" note="公司级成本" />
+      <div className="section-title-with-actions">
+        <SectionTitle title="工资记录" note="公司级成本" />
+        <AccountingReportActions
+          report={salaryReport}
+          contextIdentity={salaryReportIdentity}
+          {...reportActionDependencies}
+        />
+      </div>
       {(access.create || (editingId && access.update)) && (
         <form className="form-panel" onSubmit={handleSubmit}>
         <EmployeeSelect
@@ -7468,11 +7509,21 @@ export function ProjectCostSection({
   )
 }
 
-function OperatingExpenseSection({ access, projects, employees, records, setRecords }) {
+function OperatingExpenseSection({
+  access,
+  projects,
+  employees,
+  records,
+  setRecords,
+  reportPreparedBy,
+  reportActionDependencies,
+}) {
   const [form, setForm] = useState(createEmptyOperatingExpenseForm)
   const [editingId, setEditingId] = useState('')
   const [monthFilter, setMonthFilter] = useState(currentMonthValue())
   const [typeFilter, setTypeFilter] = useState('')
+  const [allocationScopeFilter, setAllocationScopeFilter] = useState('')
+  const [projectFilter, setProjectFilter] = useState('')
   const selectedProject = projects.find((project) => project.projectId === form.projectId)
   const selectedEmployee = employees.find((employee) => employee.employeeId === form.employeeId)
 
@@ -7520,15 +7571,65 @@ function OperatingExpenseSection({ access, projects, employees, records, setReco
     resetForm()
   }
 
-  const filteredRecords = records.filter((record) => {
+  const filteredRecords = useMemo(() => records.filter((record) => {
     const monthMatched = monthFilter ? monthFromDate(record.date) === monthFilter : true
     const typeMatched = typeFilter ? record.expenseType === typeFilter : true
-    return monthMatched && typeMatched
-  })
+    const scopeMatched = allocationScopeFilter === 'project'
+      ? record.allocateToProject === true
+      : allocationScopeFilter === 'company'
+        ? record.allocateToProject !== true
+        : true
+    const projectMatched = projectFilter ? record.projectId === projectFilter : true
+    return monthMatched && typeMatched && scopeMatched && projectMatched
+  }), [allocationScopeFilter, monthFilter, projectFilter, records, typeFilter])
+  const selectedFilterProject = projects.find((project) => project.projectId === projectFilter)
+  const operatingExpenseReport = useMemo(() => createOperatingExpenseReport({
+    records: filteredRecords,
+    month: monthFilter,
+    expenseType: typeFilter,
+    allocationScope: allocationScopeFilter === 'project'
+      ? '项目费用'
+      : allocationScopeFilter === 'company'
+        ? '公司费用'
+        : '',
+    projectId: projectFilter,
+    projectName: selectedFilterProject?.projectName || '',
+    preparedBy: reportPreparedBy,
+  }), [
+    allocationScopeFilter,
+    filteredRecords,
+    monthFilter,
+    projectFilter,
+    reportPreparedBy,
+    selectedFilterProject?.projectName,
+    typeFilter,
+  ])
+  const operatingExpenseReportIdentity = useMemo(() => JSON.stringify({
+    monthFilter,
+    typeFilter,
+    allocationScopeFilter,
+    projectFilter,
+    reportPreparedBy,
+    records: filteredRecords,
+  }), [
+    allocationScopeFilter,
+    filteredRecords,
+    monthFilter,
+    projectFilter,
+    reportPreparedBy,
+    typeFilter,
+  ])
 
   return (
     <>
-      <SectionTitle title="经营费用" note="公司日常费用" />
+      <div className="section-title-with-actions">
+        <SectionTitle title="经营费用" note="公司日常费用" />
+        <AccountingReportActions
+          report={operatingExpenseReport}
+          contextIdentity={operatingExpenseReportIdentity}
+          {...reportActionDependencies}
+        />
+      </div>
       {(access.create || (editingId && access.update)) && (
         <form className="form-panel" onSubmit={handleSubmit}>
         <div className="form-grid">
@@ -7609,6 +7710,34 @@ function OperatingExpenseSection({ access, projects, employees, records, setReco
           options={expenseTypeOptions}
           includeAll
         />
+        <label className="field">
+          <span>费用归属</span>
+          <select
+            value={allocationScopeFilter}
+            onChange={(event) => {
+              const value = event.target.value
+              setAllocationScopeFilter(value)
+              if (value !== 'project') setProjectFilter('')
+            }}
+          >
+            <option value="">全部归属</option>
+            <option value="company">公司费用</option>
+            <option value="project">项目费用</option>
+          </select>
+        </label>
+        {allocationScopeFilter === 'project' && (
+          <label className="field">
+            <span>项目</span>
+            <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+              <option value="">全部项目</option>
+              {projects.map((project) => (
+                <option value={project.projectId} key={project.projectId}>
+                  {project.projectName}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <AccountingRecordList
