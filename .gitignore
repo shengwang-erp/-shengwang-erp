@@ -8,5 +8,6 @@ dist/
 !.env.warehouse-preview.example
 
 .vercel/
+supabase/.temp/
 .worktrees/
 .superpowers/
