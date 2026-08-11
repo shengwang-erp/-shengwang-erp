@@ -99,6 +99,7 @@ import { createWarehouseService } from './services/warehouseService.js'
 import { createWarehouseConfirmationService } from './services/warehouseConfirmationService.js'
 import { createWarehouseMediaService } from './services/warehouseMediaService.js'
 import {
+  createOfflinePurchaseArrivalContext,
   purchaseWarehouseBridge,
   resolvePurchaseArrivalStatus,
 } from './features/warehouse/purchaseWarehouseBridge.js'
@@ -8099,6 +8100,15 @@ export function PurchaseManagementPage({
       setArrivalContext({ status: 'forbidden', variants: [], purchases: [] })
       return null
     }
+    if (localDemoMode) {
+      const context = createOfflinePurchaseArrivalContext(purchaseRecords)
+      setArrivalContext({
+        status: 'ready',
+        variants: context.variants,
+        purchases: context.purchases,
+      })
+      return context
+    }
     setArrivalContext((current) => ({ ...current, status: 'loading' }))
     try {
       const context = await purchaseWarehouseBridge.loadArrivalContext()
@@ -8110,10 +8120,11 @@ export function PurchaseManagementPage({
       return context
     } catch (error) {
       setArrivalContext({ status: 'error', variants: [], purchases: [] })
-      onPersistenceError?.(error)
+      const classification = classifyBusinessSourceError(error)
+      if (classification.fatal) onPersistenceError?.(error)
       return null
     }
-  }, [onPersistenceError, resolvedAccess.stockIn.view])
+  }, [onPersistenceError, purchaseRecords, resolvedAccess.stockIn.view])
   useEffect(() => {
     refreshArrivalContext()
   }, [refreshArrivalContext])

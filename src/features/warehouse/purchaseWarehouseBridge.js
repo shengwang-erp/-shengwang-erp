@@ -192,6 +192,34 @@ function validateContext(candidate) {
   return freeze({ variants, purchases })
 }
 
+export function createOfflinePurchaseArrivalContext(purchaseRecords = []) {
+  const records = Array.isArray(purchaseRecords) ? purchaseRecords : []
+  const seen = new Set()
+  const purchases = []
+  for (const record of records) {
+    const purchaseRecordKey = typeof record?.purchaseId === 'string'
+      ? record.purchaseId.trim()
+      : ''
+    if (!RECORD_KEY.test(purchaseRecordKey) || seen.has(purchaseRecordKey)) continue
+    try {
+      const orderedQuantity = responseQuantity(record.quantity)
+      if (orderedQuantity.units <= 0n) continue
+      purchases.push({
+        purchaseRecordKey,
+        orderedQuantity: orderedQuantity.value,
+        pendingQuantity: 0,
+        confirmedQuantity: 0,
+        remainingQuantity: orderedQuantity.value,
+        hasReceipt: false,
+      })
+      seen.add(purchaseRecordKey)
+    } catch {
+      // Local compatibility records that cannot satisfy the cloud contract stay unavailable.
+    }
+  }
+  return validateContext({ variants: [], purchases })
+}
+
 function supplierData(result) {
   if (
     result === null || typeof result !== 'object' || Array.isArray(result) ||

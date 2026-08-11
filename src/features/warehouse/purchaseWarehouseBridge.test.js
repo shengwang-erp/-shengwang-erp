@@ -9,6 +9,7 @@ import {
 
 import {
   PurchaseWarehouseBridgeError,
+  createOfflinePurchaseArrivalContext,
   createPurchaseWarehouseBridge,
   resolvePurchaseArrivalStatus,
 } from './purchaseWarehouseBridge.js'
@@ -317,4 +318,36 @@ test('App purchase arrival source cannot call the legacy immediate-inventory RPC
   assert.match(summarySource, /resolvePurchaseArrivalStatus/u)
   assert.match(summarySource, /待仓库确认采购数量/u)
   assert.match(summarySource, /入库状态暂不可用/u)
+})
+
+test('local demo purchase arrival context stays offline and read failures only escalate when fatal', async () => {
+  const context = createOfflinePurchaseArrivalContext([
+    { purchaseId: 'PO-001', quantity: 5 },
+    { purchaseId: 'PO-ZERO', quantity: 0 },
+    { purchaseId: 'bad key', quantity: 2 },
+  ])
+  assert.deepEqual(context, {
+    variants: [],
+    purchases: [{
+      purchaseRecordKey: 'PO-001', orderedQuantity: 5, pendingQuantity: 0,
+      confirmedQuantity: 0, remainingQuantity: 5, hasReceipt: false,
+    }],
+  })
+  assert.equal(Object.isFrozen(context), true)
+  assert.equal(Object.isFrozen(context.purchases), true)
+
+  const source = await readFile(new URL('../../App.jsx', import.meta.url), 'utf8')
+  const pageStart = source.indexOf('export function PurchaseManagementPage({')
+  const pageEnd = source.indexOf('\nfunction PurchaseFormSection({', pageStart)
+  assert.notEqual(pageStart, -1)
+  assert.notEqual(pageEnd, -1)
+  const pageSource = source.slice(pageStart, pageEnd)
+  const offlineGuard = pageSource.indexOf('if (localDemoMode)')
+  const cloudRead = pageSource.indexOf('purchaseWarehouseBridge.loadArrivalContext()')
+  assert.notEqual(offlineGuard, -1)
+  assert.notEqual(cloudRead, -1)
+  assert.ok(offlineGuard < cloudRead)
+  assert.match(pageSource, /createOfflinePurchaseArrivalContext\(purchaseRecords\)/u)
+  assert.match(pageSource, /const classification = classifyBusinessSourceError\(error\)/u)
+  assert.match(pageSource, /if \(classification\.fatal\) onPersistenceError\?\.\(error\)/u)
 })
