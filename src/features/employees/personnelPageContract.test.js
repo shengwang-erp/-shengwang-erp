@@ -216,7 +216,7 @@ test('App owns a memory-only canonical directory and passes the AuthGate boundar
   assert.doesNotMatch(appSource, /<PersonnelPage[\s\S]{0,500}setEmployees=/)
 })
 
-test('permission templates integrate through injected service and forced AuthGate re-login', () => {
+test('permission templates refresh the AuthGate profile without forcing re-login', () => {
   assert.match(
     pageSource,
     /import PermissionTemplateEditor from ['"]\.\/PermissionTemplateEditor\.jsx['"]/,
@@ -237,7 +237,8 @@ test('permission templates integrate through injected service and forced AuthGat
     /import \{ permissionTemplateService \} from ['"]\.\/services\/permissionTemplateService(?:\.js)?['"]/,
   )
   assert.match(appSource, /permissionTemplateService=\{permissionTemplateService\}/)
-  assert.match(appSource, /onPermissionTemplatesChanged=\{onLogout\}/)
+  assert.match(appSource, /onPermissionTemplatesChanged=\{onRefreshCurrentUser\}/)
+  assert.doesNotMatch(appSource, /onPermissionTemplatesChanged=\{onLogout\}/)
   assert.doesNotMatch(appSource, /currentUser\.(?:effectivePermissionKeys|department|position)\s*=/)
 })
 

@@ -112,8 +112,15 @@ test('forced password page explains one-time password and offers only change and
 
 test('App receives currentUser only from AuthGate and contains no legacy browser auth path', () => {
   assert.match(appSource, /import AuthGate from '\.\/auth\/AuthGate'/)
-  assert.match(appSource, /function AuthenticatedApp\(\{ currentUser, onLogout \}\)/)
+  assert.match(
+    appSource,
+    /function AuthenticatedApp\(\{ currentUser, onLogout, onRefreshCurrentUser \}\)/,
+  )
   assert.match(appSource, /<AuthGate>[\s\S]*<AuthenticatedApp/)
+  assert.match(
+    appSource,
+    /\{\(\{ currentUser, onLogout, onRefreshCurrentUser \}\) => \([\s\S]*onRefreshCurrentUser=\{onRefreshCurrentUser\}/,
+  )
   assert.doesNotMatch(appSource, /STORAGE_KEYS\.currentUser|setCurrentUser|handleLogin|handleRegister|createDefaultAdmin|ensureSuperAdminEmployee|isSixDigitPassword/)
   assert.doesNotMatch(appSource, /passwordHash|loginEnabled|employee\.username|SUPER_ADMIN/)
   assert.doesNotMatch(appSource, /localStorage\.(?:getItem|setItem|removeItem)\(['"]currentUser['"]/)

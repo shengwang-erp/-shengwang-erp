@@ -2502,7 +2502,7 @@ export function useProjectDirectoryLifecycle({
   return { rows: directoryState.rows, rawState: directoryState.rawState, setRows }
 }
 
-export function AuthenticatedApp({ currentUser, onLogout }) {
+export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }) {
   const [currentView, setCurrentView] = useState('home')
   const [miraisyaProjectId, setMiraisyaProjectId] = useState('')
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
@@ -4233,7 +4233,7 @@ export function AuthenticatedApp({ currentUser, onLogout }) {
         onAuthInvalid={onLogout}
         onCriticalStateChange={handlePersonnelCriticalStateChange}
         permissionTemplateService={permissionTemplateService}
-        onPermissionTemplatesChanged={onLogout}
+        onPermissionTemplatesChanged={onRefreshCurrentUser}
         onTemplateCriticalStateChange={handleTemplateCriticalStateChange}
         onBack={() => handlePersonnelAwareNavigate('home')}
       />
@@ -9783,8 +9783,12 @@ function fieldLabel(fields, fieldName) {
 function App() {
   return (
     <AuthGate>
-      {({ currentUser, onLogout }) => (
-        <AuthenticatedApp currentUser={currentUser} onLogout={onLogout} />
+      {({ currentUser, onLogout, onRefreshCurrentUser }) => (
+        <AuthenticatedApp
+          currentUser={currentUser}
+          onLogout={onLogout}
+          onRefreshCurrentUser={onRefreshCurrentUser}
+        />
       )}
     </AuthGate>
   )

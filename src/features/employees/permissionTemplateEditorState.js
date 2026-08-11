@@ -185,7 +185,8 @@ export async function refreshAuthorizationAfterTemplateSave({
       await onTemplatesChanged(snapshot)
       return true
     } catch {
-      // A stale authorization view must fall through to session invalidation.
+      // AuthGate owns retryable-versus-terminal session handling.
+      return false
     }
   }
 

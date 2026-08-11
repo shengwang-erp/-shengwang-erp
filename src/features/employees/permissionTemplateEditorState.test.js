@@ -232,7 +232,7 @@ test('clearing a snapshot fails closed without carrying a previous subject draft
   )
 })
 
-test('post-save authorization refresh falls back to invalidation when missing or rejected', async () => {
+test('post-save authorization refresh invalidates only when the refresh boundary is missing', async () => {
   const snapshot = createSnapshot()
   const refreshedEvents = []
   assert.equal(
@@ -276,7 +276,7 @@ test('post-save authorization refresh falls back to invalidation when missing or
     }),
     false,
   )
-  assert.deepEqual(rejectedEvents, ['refresh', 'invalidate'])
+  assert.deepEqual(rejectedEvents, ['refresh'])
 })
 
 test('async guard rejects stale reads, stale saves, and every result after unmount', () => {
