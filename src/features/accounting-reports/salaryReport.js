@@ -74,6 +74,7 @@ export function createSalaryReport({
     title: '工资报表',
     preparedBy,
     generatedAt,
+    orientation: 'landscape',
     fileName: `工资报表_${text(month, '不限月份')}`,
     filterLines: [
       { label: '工资月份', value: text(month, '不限月份') },

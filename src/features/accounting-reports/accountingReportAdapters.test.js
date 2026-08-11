@@ -54,6 +54,7 @@ test('salary adapter keeps every supplied row and derives employee and pay total
   })
 
   assert.deepEqual(report.sections.map((item) => item.sheetName), ['工资汇总', '工资明细'])
+  assert.equal(report.orientation, 'landscape')
   assert.equal(report.recordCount, 3)
   assert.deepEqual(report.filterLines, [
     { label: '工资月份', value: '2026-07' },
