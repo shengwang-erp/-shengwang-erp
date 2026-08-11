@@ -57,22 +57,27 @@ function findHeaderRow(sheet, firstLabel) {
 }
 
 test('renders a white A4 workbook with readable two-section detail tables', () => {
-  const workbook = createAccountingReportWorkbook(ExcelJS, createReport())
+  const report = createReport()
+  const workbook = createAccountingReportWorkbook(ExcelJS, report)
   const sheet = workbook.getWorksheet('核对')
   const firstHeaderRow = findHeaderRow(sheet, '员工')
   const firstDataRow = firstHeaderRow + 1
+  const secondHeaderRow = findHeaderRow(sheet, '供应商')
 
   assert.equal(sheet.pageSetup.paperSize, 9)
-  assert.equal(sheet.pageSetup.orientation, 'landscape')
+  assert.equal(sheet.pageSetup.orientation, report.orientation)
   assert.equal(sheet.pageSetup.fitToWidth, 1)
   assert.equal(sheet.getCell('A1').font.size, 18)
   assert.equal(sheet.getRow(firstHeaderRow).height, 26)
   assert.equal(sheet.getCell(firstHeaderRow, 1).fill.fgColor.argb, 'FFF2F2F2')
   assert.equal(sheet.getCell(firstHeaderRow, 1).font.color.argb, 'FF111111')
+  assert.ok(sheet.getCell(firstHeaderRow - 1, 1).font.size >= 12)
+  assert.ok(sheet.getCell(firstHeaderRow - 1, 1).font.size <= 14)
   assert.ok(sheet.getRows(1, sheet.rowCount).some((row) =>
     row.values.includes('本文件为 ERP 导出副本，可编辑；修改不会回写系统。')))
   assert.ok(sheet.getRows(1, sheet.rowCount).some((row) => row.values.includes('复核人：')))
   assert.ok(sheet.getRows(1, sheet.rowCount).some((row) => row.values.includes('审批人：')))
+  assert.equal(sheet.getCell(secondHeaderRow + 2, 1).value, '制表人：财务部')
   assert.ok(sheet.getRow(firstDataRow).height >= 24 && sheet.getRow(firstDataRow).height <= 28)
   assert.equal(sheet.getCell(firstDataRow, 1).border.left.style, 'thin')
   assert.equal(sheet.getCell(firstDataRow, 1).border.left.color.argb, 'FFB7B7B7')

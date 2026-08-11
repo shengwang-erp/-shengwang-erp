@@ -49,7 +49,7 @@ function configureColumns(sheet, sections, columnCount) {
 function writeSection(sheet, section, startRow) {
   const columnCount = section.columns.length
   let rowNumber = mergeTextRow(sheet, startRow, columnCount, section.title, {
-    font: { bold: true, color: { argb: COLORS.text } },
+    font: { size: 13, bold: true, color: { argb: COLORS.text } },
   })
   const headerRow = rowNumber
   for (const [index, column] of section.columns.entries()) {
@@ -90,10 +90,10 @@ function writeSection(sheet, section, startRow) {
   return { nextRow: rowNumber, headerRow }
 }
 
-function configurePrintLayout(sheet, columnCount, firstHeaderRow, lastRow, sectionCount) {
+function configurePrintLayout(sheet, columnCount, firstHeaderRow, lastRow, sectionCount, orientation) {
   sheet.pageSetup = {
     paperSize: PAPER_A4,
-    orientation: 'landscape',
+    orientation,
     fitToPage: true,
     fitToWidth: 1,
     fitToHeight: 0,
@@ -150,12 +150,12 @@ export function createAccountingReportWorkbook(ExcelJS, report) {
       firstHeaderRow ||= result.headerRow
       rowNumber = result.nextRow
     }
-    for (const label of ['制表人：', '复核人：', '审批人：']) {
+    for (const label of [`制表人：${report.preparedBy}`, '复核人：', '审批人：']) {
       rowNumber = mergeTextRow(sheet, rowNumber, columnCount, label, {
         font: { color: { argb: COLORS.text } },
       })
     }
-    configurePrintLayout(sheet, columnCount, firstHeaderRow, rowNumber - 1, sections.length)
+    configurePrintLayout(sheet, columnCount, firstHeaderRow, rowNumber - 1, sections.length, report.orientation)
   }
   return workbook
 }
