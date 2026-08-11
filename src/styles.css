@@ -1071,6 +1071,24 @@ h1 {
   border-color: #2169cc;
 }
 
+.accounting-cost-page .accounting-entry-grid {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  overflow-x: auto;
+  margin-bottom: 22px;
+  border: 1px solid var(--erp-border-subtle, #dce4ef);
+  border-radius: 12px;
+}
+
+.accounting-cost-page .accounting-entry {
+  flex: 1 0 180px;
+  min-height: 58px;
+  border-radius: 0;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
 .amount-pill {
   flex: 0 0 auto;
   padding: 6px 10px;

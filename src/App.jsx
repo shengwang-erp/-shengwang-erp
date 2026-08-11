@@ -7149,15 +7149,13 @@ function SalaryRecordsSection({
 
   return (
     <>
-      <div className="section-title-with-actions">
-        <SectionTitle title="工资记录" note="公司级成本" />
-        <AccountingReportActions
-          report={salaryReport}
-          disabled={!sourceReady}
-          contextIdentity={salaryReportIdentity}
-          {...reportActionDependencies}
-        />
-      </div>
+      <AccountingReportActions
+        title="工资记录报表"
+        report={salaryReport}
+        disabled={!sourceReady}
+        contextIdentity={salaryReportIdentity}
+        {...reportActionDependencies}
+      />
       {!sourceReady && (
         <EmptyState text={accountingReportSourceNotice('工资', reportSource.status)} />
       )}
@@ -7696,15 +7694,13 @@ function OperatingExpenseSection({
 
   return (
     <>
-      <div className="section-title-with-actions">
-        <SectionTitle title="经营费用" note="公司日常费用" />
-        <AccountingReportActions
-          report={operatingExpenseReport}
-          disabled={!sourceReady}
-          contextIdentity={operatingExpenseReportIdentity}
-          {...reportActionDependencies}
-        />
-      </div>
+      <AccountingReportActions
+        title="经营费用明细"
+        report={operatingExpenseReport}
+        disabled={!sourceReady}
+        contextIdentity={operatingExpenseReportIdentity}
+        {...reportActionDependencies}
+      />
       {!sourceReady && (
         <EmptyState text={accountingReportSourceNotice('经营费用', reportSource.status)} />
       )}
@@ -8194,15 +8190,13 @@ export function MonthlySummarySection({
 
   return (
     <>
-      <div className="section-title-with-actions">
-        <SectionTitle title="月度汇总" note={monthFilter} />
-        <AccountingReportActions
-          report={monthlySummaryReport}
-          disabled={reportBlocked || !monthlySummaryReport}
-          contextIdentity={monthlyReportIdentity}
-          {...reportActionDependencies}
-        />
-      </div>
+      <AccountingReportActions
+        title="月度成本汇总"
+        report={monthlySummaryReport}
+        disabled={reportBlocked || !monthlySummaryReport}
+        contextIdentity={monthlyReportIdentity}
+        {...reportActionDependencies}
+      />
       <div className="filter-panel">
         <Field label="统计月份" type="month" value={monthFilter} onChange={onMonthFilterChange} />
       </div>

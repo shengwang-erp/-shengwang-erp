@@ -364,6 +364,40 @@ test('operating report readiness stays independent from the monthly-summary proj
   }
 })
 
+test('desktop accounting navigation and app report sections expose the unified toolbar contract', async () => {
+  const scenario = await mount({
+    salaryRecords: [],
+    operatingExpenseRecords: [],
+    reportPreparedBy: '系统管理员',
+    reportActionDependencies: { exportExcel() {}, printReport() {} },
+  })
+  try {
+    const navigation = findWarehouseTestElement(scenario.container, (element) =>
+      element.className === 'accounting-entry-grid')
+    assert.ok(navigation)
+    assert.equal(navigation.children.length, 5)
+    assert.deepEqual(navigation.children.map((item) => item.textContent), [
+      '工资记录', '项目成本', '经营费用', '采购对账', '月度汇总',
+    ])
+    assert.match(scenario.container.textContent, /工资记录报表/u)
+    assert.doesNotMatch(scenario.container.textContent, /公司级成本/u)
+    assert.equal(elements(scenario.container, (element) =>
+      element.className === 'accounting-report-toolbar').length, 1)
+
+    await act(async () => button(scenario.container, '经营费用').click())
+    assert.match(scenario.container.textContent, /经营费用明细/u)
+    assert.equal(elements(scenario.container, (element) =>
+      element.className === 'accounting-report-toolbar').length, 1)
+
+    await act(async () => button(scenario.container, '月度汇总').click())
+    assert.match(scenario.container.textContent, /月度成本汇总/u)
+    assert.equal(elements(scenario.container, (element) =>
+      element.className === 'accounting-report-toolbar').length, 1)
+  } finally {
+    await cleanup(scenario)
+  }
+})
+
 async function cleanup(scenario) {
   await act(async () => scenario.root.unmount())
   scenario.dom.cleanup()

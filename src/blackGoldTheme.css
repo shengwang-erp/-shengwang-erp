@@ -999,23 +999,27 @@
 }
 
 .erp-black-gold .labor-tabs,
-.erp-black-gold .accounting-entry-grid {
+.erp-black-gold .accounting-cost-page .accounting-entry-grid {
   border-color: var(--erp-border-subtle);
   background: var(--erp-bg-elevated);
 }
 
 .erp-black-gold .labor-tabs button,
-.erp-black-gold .accounting-entry {
+.erp-black-gold .accounting-cost-page .accounting-entry {
   border-color: transparent;
   color: var(--erp-text-secondary);
   background: transparent;
 }
 
 .erp-black-gold .labor-tabs button[aria-selected="true"],
-.erp-black-gold .accounting-entry.active {
+.erp-black-gold .accounting-cost-page .accounting-entry.active {
   border-color: var(--erp-border-gold-muted);
   color: var(--erp-accent-gold-soft);
   background: var(--erp-accent-gold-surface);
+}
+
+.erp-black-gold .accounting-cost-page .accounting-entry + .accounting-entry:not(.active) {
+  border-left-color: var(--erp-border-subtle);
 }
 
 .erp-black-gold table {
