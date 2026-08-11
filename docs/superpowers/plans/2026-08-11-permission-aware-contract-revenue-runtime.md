@@ -4,7 +4,7 @@
 
 **Goal:** Prevent every account without contract-finance access from crashing when its authorized project directory omits contract amounts, without weakening finance validation or changing permissions/data.
 
-**Architecture:** Preserve the closed four-field project reference projection for relation-only accounts, instead of adding zero-valued finance fields during full-project normalization. Add one pure permission adapter immediately in front of the existing strict contract-revenue snapshot collection. `AuthenticatedApp` passes the effective contract-revenue view bit into that adapter and includes both access bits in memo dependencies, so login/permission changes recompute from a clean state. The domain calculator remains unchanged and continues rejecting invalid data for authorized finance users.
+**Architecture:** Add one pure permission adapter immediately in front of the existing strict contract-revenue snapshot collection. `AuthenticatedApp` passes the effective contract-revenue view bit into that adapter and includes the bit in the memo dependency list, so login/permission changes recompute from a clean state. The domain calculator remains unchanged and continues rejecting invalid data for authorized finance users.
 
 **Tech Stack:** React 19, JavaScript ES modules, Node test runner, Vite 6, Vercel.
 
@@ -19,7 +19,7 @@
 
 ---
 
-### Task 1: Permission-aware project and contract-revenue runtime
+### Task 1: Permission-aware contract-revenue runtime
 
 **Files:**
 - Create: `src/features/contract-revenue/contractRevenueRuntime.js`
@@ -134,55 +134,19 @@ node --test src/features/contract-revenue/contractRevenueRuntime.test.js
 
 Expected: 3 tests pass. The denied test must not throw, and the authorized invalid-data test must still throw `ContractRevenueValidationError`.
 
-- [ ] **Step 5: Add an App wiring regression assertion**
+- [ ] **Step 5: Remove the obsolete App-to-domain source coupling assertion**
 
-Update the first test in `src/features/contract-revenue/appRevenueIntegration.test.js` to assert all of the following source contracts:
-
-```js
-assert.match(
-  appSource,
-  /import \{ buildProjectRevenueSnapshotsForAccess \} from '.\/features\/contract-revenue\/contractRevenueRuntime\.js'/u,
-)
-assert.match(
-  appSource,
-  /buildProjectRevenueSnapshotsForAccess\(\{[\s\S]*?canViewRevenue:\s*contractRevenueAccess\.view,[\s\S]*?projects,[\s\S]*?changes:\s*projectContractChanges,[\s\S]*?plans:\s*projectPaymentPlans,[\s\S]*?receipts:\s*projectReceipts,[\s\S]*?\}\)/u,
-)
-assert.match(
-  appSource,
-  /\[projects, projectContractChanges, projectPaymentPlans, projectReceipts, contractRevenueAccess\.view\]/u,
-)
-assert.match(
-  appSource,
-  /projectReferenceAccess\.full[\s\S]*?storedProjects\.map\(\(project\) => normalizeProject\(project\)\)[\s\S]*?:[\s\S]*?storedProjects\.map\(\(project\) => \(\{ \.\.\.project \}\)\)/u,
-)
-```
-
-Remove the obsolete assertion that `App.jsx` directly calls `buildProjectRevenueSnapshotCollection`.
-
-- [ ] **Step 6: Run the App wiring test and capture RED**
-
-Run:
-
-```bash
-node --test src/features/contract-revenue/appRevenueIntegration.test.js
-```
-
-Expected: FAIL because `App.jsx` still normalizes relation-only references as full projects and calls the strict calculator directly.
-
-- [ ] **Step 7: Wire the adapter into the shared authenticated runtime**
-
-In `src/App.jsx`, preserve the closed project-reference DTO for relation-only accounts:
+In the first test in `src/features/contract-revenue/appRevenueIntegration.test.js`, remove only this obsolete assertion:
 
 ```js
-const projects = useMemo(
-  () => projectReferenceAccess.full
-    ? storedProjects.map((project) => normalizeProject(project))
-    : storedProjects.map((project) => ({ ...project })),
-  [storedProjects, projectReferenceAccess.full],
-)
+assert.match(appSource, /buildProjectRevenueSnapshotCollection\(/)
 ```
 
-Then replace the revenue imports and memo wiring:
+The executable adapter tests own the new behavior. Do not replace this with another source-text assertion: production behavior, not a spelling or import layout, is the contract.
+
+- [ ] **Step 6: Wire the adapter into the shared authenticated runtime**
+
+In `src/App.jsx`, replace the revenue imports:
 
 ```js
 import { buildProjectRevenueReadModel } from './features/contract-revenue/contractRevenueCalculations'
@@ -210,9 +174,9 @@ const projectRevenueSnapshots = useMemo(
 )
 ```
 
-Do not change `buildProjectRevenueSnapshotCollection`, finance permissions, project RPCs, or persisted project values.
+Do not change project normalization, `buildProjectRevenueSnapshotCollection`, finance permissions, project RPCs, or persisted project values.
 
-- [ ] **Step 8: Run focused tests and inspect the diff**
+- [ ] **Step 7: Run focused tests and inspect the diff**
 
 Run:
 
@@ -228,7 +192,7 @@ git diff -- src/App.jsx src/features/contract-revenue
 
 Expected: all focused tests pass; `git diff --check` emits no output; the diff contains only the adapter, its regression tests, and App wiring.
 
-- [ ] **Step 9: Commit the root-cause fix**
+- [ ] **Step 8: Commit the root-cause fix**
 
 ```bash
 git add \
