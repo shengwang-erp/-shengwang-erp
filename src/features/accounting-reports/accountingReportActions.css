@@ -13,7 +13,7 @@
 
 .accounting-report-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
 }
