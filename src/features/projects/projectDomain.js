@@ -1,8 +1,18 @@
 export const PROJECT_STATUS_OPTIONS = Object.freeze([
   '报价中', '设计中', '待开工', '进行中', '暂停', '已完工', '已取消',
 ])
+export const PROJECT_TYPES = Object.freeze({
+  STANDARD: 'standard',
+  SMALL: 'small',
+  MIRAISYA: 'miraisya',
+})
+export const LIGHTWEIGHT_DURATION_OPTIONS = Object.freeze(['half_day', 'full_day'])
+export const MIRAISYA_CUSTOMER_NAME = '株式会社未来舎サポート'
 export const DEFAULT_ATTENDANCE_RADIUS_METERS = 300
 const LOCATION_REQUIRED = new Set(['待开工', '进行中'])
+const PROJECT_TYPE_VALUES = new Set(Object.values(PROJECT_TYPES))
+const LIGHTWEIGHT_DURATION_VALUES = new Set(LIGHTWEIGHT_DURATION_OPTIONS)
+const LIGHTWEIGHT_SETTLEMENT_STATUS_VALUES = new Set(['unsettled', 'settled'])
 const ROLE_CONFIG = Object.freeze({
   design: { department: '设计部', prefix: 'designAssignee', label: '设计担当' },
   site: { department: '工程部', prefix: 'siteAssignee', label: '现场担当' },
@@ -19,8 +29,11 @@ export function localDateValue(date = new Date()) {
   return year + '-' + month + '-' + day
 }
 
-export function createEmptyProject(today = () => localDateValue()) {
-  return normalizeProject({ startDate: today() })
+export function createEmptyProject(today = () => localDateValue(), options = {}) {
+  return normalizeProject({
+    projectType: options?.projectType,
+    startDate: today(),
+  })
 }
 
 function parseCoordinate(value, minimum, maximum) {
@@ -36,12 +49,19 @@ function parseCoordinate(value, minimum, maximum) {
 }
 
 export function normalizeProject(project = {}) {
+  const projectType = PROJECT_TYPE_VALUES.has(project.projectType)
+    ? project.projectType
+    : PROJECT_TYPES.STANDARD
+  const lightweight = projectType !== PROJECT_TYPES.STANDARD
   const radius = Number(project.attendanceRadiusMeters)
   return {
     ...project,
     projectId: project.projectId || '',
+    projectType,
     projectName: project.projectName || '',
-    customerName: project.customerName || '',
+    customerName: projectType === PROJECT_TYPES.MIRAISYA
+      ? MIRAISYA_CUSTOMER_NAME
+      : project.customerName || '',
     address: project.address || '',
     latitude: parseCoordinate(project.latitude, -90, 90),
     longitude: parseCoordinate(project.longitude, -180, 180),
@@ -58,10 +78,59 @@ export function normalizeProject(project = {}) {
     siteAssigneeEmployeeId: project.siteAssigneeEmployeeId || '',
     siteAssigneeEmployeeNumber: project.siteAssigneeEmployeeNumber || '',
     siteAssigneeName: project.siteAssigneeName || '',
+    durationType: lightweight
+      ? (LIGHTWEIGHT_DURATION_VALUES.has(project.durationType)
+          ? project.durationType
+          : 'full_day')
+      : '',
+    workerAssignments: lightweight
+      ? normalizeWorkerAssignments(project.workerAssignments)
+      : [],
+    expectedAmount: projectType === PROJECT_TYPES.SMALL &&
+      Number.isSafeInteger(project.expectedAmount) && project.expectedAmount >= 0
+      ? project.expectedAmount
+      : 0,
+    lightweightSettlementStatus: lightweight
+      ? (LIGHTWEIGHT_SETTLEMENT_STATUS_VALUES.has(project.lightweightSettlementStatus)
+          ? project.lightweightSettlementStatus
+          : 'unsettled')
+      : '',
     startDate: project.startDate || '',
     endDate: project.endDate || '',
     remark: project.remark || '',
   }
+}
+
+function readOwnString(record, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key)
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) return ''
+  return typeof descriptor.value === 'string' ? descriptor.value.trim() : ''
+}
+
+function normalizeWorkerAssignments(value) {
+  if (!Array.isArray(value)) return []
+  const result = []
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue
+    const record = descriptor.value
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue
+    const employeeId = readOwnString(record, 'employeeId')
+    const employeeNumber = readOwnString(record, 'employeeNumber')
+    const name = readOwnString(record, 'name')
+    if (!employeeId || !employeeNumber || !name) continue
+    result.push({ employeeId, employeeNumber, name })
+  }
+  return result
+}
+
+export function isLightweightProject(project) {
+  const projectType = normalizeProject(project).projectType
+  return projectType === PROJECT_TYPES.SMALL || projectType === PROJECT_TYPES.MIRAISYA
+}
+
+export function isMiraisyaProject(project) {
+  return normalizeProject(project).projectType === PROJECT_TYPES.MIRAISYA
 }
 
 export function isProjectLocationConfirmed(project) {
@@ -157,16 +226,25 @@ export function validateProjectForSave(project) {
       message: '待开工或进行中的项目必须先确认施工位置和打卡范围',
     }]
   }
+  if (isLightweightProject(value) && !value.startDate) {
+    return [{
+      field: 'startDate',
+      code: 'construction_date_required',
+      message: '请选择施工日期',
+    }]
+  }
   return []
 }
 
 export function buildProjectPayload(project) {
   const value = normalizeProject(project)
   return Object.fromEntries([
-    'projectName', 'customerName', 'address', 'latitude', 'longitude',
+    'projectType', 'projectName', 'customerName', 'address', 'latitude', 'longitude',
     'attendanceRadiusMeters', 'locationConfirmedAt', 'locationAddressSnapshot',
     'status', 'designAssigneeEmployeeId', 'designAssigneeEmployeeNumber',
     'designAssigneeName', 'siteAssigneeEmployeeId',
-    'siteAssigneeEmployeeNumber', 'siteAssigneeName', 'startDate', 'endDate', 'remark',
+    'siteAssigneeEmployeeNumber', 'siteAssigneeName', 'durationType',
+    'workerAssignments', 'expectedAmount', 'lightweightSettlementStatus',
+    'startDate', 'endDate', 'remark',
   ].map((key) => [key, value[key]]))
 }

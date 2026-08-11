@@ -3,18 +3,23 @@ import test from 'node:test'
 
 import {
   DEFAULT_ATTENDANCE_RADIUS_METERS,
+  LIGHTWEIGHT_DURATION_OPTIONS,
+  MIRAISYA_CUSTOMER_NAME,
+  PROJECT_TYPES,
   PROJECT_STATUS_OPTIONS,
   assignProjectEmployee,
+  buildProjectPayload,
   confirmProjectLocation,
   createEmptyProject,
   eligibleProjectAssignees,
+  isLightweightProject,
+  isMiraisyaProject,
   isProjectLocationConfirmed,
   localDateValue,
   normalizeAddress,
   normalizeProject,
   updateProjectAddress,
   validateProjectForSave,
-  buildProjectPayload,
 } from './projectDomain.js'
 
 const design = {
@@ -41,6 +46,7 @@ test('status order and new-project defaults are exact', () => {
   ])
   assert.deepEqual(createEmptyProject(() => '2026-07-15'), {
     projectId: '',
+    projectType: 'standard',
     projectName: '',
     customerName: '',
     address: '',
@@ -56,10 +62,101 @@ test('status order and new-project defaults are exact', () => {
     siteAssigneeEmployeeId: '',
     siteAssigneeEmployeeNumber: '',
     siteAssigneeName: '',
+    durationType: '',
+    workerAssignments: [],
+    expectedAmount: 0,
+    lightweightSettlementStatus: '',
     startDate: '2026-07-15',
     endDate: '',
     remark: '',
   })
+})
+
+test('historical projects remain standard and Miraisya defaults are canonical', () => {
+  const historical = normalizeProject({ projectName: '历史项目' })
+  assert.equal(historical.projectType, PROJECT_TYPES.STANDARD)
+  assert.equal(isLightweightProject(historical), false)
+
+  const value = createEmptyProject(
+    () => '2026-08-11',
+    { projectType: PROJECT_TYPES.MIRAISYA },
+  )
+  assert.equal(value.customerName, MIRAISYA_CUSTOMER_NAME)
+  assert.equal(value.durationType, 'full_day')
+  assert.equal(value.startDate, '2026-08-11')
+  assert.equal(value.expectedAmount, 0)
+  assert.equal(value.lightweightSettlementStatus, 'unsettled')
+  assert.deepEqual(value.workerAssignments, [])
+  assert.equal(isLightweightProject(value), true)
+  assert.equal(isMiraisyaProject(value), true)
+  assert.deepEqual(LIGHTWEIGHT_DURATION_OPTIONS, ['half_day', 'full_day'])
+})
+
+test('lightweight values normalize to safe exact records and fixed Miraisya amounts', () => {
+  const small = normalizeProject({
+    projectType: 'small',
+    durationType: 'half_day',
+    expectedAmount: 125000,
+    lightweightSettlementStatus: 'settled',
+    workerAssignments: [
+      { employeeId: 'emp-1', employeeNumber: 'SW-101', name: '施工一', ignored: true },
+      undefined,
+      { employeeId: 'emp-2', employeeNumber: 202, name: '施工二' },
+    ],
+  })
+  assert.equal(small.durationType, 'half_day')
+  assert.equal(small.expectedAmount, 125000)
+  assert.equal(small.lightweightSettlementStatus, 'settled')
+  assert.deepEqual(small.workerAssignments, [
+    { employeeId: 'emp-1', employeeNumber: 'SW-101', name: '施工一' },
+  ])
+
+  const miraisya = normalizeProject({
+    projectType: 'miraisya',
+    customerName: '错误客户',
+    expectedAmount: 999999,
+  })
+  assert.equal(miraisya.customerName, MIRAISYA_CUSTOMER_NAME)
+  assert.equal(miraisya.expectedAmount, 0)
+
+  const invalid = normalizeProject({
+    projectType: 'unknown',
+    durationType: 'two_days',
+    expectedAmount: Number.MAX_SAFE_INTEGER + 1,
+  })
+  assert.equal(invalid.projectType, 'standard')
+  assert.equal(invalid.durationType, '')
+  assert.equal(invalid.expectedAmount, 0)
+})
+
+test('persistence payload includes typed project fields without caller extras', () => {
+  const payload = buildProjectPayload({
+    projectType: 'small',
+    projectName: '壁纸补修',
+    durationType: 'half_day',
+    expectedAmount: 88000,
+    lightweightSettlementStatus: 'unsettled',
+    workerAssignments: [
+      { employeeId: 'emp-1', employeeNumber: 'SW-101', name: '施工一', extra: 'drop' },
+    ],
+    callerAuthority: 'drop',
+  })
+  assert.deepEqual(
+    Object.fromEntries([
+      'projectType', 'durationType', 'workerAssignments',
+      'expectedAmount', 'lightweightSettlementStatus',
+    ].map((key) => [key, payload[key]])),
+    {
+      projectType: 'small',
+      durationType: 'half_day',
+      workerAssignments: [
+        { employeeId: 'emp-1', employeeNumber: 'SW-101', name: '施工一' },
+      ],
+      expectedAmount: 88000,
+      lightweightSettlementStatus: 'unsettled',
+    },
+  )
+  assert.equal(Object.hasOwn(payload, 'callerAuthority'), false)
 })
 
 test('default date formatting uses local calendar getters instead of UTC ISO', () => {
