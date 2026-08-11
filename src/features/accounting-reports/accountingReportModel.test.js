@@ -77,6 +77,7 @@ test('report model clones and recursively freezes every consumer-visible value',
 
 test('report contract rejects unsafe page layout and invalid section structure', () => {
   assert.throws(() => createAccountingReportModel(reportInput({ orientation: 'wide' })), /orientation/u)
+  assert.throws(() => createAccountingReportModel(reportInput({ sections: [] })), /section/u)
   assert.throws(() => createAccountingReportModel(reportInput({ sections: [
     reportInput().sections[0], { ...reportInput().sections[0] },
   ] })), /section id/u)

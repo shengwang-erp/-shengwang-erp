@@ -127,6 +127,7 @@ export function createAccountingReportModel(input) {
   const orientation = input.orientation ?? 'portrait'
   if (!ORIENTATIONS.has(orientation)) throw new TypeError('orientation must be portrait or landscape')
   const sections = array(input.sections ?? [], 'sections')
+  if (sections.length === 0) throw new TypeError('report must have at least one section')
   const sectionIds = new Set()
   const report = {
     id: text(input.id, 'accounting-report'),
