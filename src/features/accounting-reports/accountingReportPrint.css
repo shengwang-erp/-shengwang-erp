@@ -1,0 +1,145 @@
+@page accounting-report-landscape {
+  size: A4 landscape;
+  margin: 10mm 9mm 12mm;
+}
+
+@page accounting-report-portrait {
+  size: A4 portrait;
+  margin: 11mm 10mm 13mm;
+}
+
+.accounting-report-print-root {
+  display: none;
+}
+
+@media print {
+  body.accounting-report-printing > :not(.accounting-report-print-root) {
+    display: none !important;
+  }
+
+  body.accounting-report-printing > .accounting-report-print-root {
+    display: block;
+  }
+
+  .accounting-report-sheet {
+    box-sizing: border-box;
+    color: #111;
+    background: #fff;
+    font-family: "Yu Gothic", "Noto Sans CJK JP", sans-serif;
+    font-size: 10pt;
+    line-height: 1.25;
+  }
+
+  .accounting-report-sheet.landscape {
+    page: accounting-report-landscape;
+  }
+
+  .accounting-report-sheet.portrait {
+    page: accounting-report-portrait;
+  }
+
+  .accounting-report-sheet > header {
+    text-align: center;
+  }
+
+  .accounting-report-sheet > header > strong {
+    display: block;
+    font-size: 11pt;
+    font-weight: 600;
+  }
+
+  .accounting-report-sheet h1 {
+    margin: 3pt 0 7pt;
+    font-size: 18pt;
+  }
+
+  .accounting-report-sheet h2 {
+    margin: 8pt 0 4pt;
+    font-size: 10.5pt;
+  }
+
+  .accounting-report-sheet dl {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2pt 14pt;
+    margin: 0;
+    text-align: left;
+  }
+
+  .accounting-report-sheet dl > div {
+    display: flex;
+    gap: 3pt;
+  }
+
+  .accounting-report-sheet dt {
+    font-weight: 700;
+  }
+
+  .accounting-report-sheet dd {
+    margin: 0;
+  }
+
+  .accounting-report-sheet > header > p,
+  .accounting-report-sheet aside p {
+    margin: 4pt 0;
+    text-align: left;
+  }
+
+  .accounting-report-sheet table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .accounting-report-sheet thead {
+    display: table-header-group;
+  }
+
+  .accounting-report-sheet tr {
+    break-inside: avoid;
+  }
+
+  .accounting-report-sheet th,
+  .accounting-report-sheet td {
+    border: 0.5pt solid #aaa;
+    padding: 6pt 7pt;
+    overflow-wrap: anywhere;
+    vertical-align: middle;
+  }
+
+  .accounting-report-sheet th {
+    background: #f2f2f2;
+    font-size: 10.5pt;
+    font-weight: 700;
+    text-align: center;
+  }
+
+  .accounting-report-summary table {
+    width: auto;
+    min-width: 45%;
+  }
+
+  .accounting-report-sheet .align-left {
+    text-align: left;
+  }
+
+  .accounting-report-sheet .align-center {
+    text-align: center;
+  }
+
+  .accounting-report-sheet .align-right {
+    text-align: right;
+  }
+
+  .accounting-report-sheet footer {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr) auto;
+    gap: 12pt;
+    margin-top: 14pt;
+    break-inside: avoid;
+  }
+
+  .accounting-report-page-number::after {
+    content: "第 " counter(page) " 页";
+  }
+}
