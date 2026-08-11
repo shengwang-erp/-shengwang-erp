@@ -16,6 +16,10 @@ function redact(value) {
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '[REDACTED_EMAIL]')
 }
 
+function redactedBounded(value, limit, fallback) {
+  return bounded(redact(typeof value === 'string' ? value : ''), limit, fallback)
+}
+
 function safeBuildId(value) {
   const candidate = bounded(value, 64)
   if (!BUILD_ID_PATTERN.test(candidate)) return 'unversioned'
@@ -30,9 +34,9 @@ function safeOccurredAt(value) {
 
 export function buildBusinessRuntimeDiagnostic(input = {}) {
   const buildId = safeBuildId(input.buildId)
-  const errorName = bounded(redact(bounded(input.error?.name, 80, 'Error')), 80, 'Error')
-  const message = bounded(redact(bounded(input.error?.message, MESSAGE_LIMIT, 'Unknown render failure')), MESSAGE_LIMIT, 'Unknown render failure')
-  const componentStack = bounded(redact(bounded(input.componentStack, STACK_LIMIT, 'Unavailable')), STACK_LIMIT, 'Unavailable')
+  const errorName = redactedBounded(input.error?.name, 80, 'Error')
+  const message = redactedBounded(input.error?.message, MESSAGE_LIMIT, 'Unknown render failure')
+  const componentStack = redactedBounded(input.componentStack, STACK_LIMIT, 'Unavailable')
   const platform = bounded(input.runtime?.platform, 40, 'Unknown')
   const browser = bounded(input.runtime?.browser, 40, 'Unknown')
   return Object.freeze({
@@ -48,5 +52,17 @@ export function buildBusinessRuntimeDiagnostic(input = {}) {
 }
 
 export function formatBusinessRuntimeDiagnostic(diagnostic) {
-  return JSON.stringify(diagnostic, null, 2)
+  return JSON.stringify(buildBusinessRuntimeDiagnostic({
+    error: {
+      name: diagnostic?.errorName,
+      message: diagnostic?.message,
+    },
+    componentStack: diagnostic?.componentStack,
+    buildId: diagnostic?.buildId,
+    occurredAt: diagnostic?.occurredAt,
+    runtime: {
+      platform: diagnostic?.runtime?.platform,
+      browser: diagnostic?.runtime?.browser,
+    },
+  }), null, 2)
 }

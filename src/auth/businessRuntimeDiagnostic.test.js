@@ -47,6 +47,40 @@ test('bounds text and redacts credential-shaped values', () => {
   assert.ok(diagnostic.componentStack.length <= 2400)
 })
 
+test('redacts credentials before applying field bounds', () => {
+  const diagnostic = buildBusinessRuntimeDiagnostic({
+    error: {
+      name: 'n'.repeat(67) + 'person@example.com',
+      message: 'm'.repeat(307) + 'person@example.com',
+    },
+    componentStack: 's'.repeat(2387) + 'person@example.com',
+  })
+  const text = formatBusinessRuntimeDiagnostic(diagnostic)
+
+  assert.doesNotMatch(diagnostic.errorName, /person@exampl/u)
+  assert.doesNotMatch(diagnostic.message, /person@exampl/u)
+  assert.doesNotMatch(diagnostic.componentStack, /person@exampl/u)
+  assert.doesNotMatch(text, /person@exampl/u)
+})
+
+test('formatter projects only approved diagnostic fields from untrusted input', () => {
+  const text = formatBusinessRuntimeDiagnostic({
+    buildId: 'abcdef123456',
+    errorName: 'Error',
+    message: 'safe message',
+    componentStack: 'at Home',
+    runtime: { platform: 'iOS', browser: 'Safari Web App' },
+    currentUser: { name: '测试姓名', employeeNumber: 'SW-008', accessToken: 'secret-token' },
+    project: { projectName: '秘密工程' },
+  })
+
+  assert.deepEqual(Object.keys(JSON.parse(text)), [
+    'category', 'code', 'buildId', 'occurredAt', 'errorName', 'message',
+    'componentStack', 'runtime',
+  ])
+  assert.doesNotMatch(text, /测试姓名|SW-008|secret-token|秘密工程/u)
+})
+
 test('does not serialize unrelated user or business objects', () => {
   const diagnostic = buildBusinessRuntimeDiagnostic({
     error: new Error('render failed'),
