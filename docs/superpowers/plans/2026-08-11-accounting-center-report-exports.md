@@ -335,6 +335,7 @@ git commit -m "feat: build salary and expense reports"
 **Interfaces:**
 - Consumes: Task 3 actions and Task 4 adapters.
 - Adds `reportPreparedBy` to `AccountingCostPage`, `SalaryRecordsSection`, and `OperatingExpenseSection`.
+- Adds optional `reportActionDependencies={{ exportExcel, printReport }}` to `AccountingCostPage` and forwards it to shared actions in focused tests; production omits it and uses the real defaults.
 
 - [ ] **Step 1: Write failing integration tests**
 
@@ -346,7 +347,7 @@ for (const label of ['导出 Excel', '导出 PDF', '打印']) {
 }
 ```
 
-For salary, change month and employee inputs and verify the on-screen records contain exactly the matching employee row. For operating expenses, assert new `费用归属` and `项目` selectors, choose `项目费用` plus one project, and verify the on-screen records contain only that project. Read the module source and assert the salary and operating adapters receive `records: filteredRecords`, the active filter values, and `reportPreparedBy`; the adapter tests provide the exact report-row assertions.
+For salary, change month and employee inputs, click the injected Excel action, and verify the captured report contains exactly the matching employee row, active filter labels, and `preparedBy="系统管理员"`. For operating expenses, assert new `费用归属` and `项目` selectors, choose `项目费用` plus one project, click the injected Excel action, and verify both the on-screen records and captured report rows contain only that project. Exercise the real section and shared action controller; do not use source-text assertions.
 
 - [ ] **Step 2: Run integration test and verify RED**
 
@@ -409,7 +410,7 @@ git commit -m "feat: export salary and operating expense reports"
 
 **Interfaces:**
 - Produces: `createPurchaseAccountingReport({ rows, summary, anomalies, month, projectLabel, source, paymentStatus, paymentVisible, preparedBy, generatedAt })`.
-- `PurchaseAccountingSection` accepts `reportPreparedBy`; export and print dependency injection remains encapsulated in the shared action-controller tests.
+- `PurchaseAccountingSection` accepts `reportPreparedBy` and optional `reportActionDependencies`; the latter is supplied only by behavior tests and forwarded unchanged to `AccountingReportActions`.
 
 - [ ] **Step 1: Add failing purchase adapter tests**
 
@@ -423,7 +424,7 @@ Expected visible detail headers when payment is available:
 
 - [ ] **Step 2: Add failing purchase component tests**
 
-Extend the existing purchase test fixture to assert all three actions appear only when `accrualState.status === 'ready'`; filtering still narrows the visible rows by month/project/source/payment status; payment fields are excluded when the payment source is not ready; and loading/error/forbidden accrual states render no export buttons. Add a source assertion that `createPurchaseAccountingReport` receives the already-filtered `rows`, current `readModel.summary/anomalies`, and `reportPreparedBy`; the adapter test verifies the exact report rows.
+Extend the existing purchase test fixture to assert all three actions appear only when `accrualState.status === 'ready'`; filtering narrows the visible rows by month/project/source/payment status; clicking the injected Excel action captures a report with exactly those filtered rows and the current `readModel.summary/anomalies`; payment fields are excluded when the payment source is not ready; and loading/error/forbidden accrual states render no export buttons. Exercise rendered behavior rather than searching the component source.
 
 - [ ] **Step 3: Run purchase tests and verify RED**
 
@@ -456,7 +457,7 @@ git commit -m "feat: export purchase reconciliation reports"
 
 **Interfaces:**
 - Produces: `createMonthlySummaryReport({ month, coreMetrics, sourceMetrics, pendingMetrics, notes, preparedBy, generatedAt, scopeLabel })`.
-- Adds `reportPreparedBy` to `MonthlySummarySection`.
+- Adds `reportPreparedBy` and optional `reportActionDependencies` to `MonthlySummarySection`.
 
 - [ ] **Step 1: Write failing monthly adapter tests**
 
