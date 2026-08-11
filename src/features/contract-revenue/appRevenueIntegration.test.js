@@ -18,7 +18,6 @@ test('App loads all contract revenue records and memoizes the project snapshot c
     /const \[projectReceipts, setProjectReceipts\] = useState\(\[\]\)/,
   )
   assert.match(appSource, /const projectRevenueSnapshots = useMemo\(/)
-  assert.match(appSource, /buildProjectRevenueSnapshotCollection\(/)
   assert.match(appSource, /const cloudLoader = options\.cloudLoader \|\| getList/)
   assert.match(appSource, /await cloudLoader\(key\)/)
   assert.match(appSource, /projectContractChanges: CONTRACT_REVENUE_STORAGE_KEYS\.contractChanges/)

@@ -7,10 +7,8 @@ import {
   softDelete,
   upsertRecord,
 } from './services/baseRecordService'
-import {
-  buildProjectRevenueReadModel,
-  buildProjectRevenueSnapshotCollection,
-} from './features/contract-revenue/contractRevenueCalculations'
+import { buildProjectRevenueReadModel } from './features/contract-revenue/contractRevenueCalculations'
+import { buildProjectRevenueSnapshotsForAccess } from './features/contract-revenue/contractRevenueRuntime.js'
 import ContractRevenuePage from './features/contract-revenue/ContractRevenuePage'
 import ContractRevenueMigrationPanel from './features/contract-revenue/ContractRevenueMigrationPanel'
 import ProjectPage from './features/projects/ProjectPage'
@@ -3285,14 +3283,20 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
     [storedProjects],
   )
   const projectRevenueSnapshots = useMemo(
-    () =>
-      buildProjectRevenueSnapshotCollection(
-        projects,
-        projectContractChanges,
-        projectPaymentPlans,
-        projectReceipts,
-      ),
-    [projects, projectContractChanges, projectPaymentPlans, projectReceipts],
+    () => buildProjectRevenueSnapshotsForAccess({
+      canViewRevenue: contractRevenueAccess.view,
+      projects,
+      changes: projectContractChanges,
+      plans: projectPaymentPlans,
+      receipts: projectReceipts,
+    }),
+    [
+      projects,
+      projectContractChanges,
+      projectPaymentPlans,
+      projectReceipts,
+      contractRevenueAccess.view,
+    ],
   )
   const projectRevenueProjects = useMemo(
     () =>
