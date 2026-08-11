@@ -155,6 +155,26 @@ test('action controller exposes the three plain-language output choices and thei
   }
 })
 
+test('renders a project-cost-style report toolbar with title and current scope', () => {
+  const html = renderToStaticMarkup(createElement(AccountingReportActions, {
+    title: '工资记录报表', report, contextIdentity: 'layout',
+    exportExcel() {}, printReport() {},
+  }))
+  assert.match(html, /class="accounting-report-toolbar"/u)
+  assert.match(html, /class="accounting-report-toolbar-copy"/u)
+  assert.match(html, /<strong>工资记录报表<\/strong>/u)
+  assert.match(html, /月份：2026-07/u)
+  assert.match(html, /class="accounting-report-pdf-action"[\s\S]*导出 PDF[\s\S]*另存为 PDF/u)
+})
+
+test('shows the current-page scope when the report is unavailable', () => {
+  const html = renderToStaticMarkup(createElement(AccountingReportActions, {
+    title: '工资记录报表', contextIdentity: 'unavailable',
+    exportExcel() {}, printReport() {},
+  }))
+  assert.match(html, /跟随当前页面筛选条件输出/u)
+})
+
 test('disabled state blocks every report output action', async () => {
   let calls = 0
   const scenario = await mount({

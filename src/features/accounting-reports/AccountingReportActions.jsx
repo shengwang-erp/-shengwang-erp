@@ -10,7 +10,17 @@ import {
 
 const ERROR_MESSAGE = '报表生成失败，当前页面和筛选已保留'
 
+function reportScopeText(report) {
+  const lines = Array.isArray(report?.filterLines) ? report.filterLines : []
+  const scope = lines
+    .filter(({ label, value }) => label && value)
+    .map(({ label, value }) => `${label}：${value}`)
+    .join(' · ')
+  return scope || '跟随当前页面筛选条件输出'
+}
+
 export default function AccountingReportActions({
+  title = '会计报表',
   report,
   disabled = false,
   contextIdentity,
@@ -97,14 +107,20 @@ export default function AccountingReportActions({
 
   const blocked = disabled || !report || Boolean(operation)
   return <>
-    <div className="accounting-report-actions" aria-label="会计报表输出操作">
-      <button type="button" disabled={blocked} onClick={() => { void beginExcel() }}>导出 Excel</button>
-      <span className="accounting-report-pdf-action">
-        <button type="button" disabled={blocked} onClick={() => beginPrint('pdf')}>导出 PDF</button>
-        <small>在打印窗口选择“另存为 PDF”</small>
-      </span>
-      <button type="button" disabled={blocked} onClick={() => beginPrint('print')}>打印</button>
-    </div>
+    <section className="accounting-report-toolbar" aria-label={`${title}输出操作`}>
+      <div className="accounting-report-toolbar-copy">
+        <strong>{title}</strong>
+        <span>{reportScopeText(report)}</span>
+      </div>
+      <div className="accounting-report-actions">
+        <button type="button" disabled={blocked} onClick={() => { void beginExcel() }}>导出 Excel</button>
+        <span className="accounting-report-pdf-action">
+          <button type="button" disabled={blocked} onClick={() => beginPrint('pdf')}>导出 PDF</button>
+          <small>在打印窗口选择“另存为 PDF”</small>
+        </span>
+        <button type="button" disabled={blocked} onClick={() => beginPrint('print')}>打印</button>
+      </div>
+    </section>
     {operation && operation.type !== 'excel' && (
       <AccountingReportPrintSheet report={operation.report} />
     )}
