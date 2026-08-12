@@ -3,6 +3,11 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 
+-- The isolated PostgreSQL 17 pgTAP helpers live outside authenticated's
+-- default schema privileges; this transaction-local grant keeps the existing
+-- exact polymorphic comparisons callable while all fixture writes roll back.
+grant usage on schema extensions to authenticated;
+
 select plan(246);
 
 select has_table(
@@ -169,7 +174,7 @@ select is(
 
 select ok(
   (
-    select count(*) = 8 and bool_and(constraint_definition.confdeltype = 'r')
+    select count(*) = 9 and bool_and(constraint_definition.confdeltype = 'r')
     from pg_catalog.pg_constraint constraint_definition
     join pg_catalog.pg_class relation
       on relation.oid = constraint_definition.conrelid
@@ -185,7 +190,7 @@ select ok(
         'attendance_accounting_audit_log'
       )
   ),
-  'all eight normalized foreign keys restrict deletion'
+  'all nine normalized foreign keys restrict deletion'
 );
 
 select ok(
@@ -1975,6 +1980,7 @@ select throws_ok(
   'alert count propagates authorization failures instead of returning zero'
 );
 reset role;
+grant usage on schema extensions to anon;
 
 set local role anon;
 select throws_ok(
@@ -2087,7 +2093,7 @@ select is(
 
 select ok(
   (
-    select count(*) = 13
+    select count(*) = 15
       and bool_and(procedure.prosecdef)
       and bool_and(pg_get_function_result(procedure.oid) = 'jsonb')
       and bool_and(
@@ -2133,12 +2139,12 @@ select ok(
         'get_attendance_accounting_bridge_secure'
       )
   ),
-  'accounting RPCs are exact jsonb SECURITY DEFINER surfaces with closed ACLs'
+  'v1 and reviewed accounting RPCs are exact closed SECURITY DEFINER surfaces'
 );
 
 select ok(
   (
-    select count(*) = 13
+    select count(*) = 15
       and bool_and(
         case
           when procedure.proname in (
@@ -2171,7 +2177,7 @@ select ok(
         'get_attendance_accounting_bridge_secure'
       )
   ),
-  'read RPCs are stable and write RPCs remain volatile'
+  'read RPCs are stable and v1/reviewed writes remain volatile'
 );
 
 select ok(

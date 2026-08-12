@@ -172,6 +172,27 @@ v2 写 RPC 只返回两种联合结果：未确认越界且没有任何写入时
 服务器计算。所有 v2 函数先撤销 `public / anon` 执行权，再仅授权 `authenticated / service_role`；
 v1 签名与既有权限在过渡期保持不变。
 
+### 定位复核与公司人员工资（迁移 `202608120002`）
+
+`attendance_day_resolutions` 新增结构化审计字段：
+
+- `location_review_status text`：仅允许 `confirmed_valid / recorded_abnormal`；
+- `location_review_note text not null default ''`：去除首尾空白后最多 2000 字；
+- `location_reviewed_by_employee_profile_id uuid`、`location_reviewed_at timestamptz`：由服务器写入复核人和时间。
+
+权威打卡事实含越界定位时，确认 RPC 必须同时提交状态和 `1..2000` 字说明；正常定位日则四个复核字段必须为空。两种结论都不改变日结类型、出勤人天或最终项目成本。`recorded_abnormal` 只进入月工资复核备注，不触发处分或扣薪。
+
+日模式优先从该日历史场次推导：项目场次优先于通用场次，没有场次时才读取规范员工策略。因此历史项目日不会随当前部门变更而转为公司成本。通用模式拒绝任何非零项目成本或项目分摊；免打卡模式不创建日结、场次或事件。
+
+`attendance_monthly_payrolls` 新增不可变核算快照：
+
+- `attendance_method_snapshot text not null default 'project'`：`project / general / exempt`；
+- `company_personnel_cost numeric not null default 0`：仅通用和免打卡模式等于已确认净工资，项目模式为零；
+- `location_abnormal_count integer not null default 0`；
+- `location_review_summary text not null default ''`。
+
+`general` 的已确认日结仍驱动工资，但项目金额均为零；`exempt` 把在职区间内的排班工作日按整天带入既有工资公式，不补造任何日记录。月工资 DTO 另从当前员工档案返回 `position` 供显示；确认后的模式、金额与复核汇总只读工资快照，不因职位或部门变化重算。日结和月工资审计 JSON 分别包含新增的复核字段和公司工资快照字段。
+
 ### attendance_accounting 人工考勤核算
 
 `202607160001_attendance_accounting.sql` 在不可变“今日打卡”事实之上增加五张规范表：

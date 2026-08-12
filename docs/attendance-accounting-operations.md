@@ -1,6 +1,6 @@
 # 人工考勤、工资与项目用工费用运维手册
 
-本手册用于部署和验收 `202607160001_attendance_accounting.sql`。生产环境操作应在维护窗口内由数据库管理员和会计负责人共同执行；本文不授权直接修改生产数据。
+本手册用于部署和验收 `202607160001_attendance_accounting.sql`、部门打卡策略和审计复核扩展。生产环境操作应在维护窗口内由数据库管理员和会计负责人共同执行；本文不授权直接修改生产数据。
 
 ## 部署前准备
 
@@ -36,6 +36,8 @@ where status <> 'deleted';
 
 1. `202607150003_today_attendance.sql`
 2. `202607160001_attendance_accounting.sql`
+3. `202608120001_department_attendance_modes.sql`
+4. `202608120002_attendance_location_review_and_company_payroll.sql`
 
 迁移后确认五张核算表均启用 RLS，浏览器角色没有表级写权限，只能调用显式授权的 security-definer RPC。`docs/supabase-schema.sql` 是审查参考，不代替有序迁移。
 
@@ -72,6 +74,16 @@ where status <> 'deleted';
 
 首次确认日结或月工资后，系统禁止普通设置操作修改启用日期。确需更改分界，必须另写经审计的数据迁移，先完成影响分析和备份，不能直接更新设置表。
 
+## 部门模式、定位复核与公司工资
+
+服务器按事实和员工策略决定核算模式，浏览器不能指定模式。已有日期优先读取该日打卡场次：存在项目场次即为 `project`，否则存在通用场次即为 `general`；没有历史场次时才按规范员工档案派生。这样，员工以后调离工程部不会改写历史项目日结。
+
+- 项目打卡出现越界事实时，确认日结必须选择“确认有效”或“判定异常”，并填写去除首尾空白后 `1..2000` 字的复核说明；复核人和时间由服务器写入。正常定位日不得带复核字段。
+- 两种复核结论都只形成审计信息，不改变日结类型、出勤人天或最终项目人工成本。“判定异常”只是工资备注，不代表处分或扣薪。
+- `general` 使用已确认日结计算工资，但项目分摊与项目成本始终为零；净工资进入公司人员成本，不进入项目成本。
+- `exempt` 不生成打卡事件、场次或日结。符合在职区间和工作日设置的日期按整天参与现有月薪公式，净工资进入公司人员成本。
+- 月工资确认后冻结 `project / general / exempt` 模式、公司人员成本和定位复核汇总。职位只取当前规范员工档案用于显示，不参与已确认金额计算。
+
 ## 历史数据核对
 
 迁移后再次执行部署前的两组计数，结果不得减少。然后在“月度工资”和“项目用工费用”标签查看“历史数据核对”：
@@ -107,6 +119,7 @@ npm test
 npm run build
 npx supabase db reset --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db supabase/tests/attendance_accounting.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
+npx supabase test db supabase/tests/attendance_accounting.sql supabase/tests/attendance_location_review_and_company_payroll.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 ```
 
@@ -128,6 +141,10 @@ npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-account
 - [ ] 星期日无场次时显示可选，不标红；星期日有场次时可核对打卡事实。
 - [ ] 休息、请假、调休确认后移除缺卡提醒。
 - [ ] 多项目分摊总额不等于当日最终项目人工成本时不能确认；完全相等时才可确认。
+- [ ] 越界定位没有结构化结论或有效说明时不能确认；正常定位日的复核字段保持空值。
+- [ ] 项目员工调部门后，已有项目场次的历史日期仍按项目模式核算。
+- [ ] 通用打卡工资只进入公司人员成本，项目分摊和项目成本都为零。
+- [ ] 免打卡员工无需生成日记录即可按完整排班和既有月薪公式确认工资。
 - [ ] 月工资显示整天、半天、应出勤人天、已确认人天和待处理天数；有未处理日结时不能确认月份。
 - [ ] 已确认月份锁定对应日结；重开操作要求原因并留下审计。
 - [ ] 项目标签能查询选定月份和整个项目累计用工费用，并下载 UTF-8、金额可读且防公式注入的 CSV。
@@ -147,5 +164,7 @@ npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-account
 - 删除已确认日结、项目分摊或月工资以恢复旧合计；
 - 关闭 RLS、授予浏览器直接表访问，或把工资数据退回 localStorage；
 - 在已有确认记录后直接改写启用日期。
+- 将已确认月工资的模式或公司人员成本按员工当前部门重新计算，或用职位字段重算金额。
+- 为免打卡员工补造打卡、场次或日结，或把公司人员成本转入项目分摊。
 
 若数据库迁移本身必须撤回，应停止前端流量，保存新数据备份和受影响 ID 清单，再由数据库管理员制定前向修复或从部署前完整备份恢复。恢复前必须评估维护窗口内新增打卡和审计数据，禁止只删除新表而遗失事实链。

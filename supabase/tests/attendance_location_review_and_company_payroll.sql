@@ -1,0 +1,498 @@
+begin;
+
+create extension if not exists pgtap with schema extensions;
+set local search_path = pg_temp, public, auth, extensions;
+select no_plan();
+
+select col_type_is(
+  'public', 'attendance_day_resolutions', 'location_review_status', 'text',
+  'daily resolution stores the structured review status'
+);
+select col_type_is(
+  'public', 'attendance_day_resolutions', 'location_review_note', 'text',
+  'daily resolution stores the structured review note'
+);
+select col_type_is(
+  'public', 'attendance_day_resolutions',
+  'location_reviewed_by_employee_profile_id', 'uuid',
+  'daily resolution stores the canonical reviewer profile'
+);
+select col_type_is(
+  'public', 'attendance_day_resolutions', 'location_reviewed_at',
+  'timestamp with time zone', 'daily resolution stores the review timestamp'
+);
+select col_type_is(
+  'public', 'attendance_monthly_payrolls', 'attendance_method_snapshot', 'text',
+  'monthly payroll snapshots the server attendance method'
+);
+select col_type_is(
+  'public', 'attendance_monthly_payrolls', 'company_personnel_cost', 'numeric',
+  'monthly payroll stores company personnel cost'
+);
+select col_type_is(
+  'public', 'attendance_monthly_payrolls', 'location_abnormal_count', 'integer',
+  'monthly payroll snapshots location abnormal count'
+);
+select col_type_is(
+  'public', 'attendance_monthly_payrolls', 'location_review_summary', 'text',
+  'monthly payroll snapshots location review summary'
+);
+
+select has_function('public', 'confirm_attendance_resolution_secure', array[
+  'uuid', 'date', 'text', 'numeric', 'numeric', 'jsonb', 'text',
+  'text', 'text', 'integer'
+]);
+select has_function('public', 'save_attendance_resolution_draft_secure', array[
+  'uuid', 'date', 'text', 'numeric', 'numeric', 'jsonb', 'text',
+  'text', 'text', 'integer'
+]);
+select ok(
+  has_function_privilege(
+    'authenticated',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,text,text,integer)',
+    'EXECUTE'
+  )
+  and has_function_privilege(
+    'service_role',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,text,text,integer)',
+    'EXECUTE'
+  )
+  and not has_function_privilege(
+    'anon',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,text,text,integer)',
+    'EXECUTE'
+  ),
+  'review confirmation RPC remains closed to anon and executable by trusted roles'
+);
+select ok(
+  not has_function_privilege(
+    'anon',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,integer)',
+    'EXECUTE'
+  )
+  and has_function_privilege(
+    'authenticated',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,integer)',
+    'EXECUTE'
+  )
+  and has_function_privilege(
+    'service_role',
+    'public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,integer)',
+    'EXECUTE'
+  ),
+  'legacy confirmation RPC keeps its closed trusted-role ACL'
+);
+
+insert into auth.users(
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '00000000-0000-0000-0000-000000000000',
+  '85000000-0000-4000-8000-000000000001',
+  'authenticated', 'authenticated', 'task5-accountant@auth.invalid', '', now(),
+  '{}'::jsonb, '{}'::jsonb, now(), now()
+);
+
+insert into public.permission_grants(
+  subject_type, subject_code, permission_key
+) values
+  ('position', '会计主管', 'module.labor.view'),
+  ('position', '会计主管', 'module.labor.update'),
+  ('position', '会计主管', 'sensitive.salary_view'),
+  ('position', '会计主管', 'sensitive.salary_update'),
+  ('position', '会计主管', 'module.project_costs.view'),
+  ('position', '会计主管', 'module.project_costs.update')
+on conflict do nothing;
+
+insert into public.employee_profiles(
+  id, employee_number, auth_user_id, name, department, position,
+  employment_status, hire_date, resign_date, account_status,
+  must_change_password, is_hidden_system_account, attendance_required,
+  base_salary, daily_salary, hourly_wage
+) values
+  (
+    '86000000-0000-4000-8000-000000000001', 'SW-8601',
+    '85000000-0000-4000-8000-000000000001', 'Task5核算员', '财务部',
+    '会计主管', '在职', '2026-01-01', null, 'active', false, false, true,
+    null, null, null
+  ),
+  (
+    '86000000-0000-4000-8000-000000000002', 'SW-8602', null,
+    '历史项目员工', '工程部', '小工', '离职', '2026-08-03', '2026-08-05',
+    'active', true, false, true, null, 10000, null
+  ),
+  (
+    '86000000-0000-4000-8000-000000000003', 'SW-8603', null,
+    '公司考勤员工', '总务部', '总务部长', '离职', '2026-08-04', '2026-08-04',
+    'active', true, false, true, null, 12000, null
+  ),
+  (
+    '86000000-0000-4000-8000-000000000004', 'SW-8604', null,
+    '免打卡员工', '后勤部', '会计', '在职', '2026-01-01', null,
+    'active', true, false, false, 320000, null, null
+  );
+
+insert into public.attendance_accounting_settings(
+  effective_from, work_weekdays, updated_by_employee_profile_id
+) values (
+  '2026-08-01', array[1,2,3,4,5]::smallint[],
+  '86000000-0000-4000-8000-000000000001'
+);
+
+insert into public.projects(record_key, payload, status) values (
+  'P-TASK5',
+  '{"projectId":"P-TASK5","projectName":"Task5项目"}'::jsonb,
+  'active'
+);
+
+insert into public.project_attendance_sessions(
+  session_id, employee_profile_id, employee_number_snapshot,
+  employee_name_snapshot, attendance_mode, project_id, project_name_snapshot,
+  project_address_snapshot, project_latitude_snapshot,
+  project_longitude_snapshot, attendance_radius_meters_snapshot,
+  work_date, status, opened_at, closed_at
+) values
+  (
+    '87000000-0000-4000-8000-000000000001',
+    '86000000-0000-4000-8000-000000000002', 'SW-8602', '历史项目员工',
+    'project', 'P-TASK5', 'Task5项目', '项目地址', 35.0, 139.0, 100,
+    '2026-08-03', 'closed', '2026-08-03 08:00+09', '2026-08-03 17:00+09'
+  ),
+  (
+    '87000000-0000-4000-8000-000000000002',
+    '86000000-0000-4000-8000-000000000002', 'SW-8602', '历史项目员工',
+    'project', 'P-TASK5', 'Task5项目', '项目地址', 35.0, 139.0, 100,
+    '2026-08-04', 'closed', '2026-08-04 08:00+09', '2026-08-04 17:00+09'
+  ),
+  (
+    '87000000-0000-4000-8000-000000000003',
+    '86000000-0000-4000-8000-000000000002', 'SW-8602', '历史项目员工',
+    'project', 'P-TASK5', 'Task5项目', '项目地址', 35.0, 139.0, 100,
+    '2026-08-05', 'closed', '2026-08-05 08:00+09', '2026-08-05 17:00+09'
+  ),
+  (
+    '87000000-0000-4000-8000-000000000004',
+    '86000000-0000-4000-8000-000000000003', 'SW-8603', '公司考勤员工',
+    'general', null, null, null, null, null, null,
+    '2026-08-04', 'closed', '2026-08-04 08:00+09', '2026-08-04 17:00+09'
+  );
+
+insert into public.project_attendance_events(
+  event_id, session_id, event_type, request_id, server_recorded_at,
+  latitude, longitude, accuracy_meters, distance_meters, radius_meters,
+  result, abnormal_reason, out_of_range_confirmed_at
+) values
+  (
+    '88000000-0000-4000-8000-000000000001',
+    '87000000-0000-4000-8000-000000000001', 'clock_in',
+    '89000000-0000-4000-8000-000000000001', '2026-08-03 08:00+09',
+    35.01, 139.01, 5, 1500, 100, 'abnormal',
+    'outside attendance radius confirmed', '2026-08-03 08:00+09'
+  ),
+  (
+    '88000000-0000-4000-8000-000000000002',
+    '87000000-0000-4000-8000-000000000002', 'clock_in',
+    '89000000-0000-4000-8000-000000000002', '2026-08-04 08:00+09',
+    35.01, 139.01, 5, 1500, 100, 'abnormal',
+    'outside attendance radius confirmed', '2026-08-04 08:00+09'
+  ),
+  (
+    '88000000-0000-4000-8000-000000000003',
+    '87000000-0000-4000-8000-000000000003', 'clock_in',
+    '89000000-0000-4000-8000-000000000003', '2026-08-05 08:00+09',
+    35.0, 139.0, 5, 0, 100, 'normal', null, null
+  ),
+  (
+    '88000000-0000-4000-8000-000000000004',
+    '87000000-0000-4000-8000-000000000004', 'clock_in',
+    '89000000-0000-4000-8000-000000000004', '2026-08-04 08:00+09',
+    35.5, 139.5, 5, null, null, 'not_applicable', null, null
+  );
+
+-- The current department is deliberately changed after project facts exist.
+update public.employee_profiles
+set department = '总务部'
+where id = '86000000-0000-4000-8000-000000000002';
+
+select set_config(
+  'request.jwt.claim.sub', '85000000-0000-4000-8000-000000000001', true
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-03'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', null, '', 0
+  ) $$,
+  '55000', 'location review is required for out-of-range attendance',
+  'out-of-range attendance cannot be confirmed without structured review'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-03'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', 0
+  ) $$,
+  '55000', 'location review is required for out-of-range attendance',
+  'legacy confirmation cannot bypass required structured location review'
+);
+
+select ok(
+  coalesce(current_setting(
+    'app.attendance_location_review_explicit', true
+  ), '') = ''
+  and coalesce(current_setting(
+    'app.attendance_location_review_status', true
+  ), '') = ''
+  and coalesce(current_setting(
+    'app.attendance_location_review_note', true
+  ), '') = '',
+  'failed review confirmation clears transaction-local review context'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-03'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', 'confirmed_valid', repeat('x', 2001), 0
+  ) $$,
+  '22023', 'valid location review note required',
+  'location review note is limited to 2000 trimmed characters'
+);
+
+select lives_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-03'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', 'confirmed_valid', '现场证明定位有效', 0
+  ) $$,
+  'historical project facts remain project mode after the current department changes'
+);
+
+select lives_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-04'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', 'recorded_abnormal', '保留定位异常记录，不作处分', 0
+  ) $$,
+  'recorded abnormal review confirms without changing the attendance conclusion'
+);
+
+select ok(
+  (
+    select count(*) = 2
+      and min(attendance_units) = 1
+      and max(attendance_units) = 1
+      and min(final_project_cost) = 10000
+      and max(final_project_cost) = 10000
+      and count(distinct location_review_status) = 2
+    from public.attendance_day_resolutions
+    where employee_profile_id = '86000000-0000-4000-8000-000000000002'
+      and work_date in ('2026-08-03', '2026-08-04')
+  ),
+  'both review outcomes preserve identical attendance units and project cost'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-05'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', 'confirmed_valid', '正常日不应复核', 0
+  ) $$,
+  '22023', 'location review is not allowed without out-of-range attendance',
+  'location-normal days reject review metadata'
+);
+
+select lives_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000002'::uuid, '2026-08-05'::date,
+    'full_day', 1, 10000,
+    '[{"projectId":"P-TASK5","amount":10000,"allocationNote":""}]'::jsonb,
+    '', null, '', 0
+  ) $$,
+  'location-normal project day confirms with empty review fields'
+);
+
+select ok(
+  (
+    select location_review_status is null
+      and location_review_note = ''
+      and location_reviewed_by_employee_profile_id is null
+      and location_reviewed_at is null
+    from public.attendance_day_resolutions
+    where employee_profile_id = '86000000-0000-4000-8000-000000000002'
+      and work_date = '2026-08-05'
+  ),
+  'normal project day persists no review metadata'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000003'::uuid, '2026-08-04'::date,
+    'full_day', 1, 12000,
+    '[{"projectId":"P-TASK5","amount":12000,"allocationNote":""}]'::jsonb,
+    '', null, '', 0
+  ) $$,
+  '22023', 'general attendance cannot create project labor cost',
+  'general attendance rejects project cost and allocations from the client'
+);
+
+select lives_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000003'::uuid, '2026-08-04'::date,
+    'full_day', 1, 0, '[]'::jsonb, '', null, '', 0
+  ) $$,
+  'general attendance confirms only as company personnel attendance'
+);
+
+select ok(
+  (
+    select resolution.final_project_cost = 0
+      and resolution.suggested_project_cost = 0
+      and not exists (
+        select 1 from public.attendance_project_allocations allocation
+        where allocation.resolution_id = resolution.resolution_id
+      )
+    from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id =
+      '86000000-0000-4000-8000-000000000003'
+      and resolution.work_date = '2026-08-04'
+  ),
+  'general daily confirmation stores zero project cost and no allocation row'
+);
+
+select lives_ok(
+  $$ select public.confirm_monthly_payroll_secure(
+    '86000000-0000-4000-8000-000000000003'::uuid,
+    '2026-08-01'::date, 0, 0, 0, '', 0
+  ) $$,
+  'general monthly payroll confirms from its confirmed daily attendance'
+);
+
+select ok(
+  (
+    select attendance_method_snapshot = 'general'
+      and company_personnel_cost = net_salary
+      and company_personnel_cost = 12000
+    from public.attendance_monthly_payrolls
+    where employee_profile_id = '86000000-0000-4000-8000-000000000003'
+      and salary_month = '2026-08-01'
+  ),
+  'general payroll snapshots its method and full net salary as company cost'
+);
+
+select lives_ok(
+  $$ select public.confirm_monthly_payroll_secure(
+    '86000000-0000-4000-8000-000000000004'::uuid,
+    '2026-08-01'::date, 0, 0, 0, '', 0
+  ) $$,
+  'exempt monthly payroll confirms without daily attendance resolution'
+);
+
+select ok(
+  (
+    select attendance_method_snapshot = 'exempt'
+      and base_pay = 320000
+      and net_salary = 320000
+      and company_personnel_cost = 320000
+    from public.attendance_monthly_payrolls
+    where employee_profile_id = '86000000-0000-4000-8000-000000000004'
+      and salary_month = '2026-08-01'
+  ),
+  'exempt monthly salary uses the configured full monthly amount as company cost'
+);
+
+select is(
+  (
+    select count(*)
+    from public.attendance_day_resolutions
+    where employee_profile_id = '86000000-0000-4000-8000-000000000004'
+  ),
+  0::bigint,
+  'exempt payroll creates no synthetic daily resolutions'
+);
+select is(
+  (
+    select count(*)
+    from public.project_attendance_sessions
+    where employee_profile_id = '86000000-0000-4000-8000-000000000004'
+  ),
+  0::bigint,
+  'exempt payroll creates no synthetic clock sessions or events'
+);
+
+select ok(
+  (
+    select audit.after_snapshot->>'locationReviewStatus' = 'recorded_abnormal'
+      and audit.after_snapshot->>'locationReviewNote' =
+        '保留定位异常记录，不作处分'
+    from public.attendance_accounting_audit_log audit
+    join public.attendance_day_resolutions resolution
+      on audit.object_id = resolution.resolution_id::text
+    where resolution.employee_profile_id =
+      '86000000-0000-4000-8000-000000000002'
+      and resolution.work_date = '2026-08-04'
+      and audit.action_type = 'resolution_confirmed'
+  ),
+  'daily immutable audit snapshot contains the structured location review'
+);
+
+select ok(
+  (
+    select audit.after_snapshot->>'attendanceMethodSnapshot' = 'exempt'
+      and (audit.after_snapshot->>'companyPersonnelCost')::numeric = 320000
+    from public.attendance_accounting_audit_log audit
+    join public.attendance_monthly_payrolls payroll
+      on audit.object_id = payroll.payroll_id::text
+    where payroll.employee_profile_id =
+      '86000000-0000-4000-8000-000000000004'
+      and audit.action_type = 'payroll_confirmed'
+  ),
+  'monthly immutable audit snapshot contains attendance method and company cost'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-08-01'::date, '',
+        '86000000-0000-4000-8000-000000000004'::uuid, false
+      ) result
+    )
+    select result#>>'{employees,0,position}' = '会计'
+      and result#>>'{employees,0,attendanceMethod}' = 'exempt'
+      and (result#>>'{employees,0,companyPersonnelCost}')::numeric = 320000
+      and (result#>>'{employees,0,projectAllocatedAmount}')::numeric = 0
+      and (result#>>'{employees,0,projectUnallocatedAmount}')::numeric = 0
+    from report
+  ),
+  'monthly DTO carries display-only position and snapshot-owned exempt company cost'
+);
+
+select ok(
+  (
+    with report as (
+      select public.list_monthly_payroll_secure(
+        '2026-08-01'::date, '',
+        '86000000-0000-4000-8000-000000000002'::uuid, false
+      ) result
+    )
+    select (result#>>'{employees,0,locationAbnormalCount}')::integer = 2
+      and result#>>'{employees,0,locationReviewSummary}' like '%确认有效%'
+      and result#>>'{employees,0,locationReviewSummary}' like '%判定异常%'
+      and result#>>'{employees,0,locationReviewSummary}' like
+        '%保留定位异常记录，不作处分%'
+    from report
+  ),
+  'monthly DTO labels verified locations and carries recorded-abnormal remarks'
+);
+
+select * from finish();
+rollback;
