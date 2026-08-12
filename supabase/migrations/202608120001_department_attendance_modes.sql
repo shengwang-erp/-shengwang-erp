@@ -9,6 +9,91 @@ alter table public.employee_profiles
   add column attendance_policy_updated_by uuid
     references public.employee_profiles(id) on delete restrict;
 
+create table public.employee_attendance_policy_history (
+  policy_id uuid primary key default gen_random_uuid(),
+  policy_version bigint generated always as identity unique,
+  employee_profile_id uuid not null
+    references public.employee_profiles(id) on delete restrict,
+  effective_from date not null,
+  attendance_required boolean not null,
+  department_snapshot text not null,
+  attendance_mode text not null check (attendance_mode in ('project', 'general', 'exempt')),
+  source text not null default 'admin_update'
+    check (source in ('migration_baseline', 'employee_created', 'admin_update')),
+  changed_by_employee_profile_id uuid
+    references public.employee_profiles(id) on delete restrict,
+  changed_at timestamptz not null default clock_timestamp(),
+  check (effective_from between date '1900-01-01' and date '2100-12-31'),
+  check (btrim(department_snapshot) <> ''),
+  check (attendance_mode = case
+    when not attendance_required then 'exempt'
+    when department_snapshot = '工程部' then 'project'
+    else 'general'
+  end)
+);
+
+create index employee_attendance_policy_history_effective_idx
+  on public.employee_attendance_policy_history(
+    employee_profile_id, effective_from desc, policy_version desc
+  );
+
+alter table public.employee_attendance_policy_history enable row level security;
+
+insert into public.employee_attendance_policy_history(
+  employee_profile_id, effective_from, attendance_required,
+  department_snapshot, attendance_mode
+)
+select profile.id, date '1900-01-01', profile.attendance_required,
+  profile.department, case
+    when not profile.attendance_required then 'exempt'
+    when profile.department = '工程部' then 'project'
+    else 'general'
+  end
+from public.employee_profiles profile;
+
+update public.employee_attendance_policy_history
+set source = 'migration_baseline';
+
+create or replace function private.initialize_employee_attendance_policy()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  insert into public.employee_attendance_policy_history(
+    employee_profile_id, effective_from, attendance_required,
+    department_snapshot, attendance_mode, source
+  ) values (
+    new.id, date '1900-01-01', new.attendance_required, new.department,
+    case when not new.attendance_required then 'exempt'
+      when new.department = '工程部' then 'project' else 'general' end,
+    'employee_created'
+  );
+  return new;
+end;
+$$;
+
+create trigger initialize_employee_attendance_policy
+after insert on public.employee_profiles
+for each row execute function private.initialize_employee_attendance_policy();
+
+create or replace function private.protect_employee_attendance_policy_history()
+returns trigger
+language plpgsql
+set search_path = pg_catalog
+as $$
+begin
+  raise exception using
+    errcode = '55000',
+    message = 'attendance policy history is append-only';
+end;
+$$;
+
+create trigger protect_employee_attendance_policy_history
+before update or delete on public.employee_attendance_policy_history
+for each row execute function private.protect_employee_attendance_policy_history();
+
 alter table public.project_attendance_sessions
   add column attendance_mode text not null default 'project';
 
@@ -110,6 +195,23 @@ as $$
   end;
 $$;
 
+create or replace function private.attendance_policy_mode_at(
+  p_employee_profile_id uuid,
+  p_work_date date
+) returns text
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select history.attendance_mode
+  from public.employee_attendance_policy_history history
+  where history.employee_profile_id = p_employee_profile_id
+    and history.effective_from <= p_work_date
+  order by history.effective_from desc, history.policy_version desc
+  limit 1;
+$$;
+
 create or replace function private.attendance_event_v2_json(p_event_id uuid)
 returns jsonb
 language sql
@@ -189,6 +291,321 @@ as $$
   )
   from public.project_attendance_sessions session
   where session.session_id = p_session_id;
+$$;
+
+-- V1 remains a project-only compatibility boundary. General sessions/events are
+-- deliberately omitted so the legacy strict DTO never receives nullable project
+-- identity or the v2-only not_applicable result.
+create or replace function public.list_attendance_projects_secure()
+returns setof jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+begin
+  actor := private.current_attendance_employee();
+  if private.attendance_policy_mode_at(
+       actor.id, timezone('Asia/Tokyo', statement_timestamp())::date
+     ) <> 'project' then
+    return;
+  end if;
+  return query select * from public.list_attendance_projects_v2_secure();
+end;
+$$;
+
+create or replace function public.get_my_today_attendance_secure()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  server_work_date date := timezone('Asia/Tokyo', statement_timestamp())::date;
+  viewer_scope text;
+begin
+  actor := private.current_attendance_employee();
+  viewer_scope := private.current_attendance_viewer_scope(actor.id);
+  return jsonb_build_object(
+    'workDate', server_work_date,
+    'viewerAccess', jsonb_build_object(
+      'scope', viewer_scope,
+      'canViewScopedRecords', viewer_scope in ('assigned_projects', 'all')
+    ),
+    'activeSession', (
+      select private.attendance_session_json(session.session_id)
+      from public.project_attendance_sessions session
+      where session.employee_profile_id = actor.id
+        and session.status = 'open'
+        and session.attendance_mode = 'project'
+      order by session.opened_at desc, session.session_id
+      limit 1
+    ),
+    'completedSessions', coalesce((
+      select jsonb_agg(private.attendance_session_json(session.session_id)
+        order by session.opened_at desc, session.session_id)
+      from public.project_attendance_sessions session
+      where session.employee_profile_id = actor.id
+        and session.status = 'closed'
+        and session.attendance_mode = 'project'
+        and session.work_date = server_work_date
+    ), '[]'::jsonb),
+    'pendingPhotoReservations', coalesce((
+      select jsonb_agg(private.attendance_photo_json(photo.photo_id)
+        order by photo.created_at, photo.photo_id)
+      from public.project_attendance_sessions session
+      join public.project_attendance_work_points point on point.session_id = session.session_id
+      join public.project_attendance_photos photo on photo.work_point_id = point.work_point_id
+      where session.employee_profile_id = actor.id
+        and session.status = 'open'
+        and session.attendance_mode = 'project'
+        and photo.upload_status = 'pending'
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+alter function public.clock_in_project_secure(
+  text, uuid, double precision, double precision, numeric, timestamptz, text
+) rename to clock_in_project_v1_unsafe;
+alter function public.clock_in_project_v1_unsafe(
+  text, uuid, double precision, double precision, numeric, timestamptz, text
+) set schema private;
+
+create function public.clock_in_project_secure(
+  p_project_id text,
+  p_request_id uuid,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_accuracy_meters numeric,
+  p_device_recorded_at timestamptz default null,
+  p_abnormal_reason text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  existing_event_id uuid;
+  existing_session_id uuid;
+  existing_event_type text;
+  existing_employee_profile_id uuid;
+  existing_project_id text;
+  existing_attendance_mode text;
+  normalized_reason text;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_project_id is null
+    or p_project_id <> btrim(p_project_id)
+    or p_project_id = ''
+    or p_request_id is null
+    or p_latitude is null
+    or p_latitude not between -90 and 90
+    or p_latitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_longitude is null
+    or p_longitude not between -180 and 180
+    or p_longitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_accuracy_meters is null
+    or p_accuracy_meters <= 0
+    or p_accuracy_meters::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception using
+      errcode = '22023', message = 'invalid attendance clock-in request';
+  end if;
+  normalized_reason := nullif(regexp_replace(
+    p_abnormal_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+  ), '');
+  if normalized_reason is not null and char_length(normalized_reason) > 500 then
+    raise exception using
+      errcode = '22023', message = 'invalid attendance abnormal reason';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_request_id::text, 0));
+  select event.event_id, event.session_id, event.event_type,
+         attendance_session.employee_profile_id, attendance_session.project_id,
+         attendance_session.attendance_mode
+    into existing_event_id, existing_session_id, existing_event_type,
+         existing_employee_profile_id, existing_project_id,
+         existing_attendance_mode
+  from public.project_attendance_events event
+  join public.project_attendance_sessions attendance_session
+    on attendance_session.session_id = event.session_id
+  where event.request_id = p_request_id;
+  if found then
+    if existing_employee_profile_id = actor.id
+      and existing_event_type = 'clock_in'
+      and existing_project_id = p_project_id
+      and existing_attendance_mode = 'project'
+    then
+      return jsonb_build_object(
+        'session', private.attendance_session_json(existing_session_id),
+        'event', private.attendance_event_json(existing_event_id)
+      );
+    end if;
+    raise exception using
+      errcode = '22023', message = 'attendance request identifier conflict',
+      hint = 'ATTENDANCE_REQUEST_CONFLICT';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
+  select profile.* into actor
+  from public.employee_profiles profile
+  where profile.id = actor.id
+  for update;
+  if private.attendance_policy_mode_at(
+       actor.id, timezone('Asia/Tokyo', statement_timestamp())::date
+     ) <> 'project' then
+    raise exception using errcode = '42501', message = 'project attendance policy required';
+  end if;
+  return private.clock_in_project_v1_unsafe(
+    p_project_id, p_request_id, p_latitude, p_longitude,
+    p_accuracy_meters, p_device_recorded_at, p_abnormal_reason
+  );
+end;
+$$;
+
+alter function public.clock_out_project_secure(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) rename to clock_out_project_v1_unsafe;
+alter function public.clock_out_project_v1_unsafe(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) set schema private;
+
+create function public.clock_out_project_secure(
+  p_session_id uuid,
+  p_request_id uuid,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_accuracy_meters numeric,
+  p_device_recorded_at timestamptz default null,
+  p_abnormal_reason text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  actor public.employee_profiles%rowtype;
+  existing_event_id uuid;
+  existing_session_id uuid;
+  existing_event_type text;
+  existing_employee_profile_id uuid;
+  existing_attendance_mode text;
+  normalized_reason text;
+begin
+  actor := private.current_attendance_employee();
+
+  if p_session_id is null
+    or p_request_id is null
+    or p_latitude is null
+    or p_latitude not between -90 and 90
+    or p_latitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_longitude is null
+    or p_longitude not between -180 and 180
+    or p_longitude::text in ('NaN', 'Infinity', '-Infinity')
+    or p_accuracy_meters is null
+    or p_accuracy_meters <= 0
+    or p_accuracy_meters::text in ('NaN', 'Infinity', '-Infinity')
+  then
+    raise exception using
+      errcode = '22023', message = 'invalid attendance clock-out request';
+  end if;
+  normalized_reason := nullif(regexp_replace(
+    p_abnormal_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g'
+  ), '');
+  if normalized_reason is not null and char_length(normalized_reason) > 500 then
+    raise exception using
+      errcode = '22023', message = 'invalid attendance abnormal reason';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_request_id::text, 0));
+  select event.event_id, event.session_id, event.event_type,
+         attendance_session.employee_profile_id,
+         attendance_session.attendance_mode
+    into existing_event_id, existing_session_id, existing_event_type,
+         existing_employee_profile_id, existing_attendance_mode
+  from public.project_attendance_events event
+  join public.project_attendance_sessions attendance_session
+    on attendance_session.session_id = event.session_id
+  where event.request_id = p_request_id;
+  if found then
+    if existing_employee_profile_id = actor.id
+      and existing_event_type = 'clock_out'
+      and existing_session_id = p_session_id
+      and existing_attendance_mode = 'project'
+    then
+      return jsonb_build_object(
+        'session', private.attendance_session_json(existing_session_id),
+        'event', private.attendance_event_json(existing_event_id)
+      );
+    end if;
+    raise exception using
+      errcode = '22023', message = 'attendance request identifier conflict',
+      hint = 'ATTENDANCE_REQUEST_CONFLICT';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
+  select profile.* into actor
+  from public.employee_profiles profile
+  where profile.id = actor.id
+  for update;
+  if private.attendance_policy_mode_at(
+       actor.id, timezone('Asia/Tokyo', statement_timestamp())::date
+     ) <> 'project' then
+    raise exception using errcode = '42501', message = 'project attendance policy required';
+  end if;
+  return private.clock_out_project_v1_unsafe(
+    p_session_id, p_request_id, p_latitude, p_longitude,
+    p_accuracy_meters, p_device_recorded_at, p_abnormal_reason
+  );
+end;
+$$;
+
+alter function public.list_attendance_records_secure(
+  date, text, uuid, timestamptz, uuid, integer
+) rename to list_attendance_records_v1_unfiltered;
+alter function public.list_attendance_records_v1_unfiltered(
+  date, text, uuid, timestamptz, uuid, integer
+) set schema private;
+
+create function public.list_attendance_records_secure(
+  p_work_date date default null,
+  p_project_id text default null,
+  p_employee_profile_id uuid default null,
+  p_before_opened_at timestamptz default null,
+  p_before_session_id uuid default null,
+  p_limit integer default 50
+) returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  result jsonb;
+  project_items jsonb;
+begin
+  result := private.list_attendance_records_v1_unfiltered(
+    p_work_date, p_project_id, p_employee_profile_id,
+    p_before_opened_at, p_before_session_id, p_limit
+  );
+  select coalesce(jsonb_agg(item), '[]'::jsonb) into project_items
+  from jsonb_array_elements(result->'items') item
+  where item->>'projectId' is not null;
+  result := jsonb_set(result, '{items}', project_items);
+  result := jsonb_set(result, '{filterOptions,projects}', coalesce((
+    select jsonb_agg(option)
+    from jsonb_array_elements(result#>'{filterOptions,projects}') option
+    where option->>'projectId' is not null
+  ), '[]'::jsonb));
+  return result;
+end;
 $$;
 
 create or replace function private.enforce_attendance_event_session_mode()
@@ -409,14 +826,6 @@ declare
 begin
   actor := private.current_attendance_employee();
 
-  if private.attendance_policy_mode(
-    actor.attendance_required, actor.department
-  ) <> 'general' then
-    raise exception using
-      errcode = '42501',
-      message = 'general attendance policy required';
-  end if;
-
   if p_request_id is null
     or p_latitude is null
     or p_latitude not between -90 and 90
@@ -472,6 +881,29 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
 
+  select profile.* into actor
+  from public.employee_profiles profile
+  where profile.id = actor.id
+  for update;
+
+  server_recorded_at := statement_timestamp();
+  server_work_date := timezone('Asia/Tokyo', server_recorded_at)::date;
+  if private.attendance_policy_mode_at(actor.id, server_work_date) <> 'general' then
+    raise exception using
+      errcode = '42501',
+      message = 'general attendance policy required';
+  end if;
+  if exists (
+    select 1 from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id = actor.id
+      and resolution.work_date = server_work_date
+      and resolution.accounting_status in ('confirmed', 'month_locked')
+  ) then
+    raise exception using
+      errcode = '55000', message = 'attendance day is already confirmed',
+      hint = 'ATTENDANCE_ACCOUNTING_DAY_CONFIRMED';
+  end if;
+
   if exists (
     select 1
     from public.project_attendance_sessions session
@@ -483,9 +915,6 @@ begin
       message = 'attendance employee already has an open session',
       hint = 'ATTENDANCE_OPEN_SESSION_EXISTS';
   end if;
-
-  server_recorded_at := statement_timestamp();
-  server_work_date := timezone('Asia/Tokyo', server_recorded_at)::date;
 
   insert into public.project_attendance_sessions(
     employee_profile_id,
@@ -588,14 +1017,6 @@ declare
 begin
   actor := private.current_attendance_employee();
 
-  if private.attendance_policy_mode(
-    actor.attendance_required, actor.department
-  ) <> 'project' then
-    raise exception using
-      errcode = '42501',
-      message = 'project attendance policy required';
-  end if;
-
   if p_project_id is null
     or p_project_id <> btrim(p_project_id)
     or p_project_id = ''
@@ -657,6 +1078,29 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
 
+  select profile.* into actor
+  from public.employee_profiles profile
+  where profile.id = actor.id
+  for update;
+
+  server_recorded_at := statement_timestamp();
+  server_work_date := timezone('Asia/Tokyo', server_recorded_at)::date;
+  if private.attendance_policy_mode_at(actor.id, server_work_date) <> 'project' then
+    raise exception using
+      errcode = '42501',
+      message = 'project attendance policy required';
+  end if;
+  if exists (
+    select 1 from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id = actor.id
+      and resolution.work_date = server_work_date
+      and resolution.accounting_status in ('confirmed', 'month_locked')
+  ) then
+    raise exception using
+      errcode = '55000', message = 'attendance day is already confirmed',
+      hint = 'ATTENDANCE_ACCOUNTING_DAY_CONFIRMED';
+  end if;
+
   if exists (
     select 1
     from public.project_attendance_sessions session
@@ -686,8 +1130,6 @@ begin
   project_latitude := (project.payload->>'latitude')::double precision;
   project_longitude := (project.payload->>'longitude')::double precision;
   project_radius := (project.payload->>'attendanceRadiusMeters')::numeric;
-  server_recorded_at := statement_timestamp();
-  server_work_date := timezone('Asia/Tokyo', server_recorded_at)::date;
   distance_meters := private.attendance_distance_meters(
     project_latitude, project_longitude, p_latitude, p_longitude
   );
@@ -813,15 +1255,6 @@ declare
   has_complete_point boolean;
 begin
   actor := private.current_attendance_employee();
-  policy_mode := private.attendance_policy_mode(
-    actor.attendance_required, actor.department
-  );
-
-  if policy_mode = 'exempt' then
-    raise exception using
-      errcode = '42501',
-      message = 'attendance-required employee required';
-  end if;
 
   if p_session_id is null
     or p_request_id is null
@@ -876,6 +1309,20 @@ begin
   end if;
 
   perform pg_advisory_xact_lock(hashtextextended(actor.id::text, 1));
+
+  select profile.* into actor
+  from public.employee_profiles profile
+  where profile.id = actor.id
+  for update;
+  policy_mode := private.attendance_policy_mode_at(
+    actor.id, timezone('Asia/Tokyo', statement_timestamp())::date
+  );
+
+  if policy_mode = 'exempt' then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance-required employee required';
+  end if;
 
   select session.*
     into session_row
@@ -1186,6 +1633,8 @@ declare
   actor_profile public.employee_profiles%rowtype;
   unknown_key text;
   changed_fields jsonb;
+  previous_attendance_required boolean;
+  previous_department text;
 begin
   if auth.role() is distinct from 'service_role' then
     raise exception using errcode = '42501', message = 'service_role required';
@@ -1237,6 +1686,8 @@ begin
     raise exception using errcode = '42501', message = 'personnel administrator required';
   end if;
 
+  perform pg_advisory_xact_lock(hashtextextended(p_employee_id::text, 1));
+
   select profile.*
     into profile_row
     from public.employee_profiles as profile
@@ -1249,6 +1700,9 @@ begin
     raise exception using errcode = '22023', message = 'employee target unavailable';
   end if;
 
+  previous_attendance_required := profile_row.attendance_required;
+  previous_department := profile_row.department;
+
   update public.employee_profiles as profile
     set name = case when p_patch ? 'name' then btrim(p_patch->>'name') else profile.name end,
         gender = case when p_patch ? 'gender' then p_patch->>'gender' else profile.gender end,
@@ -1256,8 +1710,16 @@ begin
         nationality = case when p_patch ? 'nationality' then p_patch->>'nationality' else profile.nationality end,
         employment_status = case when p_patch ? 'employmentStatus' then p_patch->>'employmentStatus' else profile.employment_status end,
         attendance_required = case when p_patch ? 'attendanceRequired' then (p_patch->>'attendanceRequired')::boolean else profile.attendance_required end,
-        attendance_policy_updated_at = case when p_patch ? 'attendanceRequired' then statement_timestamp() else profile.attendance_policy_updated_at end,
-        attendance_policy_updated_by = case when p_patch ? 'attendanceRequired' then actor_profile.id else profile.attendance_policy_updated_by end,
+        attendance_policy_updated_at = case
+          when p_patch ? 'attendanceRequired' or p_patch ? 'department'
+            then statement_timestamp()
+          else profile.attendance_policy_updated_at
+        end,
+        attendance_policy_updated_by = case
+          when p_patch ? 'attendanceRequired' or p_patch ? 'department'
+            then actor_profile.id
+          else profile.attendance_policy_updated_by
+        end,
         hire_date = case when p_patch ? 'hireDate' then nullif(p_patch->>'hireDate', '')::date else profile.hire_date end,
         resign_date = case when p_patch ? 'resignDate' then nullif(p_patch->>'resignDate', '')::date else profile.resign_date end,
         department = case when p_patch ? 'department' then p_patch->>'department' else profile.department end,
@@ -1284,6 +1746,41 @@ begin
     where profile.id = p_employee_id
     returning * into profile_row;
 
+  if private.attendance_policy_mode(
+       profile_row.attendance_required, profile_row.department
+     ) is distinct from private.attendance_policy_mode(
+       previous_attendance_required, previous_department
+     ) and exists (
+       select 1 from public.project_attendance_sessions attendance_session
+       where attendance_session.employee_profile_id = profile_row.id
+         and attendance_session.status = 'open'
+     ) then
+    raise exception using
+      errcode = '55000',
+      message = 'attendance policy cannot change while a session is open',
+      hint = 'ATTENDANCE_OPEN_SESSION_EXISTS';
+  end if;
+
+  if profile_row.attendance_required is distinct from previous_attendance_required
+      or profile_row.department is distinct from previous_department then
+    insert into public.employee_attendance_policy_history(
+      employee_profile_id, effective_from, attendance_required,
+      department_snapshot, attendance_mode, changed_by_employee_profile_id,
+      changed_at
+    ) values (
+      profile_row.id,
+      timezone('Asia/Tokyo', statement_timestamp())::date,
+      profile_row.attendance_required,
+      profile_row.department,
+      private.attendance_policy_mode(
+        profile_row.attendance_required, profile_row.department
+      ),
+      actor_profile.id,
+      statement_timestamp()
+    )
+    ;
+  end if;
+
   select coalesce(jsonb_agg(field.key order by field.key), '[]'::jsonb)
     into changed_fields
     from jsonb_object_keys(p_patch) as field(key);
@@ -1304,10 +1801,27 @@ $$;
 
 revoke all on function private.attendance_policy_mode(boolean, text)
   from public, anon, authenticated, service_role;
+revoke all on function private.attendance_policy_mode_at(uuid, date)
+  from public, anon, authenticated, service_role;
+revoke all on function private.initialize_employee_attendance_policy()
+  from public, anon, authenticated, service_role;
+revoke all on function private.protect_employee_attendance_policy_history()
+  from public, anon, authenticated, service_role;
+revoke all on table public.employee_attendance_policy_history
+  from public, anon, authenticated, service_role;
 revoke all on function private.attendance_event_v2_json(uuid)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_session_v2_json(uuid)
   from public, anon, authenticated, service_role;
+revoke all on function private.clock_in_project_v1_unsafe(
+  text, uuid, double precision, double precision, numeric, timestamptz, text
+) from public, anon, authenticated, service_role;
+revoke all on function private.clock_out_project_v1_unsafe(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) from public, anon, authenticated, service_role;
+revoke all on function private.list_attendance_records_v1_unfiltered(
+  date, text, uuid, timestamptz, uuid, integer
+) from public, anon, authenticated, service_role;
 revoke all on function private.enforce_attendance_event_session_mode()
   from public, anon, authenticated, service_role;
 revoke all on function private.enforce_project_attendance_work_point()
@@ -1330,6 +1844,19 @@ revoke all on function public.clock_out_attendance_v2_secure(
 ) from public, anon, authenticated, service_role;
 revoke all on function public.update_employee_profile_admin(uuid, jsonb, uuid)
   from public, anon, authenticated;
+revoke all on function public.list_attendance_projects_secure()
+  from public, anon, authenticated, service_role;
+revoke all on function public.get_my_today_attendance_secure()
+  from public, anon, authenticated, service_role;
+revoke all on function public.clock_in_project_secure(
+  text, uuid, double precision, double precision, numeric, timestamptz, text
+) from public, anon, authenticated, service_role;
+revoke all on function public.clock_out_project_secure(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) from public, anon, authenticated, service_role;
+revoke all on function public.list_attendance_records_secure(
+  date, text, uuid, timestamptz, uuid, integer
+) from public, anon, authenticated, service_role;
 
 grant execute on function public.list_attendance_projects_v2_secure()
   to authenticated, service_role;
@@ -1346,5 +1873,18 @@ grant execute on function public.clock_out_attendance_v2_secure(
 ) to authenticated, service_role;
 grant execute on function public.update_employee_profile_admin(uuid, jsonb, uuid)
   to service_role;
+grant execute on function public.list_attendance_projects_secure()
+  to authenticated, service_role;
+grant execute on function public.get_my_today_attendance_secure()
+  to authenticated, service_role;
+grant execute on function public.clock_in_project_secure(
+  text, uuid, double precision, double precision, numeric, timestamptz, text
+) to authenticated, service_role;
+grant execute on function public.clock_out_project_secure(
+  uuid, uuid, double precision, double precision, numeric, timestamptz, text
+) to authenticated, service_role;
+grant execute on function public.list_attendance_records_secure(
+  date, text, uuid, timestamptz, uuid, integer
+) to authenticated, service_role;
 
 commit;

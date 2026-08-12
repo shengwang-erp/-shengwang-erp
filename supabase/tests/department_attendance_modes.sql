@@ -610,6 +610,173 @@ select is(
 );
 reset role;
 
+select ok(
+  (select count(*) = 6
+     and bool_and(effective_from = date '1900-01-01')
+     and bool_and(source = 'employee_created')
+   from public.employee_attendance_policy_history
+   where employee_profile_id between
+     '82000000-0000-4000-8000-000000000001'::uuid and
+     '82000000-0000-4000-8000-000000000006'::uuid
+     and source = 'employee_created'),
+  'new employee profiles receive one server-owned policy baseline each'
+);
+select ok(
+  exists (
+    select 1 from public.employee_attendance_policy_history history
+    where history.employee_profile_id =
+      '82000000-0000-4000-8000-000000000006'::uuid
+      and history.effective_from = timezone(
+        'Asia/Tokyo', statement_timestamp()
+      )::date
+      and history.attendance_mode = 'exempt'
+      and history.changed_by_employee_profile_id =
+        '82000000-0000-4000-8000-000000000004'::uuid
+      and history.source = 'admin_update'
+  ),
+  'administrator attendance update appends an effective-date policy fact'
+);
+select throws_ok(
+  $$ update public.employee_attendance_policy_history
+     set attendance_mode = 'general'
+     where employee_profile_id =
+       '82000000-0000-4000-8000-000000000006'::uuid $$,
+  '55000', 'attendance policy history is append-only',
+  'policy facts cannot be rewritten'
+);
+select throws_ok(
+  $$ delete from public.employee_attendance_policy_history
+     where employee_profile_id =
+       '82000000-0000-4000-8000-000000000006'::uuid $$,
+  '55000', 'attendance policy history is append-only',
+  'policy facts cannot be deleted'
+);
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select lives_ok(
+  $$ select public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    '{"attendanceRequired":true}'::jsonb,
+    '81000000-0000-4000-8000-000000000004'::uuid
+  ) $$,
+  'same-day attendance policy can return to a required mode'
+);
+select lives_ok(
+  $$ select public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    '{"department":"工程部"}'::jsonb,
+    '81000000-0000-4000-8000-000000000004'::uuid
+  ) $$,
+  'department-only mode changes append policy history too'
+);
+reset role;
+select is(
+  private.attendance_policy_mode_at(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    timezone('Asia/Tokyo', statement_timestamp())::date
+  ),
+  'project',
+  'same-day policy lookup deterministically uses the latest server version'
+);
+select is(
+  (select count(*)::integer
+   from public.employee_attendance_policy_history
+   where employee_profile_id =
+     '82000000-0000-4000-8000-000000000006'::uuid),
+  4,
+  'baseline and every real same-day mode change remain in policy history'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000002', true);
+select is(
+  (select count(*)::integer from public.list_attendance_projects_secure()),
+  0,
+  'v1 project picker fails closed for a general-policy old client'
+);
+select is(
+  jsonb_array_length(
+    public.get_my_today_attendance_secure()->'completedSessions'
+  ),
+  0,
+  'v1 strict project DTO omits completed general sessions'
+);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'DEPT-ATT-ELIGIBLE', '84000000-0000-4000-8000-000000000009',
+    35.681236, 139.767125, 10, null, null
+  ) $$,
+  '42501', 'project attendance policy required',
+  'v1 project mutation fails closed for a general-policy old client'
+);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000003', true);
+select throws_ok(
+  $$ select public.clock_in_project_secure(
+    'DEPT-ATT-ELIGIBLE', '84000000-0000-4000-8000-000000000010',
+    35.681236, 139.767125, 10, null, null
+  ) $$,
+  '42501', 'project attendance policy required',
+  'v1 project mutation fails closed for an exempt old client'
+);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000004', true);
+select ok(
+  not exists (
+    select 1
+    from jsonb_array_elements(
+      public.list_attendance_records_secure(
+        timezone('Asia/Tokyo', statement_timestamp())::date,
+        null, null, null, null, 50
+      )->'items'
+    ) item
+    where item->'projectId' = 'null'::jsonb
+       or item#>>'{clockInEvent,result}' = 'not_applicable'
+       or item#>>'{clockOutEvent,result}' = 'not_applicable'
+  ),
+  'v1 records projection never exposes general sessions or events'
+);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000001', true);
+insert into department_attendance_results values (
+  'v1_project_clock_in',
+  public.clock_in_project_secure(
+    'DEPT-ATT-ELIGIBLE', '84000000-0000-4000-8000-000000000011',
+    35.681236, 139.767125, 10, null, null
+  )
+);
+select ok(
+  (select payload ? 'session'
+      and payload ? 'event'
+      and not payload ? 'status'
+      and payload#>>'{session,projectId}' = 'DEPT-ATT-ELIGIBLE'
+      and payload#>>'{event,result}' = 'normal'
+   from department_attendance_results
+   where result_name = 'v1_project_clock_in'),
+  'v1 project account keeps its strict legacy clock-in response contract'
+);
+reset role;
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select throws_ok(
+  $$ select public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000001'::uuid,
+    '{"attendanceRequired":false}'::jsonb,
+    '81000000-0000-4000-8000-000000000004'::uuid
+  ) $$,
+  '55000', 'attendance policy cannot change while a session is open',
+  'policy writer fails closed instead of orphaning an active project session'
+);
+reset role;
+select is(
+  private.attendance_policy_mode_at(
+    '82000000-0000-4000-8000-000000000001'::uuid,
+    timezone('Asia/Tokyo', statement_timestamp())::date
+  ),
+  'project',
+  'failed active-session policy update appends no new effective fact'
+);
+
 select lives_ok(
   $$ select * from public.list_attendance_projects_secure() $$,
   'v1 project-list RPC remains callable after v2 rollout'

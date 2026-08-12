@@ -326,8 +326,10 @@ function laborSessionFromSource(source) {
     eventId: value.eventId,
     eventType: value.eventType,
     serverRecordedAt: value.serverRecordedAt,
-    result: value.result === 'not_applicable' ? 'normal' : value.result,
-    abnormalReason: value.result === 'not_applicable' ? null : value.abnormalReason,
+    result: value.result,
+    abnormalReason: value.abnormalReason,
+    distanceMeters: value.distanceMeters,
+    radiusMeters: value.radiusMeters,
   })
   return {
     sessionId: session.sessionId,
@@ -356,6 +358,7 @@ function resolutionFromSource(source, reviewStatus) {
     locationReviewNote: abnormal ? '已核对同一越界考勤事实，仅作工资单记录' : '',
     locationReviewedByEmployeeProfileId: abnormal ? ACCOUNTANT_ID : null,
     locationReviewedAt: abnormal ? '2026-08-12T18:05:00+09:00' : null,
+    attendanceMethodSnapshot: source.attendanceMode,
     confirmedAt: '2026-08-12T18:05:00+09:00',
     version: 1,
     salaryTypeSnapshot: '月薪',

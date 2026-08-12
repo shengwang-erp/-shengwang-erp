@@ -4,6 +4,8 @@
 begin;
 
 alter table public.attendance_day_resolutions
+  add column attendance_method_snapshot text not null default 'project'
+    check (attendance_method_snapshot in ('project', 'general')),
   add column location_review_status text,
   add column location_review_note text not null default '',
   add column location_reviewed_by_employee_profile_id uuid
@@ -46,7 +48,7 @@ alter table public.attendance_monthly_payrolls
   add column location_abnormal_count integer not null default 0,
   add column location_review_summary text not null default '',
   add constraint attendance_monthly_payrolls_method_snapshot_check check (
-    attendance_method_snapshot in ('project', 'general', 'exempt')
+    attendance_method_snapshot in ('project', 'general', 'exempt', 'mixed')
   ),
   add constraint attendance_monthly_payrolls_company_cost_yen_check check (
     company_personnel_cost not in (
@@ -58,12 +60,31 @@ alter table public.attendance_monthly_payrolls
       (attendance_method_snapshot = 'project' and company_personnel_cost = 0)
       or (attendance_method_snapshot in ('general', 'exempt')
         and company_personnel_cost = net_salary)
+      or (attendance_method_snapshot = 'mixed'
+        and company_personnel_cost between 0 and net_salary)
     )
   ),
   add constraint attendance_monthly_payrolls_location_abnormal_count_check
     check (location_abnormal_count >= 0),
   add constraint attendance_monthly_payrolls_location_review_summary_check
     check (location_review_summary = btrim(location_review_summary));
+
+update public.attendance_day_resolutions resolution
+set attendance_method_snapshot = case
+  when exists (
+    select 1 from public.project_attendance_sessions session
+    where session.employee_profile_id = resolution.employee_profile_id
+      and session.work_date = resolution.work_date
+      and session.attendance_mode = 'project'
+  ) then 'project'
+  when exists (
+    select 1 from public.project_attendance_sessions session
+    where session.employee_profile_id = resolution.employee_profile_id
+      and session.work_date = resolution.work_date
+      and session.attendance_mode = 'general'
+  ) then 'general'
+  else 'project'
+end;
 
 -- Legacy frozen abnormal-location facts predate structured review. Preserve the
 -- original confirmer and timestamp for finalized rows; never invent either.
@@ -124,7 +145,7 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  employee public.employee_profiles%rowtype;
+  resolved_mode text;
 begin
   if exists (
     select 1 from public.project_attendance_sessions attendance_session
@@ -142,15 +163,15 @@ begin
   ) then
     return 'general';
   end if;
-  select profile.* into employee
-  from public.employee_profiles profile
-  where profile.id = p_employee_profile_id;
-  if not found then
-    return null;
+  select resolution.attendance_method_snapshot into resolved_mode
+  from public.attendance_day_resolutions resolution
+  where resolution.employee_profile_id = p_employee_profile_id
+    and resolution.work_date = p_work_date
+    and resolution.accounting_status in ('confirmed', 'month_locked');
+  if found then
+    return resolved_mode;
   end if;
-  return private.attendance_policy_mode(
-    employee.attendance_required, employee.department
-  );
+  return private.attendance_policy_mode_at(p_employee_profile_id, p_work_date);
 end;
 $$;
 
@@ -165,35 +186,34 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  employee public.employee_profiles%rowtype;
+  method_count integer;
+  single_method text;
 begin
-  if exists (
-    select 1 from public.project_attendance_sessions attendance_session
-    where attendance_session.employee_profile_id = p_employee_profile_id
-      and attendance_session.work_date >= p_month
-      and attendance_session.work_date < (p_month + interval '1 month')::date
-      and attendance_session.attendance_mode = 'project'
-  ) then
-    return 'project';
-  end if;
-  if exists (
-    select 1 from public.project_attendance_sessions attendance_session
-    where attendance_session.employee_profile_id = p_employee_profile_id
-      and attendance_session.work_date >= p_month
-      and attendance_session.work_date < (p_month + interval '1 month')::date
-      and attendance_session.attendance_mode = 'general'
-  ) then
-    return 'general';
-  end if;
-  select profile.* into employee
-  from public.employee_profiles profile
-  where profile.id = p_employee_profile_id;
-  if not found then
-    return 'project';
-  end if;
-  return private.attendance_policy_mode(
-    employee.attendance_required, employee.department
-  );
+  with modes as (
+    select distinct private.attendance_fact_mode(
+      p_employee_profile_id, generated.day_value::date
+    ) as attendance_mode
+    from generate_series(
+      p_month::timestamp,
+      (p_month + interval '1 month - 1 day')::timestamp,
+      interval '1 day'
+    ) generated(day_value)
+    where private.attendance_employee_is_eligible(
+        p_employee_profile_id, generated.day_value::date
+      )
+      or exists (
+        select 1 from public.attendance_day_resolutions resolution
+        where resolution.employee_profile_id = p_employee_profile_id
+          and resolution.work_date = generated.day_value::date
+          and resolution.accounting_status in ('confirmed', 'month_locked')
+      )
+  )
+  select count(*)::integer, min(attendance_mode)
+  into method_count, single_method
+  from modes
+  where attendance_mode is not null;
+  if method_count > 1 then return 'mixed'; end if;
+  return coalesce(single_method, 'project');
 end;
 $$;
 
@@ -259,9 +279,96 @@ as $$
     and resolution.accounting_status in ('confirmed', 'month_locked');
 $$;
 
--- Rewrite pre-existing confirmed payroll snapshots from historical sessions
--- before current policy. Project wins over general when both exist; only a
--- month without sessions consults the employee's current policy.
+create or replace function private.attendance_month_pay_units(
+  p_employee_profile_id uuid,
+  p_month date
+) returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  with days as (
+    select generated.day_value::date as work_date,
+      private.attendance_fact_mode(
+        p_employee_profile_id, generated.day_value::date
+      ) as attendance_mode
+    from generate_series(
+      p_month::timestamp,
+      (p_month + interval '1 month - 1 day')::timestamp,
+      interval '1 day'
+    ) generated(day_value)
+    where private.attendance_employee_is_eligible(
+        p_employee_profile_id, generated.day_value::date
+      )
+      or exists (
+        select 1 from public.attendance_day_resolutions resolution
+        where resolution.employee_profile_id = p_employee_profile_id
+          and resolution.work_date = generated.day_value::date
+          and resolution.accounting_status in ('confirmed', 'month_locked')
+      )
+  ), valued as (
+    select days.attendance_mode,
+      case
+        when days.attendance_mode = 'exempt'
+          and private.attendance_schedule_required(days.work_date) then 1::numeric
+        when resolution.accounting_status in ('confirmed', 'month_locked')
+          then resolution.attendance_units
+        else 0::numeric
+      end as pay_units
+    from days
+    left join public.attendance_day_resolutions resolution
+      on resolution.employee_profile_id = p_employee_profile_id
+      and resolution.work_date = days.work_date
+  )
+  select jsonb_build_object(
+    'project', coalesce(sum(pay_units) filter (
+      where attendance_mode = 'project'
+    ), 0),
+    'company', coalesce(sum(pay_units) filter (
+      where attendance_mode in ('general', 'exempt')
+    ), 0)
+  )
+  from valued;
+$$;
+
+create or replace function private.attendance_company_personnel_cost(
+  p_employee_profile_id uuid,
+  p_month date,
+  p_attendance_method text,
+  p_net_salary numeric
+) returns numeric
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  pay_units jsonb;
+  project_units numeric := 0;
+  company_units numeric := 0;
+begin
+  if p_attendance_method = 'project' then return 0; end if;
+  if p_attendance_method in ('general', 'exempt') then
+    return p_net_salary;
+  end if;
+  if p_attendance_method <> 'mixed' then
+    raise exception using errcode = '22023',
+      message = 'invalid attendance method for company personnel cost';
+  end if;
+  pay_units := private.attendance_month_pay_units(
+    p_employee_profile_id, p_month
+  );
+  project_units := coalesce((pay_units->>'project')::numeric, 0);
+  company_units := coalesce((pay_units->>'company')::numeric, 0);
+  if project_units + company_units <= 0 then return 0; end if;
+  return round(p_net_salary * company_units / (project_units + company_units));
+end;
+$$;
+
+-- Rewrite only pre-existing confirmed payrolls that have immutable session or
+-- daily-resolution facts. Daily fact priority and effective policy history
+-- determine the method; mixed costs use the same pay-unit ratio as new payrolls.
 with historical_payroll as (
   select payroll.payroll_id,
          private.attendance_historical_month_method(
@@ -269,15 +376,40 @@ with historical_payroll as (
          ) as attendance_method,
          private.attendance_location_review_metrics(
            payroll.employee_profile_id, payroll.salary_month
-         ) as review_metrics
+         ) as review_metrics,
+         private.attendance_month_pay_units(
+           payroll.employee_profile_id, payroll.salary_month
+         ) as pay_units
   from public.attendance_monthly_payrolls payroll
   where payroll.status = 'confirmed'
+    and (
+      exists (
+        select 1 from public.project_attendance_sessions session
+        where session.employee_profile_id = payroll.employee_profile_id
+          and session.work_date >= payroll.salary_month
+          and session.work_date < (payroll.salary_month + interval '1 month')::date
+      )
+      or exists (
+        select 1 from public.attendance_day_resolutions resolution
+        where resolution.employee_profile_id = payroll.employee_profile_id
+          and resolution.work_date >= payroll.salary_month
+          and resolution.work_date < (payroll.salary_month + interval '1 month')::date
+          and resolution.accounting_status in ('confirmed', 'month_locked')
+      )
+    )
 )
 update public.attendance_monthly_payrolls payroll
 set attendance_method_snapshot = historical_payroll.attendance_method,
     company_personnel_cost = case
       when historical_payroll.attendance_method in ('general', 'exempt')
         then payroll.net_salary
+      when historical_payroll.attendance_method = 'mixed'
+        and ((historical_payroll.pay_units->>'project')::numeric
+          + (historical_payroll.pay_units->>'company')::numeric) > 0
+        then round(payroll.net_salary
+          * (historical_payroll.pay_units->>'company')::numeric
+          / ((historical_payroll.pay_units->>'project')::numeric
+            + (historical_payroll.pay_units->>'company')::numeric))
       else 0
     end,
     location_abnormal_count =
@@ -294,6 +426,11 @@ revoke all on function private.attendance_month_method(uuid, date)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_location_review_metrics(uuid, date)
   from public, anon, authenticated, service_role;
+revoke all on function private.attendance_month_pay_units(uuid, date)
+  from public, anon, authenticated, service_role;
+revoke all on function private.attendance_company_personnel_cost(
+  uuid, date, text, numeric
+) from public, anon, authenticated, service_role;
 
 alter function private.attendance_dashboard_employee_json(uuid, date, boolean)
   rename to attendance_dashboard_employee_json_v1;
@@ -312,6 +449,7 @@ as $$
 declare
   result jsonb;
   session_item jsonb;
+  event_metrics jsonb;
   sessions_result jsonb := '[]'::jsonb;
   session_mode text;
   resolution_row public.attendance_day_resolutions%rowtype;
@@ -328,6 +466,28 @@ begin
     select attendance_session.attendance_mode into session_mode
     from public.project_attendance_sessions attendance_session
     where attendance_session.session_id = (session_item->>'sessionId')::uuid;
+    if session_item->'clockInEvent' <> 'null'::jsonb then
+      select jsonb_build_object(
+        'distanceMeters', event.distance_meters,
+        'radiusMeters', event.radius_meters
+      ) into event_metrics
+      from public.project_attendance_events event
+      where event.event_id = (session_item#>>'{clockInEvent,eventId}')::uuid;
+      session_item := jsonb_set(
+        session_item, '{clockInEvent}', session_item->'clockInEvent' || event_metrics
+      );
+    end if;
+    if session_item->'clockOutEvent' <> 'null'::jsonb then
+      select jsonb_build_object(
+        'distanceMeters', event.distance_meters,
+        'radiusMeters', event.radius_meters
+      ) into event_metrics
+      from public.project_attendance_events event
+      where event.event_id = (session_item#>>'{clockOutEvent,eventId}')::uuid;
+      session_item := jsonb_set(
+        session_item, '{clockOutEvent}', session_item->'clockOutEvent' || event_metrics
+      );
+    end if;
     sessions_result := sessions_result || jsonb_build_array(
       session_item || jsonb_build_object(
         'attendanceMode', coalesce(session_mode, 'project')
@@ -346,7 +506,8 @@ begin
         'locationReviewNote', resolution_row.location_review_note,
         'locationReviewedByEmployeeProfileId',
           resolution_row.location_reviewed_by_employee_profile_id,
-        'locationReviewedAt', resolution_row.location_reviewed_at
+        'locationReviewedAt', resolution_row.location_reviewed_at,
+        'attendanceMethodSnapshot', resolution_row.attendance_method_snapshot
       ));
   end if;
   return result;
@@ -393,7 +554,8 @@ begin
         'locationReviewNote', resolution_row.location_review_note,
         'locationReviewedByEmployeeProfileId',
           resolution_row.location_reviewed_by_employee_profile_id,
-        'locationReviewedAt', resolution_row.location_reviewed_at
+        'locationReviewedAt', resolution_row.location_reviewed_at,
+        'attendanceMethodSnapshot', resolution_row.attendance_method_snapshot
       ));
   end if;
   if fact_mode in ('general', 'exempt') then
@@ -431,7 +593,8 @@ as $$
       'locationReviewNote', resolution.location_review_note,
       'locationReviewedByEmployeeProfileId',
         resolution.location_reviewed_by_employee_profile_id,
-      'locationReviewedAt', resolution.location_reviewed_at
+      'locationReviewedAt', resolution.location_reviewed_at,
+      'attendanceMethodSnapshot', resolution.attendance_method_snapshot
     )
   from public.attendance_day_resolutions resolution
   where resolution.resolution_id = p_resolution_id;
@@ -453,6 +616,23 @@ declare
     current_setting('app.attendance_location_review_explicit', true), ''
   ) = 'true';
 begin
+  if tg_op = 'UPDATE'
+      and old.accounting_status in ('confirmed', 'month_locked') then
+    if new.accounting_status not in ('confirmed', 'month_locked')
+        or (to_jsonb(new) - array['accounting_status', 'version', 'updated_at'])
+          is distinct from
+          (to_jsonb(old) - array['accounting_status', 'version', 'updated_at']) then
+      raise exception using
+        errcode = '55000',
+        message = 'confirmed attendance resolution snapshot is immutable';
+    end if;
+    return new;
+  end if;
+  if tg_op = 'INSERT' or old.accounting_status = 'draft' then
+    new.attendance_method_snapshot := private.attendance_fact_mode(
+      new.employee_profile_id, new.work_date
+    );
+  end if;
   if not review_is_explicit then
     if private.attendance_fact_mode(
         new.employee_profile_id, new.work_date
@@ -855,65 +1035,138 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  attendance_method text;
-  counts jsonb;
   payroll public.attendance_monthly_payrolls%rowtype;
   scheduled_attendance_units integer := 0;
   full_days numeric := 0;
   half_days numeric := 0;
   absence_days numeric := 0;
+  excused_days numeric := 0;
+  confirmed_attendance_units numeric := 0;
+  pending_days integer := 0;
+  allocated_amount numeric := 0;
+  final_cost numeric := 0;
+  unallocated_amount numeric := 0;
 begin
-  attendance_method := private.attendance_month_method(
-    p_employee_profile_id, p_month
-  );
-  if attendance_method = 'exempt' then
-    select saved.* into payroll
-    from public.attendance_monthly_payrolls saved
-    where saved.employee_profile_id = p_employee_profile_id
-      and saved.salary_month = p_month
-      and saved.status = 'confirmed';
-    if found then
-      scheduled_attendance_units := payroll.scheduled_attendance_units;
-      full_days := payroll.full_days;
-      half_days := payroll.half_days;
-      absence_days := payroll.absence_days;
-    else
-      select count(*)::integer into scheduled_attendance_units
+  select saved.* into payroll
+  from public.attendance_monthly_payrolls saved
+  where saved.employee_profile_id = p_employee_profile_id
+    and saved.salary_month = p_month
+    and saved.status = 'confirmed';
+
+  if found then
+    scheduled_attendance_units := payroll.scheduled_attendance_units;
+    full_days := payroll.full_days;
+    half_days := payroll.half_days;
+    absence_days := payroll.absence_days;
+    confirmed_attendance_units := full_days + half_days * 0.5;
+    select count(*)::numeric into excused_days
+    from public.attendance_day_resolutions resolution
+    where resolution.employee_profile_id = p_employee_profile_id
+      and resolution.work_date >= p_month
+      and resolution.work_date < (p_month + interval '1 month')::date
+      and resolution.accounting_status in ('confirmed', 'month_locked')
+      and resolution.resolution_type in ('rest', 'leave', 'comp_time');
+  else
+    with days as (
+      select generated.day_value::date as work_date,
+        private.attendance_fact_mode(
+          p_employee_profile_id, generated.day_value::date
+        ) as attendance_mode,
+        private.attendance_employee_is_eligible(
+          p_employee_profile_id, generated.day_value::date
+        ) as eligible,
+        resolution.resolution_type,
+        resolution.attendance_units,
+        resolution.schedule_required as frozen_schedule_required,
+        resolution.resolution_id,
+        exists (
+          select 1 from public.project_attendance_sessions attendance_session
+          where attendance_session.employee_profile_id = p_employee_profile_id
+            and attendance_session.work_date = generated.day_value::date
+        ) as has_session,
+        exists (
+          select 1 from public.attendance_day_resolutions draft_resolution
+          where draft_resolution.employee_profile_id = p_employee_profile_id
+            and draft_resolution.work_date = generated.day_value::date
+            and draft_resolution.accounting_status = 'draft'
+        ) as has_draft
       from generate_series(
         p_month::timestamp,
         (p_month + interval '1 month - 1 day')::timestamp,
         interval '1 day'
       ) generated(day_value)
-      where private.attendance_employee_is_eligible(
-          p_employee_profile_id, generated.day_value::date
-        )
-        and private.attendance_schedule_required(generated.day_value::date);
-      full_days := scheduled_attendance_units;
-    end if;
-    return jsonb_build_object(
-      'fullDays', full_days,
-      'halfDays', half_days,
-      'absenceDays', absence_days,
-      'excusedDays', 0,
-      'scheduledAttendanceUnits', scheduled_attendance_units,
-      'confirmedAttendanceUnits', full_days + half_days * 0.5,
-      'pendingDays', 0,
-      'projectAllocatedAmount', 0,
-      'projectFinalCost', 0,
-      'projectUnallocatedAmount', 0
-    );
+      left join public.attendance_day_resolutions resolution
+        on resolution.employee_profile_id = p_employee_profile_id
+        and resolution.work_date = generated.day_value::date
+        and resolution.accounting_status in ('confirmed', 'month_locked')
+    ), valued as (
+      select *,
+        case when resolution_id is not null then frozen_schedule_required
+          else eligible and private.attendance_schedule_required(work_date)
+        end as schedule_required
+      from days
+      where eligible or resolution_id is not null or has_draft
+    )
+    select
+      count(*) filter (
+        where resolution_type = 'full_day'
+          or (attendance_mode = 'exempt' and schedule_required
+            and resolution_id is null)
+      )::numeric,
+      count(*) filter (where resolution_type = 'half_day')::numeric,
+      count(*) filter (where resolution_type = 'absence')::numeric,
+      count(*) filter (
+        where resolution_type in ('rest', 'leave', 'comp_time')
+      )::numeric,
+      count(*) filter (where schedule_required)::integer,
+      coalesce(sum(case
+        when resolution_id is not null then attendance_units
+        when attendance_mode = 'exempt' and schedule_required then 1
+        else 0 end), 0),
+      count(*) filter (
+        where attendance_mode in ('project', 'general')
+          and (schedule_required or has_session or has_draft)
+          and resolution_id is null
+      )::integer
+    into full_days, half_days, absence_days, excused_days,
+      scheduled_attendance_units, confirmed_attendance_units, pending_days
+    from valued;
   end if;
-  counts := private.attendance_month_counts_v1(
-    p_employee_profile_id, p_month
+
+  select coalesce(sum(resolution.final_project_cost), 0),
+      coalesce(sum(allocation_totals.amount), 0),
+      coalesce(sum(greatest(
+        resolution.final_project_cost - allocation_totals.amount, 0
+      )), 0)
+  into final_cost, allocated_amount, unallocated_amount
+  from public.attendance_day_resolutions resolution
+  cross join lateral (
+    select coalesce(sum(allocation.amount), 0) amount
+    from public.attendance_project_allocations allocation
+    where allocation.resolution_id = resolution.resolution_id
+  ) allocation_totals
+  where resolution.employee_profile_id = p_employee_profile_id
+    and resolution.work_date >= p_month
+    and resolution.work_date < (p_month + interval '1 month')::date
+    and resolution.accounting_status in ('confirmed', 'month_locked')
+    and resolution.attendance_method_snapshot = 'project';
+
+  final_cost := private.attendance_require_safe_aggregate(final_cost);
+  allocated_amount := private.attendance_require_safe_aggregate(allocated_amount);
+  unallocated_amount := private.attendance_require_safe_aggregate(unallocated_amount);
+
+  return jsonb_build_object(
+    'fullDays', full_days,
+    'halfDays', half_days,
+    'absenceDays', absence_days,
+    'excusedDays', excused_days,
+    'scheduledAttendanceUnits', scheduled_attendance_units,
+    'confirmedAttendanceUnits', confirmed_attendance_units,
+    'pendingDays', pending_days,
+    'projectAllocatedAmount', allocated_amount,
+    'projectFinalCost', final_cost,
+    'projectUnallocatedAmount', unallocated_amount
   );
-  if attendance_method = 'general' then
-    counts := counts || jsonb_build_object(
-      'projectAllocatedAmount', 0,
-      'projectFinalCost', 0,
-      'projectUnallocatedAmount', 0
-    );
-  end if;
-  return counts;
 end;
 $$;
 
@@ -932,8 +1185,28 @@ declare
   attendance_method text;
   review_metrics jsonb;
 begin
-  if tg_op = 'UPDATE' and old.status = 'confirmed'
-      and new.status = 'reopened' then
+  if tg_op = 'UPDATE' and old.status = 'confirmed' then
+    if new.status = 'reopened' then
+      if (to_jsonb(new) - array[
+            'status', 'confirmed_by_employee_profile_id', 'confirmed_at',
+            'version', 'updated_at'
+          ]) is distinct from
+          (to_jsonb(old) - array[
+            'status', 'confirmed_by_employee_profile_id', 'confirmed_at',
+            'version', 'updated_at'
+          ]) then
+        raise exception using
+          errcode = '55000',
+          message = 'confirmed monthly payroll snapshot is immutable';
+      end if;
+      return new;
+    end if;
+    if (to_jsonb(new) - 'updated_at') is distinct from
+        (to_jsonb(old) - 'updated_at') then
+      raise exception using
+        errcode = '55000',
+        message = 'confirmed monthly payroll snapshot is immutable';
+    end if;
     return new;
   end if;
   attendance_method := private.attendance_month_method(
@@ -943,10 +1216,9 @@ begin
     new.employee_profile_id, new.salary_month
   );
   new.attendance_method_snapshot := attendance_method;
-  new.company_personnel_cost := case
-    when attendance_method in ('general', 'exempt') then new.net_salary
-    else 0
-  end;
+  new.company_personnel_cost := private.attendance_company_personnel_cost(
+    new.employee_profile_id, new.salary_month, attendance_method, new.net_salary
+  );
   new.location_abnormal_count := (review_metrics->>'count')::integer;
   new.location_review_summary := review_metrics->>'summary';
   return new;
@@ -1114,11 +1386,10 @@ begin
         );
         abnormal_count := (review_metrics->>'count')::integer;
         review_summary := review_metrics->>'summary';
-        company_cost := case
-          when attendance_method in ('general', 'exempt')
-            then coalesce((employee_item->>'netSalary')::numeric, 0)
-          else 0
-        end;
+        company_cost := private.attendance_company_personnel_cost(
+          employee_id, p_month, attendance_method,
+          coalesce((employee_item->>'netSalary')::numeric, 0)
+        );
       end if;
       attendance_counts := private.attendance_month_counts(employee_id, p_month);
       employee_item := employee_item || jsonb_build_object(
@@ -1132,20 +1403,32 @@ begin
       if can_view_salary then
         employee_item := employee_item || jsonb_build_object(
           'companyPersonnelCost', company_cost,
-          'projectAllocatedAmount', case
-            when attendance_method in ('general', 'exempt') then 0
-            else (employee_item->>'projectAllocatedAmount')::numeric
-          end,
-          'projectUnallocatedAmount', case
-            when attendance_method in ('general', 'exempt') then 0
-            else (employee_item->>'projectUnallocatedAmount')::numeric
-          end
+          'projectAllocatedAmount',
+            (attendance_counts->>'projectAllocatedAmount')::numeric,
+          'projectUnallocatedAmount',
+            (attendance_counts->>'projectUnallocatedAmount')::numeric
         );
       end if;
     end if;
     employees_result := employees_result || jsonb_build_array(employee_item);
   end loop;
   result := jsonb_set(result, '{employees}', employees_result);
+  if can_view_salary then
+    result := jsonb_set(
+      result, '{summary,projectAllocatedTotal}',
+      to_jsonb(private.attendance_require_safe_aggregate(coalesce((
+        select sum((item->>'projectAllocatedAmount')::numeric)
+        from jsonb_array_elements(employees_result) item
+      ), 0)))
+    );
+    result := jsonb_set(
+      result, '{summary,projectUnallocatedTotal}',
+      to_jsonb(private.attendance_require_safe_aggregate(coalesce((
+        select sum((item->>'projectUnallocatedAmount')::numeric)
+        from jsonb_array_elements(employees_result) item
+      ), 0)))
+    );
+  end if;
   return result;
 end;
 $$;

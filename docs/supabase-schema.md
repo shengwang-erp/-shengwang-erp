@@ -143,6 +143,8 @@ NFKC、trim 和空白折叠。担当只接受当前在职、启用且属于准�
 - `employee_profiles.attendance_required boolean not null default true`：是否要求员工打卡；
 - `employee_profiles.attendance_policy_updated_at timestamptz`：策略更新时间；
 - `employee_profiles.attendance_policy_updated_by uuid`：引用规范员工主表的策略更新人；
+- `employee_attendance_policy_history`：服务器维护的追加式有效日期历史；同一天多次变更按
+  `policy_version` 最后一版生效，浏览器角色无表级访问权；
 - `project_attendance_sessions.attendance_mode text not null default 'project'`：只允许
   `project / general`，所有历史场次由默认值兼容回填为 `project`；
 - `project_attendance_events.out_of_range_confirmed_at timestamptz`：v2 项目越界确认的服务端时间。
@@ -154,7 +156,9 @@ NFKC、trim 和空白折叠。担当只接受当前在职、启用且属于准�
 点位与照片元数据。
 
 服务器按规范员工字段派生策略：`attendance_required = false` 为 `exempt`；需要打卡且部门为
-`工程部` 时为 `project`；其他需要打卡的部门为 `general`。浏览器不能传入或覆盖模式。
+`工程部` 时为 `project`；其他需要打卡的部门为 `general`。管理员变更要求或部门时在同一事务
+更新当前档案、追加当日有效历史并写安全审计。打卡在统一的 request lock → employee advisory
+lock → employee row lock 后按东京日期重读有效历史；浏览器不能传入或覆盖模式。
 
 新增 RPC：
 
@@ -171,7 +175,9 @@ v2 写 RPC 只返回两种联合结果：未确认越界且没有任何写入时
 `{ status: 'confirmation_required', confirmation: ... }`；写入成功或命中同请求幂等记录时返回
 `{ status: 'saved', session: ..., event: ... }`。项目距离、半径、项目快照、结果和确认时间均由
 服务器计算。所有 v2 函数先撤销 `public / anon` 执行权，再仅授权 `authenticated / service_role`；
-v1 签名与既有权限在过渡期保持不变。
+v1 签名与既有权限在过渡期保持不变，但读取只投影 project 场次/事件，general/exempt 账号的
+旧项目打卡写入会失败关闭。它只用于数据库/API 与 project 分批上线兼容，不承诺旧前端在已出现
+general 数据后可以完整回退。
 
 ### 定位复核与公司人员工资（迁移 `202608120002`）
 
@@ -183,16 +189,16 @@ v1 签名与既有权限在过渡期保持不变。
 
 权威打卡事实含越界定位时，确认 RPC 必须同时提交状态和 `1..2000` 字说明；正常定位日则四个复核字段必须为空。两种结论都不改变日结类型、出勤人天或最终项目成本。`recorded_abnormal` 只进入月工资复核备注，不触发处分或扣薪。
 
-日模式优先从该日历史场次推导：项目场次优先于通用场次，没有场次时才读取规范员工策略。因此历史项目日不会随当前部门变更而转为公司成本。通用模式拒绝任何非零项目成本或项目分摊；免打卡模式不创建日结、场次或事件。
+日模式优先从该日历史场次推导：项目场次优先于通用场次；没有场次时先读取已确认/月锁日结快照，只有两者都不存在才读取当日有效政策历史。因此历史项目日不会随当前部门变更而转为公司成本。通用模式拒绝任何非零项目成本或项目分摊；免打卡模式不创建日结、场次或事件。
 
 `attendance_monthly_payrolls` 新增不可变核算快照：
 
-- `attendance_method_snapshot text not null default 'project'`：`project / general / exempt`；
-- `company_personnel_cost numeric not null default 0`：仅通用和免打卡模式等于已确认净工资，项目模式为零；
+- `attendance_method_snapshot text not null default 'project'`：`project / general / exempt / mixed`；
+- `company_personnel_cost numeric not null default 0`：通用和免打卡模式等于已确认净工资，项目模式为零；`mixed` 按公司计薪人天占全部计薪人天比例对净工资取整日元；
 - `location_abnormal_count integer not null default 0`；
 - `location_review_summary text not null default ''`。
 
-`general` 的已确认日结仍驱动工资，但项目金额均为零；`exempt` 把在职区间内的排班工作日按整天带入既有工资公式，不补造任何日记录。月工资 DTO 另从当前员工档案返回 `position` 供显示；确认后的模式、金额与复核汇总只读工资快照，不因职位或部门变化重算。日结和月工资审计 JSON 分别包含新增的复核字段和公司工资快照字段。
+`general` 的已确认日结仍驱动工资，但项目金额均为零；`exempt` 把在职区间内的排班工作日按整天带入既有工资公式，不补造任何日记录。月中变更形成 `mixed`：服务端按每日有效政策聚合，项目成本只汇总项目日冻结日结与分摊；公司人员成本为 `round(net_salary × company_pay_units ÷ total_pay_units)`。月工资 DTO 另从当前员工档案返回 `position` 供显示；确认后的模式、金额与复核汇总只读工资快照，不因职位、部门或之后的政策历史变化重算。日结和月工资审计 JSON 分别包含新增的复核字段和公司工资快照字段。
 
 ### attendance_accounting 人工考勤核算
 
@@ -778,9 +784,9 @@ pgTAP session 代替。
 
 月工资保存 `attendance_method_snapshot`、`company_personnel_cost`、
 `location_abnormal_count` 和 `location_review_summary`。历史已确认工资先按该月
-服务端场次回填：`project` 优先于 `general`，只有完全没有场次时才使用
-当前员工政策判定 `exempt/general/project`。`general` 与 `exempt` 的净工资
-记入公司人员成本，项目成本和分摊保持为零。
+服务端逐日事实回填：当日场次优先，其次读取已确认/月锁日结模式快照，最后读取当日有效政策
+历史。包含多种模式的月份保存为 `mixed`；公司成本按公司计薪人天比例分摊净工资，项目成本只取
+项目日冻结分摊。`general` 与 `exempt` 的纯模式月份把全部净工资记入公司人员成本。
 
 Migration `202607150002_project_documents.sql` adds immutable logical/versioned
 document metadata, a private `erp-project-documents` Storage bucket, and

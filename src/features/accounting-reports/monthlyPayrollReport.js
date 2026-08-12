@@ -4,6 +4,7 @@ const ATTENDANCE_METHOD_LABELS = Object.freeze({
   project: '项目打卡',
   general: '非项目打卡',
   exempt: '免打卡 · 默认全勤',
+  mixed: '混合考勤 · 按日归属',
 })
 
 const PAYROLL_STATUS_LABELS = Object.freeze({

@@ -21,3 +21,29 @@ test('general attendance is structurally unable to carry project cost identity',
   assert.match(migration, /attendance_mode = 'general'[\s\S]+project_id is null/iu)
   assert.match(migration, /result = 'not_applicable'[\s\S]+distance_meters is null/iu)
 })
+
+test('effective policy history and every clock writer share the employee lock boundary', () => {
+  assert.match(migration, /create table public\.employee_attendance_policy_history/iu)
+  assert.match(migration, /policy_version bigint generated always as identity/iu)
+  assert.match(migration, /effective_from date not null/iu)
+  assert.match(migration, /attendance policy history is append-only/iu)
+  assert.match(migration, /attendance_policy_mode_at[\s\S]+effective_from <= p_work_date[\s\S]+policy_version desc/iu)
+  for (const functionName of [
+    'clock_in_general_secure',
+    'clock_in_project_v2_secure',
+    'clock_out_attendance_v2_secure',
+  ]) {
+    assert.match(
+      migration,
+      new RegExp(`${functionName}[\\s\\S]+hashtextextended\\(actor\\.id::text, 1\\)[\\s\\S]+for update[\\s\\S]+attendance_policy_mode_at`, 'iu'),
+    )
+  }
+})
+
+test('v1 remains project-only and fails closed for other effective policies', () => {
+  assert.match(migration, /V1 remains a project-only compatibility boundary/iu)
+  assert.match(migration, /get_my_today_attendance_secure[\s\S]+attendance_mode = 'project'/iu)
+  assert.match(migration, /list_attendance_records_secure[\s\S]+item->>'projectId' is not null/iu)
+  assert.match(migration, /clock_in_project_secure[\s\S]+attendance_policy_mode_at[\s\S]+project attendance policy required/iu)
+  assert.match(migration, /clock_out_project_secure[\s\S]+attendance_policy_mode_at[\s\S]+project attendance policy required/iu)
+})

@@ -40,6 +40,15 @@ select extensions.dblink_connect(
   )
 );
 select extensions.dblink_exec('task5_setup', $setup$
+  set session_replication_role = replica;
+  delete from public.employee_attendance_policy_history
+  where employee_profile_id in (
+    '86f00000-0000-4000-8000-000000000001'::uuid,
+    '86f00000-0000-4000-8000-000000000002'::uuid,
+    '86f00000-0000-4000-8000-000000000003'::uuid,
+    '86f00000-0000-4000-8000-000000000004'::uuid
+  );
+  set session_replication_role = origin;
   delete from public.attendance_project_allocations
   where resolution_id in (
     select resolution_id from public.attendance_day_resolutions
@@ -55,14 +64,25 @@ select extensions.dblink_exec('task5_setup', $setup$
   delete from public.attendance_accounting_settings
   where updated_by_employee_profile_id =
     '86f00000-0000-4000-8000-000000000001'::uuid;
-  delete from public.employee_profiles where id in (
+  delete from public.employee_security_audit
+  where target_employee_profile_id in (
     '86f00000-0000-4000-8000-000000000001'::uuid,
     '86f00000-0000-4000-8000-000000000002'::uuid,
-    '86f00000-0000-4000-8000-000000000003'::uuid
+    '86f00000-0000-4000-8000-000000000003'::uuid,
+    '86f00000-0000-4000-8000-000000000004'::uuid
   );
-  delete from auth.users where id in (
+  delete from public.employee_profiles
+  where id in (
+    '86f00000-0000-4000-8000-000000000001'::uuid,
+    '86f00000-0000-4000-8000-000000000002'::uuid,
+    '86f00000-0000-4000-8000-000000000003'::uuid,
+    '86f00000-0000-4000-8000-000000000004'::uuid
+  );
+  delete from auth.users
+  where id in (
     '85f00000-0000-4000-8000-000000000001'::uuid,
-    '85f00000-0000-4000-8000-000000000002'::uuid
+    '85f00000-0000-4000-8000-000000000002'::uuid,
+    '85f00000-0000-4000-8000-000000000003'::uuid
   );
   delete from public.permission_grants
   where subject_type = 'position'
@@ -82,6 +102,10 @@ select extensions.dblink_exec('task5_setup', $setup$
     ('00000000-0000-0000-0000-000000000000',
      '85f00000-0000-4000-8000-000000000002', 'authenticated',
      'authenticated', 'task5-race-viewer@auth.invalid', '', now(),
+     '{}'::jsonb, '{}'::jsonb, now(), now()),
+    ('00000000-0000-0000-0000-000000000000',
+     '85f00000-0000-4000-8000-000000000003', 'authenticated',
+     'authenticated', 'task5-race-admin@auth.invalid', '', now(),
      '{}'::jsonb, '{}'::jsonb, now(), now());
   insert into public.employee_profiles(
     id, employee_number, auth_user_id, name, department, position,
@@ -98,7 +122,10 @@ select extensions.dblink_exec('task5_setup', $setup$
      null),
     ('86f00000-0000-4000-8000-000000000003', 'SW-8693', null,
      '无场次政策员工', '总务部', '大工', '在职', '2026-01-01',
-     'active', true, false, true, 10000);
+     'active', true, false, true, 10000),
+    ('86f00000-0000-4000-8000-000000000004', 'SW-8694',
+     '85f00000-0000-4000-8000-000000000003', '并发人员管理员', '总务部',
+     '社长', '在职', '2026-01-01', 'active', false, false, true, null);
   insert into public.permission_grants(
     subject_type, subject_code, permission_key,
     created_at, updated_at, created_by_auth_user_id, updated_by_auth_user_id
@@ -140,12 +167,19 @@ select extensions.dblink_connect(
   )
 );
 select extensions.dblink_exec('task5_policy_updater', 'begin');
-select extensions.dblink_exec(
+select extensions.dblink_exec('task5_policy_updater', 'set role service_role');
+select * from extensions.dblink(
   'task5_policy_updater',
-  $$ update public.employee_profiles
-     set attendance_required = false
-     where id = '86f00000-0000-4000-8000-000000000003'::uuid $$
-);
+  $$ select set_config('request.jwt.claim.role', 'service_role', false) $$
+) as configured(value text);
+select * from extensions.dblink(
+  'task5_policy_updater',
+  $$ select public.update_employee_profile_admin(
+    '86f00000-0000-4000-8000-000000000003'::uuid,
+    '{"attendanceRequired":false}'::jsonb,
+    '85f00000-0000-4000-8000-000000000003'::uuid
+  ) $$
+) as updated(payload jsonb);
 select extensions.dblink_exec('task5_policy_confirmer', 'set role authenticated');
 select * from extensions.dblink(
   'task5_policy_confirmer',
@@ -161,7 +195,8 @@ select is(
     $remote$
       select public.confirm_attendance_resolution_secure(
         '86f00000-0000-4000-8000-000000000003'::uuid,
-        '2026-08-06'::date, 'full_day', 1, 0, '[]'::jsonb,
+        timezone('Asia/Tokyo', statement_timestamp())::date,
+        'full_day', 1, 0, '[]'::jsonb,
         '', null, '', 0
       )
     $remote$
@@ -212,6 +247,7 @@ select ok(
 );
 select extensions.dblink_exec('task5_policy_confirmer', 'reset role');
 select extensions.dblink_disconnect('task5_policy_confirmer');
+select extensions.dblink_exec('task5_policy_updater', 'reset role');
 select extensions.dblink_disconnect('task5_policy_updater');
 
 select extensions.dblink_connect(
@@ -252,7 +288,8 @@ select is(
     $remote$
       select public.confirm_attendance_resolution_secure(
         '86f00000-0000-4000-8000-000000000003'::uuid,
-        '2026-08-06'::date, 'full_day', 1, 0, '[]'::jsonb,
+        timezone('Asia/Tokyo', statement_timestamp())::date,
+        'full_day', 1, 0, '[]'::jsonb,
         '', null, '', 0
       )
     $remote$
@@ -320,14 +357,13 @@ select extensions.dblink_exec('task5_cleanup', $cleanup$
   delete from public.attendance_accounting_settings
   where updated_by_employee_profile_id =
     '86f00000-0000-4000-8000-000000000001'::uuid;
-  delete from public.employee_profiles where id in (
+  update public.employee_profiles
+  set deleted_at = statement_timestamp(), account_status = 'disabled'
+  where id in (
     '86f00000-0000-4000-8000-000000000001'::uuid,
     '86f00000-0000-4000-8000-000000000002'::uuid,
-    '86f00000-0000-4000-8000-000000000003'::uuid
-  );
-  delete from auth.users where id in (
-    '85f00000-0000-4000-8000-000000000001'::uuid,
-    '85f00000-0000-4000-8000-000000000002'::uuid
+    '86f00000-0000-4000-8000-000000000003'::uuid,
+    '86f00000-0000-4000-8000-000000000004'::uuid
   );
   delete from public.permission_grants
   where subject_type = 'position'
@@ -672,8 +708,18 @@ select throws_ok(
      where employee_profile_id =
        '86000000-0000-4000-8000-000000000002'::uuid
        and work_date = '2026-08-05'::date $$,
-  '23514', null,
-  'direct writes cannot persist an abnormal frozen issue without structured review'
+  '55000', 'confirmed attendance resolution snapshot is immutable',
+  'direct writes cannot rewrite a confirmed daily fact'
+);
+
+select throws_ok(
+  $$ update public.attendance_day_resolutions
+     set attendance_method_snapshot = 'general'
+     where employee_profile_id =
+       '86000000-0000-4000-8000-000000000002'::uuid
+       and work_date = '2026-08-05'::date $$,
+  '55000', 'confirmed attendance resolution snapshot is immutable',
+  'confirmed daily attendance method is frozen against later policy changes'
 );
 
 select throws_ok(
@@ -747,6 +793,16 @@ select ok(
       and salary_month = '2026-08-01'
   ),
   'general payroll snapshots its method and full net salary as company cost'
+);
+
+select throws_ok(
+  $$ update public.attendance_monthly_payrolls
+     set company_personnel_cost = 0
+     where employee_profile_id =
+       '86000000-0000-4000-8000-000000000003'::uuid
+       and salary_month = '2026-08-01'::date $$,
+  '55000', 'confirmed monthly payroll snapshot is immutable',
+  'confirmed monthly policy and cost snapshots cannot be rewritten directly'
 );
 
 select lives_ok(
@@ -860,6 +916,261 @@ select ok(
     from report
   ),
   'monthly DTO labels verified locations and carries recorded-abnormal remarks'
+);
+
+-- Mid-month policy history must be aggregated by effective work date. These
+-- profiles deliberately leave employee_profiles on their original policy so
+-- a current-policy implementation cannot accidentally pass this matrix.
+insert into public.employee_profiles(
+  id, employee_number, name, department, position, employment_status,
+  hire_date, resign_date, account_status, must_change_password,
+  is_hidden_system_account, attendance_required, base_salary
+) values
+  (
+    '86000000-0000-4000-8000-000000000005', 'SW-8605',
+    '月中公司转免打卡', '总务部', '总务部长', '离职', '2026-08-03', '2026-08-14',
+    'active', true, false, true, 100003
+  ),
+  (
+    '86000000-0000-4000-8000-000000000006', 'SW-8606',
+    '月中项目转免打卡', '工程部', '小工', '离职', '2026-08-03', '2026-08-14',
+    'active', true, false, true, 100001
+  ),
+  (
+    '86000000-0000-4000-8000-000000000007', 'SW-8607',
+    '月中免打卡转公司', '总务部', '总务部长', '离职', '2026-08-03', '2026-08-14',
+    'active', true, false, false, 100005
+  );
+
+insert into public.employee_attendance_policy_history(
+  employee_profile_id, effective_from, attendance_required,
+  department_snapshot, attendance_mode, source,
+  changed_by_employee_profile_id
+) values
+  (
+    '86000000-0000-4000-8000-000000000005', '2026-08-10', false,
+    '总务部', 'exempt', 'admin_update',
+    '86000000-0000-4000-8000-000000000001'
+  ),
+  (
+    '86000000-0000-4000-8000-000000000006', '2026-08-10', false,
+    '工程部', 'exempt', 'admin_update',
+    '86000000-0000-4000-8000-000000000001'
+  ),
+  (
+    '86000000-0000-4000-8000-000000000007', '2026-08-10', true,
+    '总务部', 'general', 'admin_update',
+    '86000000-0000-4000-8000-000000000001'
+  );
+
+insert into public.attendance_day_resolutions(
+  employee_profile_id, work_date, schedule_required, resolution_type,
+  attendance_units, accounting_status, salary_type_snapshot,
+  base_salary_snapshot, suggested_project_cost, final_project_cost,
+  confirmed_by_employee_profile_id, confirmed_at
+)
+select employee_id, work_date, true,
+  case when employee_id = '86000000-0000-4000-8000-000000000006'::uuid
+      and work_date = '2026-08-07'::date
+    then 'half_day' else 'full_day' end,
+  case when employee_id = '86000000-0000-4000-8000-000000000006'::uuid
+      and work_date = '2026-08-07'::date
+    then 0.5 else 1 end,
+  'confirmed', '月薪',
+  case employee_id
+    when '86000000-0000-4000-8000-000000000005'::uuid then 100003
+    when '86000000-0000-4000-8000-000000000006'::uuid then 100001
+    else 100005
+  end,
+  case when employee_id = '86000000-0000-4000-8000-000000000006'::uuid
+    then case when work_date = '2026-08-07'::date then 5000 else 10000 end
+    else 0 end,
+  case when employee_id = '86000000-0000-4000-8000-000000000006'::uuid
+    then case when work_date = '2026-08-07'::date then 5000 else 10000 end
+  else 0 end,
+  '86000000-0000-4000-8000-000000000001',
+  statement_timestamp()
+from (
+  select '86000000-0000-4000-8000-000000000005'::uuid employee_id,
+    day_value::date work_date
+  from generate_series('2026-08-03'::date, '2026-08-07'::date, '1 day') day_value
+  union all
+  select '86000000-0000-4000-8000-000000000006'::uuid,
+    day_value::date
+  from generate_series('2026-08-03'::date, '2026-08-07'::date, '1 day') day_value
+  union all
+  select '86000000-0000-4000-8000-000000000007'::uuid,
+    day_value::date
+  from generate_series('2026-08-10'::date, '2026-08-14'::date, '1 day') day_value
+) required_days;
+
+insert into public.attendance_project_allocations(
+  resolution_id, project_id, project_name_snapshot, amount,
+  allocation_note
+)
+select resolution.resolution_id, 'P-TASK5', 'Task5项目',
+  resolution.final_project_cost, ''
+from public.attendance_day_resolutions resolution
+where resolution.employee_profile_id =
+    '86000000-0000-4000-8000-000000000006'::uuid
+  and resolution.work_date between '2026-08-03' and '2026-08-07';
+
+select is(
+  private.attendance_month_method(
+    '86000000-0000-4000-8000-000000000005', '2026-08-01'
+  ),
+  'mixed',
+  'general to exempt within one month is represented as mixed'
+);
+select is(
+  private.attendance_month_method(
+    '86000000-0000-4000-8000-000000000006', '2026-08-01'
+  ),
+  'mixed',
+  'project to exempt within one month is represented as mixed'
+);
+select is(
+  private.attendance_month_method(
+    '86000000-0000-4000-8000-000000000007', '2026-08-01'
+  ),
+  'mixed',
+  'exempt to required company attendance within one month is mixed'
+);
+
+select ok(
+  (
+    select (counts->>'scheduledAttendanceUnits')::integer = 10
+      and (counts->>'fullDays')::numeric = 9
+      and (counts->>'halfDays')::numeric = 1
+      and (counts->>'confirmedAttendanceUnits')::numeric = 9.5
+      and (counts->>'pendingDays')::integer = 0
+      and (counts->>'projectFinalCost')::numeric = 45000
+      and (counts->>'projectAllocatedAmount')::numeric = 45000
+      and (counts->>'projectUnallocatedAmount')::numeric = 0
+    from private.attendance_month_counts(
+      '86000000-0000-4000-8000-000000000006', '2026-08-01'
+    ) counts
+  ),
+  'mixed project/exempt counts aggregate frozen required days and automatic exempt days'
+);
+
+select ok(
+  (
+    select (counts->>'scheduledAttendanceUnits')::integer = 10
+      and (counts->>'fullDays')::numeric = 10
+      and (counts->>'pendingDays')::integer = 0
+      and (counts->>'projectFinalCost')::numeric = 0
+    from private.attendance_month_counts(
+      '86000000-0000-4000-8000-000000000005', '2026-08-01'
+    ) counts
+  ) and (
+    select (counts->>'scheduledAttendanceUnits')::integer = 10
+      and (counts->>'fullDays')::numeric = 10
+      and (counts->>'pendingDays')::integer = 0
+      and (counts->>'projectFinalCost')::numeric = 0
+    from private.attendance_month_counts(
+      '86000000-0000-4000-8000-000000000007', '2026-08-01'
+    ) counts
+  ),
+  'general/exempt transitions remain complete without synthetic exempt-day facts'
+);
+
+select lives_ok(
+  $$ select public.confirm_monthly_payroll_secure(
+    employee_id, '2026-08-01'::date, 0, 0, 0, '', 0
+  )
+  from unnest(array[
+    '86000000-0000-4000-8000-000000000005'::uuid,
+    '86000000-0000-4000-8000-000000000006'::uuid,
+    '86000000-0000-4000-8000-000000000007'::uuid
+  ]) employee_id $$,
+  'all complete mixed-policy months can be confirmed'
+);
+
+select ok(
+  (
+    select attendance_method_snapshot = 'mixed'
+      and net_salary = 100001
+      and company_personnel_cost = 52632
+      and company_personnel_cost = round(net_salary * 5::numeric / 9.5)
+    from public.attendance_monthly_payrolls
+    where employee_profile_id = '86000000-0000-4000-8000-000000000006'
+      and salary_month = '2026-08-01'
+  ),
+  'mixed project/company payroll rounds company cost to exact integer yen by pay units'
+);
+
+select ok(
+  (
+    select count(*) = 5
+      and sum(allocation.amount) = 45000
+    from public.attendance_project_allocations allocation
+    join public.attendance_day_resolutions resolution
+      on resolution.resolution_id = allocation.resolution_id
+    where resolution.employee_profile_id =
+      '86000000-0000-4000-8000-000000000006'
+      and resolution.attendance_method_snapshot = 'project'
+  ) and not exists (
+    select 1 from public.attendance_project_allocations allocation
+    join public.attendance_day_resolutions resolution
+      on resolution.resolution_id = allocation.resolution_id
+    where resolution.employee_profile_id in (
+      '86000000-0000-4000-8000-000000000005',
+      '86000000-0000-4000-8000-000000000007'
+    )
+  ),
+  'only frozen project days contribute project allocation cost'
+);
+
+select ok(
+  (
+    select bool_and(attendance_method_snapshot = 'mixed')
+      and min(company_personnel_cost) = min(net_salary)
+      and max(company_personnel_cost) = max(net_salary)
+    from public.attendance_monthly_payrolls
+    where employee_profile_id in (
+      '86000000-0000-4000-8000-000000000005',
+      '86000000-0000-4000-8000-000000000007'
+    )
+      and salary_month = '2026-08-01'
+  ),
+  'mixed months containing only company/exempt days keep full net salary in company cost'
+);
+
+select is(
+  (
+    select count(*) from public.attendance_day_resolutions
+    where employee_profile_id in (
+      '86000000-0000-4000-8000-000000000005',
+      '86000000-0000-4000-8000-000000000006'
+    ) and work_date >= '2026-08-10'
+  ),
+  0::bigint,
+  'exempt scheduled days never create synthetic daily resolutions'
+);
+
+insert into public.employee_attendance_policy_history(
+  employee_profile_id, effective_from, attendance_required,
+  department_snapshot, attendance_mode, source,
+  changed_by_employee_profile_id
+) values (
+  '86000000-0000-4000-8000-000000000006', '2026-08-04', true,
+  '总务部', 'general', 'admin_update',
+  '86000000-0000-4000-8000-000000000001'
+);
+
+select ok(
+  private.attendance_fact_mode(
+    '86000000-0000-4000-8000-000000000006', '2026-08-04'
+  ) = 'project'
+  and (
+    select attendance_method_snapshot = 'mixed'
+      and company_personnel_cost = 52632
+    from public.attendance_monthly_payrolls
+    where employee_profile_id = '86000000-0000-4000-8000-000000000006'
+      and salary_month = '2026-08-01'
+  ),
+  'month-locked daily and monthly snapshots stay unchanged after back-effective policy history'
 );
 
 select * from finish();

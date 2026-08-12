@@ -60,13 +60,24 @@ test('monthly payroll snapshots company cost and exact attendance method', () =>
   ]) {
     assert.match(migration, new RegExp(`add column ${column}`, 'iu'))
   }
-  assert.match(migration, /attendance_method_snapshot[\s\S]+project[\s\S]+general[\s\S]+exempt/iu)
-  assert.match(migration, /attendance_month_counts_v1[\s\S]+attendance_method = 'exempt'[\s\S]+scheduled_attendance_units/iu)
+  assert.match(migration, /attendance_method_snapshot[\s\S]+project[\s\S]+general[\s\S]+exempt[\s\S]+mixed/iu)
+  assert.match(
+    migration,
+    /attendance_month_counts[\s\S]+attendance_fact_mode[\s\S]+attendance_mode = 'exempt'[\s\S]+schedule_required[\s\S]+attendance_method_snapshot = 'project'/iu,
+  )
+  assert.match(
+    migration,
+    /attendance_company_personnel_cost[\s\S]+attendance_month_pay_units[\s\S]+round\(p_net_salary \* company_units \/ \(project_units \+ company_units\)\)/iu,
+  )
   assert.match(migration, /company_personnel_cost[\s\S]+net_salary/iu)
   assert.match(migration, /'position'[\s\S]+employee\.position/iu)
   assert.match(
     migration,
-    /attendance_historical_month_method[\s\S]+project_attendance_sessions[\s\S]+attendance_mode = 'project'[\s\S]+attendance_mode = 'general'/iu,
+    /attendance_fact_mode[\s\S]+project_attendance_sessions[\s\S]+attendance_mode = 'project'[\s\S]+attendance_mode = 'general'[\s\S]+attendance_policy_mode_at/iu,
+  )
+  assert.match(
+    migration,
+    /attendance_historical_month_method[\s\S]+attendance_fact_mode[\s\S]+generate_series[\s\S]+method_count > 1[\s\S]+mixed/iu,
   )
   assert.match(
     migration,

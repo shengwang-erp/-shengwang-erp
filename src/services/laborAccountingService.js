@@ -42,7 +42,8 @@ const MAX_ALLOCATIONS = 100
 const RESOLUTION_TYPE_SET = new Set(ACCOUNTING_RESOLUTION_TYPES)
 const ISSUE_CODE_SET = new Set(ATTENDANCE_ISSUE_CODES)
 const ATTENDANCE_MODE_SET = new Set(['project', 'general'])
-const ATTENDANCE_METHOD_SET = new Set(['project', 'general', 'exempt'])
+const ATTENDANCE_METHOD_SET = new Set(['project', 'general', 'exempt', 'mixed'])
+const DAILY_ATTENDANCE_METHOD_SET = new Set(['project', 'general'])
 const LOCATION_REVIEW_STATUS_SET = new Set(['confirmed_valid', 'recorded_abnormal'])
 const ISSUE_ORDER = Object.freeze([
   'abnormal_location', 'missing_clock_in', 'missing_clock_out',
@@ -71,6 +72,7 @@ const SETTINGS_KEYS = Object.freeze([
 ])
 const EVENT_KEYS = Object.freeze([
   'eventId', 'eventType', 'serverRecordedAt', 'result', 'abnormalReason',
+  'distanceMeters', 'radiusMeters',
 ])
 const SESSION_KEYS = Object.freeze([
   'sessionId', 'attendanceMode', 'projectId', 'projectName', 'status', 'openedAt', 'closedAt',
@@ -80,7 +82,7 @@ const COMPACT_RESOLUTION_KEYS = Object.freeze([
   'resolutionId', 'resolutionType', 'attendanceUnits', 'accountingStatus',
   'scheduleRequired', 'resolutionNote', 'locationReviewStatus',
   'locationReviewNote', 'locationReviewedByEmployeeProfileId',
-  'locationReviewedAt', 'confirmedAt', 'version',
+  'locationReviewedAt', 'attendanceMethodSnapshot', 'confirmedAt', 'version',
 ])
 const DASHBOARD_EMPLOYEE_KEYS = Object.freeze([
   'employeeProfileId', 'employeeNumber', 'name', 'department', 'position',
@@ -446,22 +448,43 @@ function validateSettings(value, { includeVersion = false } = {}) {
   return result
 }
 
-function validateAttendanceEvent(value, expectedType) {
+function metricValue(value, { nullable = false, positive = false } = {}) {
+  if (nullable && value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || Object.is(value, -0) ||
+      (positive ? value <= 0 : value < 0)) throw invalidResponse()
+  return value
+}
+
+function validateAttendanceEvent(value, expectedType, attendanceMode) {
   const row = objectShape(value, EVENT_KEYS)
   const eventType = enumValue(row.eventType, new Set(['clock_in', 'clock_out']))
   if (eventType !== expectedType) throw invalidResponse()
-  const result = enumValue(row.result, new Set(['normal', 'abnormal']))
+  const result = enumValue(row.result, attendanceMode === 'general'
+    ? new Set(['not_applicable'])
+    : new Set(['normal', 'abnormal']))
   const abnormalReason = row.abnormalReason === null
     ? null
     : textValue(row.abnormalReason, { min: 1, max: MAX_NOTE_LENGTH })
-  if ((result === 'normal' && abnormalReason !== null) ||
-      (result === 'abnormal' && abnormalReason === null)) throw invalidResponse()
+  const distanceMeters = metricValue(row.distanceMeters, {
+    nullable: attendanceMode === 'general',
+  })
+  const radiusMeters = metricValue(row.radiusMeters, {
+    nullable: attendanceMode === 'general', positive: true,
+  })
+  if ((attendanceMode === 'general' && (
+    abnormalReason !== null || distanceMeters !== null || radiusMeters !== null
+  )) || (attendanceMode === 'project' && (
+    (result === 'normal' && abnormalReason !== null) ||
+    (result === 'abnormal' && abnormalReason === null)
+  ))) throw invalidResponse()
   return {
     eventId: uuidValue(row.eventId),
     eventType,
     serverRecordedAt: instantValue(row.serverRecordedAt),
     result,
     abnormalReason,
+    distanceMeters,
+    radiusMeters,
   }
 }
 
@@ -480,10 +503,10 @@ function validateSession(value) {
   const closedAt = instantValue(row.closedAt, { nullable: true })
   const clockInEvent = row.clockInEvent === null
     ? null
-    : validateAttendanceEvent(row.clockInEvent, 'clock_in')
+    : validateAttendanceEvent(row.clockInEvent, 'clock_in', attendanceMode)
   const clockOutEvent = row.clockOutEvent === null
     ? null
-    : validateAttendanceEvent(row.clockOutEvent, 'clock_out')
+    : validateAttendanceEvent(row.clockOutEvent, 'clock_out', attendanceMode)
   if ((status === 'open' && (closedAt !== null || clockOutEvent !== null)) ||
       (status === 'closed' && closedAt === null)) {
     throw invalidResponse()
@@ -552,6 +575,9 @@ function validateCompactResolution(value) {
     locationReviewNote,
     locationReviewedByEmployeeProfileId,
     locationReviewedAt,
+    attendanceMethodSnapshot: enumValue(
+      row.attendanceMethodSnapshot, DAILY_ATTENDANCE_METHOD_SET,
+    ),
     confirmedAt,
     version: safeInteger(row.version, { min: 1 }),
   }
@@ -909,10 +935,13 @@ function validateMonthlyEmployee(value, canViewSalary) {
     const companyPersonnelCost = yenValue(row.companyPersonnelCost)
     const expectedCompanyCost = netSalary === null ? 0 : netSalary
     if ((attendanceMethod === 'project' && companyPersonnelCost !== 0) ||
-        (attendanceMethod !== 'project' && (
+        (['general', 'exempt'].includes(attendanceMethod) && (
           companyPersonnelCost !== expectedCompanyCost ||
           projectAllocatedAmount !== 0 || projectUnallocatedAmount !== 0
-        ))) throw invalidResponse()
+        )) ||
+        (attendanceMethod === 'mixed' && companyPersonnelCost > expectedCompanyCost)) {
+      throw invalidResponse()
+    }
     Object.assign(result, {
       salaryType,
       baseSalarySnapshot: yenValue(row.baseSalarySnapshot),
@@ -1129,7 +1158,9 @@ function validatePayrollResult(value) {
     const netSalary = yenValue(payrollRow.netSalary)
     const companyPersonnelCost = yenValue(payrollRow.companyPersonnelCost)
     if ((attendanceMethodSnapshot === 'project' && companyPersonnelCost !== 0) ||
-        (attendanceMethodSnapshot !== 'project' && companyPersonnelCost !== netSalary)) {
+        (['general', 'exempt'].includes(attendanceMethodSnapshot) &&
+          companyPersonnelCost !== netSalary) ||
+        (attendanceMethodSnapshot === 'mixed' && companyPersonnelCost > netSalary)) {
       throw invalidResponse()
     }
     Object.assign(payroll, {

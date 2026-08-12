@@ -1631,7 +1631,8 @@ select ok(
 );
 
 reset role;
-delete from public.employee_profiles
+update public.employee_profiles
+set deleted_at = statement_timestamp(), account_status = 'disabled'
 where id in (
   '6d000000-0000-4000-8000-000000000017',
   '6d000000-0000-4000-8000-000000000018',
@@ -3175,9 +3176,12 @@ declare
   caught_message text;
 begin
   begin
+    update public.employee_profiles
+    set resign_date = '2026-08-06'
+    where id = '75000000-0000-4000-8000-000000000007';
     result_text := public.save_attendance_resolution_draft_secure(
-      '75000000-0000-4000-8000-000000000007', '2026-08-05',
-      'full_day', 1, 0, '[]'::jsonb, '', 2
+      '75000000-0000-4000-8000-000000000007', '2026-08-06',
+      'full_day', 1, 0, '[]'::jsonb, '', 0
     )#>>'{resolution,accountingStatus}';
     raise exception using errcode = 'PT408', message = result_text;
   exception when sqlstate 'PT408' then
@@ -3199,11 +3203,14 @@ declare
   caught_message text;
 begin
   begin
+    update public.employee_profiles
+    set resign_date = '2026-08-06'
+    where id = '75000000-0000-4000-8000-000000000007';
     perform public.confirm_attendance_resolution_secure(
-      '75000000-0000-4000-8000-000000000007', '2026-08-05',
+      '75000000-0000-4000-8000-000000000007', '2026-08-06',
       'rest', 0, 100,
       '[{"projectId":"P-T4-A","amount":100,"allocationNote":""}]'::jsonb,
-      '', 2
+      '', 0
     );
     raise exception using errcode = 'PT407', message = 'SUCCESS';
   exception when sqlstate 'PT407' then
@@ -4487,6 +4494,9 @@ begin
   exception when sqlstate 'PT402' then
     get stacked diagnostics caught_message = message_text;
     return caught_message;
+  when sqlstate '55000' then
+    get stacked diagnostics caught_message = message_text;
+    return '55000:' || caught_message;
   end;
 end;
 $$;
@@ -4497,8 +4507,8 @@ select set_config(
 );
 select is(
   pg_temp.task4_confirmation_history_settings_guard(),
-  '55000:effective_from cannot change after confirmed attendance; use an explicit database migration',
-  'confirmation history irreversibly freezes the activation boundary'
+  '55000:confirmed attendance resolution snapshot is immutable',
+  'confirmed daily snapshots cannot be downgraded to rewrite policy history'
 );
 reset role;
 
@@ -5121,13 +5131,13 @@ select ok(
         '2026-07-01', '', '75000000-0000-4000-8000-000000000009', false
       ) result
     )
-    select result#>>'{employees,0,projectAllocatedAmount}' = '4000'
-      and result#>>'{employees,0,projectUnallocatedAmount}' = '1000'
-      and result#>>'{summary,projectAllocatedTotal}' = '4000'
-      and result#>>'{summary,projectUnallocatedTotal}' = '1000'
+    select result#>>'{employees,0,projectAllocatedAmount}' = '0'
+      and result#>>'{employees,0,projectUnallocatedAmount}' = '0'
+      and result#>>'{summary,projectAllocatedTotal}' = '0'
+      and result#>>'{summary,projectUnallocatedTotal}' = '0'
     from report
   ),
-  'monthly project allocation metrics include draft allocated and unallocated amounts'
+  'monthly project allocation metrics exclude drafts until the project day is frozen'
 );
 
 reset role;
@@ -5174,8 +5184,8 @@ select set_config(
 );
 select is(
   pg_temp.task4_unallocated_per_day_probe(),
-  '6000:1000',
-  'monthly unallocated cost sums positive remainder per draft without cross-day cancellation'
+  '0:0',
+  'monthly project cost excludes every draft while pending details remain reviewable'
 );
 
 select ok(

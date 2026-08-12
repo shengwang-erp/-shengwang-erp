@@ -46,6 +46,8 @@ function attendanceEvent(eventType) {
       : '2026-07-18T17:00:00+09:00',
     result: 'normal',
     abnormalReason: null,
+    distanceMeters: 18,
+    radiusMeters: 200,
   }
 }
 
@@ -63,6 +65,20 @@ function attendanceSession() {
   }
 }
 
+function makeGeneralSession(session) {
+  Object.assign(session, {
+    attendanceMode: 'general', projectId: null, projectName: null,
+  })
+  for (const event of [session.clockInEvent, session.clockOutEvent]) {
+    if (event === null) continue
+    Object.assign(event, {
+      result: 'not_applicable', abnormalReason: null,
+      distanceMeters: null, radiusMeters: null,
+    })
+  }
+  return session
+}
+
 function compactResolution() {
   return {
     resolutionId: RESOLUTION_ID,
@@ -75,6 +91,7 @@ function compactResolution() {
     locationReviewNote: '',
     locationReviewedByEmployeeProfileId: null,
     locationReviewedAt: null,
+    attendanceMethodSnapshot: 'project',
     confirmedAt: '2026-07-18T17:05:00+09:00',
     version: 1,
   }
@@ -676,9 +693,7 @@ test('daily dashboard validates both salary permission variants and exact issue 
 
 test('daily DTOs require exact attendance modes, nullable general project identity, and review metadata', async () => {
   const general = dailyDashboard()
-  Object.assign(general.employees[0].sessions[0], {
-    attendanceMode: 'general', projectId: null, projectName: null,
-  })
+  makeGeneralSession(general.employees[0].sessions[0])
   const generalResult = await serviceWithResponder(() => general).service
     .listDailyDashboard({ workDate: WORK_DATE })
   assert.deepEqual(
@@ -687,6 +702,40 @@ test('daily DTOs require exact attendance modes, nullable general project identi
     ])),
     { attendanceMode: 'general', projectId: null, projectName: null },
   )
+  assert.deepEqual(
+    Object.fromEntries(['result', 'distanceMeters', 'radiusMeters'].map((key) => [
+      key, generalResult.employees[0].sessions[0].clockInEvent[key],
+    ])),
+    { result: 'not_applicable', distanceMeters: null, radiusMeters: null },
+  )
+
+  const accuracyDrivenAbnormal = dailyDashboard()
+  Object.assign(accuracyDrivenAbnormal.employees[0].sessions[0].clockInEvent, {
+    result: 'abnormal',
+    abnormalReason: '定位精度范围超出现场边界',
+    distanceMeters: 190,
+    radiusMeters: 200,
+  })
+  const accuracyDrivenResult = await serviceWithResponder(() => accuracyDrivenAbnormal).service
+    .listDailyDashboard({ workDate: WORK_DATE })
+  assert.equal(
+    accuracyDrivenResult.employees[0].sessions[0].clockInEvent.result,
+    'abnormal',
+  )
+
+  for (const mutate of [
+    (row) => { row.employees[0].sessions[0].clockInEvent.result = 'normal' },
+    (row) => { row.employees[0].sessions[0].clockInEvent.distanceMeters = 1 },
+    (row) => { row.employees[0].sessions[0].clockInEvent.radiusMeters = 100 },
+  ]) {
+    const malformed = clone(general)
+    mutate(malformed)
+    await assert.rejects(
+      () => serviceWithResponder(() => malformed).service
+        .listDailyDashboard({ workDate: WORK_DATE }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
 
   const reviewed = resolutionDetail()
   Object.assign(reviewed.facts, {
@@ -694,6 +743,7 @@ test('daily DTOs require exact attendance modes, nullable general project identi
   })
   reviewed.facts.sessions[0].clockInEvent.result = 'abnormal'
   reviewed.facts.sessions[0].clockInEvent.abnormalReason = '定位距离现场 420 米'
+  reviewed.facts.sessions[0].clockInEvent.distanceMeters = 420
   Object.assign(reviewed.resolution, {
     locationReviewStatus: 'confirmed_valid',
     locationReviewNote: '已核对现场负责人',
@@ -819,9 +869,7 @@ test('resolution detail accepts only explicit salary and project-money variants'
 
 test('general resolution detail accepts zero suggested cost without project-cost permission', async () => {
   const data = resolutionDetail({ canViewSalary: true, canViewProjectCosts: false })
-  Object.assign(data.facts.sessions[0], {
-    attendanceMode: 'general', projectId: null, projectName: null,
-  })
+  makeGeneralSession(data.facts.sessions[0])
   data.salary.suggestedProjectCost = 0
   data.allocations = []
   data.hasMoneyScope = false
@@ -832,9 +880,7 @@ test('general resolution detail accepts zero suggested cost without project-cost
   assert.deepEqual(result.availableProjects, [])
 
   const visible = resolutionDetail()
-  Object.assign(visible.facts.sessions[0], {
-    attendanceMode: 'general', projectId: null, projectName: null,
-  })
+  makeGeneralSession(visible.facts.sessions[0])
   visible.salary.suggestedProjectCost = 0
   visible.resolution.suggestedProjectCost = 0
   visible.resolution.finalProjectCost = 0
@@ -870,6 +916,7 @@ test('resolution detail review metadata must match immutable abnormal-location f
   })
   abnormalWithoutReview.facts.sessions[0].clockInEvent.result = 'abnormal'
   abnormalWithoutReview.facts.sessions[0].clockInEvent.abnormalReason = '定位距离现场 420 米'
+  abnormalWithoutReview.facts.sessions[0].clockInEvent.distanceMeters = 420
   await assert.rejects(
     () => serviceWithResponder(() => abnormalWithoutReview).service.getResolutionDetail({
       employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
@@ -1013,6 +1060,37 @@ test('monthly DTOs preserve method, position, company cost, and location review 
     locationAbnormalCount: 2,
     locationReviewSummary: '确认有效 1 条；判定异常 1 条',
   })
+})
+
+test('monthly DTO accepts mixed attendance with bounded company and frozen project costs', async () => {
+  const data = monthlyPayroll()
+  Object.assign(data.employees[0], {
+    attendanceMethod: 'mixed',
+    netSalary: 100001,
+    companyPersonnelCost: 52632,
+    projectAllocatedAmount: 45000,
+    projectUnallocatedAmount: 0,
+  })
+  const result = await serviceWithResponder(() => data).service.listMonthlyPayroll({
+    month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+  })
+  assert.deepEqual({
+    attendanceMethod: result.employees[0].attendanceMethod,
+    companyPersonnelCost: result.employees[0].companyPersonnelCost,
+    projectAllocatedAmount: result.employees[0].projectAllocatedAmount,
+  }, {
+    attendanceMethod: 'mixed',
+    companyPersonnelCost: 52632,
+    projectAllocatedAmount: 45000,
+  })
+
+  data.employees[0].companyPersonnelCost = 100002
+  await assert.rejects(
+    () => serviceWithResponder(() => data).service.listMonthlyPayroll({
+      month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+    }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
 })
 
 test('monthly location review aggregates accept legal notes and share one bounded contract', async () => {
@@ -1279,6 +1357,16 @@ test('payroll write DTOs validate the explicit salary visibility alternatives', 
   assert.equal(generalResult.employee.position, '大工')
   assert.equal(generalResult.payroll.attendanceMethodSnapshot, 'general')
   assert.equal(generalResult.payroll.companyPersonnelCost, 248500)
+
+  const mixed = payrollResult()
+  Object.assign(mixed.payroll, {
+    attendanceMethodSnapshot: 'mixed',
+    companyPersonnelCost: 125000,
+  })
+  const mixedResult = await serviceWithResponder(() => mixed).service
+    .confirmMonthlyPayroll(payrollPayload())
+  assert.equal(mixedResult.payroll.attendanceMethodSnapshot, 'mixed')
+  assert.equal(mixedResult.payroll.companyPersonnelCost, 125000)
 
   for (const malformed of [
     (() => { const row = payrollResult(); row.payroll.attendanceMethodSnapshot = 'unknown'; return row })(),

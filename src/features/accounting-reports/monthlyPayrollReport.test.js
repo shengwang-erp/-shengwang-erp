@@ -121,6 +121,22 @@ test('adapts the supplied filtered cohort into exact leadership payroll totals a
   }
 })
 
+test('labels mixed attendance clearly in leadership exports', () => {
+  const mixedEmployee = {
+    ...employees[0],
+    employeeNumber: 'SW-004', employeeName: '月中转岗员工',
+    attendanceMethod: 'mixed', scheduledAttendanceUnits: 10,
+    fullDays: 9, halfDays: 1, pendingDays: 0,
+    basePay: 100001, netSalary: 100001,
+    projectAllocatedAmount: 45000, projectUnallocatedAmount: 0,
+    companyPersonnelCost: 52632, confirmationNote: '按每日政策归属',
+  }
+  const report = createReport({ employees: [mixedEmployee] })
+  assert.equal(report.sections[1].rows[0].attendanceMethod, '混合考勤 · 按日归属')
+  assert.equal(report.sections[1].rows[0].projectCost, 45000)
+  assert.equal(report.sections[1].rows[0].companyPersonnelCost, 52632)
+})
+
 test('preserves missing salary as unavailable and excludes it from status-aware totals and Excel values', () => {
   const unavailable = {
     ...employees[0], employeeProfileId: '52000000-0000-4000-8000-000000000004',

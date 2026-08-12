@@ -45,12 +45,18 @@ where status <> 'deleted';
 
 1. 确认 Supabase 当前可恢复备份，记录备份标识、备份时间、负责人及
    `supabase_migrations.schema_migrations` 当前版本清单。
-2. 应用 `202608120001`，确认 v1/v2 今日考勤 RPC 同时存在；不得删除 v1。
+2. 应用 `202608120001`，确认 v1/v2 今日考勤 RPC 同时存在；不得删除 v1。v1 只保证 project
+   数据的旧签名/API 兼容，general/exempt 旧客户端写入必须失败关闭。
 3. 应用 `202608120002`，执行下列只读探针；任何对象缺失、约束未验证或异常计数不符合预期时停止。
 4. 部署通过完整 Node、pgTAP、build 和浏览器矩阵的 Vercel production build。
 5. 对工程、通用、免打卡、会计和工资禁止五类账号逐个 smoke test。
 6. 确认 `https://shengwang-erp.vercel.app/` main alias 指向本次部署，并把部署 URL、commit、
    migration versions、探针结果和 smoke test 结果附到发布记录。
+
+本次发布使用维护窗口和 roll-forward。数据库产生 general 场次、有效日期政策历史或新工资快照
+后，不承诺旧前端完整回退；不得单独回退 Vercel alias 后继续开放写入。前端故障应暂停相关入口、
+修复后向前发布。只有部署前完整备份的经审计整库恢复可作为灾难恢复，不允许单独撤销迁移、删除
+政策历史或临时放宽 v1 门禁。
 
 ### `202608120002` 后立即执行：会计与工资对象/ACL 探针
 
@@ -156,7 +162,9 @@ order by attendance_method_snapshot, accounting_status;
 - 两种复核结论都只形成审计信息，不改变日结类型、出勤人天或最终项目人工成本。“判定异常”只是工资备注，不代表处分或扣薪。
 - `general` 使用已确认日结计算工资，但项目分摊与项目成本始终为零；净工资进入公司人员成本，不进入项目成本。
 - `exempt` 不生成打卡事件、场次或日结。符合在职区间和工作日设置的日期按整天参与现有月薪公式，净工资进入公司人员成本。
-- 月工资确认后冻结 `project / general / exempt` 模式、公司人员成本和定位复核汇总。职位只取当前规范员工档案用于显示，不参与已确认金额计算。
+- 月中发生模式变化时显示 `mixed（混合考勤 · 按日归属）`。月度人天按每日有效政策聚合；免打卡工作日自动算整天，但不补造日结。
+- `mixed` 月的公司人员成本为 `round(净工资 × 公司计薪人天 ÷ 全部计薪人天)`，按整数日元四舍五入；项目成本只取项目日已确认/月锁的冻结日结与分摊，不用净工资减公司成本反推。
+- 月工资确认后冻结 `project / general / exempt / mixed` 模式、公司人员成本和定位复核汇总。职位只取当前规范员工档案用于显示，不参与已确认金额计算。
 
 ## 历史数据核对
 
@@ -194,6 +202,7 @@ npm run build
 npx supabase db reset --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db supabase/tests/attendance_accounting.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db supabase/tests/today_attendance.sql supabase/tests/department_attendance_modes.sql supabase/tests/attendance_accounting.sql supabase/tests/attendance_location_review_and_company_payroll.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
+npx supabase test db supabase/tests/attendance_policy_clock_races.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 ```
 

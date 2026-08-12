@@ -17,6 +17,7 @@ const ATTENDANCE_METHOD_LABELS = Object.freeze({
   project: '项目打卡',
   general: '非项目打卡',
   exempt: '免打卡 · 默认全勤',
+  mixed: '混合考勤 · 按日归属',
 })
 
 const POSIX_EDGE_SPACE = /^[\u0009-\u000d\u0020]+|[\u0009-\u000d\u0020]+$/gu
