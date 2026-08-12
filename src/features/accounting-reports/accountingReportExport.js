@@ -126,9 +126,9 @@ function writeSection(sheet, section, startRow) {
       )
       estimatedLines = Math.max(estimatedLines, lineCount)
     }
-    sheet.getRow(rowNumber).height = estimatedLines <= 2
-      ? 26
-      : Math.min(120, estimatedLines * 15 + 6)
+    const calculatedHeight = estimatedLines * 15 + 6
+    if (estimatedLines <= 2) sheet.getRow(rowNumber).height = 26
+    else if (calculatedHeight <= 409) sheet.getRow(rowNumber).height = calculatedHeight
     rowNumber += 1
   }
   return { nextRow: rowNumber, headerRow }

@@ -299,6 +299,24 @@ test('writes only strict valid report dates as native Excel dates', () => {
   assert.equal(sheet.getCell(header + 7, 1).value, "'=DATE(2026,8,31)")
 })
 
+test('leaves DTO-scale wrapped text without an insufficient fixed Excel row height', () => {
+  const report = createReport({
+    sections: [{
+      id: 'long-notes', title: '超长备注', sheetName: '超长备注',
+      columns: [{ key: 'note', label: '备注', width: 10, align: 'left', format: 'text' }],
+      rows: [{ note: '定位复核摘要。'.repeat(300) }],
+      emptyText: '无记录',
+    }],
+  })
+  const sheet = createAccountingReportWorkbook(ExcelJS, report).getWorksheet('超长备注')
+  const header = findHeaderRow(sheet, '备注')
+  const row = sheet.getRow(header + 1)
+
+  assert.equal(row.height, undefined)
+  assert.equal(row.getCell(1).alignment.wrapText, true)
+  assert.equal(row.getCell(1).value, '定位复核摘要。'.repeat(300))
+})
+
 test('forced-multipage salary repeats its exact header while monthly repeats only safe metadata', () => {
   const salary = createSalaryReport({
     records: Array.from({ length: 80 }, (_, index) => ({
