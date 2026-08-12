@@ -1857,6 +1857,37 @@ test('every rendered form control has an accessible label and the page is SSR-sa
   }
 })
 
+test('resolution dialog keeps its actions outside a bounded scrolling body on every viewport', () => {
+  const { default: AttendanceResolutionDialog } = moduleFor('dialog')
+  const markup = render(AttendanceResolutionDialog, {
+    detail,
+    draft,
+    saving: false,
+    error: '',
+    onChange() {},
+    onSaveDraft() {},
+    onConfirm() {},
+    onClose() {},
+  })
+  const headingIndex = markup.indexOf('class="labor-dialog-heading"')
+  const scrollIndex = markup.indexOf('class="labor-dialog-scroll"')
+  const actionsIndex = markup.indexOf('class="labor-dialog-actions"')
+
+  assert.ok(headingIndex >= 0)
+  assert.ok(scrollIndex > headingIndex)
+  assert.ok(actionsIndex > scrollIndex)
+
+  const viewportIndependentCss = css.slice(0, css.indexOf('@media'))
+  assert.match(
+    viewportIndependentCss,
+    /\.labor-accounting-page\s+\.labor-resolution-dialog\s*\{[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/su,
+  )
+  assert.match(
+    viewportIndependentCss,
+    /\.labor-accounting-page\s+\.labor-dialog-scroll\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*auto/su,
+  )
+})
+
 test('styles are fully scoped and turn the desktop table into narrow employee cards', () => {
   assert.ok(css.length > 0)
   assert.match(css, /\.labor-accounting-page/u)

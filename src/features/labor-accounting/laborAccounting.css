@@ -688,6 +688,7 @@
 
 .labor-accounting-page .labor-resolution-dialog {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(1040px, 100%);
   max-height: calc(100dvh - 48px);
   overflow: hidden;
@@ -732,7 +733,8 @@
 
 .labor-accounting-page .labor-dialog-scroll {
   display: grid;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: auto;
   gap: 14px;
   padding: 16px;
 }
