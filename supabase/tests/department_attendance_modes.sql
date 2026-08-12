@@ -140,9 +140,21 @@ insert into public.employee_profiles(
   ('82000000-0000-4000-8000-000000000001','SW-8201','81000000-0000-4000-8000-000000000001','工程打卡员工','工程部','小工','在职','active',false,false,true),
   ('82000000-0000-4000-8000-000000000002','SW-8202','81000000-0000-4000-8000-000000000002','公司打卡员工','总务部','总务部长','在职','active',false,false,true),
   ('82000000-0000-4000-8000-000000000003','SW-8203','81000000-0000-4000-8000-000000000003','免打卡员工','工程部','小工','在职','active',false,false,false),
-  ('82000000-0000-4000-8000-000000000004','SW-000','81000000-0000-4000-8000-000000000004','系统管理员','总务部','社长','在职','active',false,true,true),
+  ('82000000-0000-4000-8000-000000000004','SW-8244','81000000-0000-4000-8000-000000000004','人员管理员','总务部','社长','在职','active',false,false,true),
   ('82000000-0000-4000-8000-000000000005','SW-8205','81000000-0000-4000-8000-000000000005','非管理员','工程部','小工','在职','active',false,false,true),
   ('82000000-0000-4000-8000-000000000006','SW-8206','81000000-0000-4000-8000-000000000006','政策目标','总务部','总务部长','在职','active',false,false,true);
+
+select ok(
+  (select employee_number <> 'SW-000'
+     and is_hidden_system_account = false
+     and position = '社长'
+     and account_status = 'active'
+     and employment_status = '在职'
+     and must_change_password = false
+   from public.employee_profiles
+   where id = '82000000-0000-4000-8000-000000000004'),
+  'attendance policy update is exercised through an ordinary personnel administrator'
+);
 
 set local role service_role;
 select set_config('request.jwt.claim.role', 'service_role', true);

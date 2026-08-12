@@ -442,29 +442,40 @@ export default function PersonnelPage({
     setMutation({ operation: formState.mode, targetId: formState.targetId })
     try {
       if (formState.mode === 'create') {
-        const result = await employeeAdmin.provisionEmployee({
-          requestId: formState.requestId,
-          profile: buildCreateProfile(formState, {
-            identityAllowed,
-            salaryAllowed,
-          }),
-        })
-        if (result.initialPassword) {
-          setCredentials({
-            employeeNumber: result.employee.employeeNumber,
-            initialPassword: result.initialPassword,
+        let provisionedEmployeeId = formState.targetId
+        if (!provisionedEmployeeId) {
+          const result = await employeeAdmin.provisionEmployee({
+            requestId: formState.requestId,
+            profile: buildCreateProfile(formState, {
+              identityAllowed,
+              salaryAllowed,
+            }),
           })
-          retainPersonnelProtection = true
-        } else {
-          setNotice('员工已创建，但一次性初始密码不能再次查看；如未安全交付，请生成新的临时密码。')
+          provisionedEmployeeId = result.employee.id
+          setFormState((current) => {
+            if (
+              current?.mode !== 'create' ||
+              current.requestId !== formState.requestId
+            ) return current
+            return { ...current, targetId: provisionedEmployeeId }
+          })
+          if (result.initialPassword) {
+            setCredentials({
+              employeeNumber: result.employee.employeeNumber,
+              initialPassword: result.initialPassword,
+            })
+            retainPersonnelProtection = true
+          } else {
+            setNotice('员工已创建，但一次性初始密码不能再次查看；如未安全交付，请生成新的临时密码。')
+          }
         }
-        setFormState(null)
         if (formState.values.attendanceRequired === false) {
           await employeeAdmin.updateProfile({
-            employeeId: result.employee.id,
+            employeeId: provisionedEmployeeId,
             patch: { attendanceRequired: false },
           })
         }
+        setFormState(null)
         try {
           await onRefreshEmployees()
         } catch (caught) {

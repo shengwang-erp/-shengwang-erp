@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import test from 'node:test'
+import { act, createElement } from 'react'
+import test, { after } from 'node:test'
+import { createServer } from 'vite'
+
+import {
+  findWarehouseTestElement,
+  installWarehouseReactDom,
+  TestEvent,
+} from '../warehouse/warehouseReactDomTestUtils.js'
 
 async function readSource(relativePath) {
   return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '')
@@ -12,6 +20,48 @@ const [pageSource, dialogSource, appSource, cssSource] = await Promise.all([
   readSource('../../App.jsx'),
   readSource('../../styles.css'),
 ])
+
+const bootstrapDom = installWarehouseReactDom()
+const { createRoot } = await import('react-dom/client')
+bootstrapDom.cleanup()
+
+const server = await createServer({
+  root: process.cwd(),
+  cacheDir: '/private/tmp/personnel-page-contract-vite-cache',
+  configFile: false,
+  logLevel: 'silent',
+  appType: 'custom',
+  esbuild: { jsx: 'automatic' },
+  server: { middlewareMode: true },
+})
+const personnelModule = await server.ssrLoadModule(
+  '/src/features/employees/PersonnelPage.jsx',
+)
+const PersonnelPage = personnelModule.default
+after(() => server.close())
+
+function personnelElement(root, predicate) {
+  return findWarehouseTestElement(root, predicate)
+}
+
+function personnelButton(root, label) {
+  return personnelElement(root, (element) =>
+    element.nodeName === 'BUTTON' && element.textContent.trim() === label)
+}
+
+function personnelField(root, name) {
+  return personnelElement(root, (element) =>
+    ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.nodeName) &&
+    (element.getAttribute('name') === name || element.name === name))
+}
+
+async function changePersonnelField(element, value) {
+  await act(async () => {
+    element.value = value
+    element.dispatchEvent(new TestEvent('input'))
+    element.dispatchEvent(new TestEvent('change'))
+  })
+}
 
 test('personnel form uses the fixed domain options with explicit required selections', () => {
   assert.match(
@@ -97,6 +147,107 @@ test('administrator form owns the exact daily-attendance boolean and exposes its
     pageSource,
     /setCredentials\([\s\S]*employeeAdmin\.updateProfile\(\{[\s\S]*patch:\s*\{ attendanceRequired: false \}/u,
   )
+})
+
+test('failed post-provision attendance policy remains retryable without provisioning twice', async () => {
+  const employeeId = 'd7c66406-028c-44d8-90f4-24a04c448cc1'
+  let provisionCalls = 0
+  let updateCalls = 0
+  let refreshCalls = 0
+  const updateInputs = []
+  const employeeAdmin = {
+    async provisionEmployee() {
+      provisionCalls += 1
+      return {
+        employee: {
+          id: employeeId,
+          employeeNumber: 'SW-8812',
+          name: '免打卡员工',
+          department: '总务部',
+          position: '总务部长',
+          employmentStatus: '在职',
+          accountStatus: 'active',
+          attendanceRequired: true,
+          mustChangePassword: true,
+        },
+        initialPassword: 'SecureStart2A',
+      }
+    },
+    async updateProfile(input) {
+      updateCalls += 1
+      updateInputs.push(input)
+      if (updateCalls === 1) {
+        const error = new Error('打卡政策暂未保存，请重试')
+        error.name = 'EmployeeAdminError'
+        throw error
+      }
+      return { employee: { id: employeeId } }
+    },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(createElement(PersonnelPage, {
+      employees: [],
+      currentEmployee: {
+        id: '4ec4b517-27d8-4cf6-8ee1-5112d12b43c0',
+        employeeNumber: 'SW-000',
+        name: '系统管理员',
+        department: '总务部',
+        position: '社长',
+        employmentStatus: '在职',
+        accountStatus: 'active',
+        mustChangePassword: false,
+        effectivePermissionKeys: ['all'],
+      },
+      employeeAdmin,
+      onRefreshEmployees: async () => { refreshCalls += 1 },
+      onAuthInvalid() {},
+      onCriticalStateChange: () => true,
+      permissionTemplateService: {
+        readPermissionTemplates: () => new Promise(() => {}),
+      },
+    })))
+
+    await act(async () => personnelButton(container, '新增员工').click())
+    await changePersonnelField(personnelField(container, 'name'), '免打卡员工')
+    await changePersonnelField(personnelField(container, 'department'), '总务部')
+    await changePersonnelField(personnelField(container, 'position'), '总务部长')
+    const attendanceRequired = personnelField(container, 'attendanceRequired')
+    await act(async () => {
+      attendanceRequired.checked = false
+      attendanceRequired.click()
+    })
+
+    const createForm = personnelElement(container, (element) =>
+      element.nodeName === 'FORM' && element.className === 'personnel-form')
+    await act(async () => createForm.dispatchEvent(new TestEvent('submit')))
+
+    assert.equal(provisionCalls, 1)
+    assert.equal(updateCalls, 1)
+    assert.equal(refreshCalls, 0)
+    assert.ok(personnelField(container, 'attendanceRequired'))
+    assert.equal(personnelField(container, 'attendanceRequired').checked, false)
+    assert.match(container.textContent, /打卡政策暂未保存，请重试/u)
+
+    const retryForm = personnelElement(container, (element) =>
+      element.nodeName === 'FORM' && element.className === 'personnel-form')
+    await act(async () => retryForm.dispatchEvent(new TestEvent('submit')))
+
+    assert.equal(provisionCalls, 1)
+    assert.equal(updateCalls, 2)
+    assert.equal(refreshCalls, 1)
+    assert.deepEqual(updateInputs, [
+      { employeeId, patch: { attendanceRequired: false } },
+      { employeeId, patch: { attendanceRequired: false } },
+    ])
+    assert.equal(personnelElement(container, (element) =>
+      element.nodeName === 'FORM' && element.className === 'personnel-form'), null)
+  } finally {
+    await act(async () => root.unmount())
+    dom.cleanup()
+  }
 })
 
 test('an unchanged edit cannot submit an empty patch', () => {
