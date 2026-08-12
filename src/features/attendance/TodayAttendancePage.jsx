@@ -358,10 +358,12 @@ export function createAttendanceClockController({
   const writeGuard = providedWriteGuard || createAttendancePageWriteGuard()
   const ownsWriteGuard = !providedWriteGuard
   let mounted = true
+  let lifecycleEpoch = 0
   let activeOperation = null
   let pendingConfirmation = null
 
   const submit = async (kind, submission) => {
+    const operationEpoch = lifecycleEpoch
     const writeToken = writeGuard.begin()
     if (writeToken === null) return { status: 'busy' }
     const attendanceSession = getToday?.()?.activeSession
@@ -386,7 +388,8 @@ export function createAttendanceClockController({
       const result = kind === 'clock_out'
         ? await service.clockOut(input)
         : await service.clockIn(input)
-      if (!mounted || !writeGuard.isCurrent(writeToken)) {
+      if (!mounted || operationEpoch !== lifecycleEpoch ||
+          !writeGuard.isCurrent(writeToken)) {
         writeGuard.finish(writeToken)
         return { status: 'stale' }
       }
@@ -421,6 +424,7 @@ export function createAttendanceClockController({
     async confirmOutOfRange() {
       const pending = pendingConfirmation
       if (!pending) return { status: 'invalid' }
+      const operationEpoch = lifecycleEpoch
       const writeToken = writeGuard.begin()
       if (writeToken === null) return { status: 'busy' }
       pendingConfirmation = null
@@ -428,7 +432,8 @@ export function createAttendanceClockController({
         const result = pending.kind === 'clock_out'
           ? await service.clockOut({ ...pending.input, outOfRangeConfirmed: true })
           : await service.clockIn({ ...pending.input, outOfRangeConfirmed: true })
-        if (!mounted || !writeGuard.isCurrent(writeToken)) {
+        if (!mounted || operationEpoch !== lifecycleEpoch ||
+            !writeGuard.isCurrent(writeToken)) {
           writeGuard.finish(writeToken)
           return { status: 'stale' }
         }
@@ -458,6 +463,12 @@ export function createAttendanceClockController({
       pendingConfirmation = null
       return { status: 'cancelled' }
     },
+    reconcileSnapshot(_today) {
+      lifecycleEpoch += 1
+      const discarded = pendingConfirmation !== null
+      pendingConfirmation = null
+      return { status: discarded ? 'discarded' : 'unchanged' }
+    },
     async refreshAfterClock() {
       const operation = activeOperation
       if (!operation || !writeGuard.isCurrent(operation.writeToken)) {
@@ -476,6 +487,7 @@ export function createAttendanceClockController({
     },
     unmount() {
       mounted = false
+      lifecycleEpoch += 1
       if (activeOperation) writeGuard.finish(activeOperation.writeToken)
       activeOperation = null
       pendingConfirmation = null
@@ -1347,13 +1359,21 @@ export default function TodayAttendancePage({
   const [preview, setPreview] = useState(null)
   const [clockConfirmation, setClockConfirmation] = useState(null)
   const [confirmationPending, setConfirmationPending] = useState(false)
+  const clockControllerRef = useRef(null)
+  const clockConfirmationRef = useRef(null)
   const returnFocusRef = useRef(null)
   const pendingCountRef = useRef(0)
   const clockPendingRef = useRef(false)
   const createRequestIdRef = useRef(createRequestId)
   createRequestIdRef.current = createRequestId
+  clockConfirmationRef.current = clockConfirmation
 
   const applySnapshot = useCallback((nextSnapshot) => {
+    clockControllerRef.current?.reconcileSnapshot(nextSnapshot.today)
+    clockConfirmationRef.current?.onCancelled?.()
+    clockConfirmationRef.current = null
+    setClockConfirmation(null)
+    setConfirmationPending(false)
     snapshotRef.current = nextSnapshot
     setSnapshot(nextSnapshot)
   }, [])
@@ -1408,6 +1428,7 @@ export default function TodayAttendancePage({
     onAuthInvalid,
     writeGuard,
   }), [onAuthInvalid, refreshToday, selectedProject, service, writeGuard])
+  clockControllerRef.current = clockController
   const previewController = useMemo(() => createAttendancePhotoPreviewController({
     photoStorage,
     onPreview: setPreview,
@@ -1532,8 +1553,9 @@ export default function TodayAttendancePage({
   const cancelClockConfirmation = useCallback(() => {
     if (confirmationPending) return
     clockController.cancelOutOfRange()
+    clockConfirmation?.onCancelled?.()
     setClockConfirmation(null)
-  }, [clockController, confirmationPending])
+  }, [clockConfirmation, clockController, confirmationPending])
 
   const refreshAfterClock = useCallback(async () => {
     try {
@@ -1557,13 +1579,14 @@ export default function TodayAttendancePage({
     void clockController.confirmOutOfRange().then(async (result) => {
       if (result.status !== 'submitted') throw operationError('ATTENDANCE_WRITE_BUSY')
       clockPendingRef.current = true
+      clockConfirmation?.onConfirmed?.()
       setClockConfirmation(null)
       await refreshAfterClock()
     }).catch((error) => {
       if (!clockPendingRef.current) endPending()
       setErrorCode(safeErrorCode(error, 'ATTENDANCE_SERVICE_UNAVAILABLE'))
     }).finally(() => setConfirmationPending(false))
-  }, [beginPending, clockController, confirmationPending, endPending, refreshAfterClock])
+  }, [beginPending, clockConfirmation, clockController, confirmationPending, endPending, refreshAfterClock])
 
   const handleOpenPhoto = useCallback((photo, suppliedContext) => {
     if (photo?.uploadStatus !== 'active') return

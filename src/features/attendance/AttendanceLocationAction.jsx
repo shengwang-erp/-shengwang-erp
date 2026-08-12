@@ -89,10 +89,31 @@ export function createAttendanceLocationSubmissionController({
     if (result?.status === 'confirmation_required') {
       locked = false
       emit(stateFor('awaiting_confirmation', { submission, preview: state.preview }))
+      let resolved = false
       onConfirmationRequired?.({
         submission,
         confirmation: result.confirmation,
         returnFocus,
+        onConfirmed() {
+          if (resolved || !mounted || token !== generation ||
+              state.phase !== 'awaiting_confirmation' ||
+              state.submission !== submission) return { status: 'stale' }
+          resolved = true
+          locked = true
+          generation += 1
+          emit(stateFor('refreshing', { submission, preview: state.preview }))
+          return { status: 'confirmed' }
+        },
+        onCancelled() {
+          if (resolved || !mounted || token !== generation ||
+              state.phase !== 'awaiting_confirmation' ||
+              state.submission !== submission) return { status: 'stale' }
+          resolved = true
+          locked = false
+          generation += 1
+          emit(stateFor())
+          return { status: 'cancelled' }
+        },
       })
       return result
     }
@@ -117,6 +138,13 @@ export function createAttendanceLocationSubmissionController({
   }
   return Object.freeze({
     getState: () => state,
+    mount() {
+      if (mounted) return
+      mounted = true
+      locked = false
+      controller = null
+      generation += 1
+    },
     async begin(returnFocus = null) {
       if (!mounted || locked) return { status: 'busy' }
       if (attendanceMode === 'project' && !isAttendanceTargetGeometryValid(targetLocation)) {
@@ -232,14 +260,20 @@ export default function AttendanceLocationAction({
   // The semantic signature, not render-time object identity, owns an in-flight attempt.
   }), [attendanceMode, locationService, targetSignature])
 
-  useEffect(() => () => controller.unmount(), [controller])
+  useEffect(() => {
+    controller.mount()
+    return () => controller.unmount()
+  }, [controller])
   useLayoutEffect(() => {
     const previous = controllerRef.current
     controllerRef.current = controller
     if (currentTargetSignatureRef.current !== targetSignature) {
       currentTargetSignatureRef.current = targetSignature
     }
-    if (previous && previous !== controller) previous.unmount()
+    if (previous && previous !== controller) {
+      previous.unmount()
+      setAttempt(stateFor())
+    }
   }, [controller, targetSignature])
 
   const busy = ['locating', 'submitting', 'refreshing'].includes(attempt.phase)

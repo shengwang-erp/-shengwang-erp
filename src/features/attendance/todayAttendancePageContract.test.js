@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer, transformWithEsbuild } from 'vite'
 
 import {
+  findWarehouseTestElement,
+  installWarehouseReactDom,
+  TestEvent,
+} from '../warehouse/warehouseReactDomTestUtils.js'
+
+import {
   attendanceLocationAttemptReducer,
   createAttendanceLocationAttempt,
 } from './attendanceLocationAttempt.js'
+
+const bootstrapDom = installWarehouseReactDom()
+const { createRoot } = await import('react-dom/client')
+bootstrapDom.cleanup()
 
 const COMPONENT_FILES = Object.freeze({
   picker: 'AttendanceProjectPicker.jsx',
@@ -148,6 +158,24 @@ function deferred() {
     reject = rejectPromise
   })
   return { promise, resolve, reject }
+}
+
+function domElements(root, predicate, result = []) {
+  if (root?.nodeType === 1 && predicate(root)) result.push(root)
+  for (const child of root?.childNodes ?? []) domElements(child, predicate, result)
+  return result
+}
+
+function domButton(root, label) {
+  return findWarehouseTestElement(root, (element) =>
+    element.nodeName === 'BUTTON' && element.textContent.trim() === label)
+}
+
+async function flushReact() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
 }
 
 const eligibleProject = Object.freeze({
@@ -468,6 +496,96 @@ test('location submission never opens confirmation or writes after positioning f
   assert.equal(result.stage, 'locate')
   assert.deepEqual(calls, ['locate'])
   assert.deepEqual(confirmation, [])
+})
+
+test('StrictMode location action remains live after effect replay and submits one positioned request', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const calls = []
+  const LocationAction = componentModule('location').default
+  try {
+    await act(async () => {
+      root.render(createElement(StrictMode, null, createElement(LocationAction, {
+        action: 'clock_in', attendanceMode: 'project', targetLocation: eligibleProject,
+        locationService: {
+          async getCurrentLocation() {
+            calls.push('locate')
+            return {
+              latitude: eligibleProject.latitude, longitude: eligibleProject.longitude,
+              accuracyMeters: 8, deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+            }
+          },
+        },
+        createRequestId: () => 'strict-request',
+        async onSubmit() { calls.push('submit'); return { status: 'saved' } },
+        async onSuccess() { calls.push('refresh') },
+      })))
+    })
+    const start = domButton(container, '打卡上班')
+    assert.ok(start)
+    await act(async () => { start.click() })
+    await flushReact()
+    assert.deepEqual(calls, ['locate', 'submit', 'refresh'])
+    assert.ok(domButton(container, '打卡上班'))
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('target replacement resets locating UI and makes the old geolocation completion stale', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const firstLocation = deferred()
+  const secondLocation = deferred()
+  const locations = [firstLocation, secondLocation]
+  const writes = []
+  const LocationAction = componentModule('location').default
+  const projectB = { ...eligibleProject, projectId: 'P009', projectName: '横滨现场' }
+  const renderTarget = async (targetLocation) => {
+    await act(async () => {
+      root.render(createElement(LocationAction, {
+        action: 'clock_in', attendanceMode: 'project', targetLocation,
+        locationService: {
+          getCurrentLocation() { return locations.shift().promise },
+        },
+        createRequestId: () => `request-${targetLocation.projectId}`,
+        async onSubmit(submission) { writes.push(submission); return { status: 'saved' } },
+        async onSuccess() {},
+      }))
+    })
+  }
+  try {
+    await renderTarget(eligibleProject)
+    await act(async () => { domButton(container, '打卡上班').click() })
+    assert.equal(domButton(container, '打卡上班'), null)
+
+    await renderTarget(projectB)
+    const replacementButton = domButton(container, '打卡上班')
+    assert.ok(replacementButton, 'the replacement target has a visible fresh action')
+    await act(async () => { replacementButton.click() })
+
+    firstLocation.resolve({
+      latitude: eligibleProject.latitude, longitude: eligibleProject.longitude,
+      accuracyMeters: 8, deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+    })
+    await flushReact()
+    assert.equal(writes.length, 0, 'the replaced target cannot submit its late position')
+    secondLocation.resolve({
+      latitude: projectB.latitude, longitude: projectB.longitude,
+      accuracyMeters: 8, deviceRecordedAt: '2026-08-12T01:01:00.000Z',
+    })
+    await flushReact()
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].requestId, 'request-P009')
+  } finally {
+    firstLocation.resolve({ latitude: 35, longitude: 139, accuracyMeters: 8 })
+    secondLocation.resolve({ latitude: 35, longitude: 139, accuracyMeters: 8 })
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
 })
 
 test('every disabled location recovery control references its rendered explanation', () => {
@@ -1638,6 +1756,221 @@ test('cancelled project confirmation performs no second write', async () => {
   assert.deepEqual(await controller.confirmOutOfRange(), { status: 'invalid' })
 })
 
+test('an authoritative snapshot discards a captured confirmation before it can write', async () => {
+  const page = task9Module('page')
+  const writes = []
+  let today = {
+    policy: { attendanceRequired: true, attendanceMode: 'project' },
+    activeSession: null,
+  }
+  const controller = page.createAttendanceClockController({
+    service: {
+      async clockIn(input) {
+        writes.push(input)
+        return { status: 'confirmation_required', confirmation: {
+          projectId: 'P001', projectName: '东京站现场', distanceMeters: 401,
+          radiusMeters: 300, accuracyMeters: 10,
+        } }
+      },
+    },
+    getToday: () => today,
+    getSelectedProject: () => eligibleProject,
+    async refreshToday() { return { status: 'accepted', today } },
+  })
+  assert.equal((await controller.clockIn({ requestId: 'request-old', location: {} })).status,
+    'confirmation_required')
+  today = {
+    policy: { attendanceRequired: true, attendanceMode: 'general' },
+    activeSession: null,
+  }
+  assert.deepEqual(controller.reconcileSnapshot(today), { status: 'discarded' })
+  assert.deepEqual(await controller.confirmOutOfRange(), { status: 'invalid' })
+  assert.equal(writes.length, 1)
+  assert.match(task9Sources.page, /clockControllerRef\.current\?\.reconcileSnapshot\(nextSnapshot\.today\)/u)
+  assert.match(task9Sources.page, /setClockConfirmation\(null\)/u)
+})
+
+test('a rendered authoritative refresh closes the old confirmation and prevents its captured write', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const Page = task9Module('page').default
+  const baseToday = {
+    workDate: '2026-08-12',
+    policy: { attendanceRequired: true, attendanceMode: 'project' },
+    viewerAccess: { scope: 'own', canViewScopedRecords: false },
+    activeSession: null, completedSessions: [], pendingPhotoReservations: [],
+  }
+  let writes = 0
+  const firstService = {
+    async listAttendanceProjects() { return [eligibleProject] },
+    async getMyTodayAttendance() { return baseToday },
+    async clockIn() {
+      writes += 1
+      return { status: 'confirmation_required', confirmation: {
+        projectId: 'P001', projectName: '东京站现场', distanceMeters: 401,
+        radiusMeters: 300, accuracyMeters: 10,
+      } }
+    },
+  }
+  const secondService = {
+    async listAttendanceProjects() { return [eligibleProject] },
+    async getMyTodayAttendance() {
+      return {
+        ...baseToday,
+        policy: { attendanceRequired: true, attendanceMode: 'general' },
+      }
+    },
+  }
+  const commonProps = {
+    locationService: { async getCurrentLocation() {
+      return {
+        latitude: 35.7, longitude: 139.7, accuracyMeters: 10,
+        deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+      }
+    } },
+    createRequestId: () => 'rendered-stale-request',
+  }
+  try {
+    await act(async () => { root.render(createElement(Page, { ...commonProps, service: firstService })) })
+    await flushReact()
+    const picker = findWarehouseTestElement(container, (element) => element.nodeName === 'SELECT')
+    assert.ok(picker)
+    picker.value = 'P001'
+    await act(async () => { picker.dispatchEvent(new TestEvent('change')) })
+    await flushReact()
+    await act(async () => { domButton(container, '打卡上班').click() })
+    await flushReact()
+    assert.ok(findWarehouseTestElement(container, (element) =>
+      element.getAttribute?.('role') === 'dialog'))
+    assert.equal(writes, 1)
+
+    await act(async () => { root.render(createElement(Page, { ...commonProps, service: secondService })) })
+    await flushReact()
+    assert.equal(findWarehouseTestElement(container, (element) =>
+      element.getAttribute?.('role') === 'dialog'), null)
+    assert.equal(writes, 1, 'the captured old confirmation cannot issue a second write')
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
+test('saved confirmation blocks its originating action when authoritative refresh fails', async () => {
+  const page = task9Module('page')
+  const location = componentModule('location')
+  let writes = 0
+  let capturedConfirmation
+  const clockController = page.createAttendanceClockController({
+    service: {
+      async clockIn() {
+        writes += 1
+        return writes === 1
+          ? { status: 'confirmation_required', confirmation: {
+            projectId: 'P001', projectName: '东京站现场', distanceMeters: 401,
+            radiusMeters: 300, accuracyMeters: 10,
+          } }
+          : { status: 'saved', session: session(), event: {} }
+      },
+    },
+    getToday: () => ({
+      policy: { attendanceRequired: true, attendanceMode: 'project' },
+      activeSession: null,
+    }),
+    getSelectedProject: () => eligibleProject,
+    async refreshToday() { throw new Error('refresh unavailable') },
+  })
+  const actionController = location.createAttendanceLocationSubmissionController({
+    attendanceMode: 'project', targetLocation: eligibleProject,
+    locationService: { async getCurrentLocation() {
+      return {
+        latitude: 35.7, longitude: 139.7, accuracyMeters: 10,
+        deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+      }
+    } },
+    createRequestId: () => 'request-confirmed',
+    onSubmit: (submission) => clockController.clockIn(submission),
+    async onSuccess() {},
+    onConfirmationRequired(value) { capturedConfirmation = value },
+  })
+
+  assert.equal((await actionController.begin()).status, 'confirmation_required')
+  assert.equal((await clockController.confirmOutOfRange()).status, 'submitted')
+  capturedConfirmation.onConfirmed()
+  await assert.rejects(() => clockController.refreshAfterClock(), /refresh unavailable/u)
+  assert.equal(actionController.getState().phase, 'refreshing')
+  assert.deepEqual(await actionController.begin(), { status: 'busy' })
+  assert.equal(writes, 2, 'only the initial attempt and its one confirmation write occur')
+})
+
+test('rendered confirmed save exposes only authoritative retry after refresh failure', async () => {
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const Page = task9Module('page').default
+  const baseToday = {
+    workDate: '2026-08-12',
+    policy: { attendanceRequired: true, attendanceMode: 'project' },
+    viewerAccess: { scope: 'own', canViewScopedRecords: false },
+    activeSession: null, completedSessions: [], pendingPhotoReservations: [],
+  }
+  let reads = 0
+  let writes = 0
+  const service = {
+    async listAttendanceProjects() { return [eligibleProject] },
+    async getMyTodayAttendance() {
+      reads += 1
+      if (reads === 2) throw new Error('refresh unavailable')
+      return reads >= 3 ? { ...baseToday, activeSession: session() } : baseToday
+    },
+    async clockIn() {
+      writes += 1
+      return writes === 1
+        ? { status: 'confirmation_required', confirmation: {
+          projectId: 'P001', projectName: '东京站现场', distanceMeters: 401,
+          radiusMeters: 300, accuracyMeters: 10,
+        } }
+        : { status: 'saved', session: session(), event: {} }
+    },
+  }
+  try {
+    await act(async () => { root.render(createElement(Page, {
+      service,
+      locationService: { async getCurrentLocation() {
+        return {
+          latitude: 35.7, longitude: 139.7, accuracyMeters: 10,
+          deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+        }
+      } },
+      createRequestId: () => 'confirmed-refresh-request',
+    })) })
+    await flushReact()
+    const picker = findWarehouseTestElement(container, (element) => element.nodeName === 'SELECT')
+    picker.value = 'P001'
+    await act(async () => { picker.dispatchEvent(new TestEvent('change')) })
+    await flushReact()
+    await act(async () => { domButton(container, '打卡上班').click() })
+    await flushReact()
+    await act(async () => { domButton(container, '仍然打卡').click() })
+    await flushReact()
+
+    assert.equal(writes, 2)
+    assert.equal(domButton(container, '打卡上班'), null,
+      'the originating action stays fail-closed after the saved write')
+    const retry = domButton(container, '重新读取服务器记录')
+    assert.ok(retry)
+    assert.equal(retry.disabled, false)
+    await act(async () => { retry.click() })
+    await flushReact()
+    assert.equal(reads, 3)
+    assert.equal(writes, 2, 'authoritative retry performs no fresh attendance write')
+    assert.equal(domButton(container, '打卡上班'), null)
+  } finally {
+    await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
+})
+
 test('signed preview is component-memory only and invalidates older, closed, and unmounted requests', async () => {
   const page = task9Module('page')
   const previewA = deferred()
@@ -1912,6 +2245,69 @@ test('out-of-range dialog exposes project distance, radius and accessible idle o
   assert.match(sources.confirmation, /Escape/u)
   assert.match(sources.confirmation, /focusable|FOCUSABLE/u)
   assert.match(sources.confirmation, /returnFocus/u)
+})
+
+test('StrictMode confirmation dialog redirects escaped focus, handles idle Escape, disables pending actions, and restores focus', async () => {
+  const dom = installWarehouseReactDom()
+  const origin = dom.document.createElement('button')
+  origin.textContent = '发起打卡'
+  origin.isConnected = true
+  dom.document.body.appendChild(origin)
+  origin.focus()
+  const outside = dom.document.createElement('button')
+  outside.textContent = '外部控件'
+  dom.document.body.appendChild(outside)
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  const Dialog = componentModule('confirmation').default
+  const confirmation = {
+    projectId: 'P001', projectName: '东京站现场', distanceMeters: 412.7,
+    radiusMeters: 300, accuracyMeters: 12,
+  }
+  let cancelled = 0
+  let cleared = false
+  const renderDialog = async (pending) => {
+    await act(async () => {
+      root.render(createElement(StrictMode, null, createElement(Dialog, {
+        confirmation, pending, returnFocus: origin,
+        onCancel() { cancelled += 1 }, onConfirm() {},
+      })))
+    })
+  }
+  try {
+    await renderDialog(false)
+    const dialog = findWarehouseTestElement(container, (element) =>
+      element.getAttribute?.('role') === 'dialog')
+    assert.ok(dialog?.contains(dom.document.activeElement))
+    outside.focus()
+    await act(async () => {
+      dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Tab' }))
+    })
+    assert.ok(dialog.contains(dom.document.activeElement), 'Tab from outside returns inside')
+    await act(async () => {
+      dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Escape' }))
+    })
+    assert.equal(cancelled, 1)
+
+    await renderDialog(true)
+    const pendingButtons = domElements(dialog, (element) => element.nodeName === 'BUTTON')
+    assert.equal(pendingButtons.length, 2)
+    assert.ok(pendingButtons.every((button) => button.disabled))
+    outside.focus()
+    await act(async () => {
+      dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Tab' }))
+      dom.document.dispatchEvent(new TestEvent('keydown', { key: 'Escape' }))
+    })
+    assert.equal(dom.document.activeElement, dialog)
+    assert.equal(cancelled, 1, 'pending Escape cannot cancel')
+
+    await act(async () => { root.render(null) })
+    cleared = true
+    assert.equal(dom.document.activeElement, origin)
+  } finally {
+    if (!cleared) await act(async () => { root.unmount() })
+    dom.cleanup()
+  }
 })
 
 test('general history and records label company non-project sessions without work points', () => {

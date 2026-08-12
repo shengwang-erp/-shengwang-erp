@@ -43,6 +43,11 @@ export default function AttendanceOutOfRangeDialog({
       }
       const first = focusable[0]
       const last = focusable.at(-1)
+      if (!dialogRef.current?.contains(globalThis.document?.activeElement)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+        return
+      }
       if (event.shiftKey && globalThis.document?.activeElement === first) {
         event.preventDefault()
         last.focus()
