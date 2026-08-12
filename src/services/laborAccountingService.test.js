@@ -1051,6 +1051,48 @@ test('monthly location review aggregates accept legal notes and share one bounde
   }
 })
 
+test('monthly location review aggregates count supplementary characters as Unicode code points', async () => {
+  const maxLegalMonthlySummary = Array.from({ length: 31 }, (_, index) => (
+    `2026-07-${String(index + 1).padStart(2, '0')} 判定异常：${'🚀'.repeat(2000)}`
+  )).join('；')
+  assert.equal(Array.from(maxLegalMonthlySummary).length, 62526)
+  assert.ok(maxLegalMonthlySummary.length > 65536)
+
+  const monthly = monthlyPayroll()
+  monthly.employees[0].locationReviewSummary = maxLegalMonthlySummary
+  const monthlyResult = await serviceWithResponder(() => monthly).service.listMonthlyPayroll({
+    month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+  })
+  assert.equal(monthlyResult.employees[0].locationReviewSummary, maxLegalMonthlySummary)
+
+  const payroll = payrollResult()
+  payroll.payroll.locationReviewSummary = maxLegalMonthlySummary
+  const payrollWriteResult = await serviceWithResponder(() => payroll).service
+    .saveMonthlyPayrollDraft(payrollPayload())
+  assert.equal(payrollWriteResult.payroll.locationReviewSummary, maxLegalMonthlySummary)
+
+  const oneCodePointOverLimit = '🚀'.repeat(65537)
+  for (const [response, invoke] of [
+    [(() => {
+      const row = monthlyPayroll()
+      row.employees[0].locationReviewSummary = oneCodePointOverLimit
+      return row
+    })(), (service) => service.listMonthlyPayroll({
+      month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+    })],
+    [(() => {
+      const row = payrollResult()
+      row.payroll.locationReviewSummary = oneCodePointOverLimit
+      return row
+    })(), (service) => service.saveMonthlyPayrollDraft(payrollPayload())],
+  ]) {
+    await assert.rejects(
+      () => invoke(serviceWithResponder(() => response).service),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
 test('employee month calendar validates exact identity, month coverage, order, and safe day facts', async () => {
   const { service } = serviceWithResponder(() => employeeMonthCalendar())
   const result = await service.listEmployeeMonthCalendar({

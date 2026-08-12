@@ -224,6 +224,23 @@ function textValue(value, {
   return normalized
 }
 
+function monthlyLocationReviewSummaryValue(value) {
+  if (typeof value !== 'string') return fail(invalidResponse)
+  const normalized = trimPosix(value)
+  if (normalized.length > MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH * 2) {
+    return fail(invalidResponse)
+  }
+  let codePointCount = 0
+  const codePoints = normalized[Symbol.iterator]()
+  for (let next = codePoints.next(); !next.done; next = codePoints.next()) {
+    codePointCount += 1
+    if (codePointCount > MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH) {
+      return fail(invalidResponse)
+    }
+  }
+  return normalized
+}
+
 function identifier(value, options = {}) {
   return textValue(value, {
     max: MAX_IDENTIFIER_LENGTH,
@@ -860,9 +877,7 @@ function validateMonthlyEmployee(value, canViewSalary) {
     position: textValue(row.position, { max: MAX_IDENTIFIER_LENGTH }),
     attendanceMethod,
     locationAbnormalCount: safeInteger(row.locationAbnormalCount),
-    locationReviewSummary: textValue(row.locationReviewSummary, {
-      max: MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH, trim: true,
-    }),
+    locationReviewSummary: monthlyLocationReviewSummaryValue(row.locationReviewSummary),
     fullDays: safeInteger(row.fullDays),
     halfDays: safeInteger(row.halfDays),
     excusedDays: safeInteger(row.excusedDays),
@@ -1101,9 +1116,9 @@ function validatePayrollResult(value) {
     status,
     attendanceMethodSnapshot,
     locationAbnormalCount: safeInteger(payrollRow.locationAbnormalCount),
-    locationReviewSummary: textValue(payrollRow.locationReviewSummary, {
-      max: MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH, trim: true,
-    }),
+    locationReviewSummary: monthlyLocationReviewSummaryValue(
+      payrollRow.locationReviewSummary,
+    ),
     confirmedAt,
     version: safeInteger(payrollRow.version, { min: 1 }),
   }
