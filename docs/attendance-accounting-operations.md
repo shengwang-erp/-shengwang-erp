@@ -52,7 +52,11 @@ where status <> 'deleted';
 6. 确认 `https://shengwang-erp.vercel.app/` main alias 指向本次部署，并把部署 URL、commit、
    migration versions、探针结果和 smoke test 结果附到发布记录。
 
-迁移后的数据库探针只返回对象/约束状态和聚合计数，不读取姓名、工资金额、坐标或复核说明：
+### `202608120002` 后立即执行：会计与工资对象/ACL 探针
+
+下面整段 SQL 可直接复制执行，只检查 `202608120002` 完成后的会计与工资公开边界。每行必须
+满足 `procedure_exists=true`、`authenticated_can_execute=true`、
+`anon_cannot_execute=true`；缺行、`false` 或 `null` 都必须停止发布。
 
 ```sql
 select version
@@ -60,11 +64,33 @@ from supabase_migrations.schema_migrations
 where version in ('202608120001', '202608120002')
 order by version;
 
+with expected(signature) as (
+  values
+    ('public.get_attendance_resolution_detail_secure(uuid,date)'),
+    ('public.save_attendance_resolution_draft_secure(uuid,date,text,numeric,numeric,jsonb,text,text,text,integer)'),
+    ('public.confirm_attendance_resolution_secure(uuid,date,text,numeric,numeric,jsonb,text,text,text,integer)'),
+    ('public.list_monthly_payroll_secure(date,text,uuid,boolean)'),
+    ('public.save_monthly_payroll_draft_secure(uuid,date,numeric,numeric,numeric,text,integer)'),
+    ('public.confirm_monthly_payroll_secure(uuid,date,numeric,numeric,numeric,text,integer)'),
+    ('public.reopen_monthly_payroll_secure(uuid,text,integer)')
+), resolved as (
+  select signature, to_regprocedure(signature) as procedure_oid
+  from expected
+)
 select
-  to_regprocedure('public.get_my_today_attendance_secure()') is not null as attendance_v1_exists,
-  to_regprocedure('public.get_my_today_attendance_v2_secure()') is not null as attendance_v2_exists,
-  to_regprocedure('public.list_monthly_payroll_secure(date,text,uuid,boolean)') is not null
-    as monthly_payroll_exists;
+  signature,
+  procedure_oid is not null as procedure_exists,
+  coalesce(has_function_privilege('authenticated', procedure_oid, 'EXECUTE'), false)
+    as authenticated_can_execute,
+  not coalesce(has_function_privilege('anon', procedure_oid, 'EXECUTE'), false)
+    as anon_cannot_execute
+from resolved
+order by signature;
+```
+
+迁移后的下列只读探针只返回约束状态和聚合计数，不读取姓名、工资金额、坐标或复核说明：
+
+```sql
 
 select conname, convalidated
 from pg_constraint
@@ -86,7 +112,8 @@ group by attendance_method_snapshot, accounting_status
 order by attendance_method_snapshot, accounting_status;
 ```
 
-三个约束都必须各返回一行且 `convalidated = true`；探针返回空行或 `false` 不能用人工解释为成功。
+版本查询必须按顺序返回两行；七个函数与三个约束都必须各返回一行，且约束的
+`convalidated = true`。探针返回空行、`false` 或 `null` 不能用人工解释为成功。
 
 ## 权限矩阵
 

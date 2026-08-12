@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-13T01:16:00+09:00",
+  "browserSurface": "codex-in-app-browser",
+  "sourceCommit": "103c770b52551ddf2ed02ff3fc0ff95dd00a3377",
+  "fixture": {
+    "kind": "real-production-components",
+    "dataClass": "fictitious",
+    "productionConnected": false
+  },
+  "desktop": {
+    "viewport": { "width": 1440, "height": 1000 },
+    "dialog": { "top": 24, "bottom": 976 },
+    "gridRows": [112.5, 766, 71.5],
+    "scroll": {
+      "clientHeight": 766,
+      "scrollHeight": 1819,
+      "maxScrollTop": 1053,
+      "scrollTop": 1053.5
+    },
+    "actions": { "top": 903.5, "bottom": 975 },
+    "primaryAction": { "top": 918.5, "bottom": 961 },
+    "document": { "scrollWidth": 1425 },
+    "consoleErrors": [],
+    "consoleWarnings": []
+  },
+  "mobile": {
+    "viewport": { "width": 390, "height": 844 },
+    "dialog": { "top": 33.77, "bottom": 844 },
+    "gridRows": [112.5, 572.734, 123],
+    "scroll": {
+      "clientHeight": 573,
+      "scrollHeight": 2708,
+      "maxScrollTop": 2135,
+      "scrollTop": 2135
+    },
+    "actions": { "top": 720, "bottom": 843 },
+    "primaryAction": { "top": 735, "bottom": 777.5 },
+    "document": { "scrollWidth": 375 },
+    "consoleErrors": [],
+    "consoleWarnings": []
+  },
+  "outputQa": {
+    "fixture": "fictitious-local-only",
+    "productionConnected": false,
+    "consoleErrors": [],
+    "consoleWarnings": [],
+    "excel": {
+      "started": 1,
+      "completed": 1,
+      "exported": true,
+      "fileName": "月度工资表_2026-08_2026-08-31.xlsx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "byteLength": 11926,
+      "worksheetNames": ["工资汇总", "工资明细", "定位异常记录"],
+      "detailEmployeeNumbers": ["SW-021", "SW-028", "SW-001"],
+      "pageSetup": { "paperSize": 9, "orientation": "landscape", "fitToWidth": 1 }
+    },
+    "print": {
+      "started": 1,
+      "nativeInvocations": 1,
+      "portalAtInvoke": true,
+      "bodyClassAfter": "",
+      "portalAfterCleanup": false,
+      "printRootsAfterCleanup": 0,
+      "nativeDialogAutomated": false
+    }
+  }
+}

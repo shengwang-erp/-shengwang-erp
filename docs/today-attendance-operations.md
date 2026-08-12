@@ -39,6 +39,46 @@
 切换到 v2。`202608120002` 必须在 `202608120001` 之后，Vercel 必须在两者及只读探针之后。
 不得在同一发布中删除或收回 v1 RPC；只有单独评审的后续清理迁移才能结束过渡期。
 
+### `202608120001` 后立即执行：v1/v2 考勤兼容探针
+
+下面整段 SQL 可直接复制执行。它只验证 `202608120001` 应当提供或保留的考勤读取、上班和
+下班 RPC，不混入后续会计或工资对象。每行都必须满足 `procedure_exists=true`、
+`authenticated_can_execute=true`、`anon_cannot_execute=true`；缺行、`false` 或 `null` 都必须
+停止发布。
+
+```sql
+with expected(signature) as (
+  values
+    ('public.list_attendance_projects_secure()'),
+    ('public.get_my_today_attendance_secure()'),
+    ('public.clock_in_project_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,text)'),
+    ('public.clock_out_project_secure(uuid,uuid,double precision,double precision,numeric,timestamp with time zone,text)'),
+    ('public.list_attendance_projects_v2_secure()'),
+    ('public.get_my_today_attendance_v2_secure()'),
+    ('public.clock_in_general_secure(uuid,double precision,double precision,numeric,timestamp with time zone)'),
+    ('public.clock_in_project_v2_secure(text,uuid,double precision,double precision,numeric,timestamp with time zone,boolean)'),
+    ('public.clock_out_attendance_v2_secure(uuid,uuid,double precision,double precision,numeric,timestamp with time zone,boolean)')
+), resolved as (
+  select signature, to_regprocedure(signature) as procedure_oid
+  from expected
+)
+select
+  signature,
+  procedure_oid is not null as procedure_exists,
+  coalesce(has_function_privilege('authenticated', procedure_oid, 'EXECUTE'), false)
+    as authenticated_can_execute,
+  not coalesce(has_function_privilege('anon', procedure_oid, 'EXECUTE'), false)
+    as anon_cannot_execute
+from resolved
+order by signature;
+```
+
+### `202608120002` 后执行：会计与工资探针
+
+应用 `202608120002` 后不要重复使用上面的考勤探针代替会计验收。立即执行
+[人工考勤、工资与项目用工费用运维手册](./attendance-accounting-operations.md)中独立的
+`202608120002` 会计/工资精确签名、EXECUTE ACL、约束和只读聚合探针。
+
 ## 2. 私有照片桶设置
 
 照片桶的固定契约如下：

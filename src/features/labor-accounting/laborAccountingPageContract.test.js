@@ -32,6 +32,10 @@ const sourceEntries = await Promise.all(Object.entries(COMPONENT_FILES).map(asyn
 ]))
 const sources = Object.fromEntries(sourceEntries)
 const css = await readFile(new URL('./laborAccounting.css', import.meta.url), 'utf8').catch(() => '')
+const browserEvidenceText = await readFile(
+  new URL('./accountingDialogBrowserEvidence.json', import.meta.url),
+  'utf8',
+).catch(() => '')
 
 async function loadModules() {
   const server = await createServer({
@@ -1886,6 +1890,61 @@ test('resolution dialog keeps its actions outside a bounded scrolling body on ev
     viewportIndependentCss,
     /\.labor-accounting-page\s+\.labor-dialog-scroll\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*auto/su,
   )
+})
+
+test('sanitized real-browser evidence preserves the dialog layout release gate', () => {
+  assert.ok(browserEvidenceText, 'committed in-app-browser evidence is required')
+  const evidence = JSON.parse(browserEvidenceText)
+  assert.equal(evidence.schemaVersion, 1)
+  assert.equal(evidence.browserSurface, 'codex-in-app-browser')
+  assert.equal(evidence.fixture.dataClass, 'fictitious')
+  assert.equal(evidence.fixture.productionConnected, false)
+  for (const viewport of [evidence.desktop, evidence.mobile]) {
+    assert.ok(viewport.dialog.top >= 0)
+    assert.ok(viewport.dialog.bottom <= viewport.viewport.height)
+    assert.ok(viewport.scroll.clientHeight < viewport.scroll.scrollHeight)
+    assert.ok(viewport.scroll.scrollTop >= viewport.scroll.maxScrollTop - 1)
+    assert.ok(viewport.actions.top >= viewport.dialog.top)
+    assert.ok(viewport.actions.bottom <= viewport.dialog.bottom)
+    assert.ok(viewport.primaryAction.top >= viewport.dialog.top)
+    assert.ok(viewport.primaryAction.bottom <= viewport.dialog.bottom)
+    assert.ok(viewport.primaryAction.bottom <= viewport.viewport.height)
+    assert.ok(viewport.document.scrollWidth <= viewport.viewport.width)
+    assert.deepEqual(viewport.consoleErrors, [])
+    assert.deepEqual(viewport.consoleWarnings, [])
+  }
+  const output = evidence.outputQa
+  assert.equal(output.fixture, 'fictitious-local-only')
+  assert.equal(output.productionConnected, false)
+  assert.deepEqual(output.consoleErrors, [])
+  assert.deepEqual(output.consoleWarnings, [])
+  assert.deepEqual({
+    started: output.excel.started,
+    completed: output.excel.completed,
+    exported: output.excel.exported,
+    mimeType: output.excel.mimeType,
+  }, {
+    started: 1,
+    completed: 1,
+    exported: true,
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  assert.match(output.excel.fileName, /\.xlsx$/u)
+  assert.ok(output.excel.byteLength > 0)
+  assert.deepEqual(output.excel.worksheetNames, ['工资汇总', '工资明细', '定位异常记录'])
+  assert.deepEqual(output.excel.detailEmployeeNumbers, ['SW-021', 'SW-028', 'SW-001'])
+  assert.deepEqual(output.excel.pageSetup, {
+    paperSize: 9, orientation: 'landscape', fitToWidth: 1,
+  })
+  assert.deepEqual(output.print, {
+    started: 1,
+    nativeInvocations: 1,
+    portalAtInvoke: true,
+    bodyClassAfter: '',
+    portalAfterCleanup: false,
+    printRootsAfterCleanup: 0,
+    nativeDialogAutomated: false,
+  })
 })
 
 test('styles are fully scoped and turn the desktop table into narrow employee cards', () => {
