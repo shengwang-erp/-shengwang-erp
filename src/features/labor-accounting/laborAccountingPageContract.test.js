@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createElement } from 'react'
+import { act, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import { createServer } from 'vite'
+
+import {
+  findWarehouseTestElement,
+  installWarehouseReactDom,
+} from '../warehouse/warehouseReactDomTestUtils.js'
+
+const bootstrapDom = installWarehouseReactDom()
+const { createRoot } = await import('react-dom/client')
+bootstrapDom.cleanup()
 
 const COMPONENT_FILES = Object.freeze({
   page: 'LaborAccountingPage.jsx',
@@ -53,6 +62,15 @@ function moduleFor(name) {
 
 function render(Component, props) {
   return renderToStaticMarkup(createElement(Component, props))
+}
+
+function dialogElement(root, predicate) {
+  return findWarehouseTestElement(root, predicate)
+}
+
+function dialogButton(root, label) {
+  return dialogElement(root, (element) =>
+    element.nodeName === 'BUTTON' && element.textContent.trim() === label)
 }
 
 const session = Object.freeze({
@@ -444,6 +462,75 @@ test('resolution dialog keeps immutable facts separate from whole and half-day a
   assert.doesNotMatch(markup, /修改打卡时间/u)
 })
 
+test('abnormal-location draft stays blocked until review status and trimmed note are complete', async () => {
+  const { default: AttendanceResolutionDialog } = moduleFor('dialog')
+  const savedDrafts = []
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(createElement(AttendanceResolutionDialog, {
+      detail,
+      draft,
+      saving: false,
+      error: '',
+      onChange() {},
+      onSaveDraft(nextDraft) { savedDrafts.push(nextDraft) },
+      onConfirm() {},
+      onClose() {},
+    })))
+
+    assert.equal(dialogButton(container, '保存草稿').disabled, true)
+    assert.match(container.textContent, /暂不能保存草稿/u)
+    assert.match(container.textContent, /暂不能确认/u)
+    assert.match(container.textContent, /请选择定位异常处理结果/u)
+    assert.match(container.textContent, /请填写定位异常处理备注/u)
+
+    await act(async () => root.render(createElement(AttendanceResolutionDialog, {
+      key: 'status-only',
+      detail,
+      draft: { ...draft, locationReviewStatus: 'confirmed_valid' },
+      onSaveDraft(nextDraft) { savedDrafts.push(nextDraft) },
+      onClose() {},
+    })))
+    assert.equal(dialogButton(container, '保存草稿').disabled, true)
+    assert.match(container.textContent, /请填写定位异常处理备注/u)
+
+    await act(async () => root.render(createElement(AttendanceResolutionDialog, {
+      key: 'whitespace-note',
+      detail,
+      draft: {
+        ...draft,
+        locationReviewStatus: 'confirmed_valid',
+        locationReviewNote: '   ',
+      },
+      onSaveDraft(nextDraft) { savedDrafts.push(nextDraft) },
+      onClose() {},
+    })))
+    assert.equal(dialogButton(container, '保存草稿').disabled, true)
+    assert.match(container.textContent, /请填写定位异常处理备注/u)
+
+    const completeDraft = {
+      ...draft,
+      locationReviewStatus: 'confirmed_valid',
+      locationReviewNote: '  现场负责人已确认  ',
+    }
+    await act(async () => root.render(createElement(AttendanceResolutionDialog, {
+      key: 'complete-review',
+      detail,
+      draft: completeDraft,
+      onSaveDraft(nextDraft) { savedDrafts.push(nextDraft) },
+      onClose() {},
+    })))
+    assert.equal(dialogButton(container, '保存草稿').disabled, false)
+    await act(async () => dialogButton(container, '保存草稿').click())
+    assert.deepEqual(savedDrafts, [completeDraft])
+  } finally {
+    await act(async () => root.unmount())
+    dom.cleanup()
+  }
+})
+
 test('resolution helpers derive projects and corrected draft defaults from facts and salary DTOs', () => {
   const {
     buildInitialResolutionDraft,
@@ -713,6 +800,8 @@ test('available-project allocation controls honor project permissions and day lo
     attendanceUnits: 0,
     finalProjectCost: 0,
     allocations: [],
+    locationReviewStatus: 'confirmed_valid',
+    locationReviewNote: '现场负责人已确认',
   }
   assert.deepEqual(resolutionDraftBlockers({
     ...detail,
@@ -819,6 +908,8 @@ test('open sessions, salary gaps, and imbalance block confirm but do not disable
     ...draft,
     finalProjectCost: 12000,
     allocations: [{ projectId: 'PROJECT-001', amount: 0, allocationNote: '' }],
+    locationReviewStatus: 'confirmed_valid',
+    locationReviewNote: '现场负责人已确认',
   }
   const blockers = resolutionConfirmBlockers(openDetail, unbalancedDraft)
   assert.ok(blockers.some((reason) => reason.includes('仍在打卡')))

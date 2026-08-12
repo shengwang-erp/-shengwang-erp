@@ -33,6 +33,8 @@ const MIN_YEAR = 1900
 const MAX_YEAR = 2100
 const MAX_IDENTIFIER_LENGTH = 500
 const MAX_NOTE_LENGTH = 2000
+// One month can aggregate up to 31 Task 5 notes plus server-added dates and labels.
+const MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH = 65536
 const MAX_SEARCH_LENGTH = 200
 const MAX_TIMESTAMP_LENGTH = 64
 const MAX_ALLOCATIONS = 100
@@ -859,7 +861,7 @@ function validateMonthlyEmployee(value, canViewSalary) {
     attendanceMethod,
     locationAbnormalCount: safeInteger(row.locationAbnormalCount),
     locationReviewSummary: textValue(row.locationReviewSummary, {
-      max: MAX_NOTE_LENGTH, trim: true,
+      max: MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH, trim: true,
     }),
     fullDays: safeInteger(row.fullDays),
     halfDays: safeInteger(row.halfDays),
@@ -1100,7 +1102,7 @@ function validatePayrollResult(value) {
     attendanceMethodSnapshot,
     locationAbnormalCount: safeInteger(payrollRow.locationAbnormalCount),
     locationReviewSummary: textValue(payrollRow.locationReviewSummary, {
-      max: MAX_NOTE_LENGTH, trim: true,
+      max: MAX_MONTHLY_LOCATION_REVIEW_SUMMARY_LENGTH, trim: true,
     }),
     confirmedAt,
     version: safeInteger(payrollRow.version, { min: 1 }),

@@ -1011,6 +1011,46 @@ test('monthly DTOs preserve method, position, company cost, and location review 
   })
 })
 
+test('monthly location review aggregates accept legal notes and share one bounded contract', async () => {
+  const noteAtTaskFiveLimit = '核'.repeat(2000)
+  const oneLegalEntry = `2026-07-01 确认有效：${noteAtTaskFiveLimit}`
+  const multipleLegalEntries = `${oneLegalEntry}；2026-07-02 判定异常：${noteAtTaskFiveLimit}`
+
+  const monthly = monthlyPayroll()
+  monthly.employees[0].locationReviewSummary = multipleLegalEntries
+  const monthlyResult = await serviceWithResponder(() => monthly).service.listMonthlyPayroll({
+    month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+  })
+  assert.equal(monthlyResult.employees[0].locationReviewSummary, multipleLegalEntries)
+
+  const payroll = payrollResult()
+  payroll.payroll.locationReviewSummary = oneLegalEntry
+  const payrollWriteResult = await serviceWithResponder(() => payroll).service
+    .saveMonthlyPayrollDraft(payrollPayload())
+  assert.equal(payrollWriteResult.payroll.locationReviewSummary, oneLegalEntry)
+
+  const aboveAggregateLimit = '异'.repeat(65537)
+  for (const [response, invoke] of [
+    [(() => {
+      const row = monthlyPayroll()
+      row.employees[0].locationReviewSummary = aboveAggregateLimit
+      return row
+    })(), (service) => service.listMonthlyPayroll({
+      month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+    })],
+    [(() => {
+      const row = payrollResult()
+      row.payroll.locationReviewSummary = aboveAggregateLimit
+      return row
+    })(), (service) => service.saveMonthlyPayrollDraft(payrollPayload())],
+  ]) {
+    await assert.rejects(
+      () => invoke(serviceWithResponder(() => response).service),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
 test('employee month calendar validates exact identity, month coverage, order, and safe day facts', async () => {
   const { service } = serviceWithResponder(() => employeeMonthCalendar())
   const result = await service.listEmployeeMonthCalendar({

@@ -181,6 +181,18 @@ function draftHasMoneyScope(draft) {
     (Array.isArray(draft?.allocations) && draft.allocations.length > 0)
 }
 
+function locationReviewBlockers(detail, draft) {
+  if (!detail?.facts?.issueCodes?.includes('abnormal_location')) return []
+  const blockers = []
+  if (!['confirmed_valid', 'recorded_abnormal'].includes(draft?.locationReviewStatus)) {
+    blockers.push('请选择定位异常处理结果')
+  }
+  if (typeof draft?.locationReviewNote !== 'string' || !draft.locationReviewNote.trim()) {
+    blockers.push('请填写定位异常处理备注')
+  }
+  return blockers
+}
+
 export function resolutionDraftBlockers(detail, draft, { saving = false } = {}) {
   const blockers = []
   const writeBlockedReason = resolutionWriteBlockedReason(detail)
@@ -190,6 +202,7 @@ export function resolutionDraftBlockers(detail, draft, { saving = false } = {}) 
       detail?.permissions?.canUpdateProjectCosts !== true) {
     blockers.push('当前草稿含项目费用；账号缺少完整项目费用权限，不能保存')
   }
+  blockers.push(...locationReviewBlockers(detail, draft))
   return [...new Set(blockers)]
 }
 
@@ -199,14 +212,7 @@ export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}
   if (writeBlockedReason) blockers.push(writeBlockedReason)
   if (saving) blockers.push('请求正在处理中')
   if (detail?.facts?.hasOpenSession) blockers.push('员工仍在打卡中，请完成下班打卡后确认')
-  if (detail?.facts?.issueCodes?.includes('abnormal_location')) {
-    if (!['confirmed_valid', 'recorded_abnormal'].includes(draft?.locationReviewStatus)) {
-      blockers.push('请选择定位异常处理结果')
-    }
-    if (typeof draft?.locationReviewNote !== 'string' || !draft.locationReviewNote.trim()) {
-      blockers.push('请填写定位异常处理备注')
-    }
-  }
+  blockers.push(...locationReviewBlockers(detail, draft))
   if (!validResolutionUnits(draft)) blockers.push('核算类型与确认人天不一致')
   if (!safeYen(draft?.finalProjectCost)) blockers.push('最终项目人工成本必须是非负整数日元')
 
@@ -848,6 +854,12 @@ export default function AttendanceResolutionDialog({
             </label>
 
             {error && <p className="labor-dialog-error" role="alert">{error}</p>}
+            {draftBlockers.length > 0 && !readOnlyReason && (
+              <div className="labor-confirm-blockers" role="status">
+                <strong>暂不能保存草稿</strong>
+                <ul>{draftBlockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+              </div>
+            )}
             {blockers.length > 0 && !readOnlyReason && (
               <div className="labor-confirm-blockers" role="status">
                 <strong>暂不能确认</strong>
