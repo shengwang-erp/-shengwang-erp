@@ -21,6 +21,7 @@ const PROFILE_FIELDS = Object.freeze([
   'birthDate',
   'nationality',
   'employmentStatus',
+  'attendanceRequired',
   'hireDate',
   'resignDate',
   'department',
@@ -61,11 +62,15 @@ const DIRECTORY_FIELDS = Object.freeze([
   'position',
   'employmentStatus',
   'accountStatus',
+  'attendanceRequired',
 ])
 const EMPLOYEE_SUMMARY_FIELDS = Object.freeze([
   ...DIRECTORY_FIELDS,
   'mustChangePassword',
 ])
+const PROVISION_EMPLOYEE_SUMMARY_FIELDS = Object.freeze(
+  EMPLOYEE_SUMMARY_FIELDS.filter((key) => key !== 'attendanceRequired'),
+)
 const DETAIL_BASE_FIELDS = Object.freeze([
   ...EMPLOYEE_SUMMARY_FIELDS,
   'legacyEmployeeId',
@@ -198,6 +203,12 @@ function normalizeNullableString(value, maximum = 500) {
 }
 
 function normalizeProfileField(key, value) {
+  if (key === 'attendanceRequired') {
+    if (typeof value !== 'boolean') {
+      throw adminError('EMPLOYEE_ADMIN_INPUT_INVALID')
+    }
+    return value
+  }
   if (key === 'name') {
     if (typeof value !== 'string') throw adminError('EMPLOYEE_ADMIN_INPUT_INVALID')
     const name = value.trim()
@@ -297,7 +308,8 @@ function mapDirectoryRow(value) {
     !DEPARTMENT_OPTIONS.includes(value.department) ||
     !POSITION_OPTIONS.includes(value.position) ||
     !EMPLOYMENT_STATUSES.has(value.employmentStatus) ||
-    !ACCOUNT_STATUSES.has(value.accountStatus)
+    !ACCOUNT_STATUSES.has(value.accountStatus) ||
+    typeof value.attendanceRequired !== 'boolean'
   ) {
     throw adminError('EMPLOYEE_ADMIN_RESPONSE_INVALID')
   }
@@ -315,6 +327,16 @@ function mapEmployeeSummary(value) {
     throw adminError('EMPLOYEE_ADMIN_RESPONSE_INVALID')
   }
   return { ...directory, mustChangePassword: value.mustChangePassword }
+}
+
+function mapProvisionEmployeeSummary(value) {
+  if (hasExactKeys(value, EMPLOYEE_SUMMARY_FIELDS)) {
+    return mapEmployeeSummary(value)
+  }
+  if (!hasExactKeys(value, PROVISION_EMPLOYEE_SUMMARY_FIELDS)) {
+    throw adminError('EMPLOYEE_ADMIN_RESPONSE_INVALID')
+  }
+  return mapEmployeeSummary({ ...value, attendanceRequired: true })
 }
 
 function bindEmployeeToTarget(employee, expectedEmployeeId) {
@@ -406,7 +428,7 @@ function parseProvisionResponse(value) {
   ) {
     throw adminError('EMPLOYEE_ADMIN_RESPONSE_INVALID')
   }
-  const employee = mapEmployeeSummary(value.employee)
+  const employee = mapProvisionEmployeeSummary(value.employee)
   if (Object.keys(value).length === 1) return { employee }
   if (!hasExactKeys(value, ['employee', 'initialPassword']) || !validCredential(value.initialPassword)) {
     throw adminError('EMPLOYEE_ADMIN_RESPONSE_INVALID')

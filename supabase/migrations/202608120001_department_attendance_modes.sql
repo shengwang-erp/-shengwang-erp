@@ -1018,6 +1018,290 @@ begin
 end;
 $$;
 
+create or replace function private.employee_safe_summary(
+  p_employee public.employee_profiles
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public, private
+as $$
+  select jsonb_build_object(
+    'id', p_employee.id,
+    'employeeNumber', p_employee.employee_number,
+    'name', p_employee.name,
+    'department', p_employee.department,
+    'position', p_employee.position,
+    'employmentStatus', p_employee.employment_status,
+    'accountStatus', p_employee.account_status,
+    'attendanceRequired', p_employee.attendance_required,
+    'mustChangePassword', p_employee.must_change_password
+  );
+$$;
+
+drop function public.employee_directory();
+create function public.employee_directory()
+returns table (
+  "id" uuid,
+  "employeeNumber" text,
+  "name" text,
+  "department" text,
+  "position" text,
+  "employmentStatus" text,
+  "accountStatus" text,
+  "attendanceRequired" boolean
+)
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.is_current_employee_active() then
+    return;
+  end if;
+
+  return query
+  select
+    employee.id,
+    employee.employee_number,
+    employee.name,
+    employee.department,
+    employee.position,
+    employee.employment_status,
+    employee.account_status,
+    employee.attendance_required
+  from public.employee_profiles as employee
+  where employee.deleted_at is null
+    and employee.is_hidden_system_account = false
+    and employee.employee_number <> 'SW-000'
+  order by employee.employee_number;
+end;
+$$;
+
+revoke all on function public.employee_directory()
+  from public, anon;
+grant execute on function public.employee_directory()
+  to authenticated, service_role;
+
+create or replace function public.employee_profile_detail(p_employee_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  employee public.employee_profiles%rowtype;
+  current_employee_id uuid;
+  result jsonb;
+begin
+  if not public.is_current_employee_active() then
+    raise exception using errcode = '42501', message = 'active employee required';
+  end if;
+
+  select current_employee.id
+    into current_employee_id
+    from public.employee_profiles as current_employee
+    where current_employee.auth_user_id = auth.uid()
+      and current_employee.deleted_at is null;
+
+  if current_employee_id is distinct from p_employee_id
+    and not public.has_current_permission('module.employees.view')
+  then
+    raise exception using errcode = '42501', message = 'employee view permission required';
+  end if;
+
+  select profile.*
+    into employee
+    from public.employee_profiles as profile
+    where profile.id = p_employee_id
+      and profile.deleted_at is null;
+
+  if not found or employee.is_hidden_system_account then
+    return null;
+  end if;
+
+  result := jsonb_build_object(
+    'id', employee.id,
+    'employeeNumber', employee.employee_number,
+    'legacyEmployeeId', employee.legacy_employee_id,
+    'name', employee.name,
+    'department', employee.department,
+    'position', employee.position,
+    'employmentStatus', employee.employment_status,
+    'accountStatus', employee.account_status,
+    'attendanceRequired', employee.attendance_required,
+    'mustChangePassword', employee.must_change_password,
+    'hireDate', employee.hire_date,
+    'resignDate', employee.resign_date,
+    'level', employee.level,
+    'phone', employee.phone,
+    'remark', employee.remark,
+    'createdAt', employee.created_at,
+    'updatedAt', employee.updated_at
+  );
+
+  if public.has_current_permission('sensitive.employee_identity_view') then
+    result := result || jsonb_build_object(
+      'gender', employee.gender,
+      'birthDate', employee.birth_date,
+      'nationality', employee.nationality,
+      'emergencyContactName', employee.emergency_contact_name,
+      'emergencyContactPhone', employee.emergency_contact_phone,
+      'currentAddress', employee.current_address,
+      'visaAgency', employee.visa_agency,
+      'visaType', employee.visa_type,
+      'visaExpireDate', employee.visa_expire_date,
+      'passportNumber', employee.passport_number,
+      'residenceCardNumber', employee.residence_card_number
+    );
+  end if;
+
+  if public.has_current_permission('sensitive.salary_view') then
+    result := result || jsonb_build_object(
+      'baseSalary', employee.base_salary,
+      'dailySalary', employee.daily_salary,
+      'hourlyWage', employee.hourly_wage,
+      'salaryRemark', employee.salary_remark
+    );
+  end if;
+
+  return result;
+end;
+$$;
+
+create or replace function public.update_employee_profile_admin(
+  p_employee_id uuid,
+  p_patch jsonb,
+  p_actor_auth_user_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  profile_row public.employee_profiles%rowtype;
+  actor_profile public.employee_profiles%rowtype;
+  unknown_key text;
+  changed_fields jsonb;
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception using errcode = '42501', message = 'service_role required';
+  end if;
+  if p_employee_id is null
+    or p_actor_auth_user_id is null
+    or jsonb_typeof(p_patch) is distinct from 'object'
+    or p_patch = '{}'::jsonb
+  then
+    raise exception using errcode = '22023', message = 'invalid employee patch';
+  end if;
+  if p_patch ? 'attendanceRequired'
+    and jsonb_typeof(p_patch->'attendanceRequired') is distinct from 'boolean'
+  then
+    raise exception using errcode = '22023', message = 'invalid employee patch';
+  end if;
+
+  select key
+    into unknown_key
+    from jsonb_object_keys(p_patch) as submitted(key)
+    where submitted.key <> all (array[
+      'name', 'gender', 'birthDate', 'nationality', 'employmentStatus',
+      'attendanceRequired', 'hireDate', 'resignDate', 'department', 'position',
+      'level', 'phone', 'emergencyContactName', 'emergencyContactPhone',
+      'currentAddress', 'visaAgency', 'visaType', 'visaExpireDate',
+      'passportNumber', 'residenceCardNumber', 'baseSalary', 'dailySalary',
+      'hourlyWage', 'salaryRemark', 'wecomUserId', 'wecomDepartmentId',
+      'wecomDepartmentName', 'remark'
+    ]::text[])
+    limit 1;
+  if unknown_key is not null then
+    raise exception using errcode = '22023', message = 'unsupported employee patch field';
+  end if;
+
+  perform private.assert_employee_profile_write_authorized(
+    p_actor_auth_user_id,
+    p_patch
+  );
+
+  select actor.*
+    into actor_profile
+    from public.employee_profiles as actor
+    where actor.auth_user_id = p_actor_auth_user_id
+      and actor.deleted_at is null
+      and actor.account_status = 'active'
+      and actor.employment_status = '在职'
+      and actor.must_change_password = false;
+  if not found then
+    raise exception using errcode = '42501', message = 'personnel administrator required';
+  end if;
+
+  select profile.*
+    into profile_row
+    from public.employee_profiles as profile
+    where profile.id = p_employee_id
+      and profile.deleted_at is null
+      and profile.is_hidden_system_account = false
+      and profile.employee_number <> 'SW-000'
+    for update;
+  if not found then
+    raise exception using errcode = '22023', message = 'employee target unavailable';
+  end if;
+
+  update public.employee_profiles as profile
+    set name = case when p_patch ? 'name' then btrim(p_patch->>'name') else profile.name end,
+        gender = case when p_patch ? 'gender' then p_patch->>'gender' else profile.gender end,
+        birth_date = case when p_patch ? 'birthDate' then nullif(p_patch->>'birthDate', '')::date else profile.birth_date end,
+        nationality = case when p_patch ? 'nationality' then p_patch->>'nationality' else profile.nationality end,
+        employment_status = case when p_patch ? 'employmentStatus' then p_patch->>'employmentStatus' else profile.employment_status end,
+        attendance_required = case when p_patch ? 'attendanceRequired' then (p_patch->>'attendanceRequired')::boolean else profile.attendance_required end,
+        attendance_policy_updated_at = case when p_patch ? 'attendanceRequired' then statement_timestamp() else profile.attendance_policy_updated_at end,
+        attendance_policy_updated_by = case when p_patch ? 'attendanceRequired' then actor_profile.id else profile.attendance_policy_updated_by end,
+        hire_date = case when p_patch ? 'hireDate' then nullif(p_patch->>'hireDate', '')::date else profile.hire_date end,
+        resign_date = case when p_patch ? 'resignDate' then nullif(p_patch->>'resignDate', '')::date else profile.resign_date end,
+        department = case when p_patch ? 'department' then p_patch->>'department' else profile.department end,
+        position = case when p_patch ? 'position' then p_patch->>'position' else profile.position end,
+        level = case when p_patch ? 'level' then p_patch->>'level' else profile.level end,
+        phone = case when p_patch ? 'phone' then p_patch->>'phone' else profile.phone end,
+        emergency_contact_name = case when p_patch ? 'emergencyContactName' then p_patch->>'emergencyContactName' else profile.emergency_contact_name end,
+        emergency_contact_phone = case when p_patch ? 'emergencyContactPhone' then p_patch->>'emergencyContactPhone' else profile.emergency_contact_phone end,
+        current_address = case when p_patch ? 'currentAddress' then p_patch->>'currentAddress' else profile.current_address end,
+        visa_agency = case when p_patch ? 'visaAgency' then p_patch->>'visaAgency' else profile.visa_agency end,
+        visa_type = case when p_patch ? 'visaType' then p_patch->>'visaType' else profile.visa_type end,
+        visa_expire_date = case when p_patch ? 'visaExpireDate' then nullif(p_patch->>'visaExpireDate', '')::date else profile.visa_expire_date end,
+        passport_number = case when p_patch ? 'passportNumber' then p_patch->>'passportNumber' else profile.passport_number end,
+        residence_card_number = case when p_patch ? 'residenceCardNumber' then p_patch->>'residenceCardNumber' else profile.residence_card_number end,
+        base_salary = case when p_patch ? 'baseSalary' then nullif(p_patch->>'baseSalary', '')::numeric else profile.base_salary end,
+        daily_salary = case when p_patch ? 'dailySalary' then nullif(p_patch->>'dailySalary', '')::numeric else profile.daily_salary end,
+        hourly_wage = case when p_patch ? 'hourlyWage' then nullif(p_patch->>'hourlyWage', '')::numeric else profile.hourly_wage end,
+        salary_remark = case when p_patch ? 'salaryRemark' then p_patch->>'salaryRemark' else profile.salary_remark end,
+        wecom_user_id = case when p_patch ? 'wecomUserId' then p_patch->>'wecomUserId' else profile.wecom_user_id end,
+        wecom_department_id = case when p_patch ? 'wecomDepartmentId' then p_patch->>'wecomDepartmentId' else profile.wecom_department_id end,
+        wecom_department_name = case when p_patch ? 'wecomDepartmentName' then p_patch->>'wecomDepartmentName' else profile.wecom_department_name end,
+        remark = case when p_patch ? 'remark' then p_patch->>'remark' else profile.remark end,
+        updated_by_auth_user_id = p_actor_auth_user_id
+    where profile.id = p_employee_id
+    returning * into profile_row;
+
+  select coalesce(jsonb_agg(field.key order by field.key), '[]'::jsonb)
+    into changed_fields
+    from jsonb_object_keys(p_patch) as field(key);
+  insert into public.employee_security_audit (
+    actor_auth_user_id,
+    target_employee_profile_id,
+    action,
+    safe_details
+  ) values (
+    p_actor_auth_user_id,
+    profile_row.id,
+    'employee.profile_updated',
+    jsonb_build_object('fields', changed_fields)
+  );
+  return private.employee_safe_summary(profile_row);
+end;
+$$;
+
 revoke all on function private.attendance_policy_mode(boolean, text)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_event_v2_json(uuid)
@@ -1044,6 +1328,8 @@ revoke all on function public.clock_in_project_v2_secure(
 revoke all on function public.clock_out_attendance_v2_secure(
   uuid, uuid, double precision, double precision, numeric, timestamptz, boolean
 ) from public, anon, authenticated, service_role;
+revoke all on function public.update_employee_profile_admin(uuid, jsonb, uuid)
+  from public, anon, authenticated;
 
 grant execute on function public.list_attendance_projects_v2_secure()
   to authenticated, service_role;
@@ -1058,5 +1344,7 @@ grant execute on function public.clock_in_project_v2_secure(
 grant execute on function public.clock_out_attendance_v2_secure(
   uuid, uuid, double precision, double precision, numeric, timestamptz, boolean
 ) to authenticated, service_role;
+grant execute on function public.update_employee_profile_admin(uuid, jsonb, uuid)
+  to service_role;
 
 commit;

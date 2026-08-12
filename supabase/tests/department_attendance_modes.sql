@@ -127,7 +127,10 @@ insert into auth.users(
 ) values
   ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000001','authenticated','authenticated','department-attendance-engineering@auth.invalid','',now(),'{}','{}',now(),now()),
   ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000002','authenticated','authenticated','department-attendance-general@auth.invalid','',now(),'{}','{}',now(),now()),
-  ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000003','authenticated','authenticated','department-attendance-exempt@auth.invalid','',now(),'{}','{}',now(),now());
+  ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000003','authenticated','authenticated','department-attendance-exempt@auth.invalid','',now(),'{}','{}',now(),now()),
+  ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000004','authenticated','authenticated','department-attendance-admin@auth.invalid','',now(),'{}','{}',now(),now()),
+  ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000005','authenticated','authenticated','department-attendance-non-admin@auth.invalid','',now(),'{}','{}',now(),now()),
+  ('00000000-0000-0000-0000-000000000000','81000000-0000-4000-8000-000000000006','authenticated','authenticated','department-attendance-policy-target@auth.invalid','',now(),'{}','{}',now(),now());
 
 insert into public.employee_profiles(
   id, employee_number, auth_user_id, name, department, position,
@@ -136,7 +139,104 @@ insert into public.employee_profiles(
 ) values
   ('82000000-0000-4000-8000-000000000001','SW-8201','81000000-0000-4000-8000-000000000001','工程打卡员工','工程部','小工','在职','active',false,false,true),
   ('82000000-0000-4000-8000-000000000002','SW-8202','81000000-0000-4000-8000-000000000002','公司打卡员工','总务部','总务部长','在职','active',false,false,true),
-  ('82000000-0000-4000-8000-000000000003','SW-8203','81000000-0000-4000-8000-000000000003','免打卡员工','工程部','小工','在职','active',false,false,false);
+  ('82000000-0000-4000-8000-000000000003','SW-8203','81000000-0000-4000-8000-000000000003','免打卡员工','工程部','小工','在职','active',false,false,false),
+  ('82000000-0000-4000-8000-000000000004','SW-000','81000000-0000-4000-8000-000000000004','系统管理员','总务部','社长','在职','active',false,true,true),
+  ('82000000-0000-4000-8000-000000000005','SW-8205','81000000-0000-4000-8000-000000000005','非管理员','工程部','小工','在职','active',false,false,true),
+  ('82000000-0000-4000-8000-000000000006','SW-8206','81000000-0000-4000-8000-000000000006','政策目标','总务部','总务部长','在职','active',false,false,true);
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select is(
+  public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    '{"attendanceRequired":false}'::jsonb,
+    '81000000-0000-4000-8000-000000000004'::uuid
+  )->>'attendanceRequired',
+  'false',
+  'personnel administrator can disable a target daily-attendance requirement'
+);
+reset role;
+
+select ok(
+  (select attendance_required is false
+     and attendance_policy_updated_at is not null
+     and attendance_policy_updated_by = '82000000-0000-4000-8000-000000000004'::uuid
+   from public.employee_profiles
+   where id = '82000000-0000-4000-8000-000000000006'),
+  'administrator policy update records the exact target policy and actor profile'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000004', true);
+select is(
+  (select "attendanceRequired"
+   from public.employee_directory()
+   where "id" = '82000000-0000-4000-8000-000000000006'::uuid),
+  false,
+  'employee directory exposes the current attendance policy for personnel cards'
+);
+select is(
+  (public.employee_profile_detail(
+    '82000000-0000-4000-8000-000000000006'::uuid
+  )->>'attendanceRequired')::boolean,
+  false,
+  'employee detail exposes the exact attendance policy for the administrator form'
+);
+reset role;
+
+select ok(
+  exists (
+    select 1
+    from public.employee_security_audit audit
+    where audit.actor_auth_user_id = '81000000-0000-4000-8000-000000000004'::uuid
+      and audit.target_employee_profile_id = '82000000-0000-4000-8000-000000000006'::uuid
+      and audit.action = 'employee.profile_updated'
+      and audit.safe_details->'fields' @> '["attendanceRequired"]'::jsonb
+  ),
+  'attendance policy update audit lists attendanceRequired'
+);
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select throws_ok(
+  $$ select public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    '{"attendanceRequired":true}'::jsonb,
+    '81000000-0000-4000-8000-000000000005'::uuid
+  ) $$,
+  '42501',
+  'personnel administrator required',
+  'non-administrator cannot change another employee attendance policy'
+);
+reset role;
+
+set local role service_role;
+select set_config('request.jwt.claim.role', 'service_role', true);
+select throws_ok(
+  $$ select public.update_employee_profile_admin(
+    '82000000-0000-4000-8000-000000000006'::uuid,
+    '{"attendanceRequired":"false"}'::jsonb,
+    '81000000-0000-4000-8000-000000000004'::uuid
+  ) $$,
+  '22023',
+  'invalid employee patch',
+  'administrator RPC rejects string coercion for attendanceRequired'
+);
+reset role;
+
+set local role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '81000000-0000-4000-8000-000000000006', true);
+select throws_ok(
+  $$ update public.employee_profiles
+     set attendance_required = true
+     where id = '82000000-0000-4000-8000-000000000006'::uuid $$,
+  '42501',
+  null,
+  'employee cannot update their own attendance policy directly'
+);
+reset role;
 
 set local role service_role;
 insert into public.projects(record_key, payload, status) values (

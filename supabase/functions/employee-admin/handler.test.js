@@ -22,6 +22,7 @@ const SAFE_EMPLOYEE = Object.freeze({
   employmentStatus: '在职',
   accountStatus: 'active',
   mustChangePassword: false,
+  attendanceRequired: true,
 })
 
 function request(body, init = {}) {
@@ -232,6 +233,50 @@ test('updates an allowlisted profile patch after fresh authorization', async () 
     'admin-client',
     'update-profile',
   ])
+})
+
+test('preserves an exact attendanceRequired boolean through fresh authorization', async () => {
+  const fixture = dependencies({
+    updateEmployeeProfile: async (_client, input) => {
+      fixture.calls.push('update-profile')
+      assert.deepEqual(input.patch, { attendanceRequired: false })
+      return SAFE_EMPLOYEE
+    },
+  })
+  const response = await createEmployeeAdminHandler(fixture.values)(
+    request({
+      operation: 'update_profile',
+      employeeId: EMPLOYEE_ID,
+      patch: { attendanceRequired: false },
+    }),
+  )
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(fixture.calls, [
+    'authorize',
+    'admin-client',
+    'update-profile',
+  ])
+})
+
+test('rejects attendanceRequired coercion before authorization', async () => {
+  for (const attendanceRequired of ['false', 0, null]) {
+    const fixture = dependencies()
+    const response = await createEmployeeAdminHandler(fixture.values)(
+      request({
+        operation: 'update_profile',
+        employeeId: EMPLOYEE_ID,
+        patch: { attendanceRequired },
+      }),
+    )
+
+    assert.equal(response.status, 400)
+    assert.equal(
+      (await body(response)).error.code,
+      'EMPLOYEE_ADMIN_INPUT_INVALID',
+    )
+    assert.deepEqual(fixture.calls, [])
+  }
 })
 
 test('sensitive update fields require the matching server permission before mutation', async () => {

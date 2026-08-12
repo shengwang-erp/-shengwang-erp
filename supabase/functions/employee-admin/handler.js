@@ -14,7 +14,7 @@ import {
 } from '../../../src/auth/employeeAuthDomain.js'
 import {
   assertSensitiveProfilePermissions,
-  validateProfileInput,
+  validateProfileInput as validateBaseProfileInput,
 } from '../employee-provision/handler.js'
 
 const MAX_REQUEST_BYTES = 32 * 1024
@@ -91,6 +91,28 @@ export async function derivePasswordResetCredential(
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function validateProfileInput(profile, { partial = false } = {}) {
+  if (!isPlainObject(profile)) throw inputError()
+  const attendanceSubmitted = Object.hasOwn(profile, 'attendanceRequired')
+  if (
+    attendanceSubmitted &&
+    typeof profile.attendanceRequired !== 'boolean'
+  ) {
+    throw inputError()
+  }
+  const baseProfile = { ...profile }
+  delete baseProfile.attendanceRequired
+  const normalized = Object.keys(baseProfile).length > 0
+    ? validateBaseProfileInput(baseProfile, { partial })
+    : {}
+  if (partial && !attendanceSubmitted && Object.keys(normalized).length === 0) {
+    throw inputError()
+  }
+  return attendanceSubmitted
+    ? { ...normalized, attendanceRequired: profile.attendanceRequired }
+    : normalized
 }
 
 async function readAdminInput(request) {
@@ -188,6 +210,7 @@ function safeEmployee(value) {
     employmentStatus: read('employmentStatus', 'employment_status'),
     accountStatus: read('accountStatus', 'account_status'),
     mustChangePassword: read('mustChangePassword', 'must_change_password'),
+    attendanceRequired: read('attendanceRequired', 'attendance_required'),
   }
   if (
     !UUID_PATTERN.test(employee.id ?? '') ||
@@ -197,7 +220,8 @@ function safeEmployee(value) {
     !POSITION_OPTIONS.includes(employee.position) ||
     !['在职', '离职', '休假', '停工'].includes(employee.employmentStatus) ||
     !['active', 'disabled'].includes(employee.accountStatus) ||
-    typeof employee.mustChangePassword !== 'boolean'
+    typeof employee.mustChangePassword !== 'boolean' ||
+    typeof employee.attendanceRequired !== 'boolean'
   ) {
     throw serviceError('EMPLOYEE_ADMIN_FAILED', '员工管理操作失败')
   }

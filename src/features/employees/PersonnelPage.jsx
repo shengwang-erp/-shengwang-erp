@@ -29,6 +29,7 @@ const CORE_EDITABLE_FIELDS = Object.freeze([
   'department',
   'position',
   'employmentStatus',
+  'attendanceRequired',
   'hireDate',
   'resignDate',
   'level',
@@ -65,6 +66,7 @@ const CREATE_VALUES = Object.freeze({
   department: '',
   position: '',
   employmentStatus: '在职',
+  attendanceRequired: true,
   hireDate: '',
   resignDate: '',
   level: '',
@@ -118,7 +120,10 @@ function buildCreateProfile(formState, { identityAllowed, salaryAllowed }) {
     employmentStatus: formState.values.employmentStatus,
   }
   for (const key of CORE_EDITABLE_FIELDS) {
-    if (['name', 'department', 'position', 'employmentStatus'].includes(key)) continue
+    if (
+      ['name', 'department', 'position', 'employmentStatus', 'attendanceRequired']
+        .includes(key)
+    ) continue
     const value = formState.values[key]
     if (formState.dirtyKeys.has(key) || (value !== '' && value !== null)) {
       Object.assign(profile, { [key]: value })
@@ -454,6 +459,12 @@ export default function PersonnelPage({
           setNotice('员工已创建，但一次性初始密码不能再次查看；如未安全交付，请生成新的临时密码。')
         }
         setFormState(null)
+        if (formState.values.attendanceRequired === false) {
+          await employeeAdmin.updateProfile({
+            employeeId: result.employee.id,
+            patch: { attendanceRequired: false },
+          })
+        }
         try {
           await onRefreshEmployees()
         } catch (caught) {
@@ -694,6 +705,20 @@ export default function PersonnelPage({
                 options={EMPLOYMENT_STATUS_OPTIONS}
                 required
               />
+              <label className="personnel-checkbox-field">
+                <input
+                  name="attendanceRequired"
+                  type="checkbox"
+                  checked={formState.values.attendanceRequired === true}
+                  onChange={(event) =>
+                    handleFieldChange('attendanceRequired', event.target.checked)
+                  }
+                />
+                <span>
+                  <strong>需要每日打卡</strong>
+                  <small>关闭后不产生缺卡异常，免打卡人员按正常全勤进入月度工资。</small>
+                </span>
+              </label>
               <PersonnelField label="入职日期" name="hireDate" type="date" value={formState.values.hireDate} onChange={handleFieldChange} />
               <PersonnelField label="离职日期" name="resignDate" type="date" value={formState.values.resignDate} onChange={handleFieldChange} />
               <PersonnelSelect label="等级" name="level" value={formState.values.level || ''} onChange={handleFieldChange} options={LEVEL_OPTIONS} />
@@ -779,6 +804,10 @@ export default function PersonnelPage({
               <dl className="personnel-details">
                 <div><dt>部门</dt><dd>{employee.department}</dd></div>
                 <div><dt>职位</dt><dd>{employee.position}</dd></div>
+                <div>
+                  <dt>打卡模式</dt>
+                  <dd>{employee.attendanceRequired === true ? '每日打卡' : '免打卡'}</dd>
+                </div>
               </dl>
               {canAdminister && (
                 <div className="personnel-actions">

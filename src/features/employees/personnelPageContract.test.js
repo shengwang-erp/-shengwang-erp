@@ -79,6 +79,26 @@ test('edit loads detail on demand and sends only authorized dirty loaded fields'
   assert.doesNotMatch(pageSource, /patch:\s*\{\s*\.\.\.formState\.values/)
 })
 
+test('administrator form owns the exact daily-attendance boolean and exposes its current mode', () => {
+  assert.match(pageSource, /attendanceRequired:\s*true/u)
+  assert.match(pageSource, /name="attendanceRequired"/u)
+  assert.match(pageSource, /需要每日打卡/u)
+  assert.match(pageSource, /免打卡人员按正常全勤进入月度工资/u)
+  assert.match(
+    pageSource,
+    /checked=\{formState\.values\.attendanceRequired === true\}/u,
+  )
+  assert.match(
+    pageSource,
+    /handleFieldChange\('attendanceRequired', event\.target\.checked\)/u,
+  )
+  assert.match(pageSource, /employee\.attendanceRequired === true[\s\S]*每日打卡[\s\S]*免打卡/u)
+  assert.match(
+    pageSource,
+    /setCredentials\([\s\S]*employeeAdmin\.updateProfile\(\{[\s\S]*patch:\s*\{ attendanceRequired: false \}/u,
+  )
+})
+
 test('an unchanged edit cannot submit an empty patch', () => {
   assert.match(
     pageSource,

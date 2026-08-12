@@ -19,10 +19,21 @@ const DIRECTORY_ROW = Object.freeze({
   position: '职长',
   employmentStatus: '在职',
   accountStatus: 'active',
+  attendanceRequired: true,
 })
 
 const SAFE_EMPLOYEE = Object.freeze({
   ...DIRECTORY_ROW,
+  mustChangePassword: true,
+})
+const PROVISION_EMPLOYEE = Object.freeze({
+  id: DIRECTORY_ROW.id,
+  employeeNumber: DIRECTORY_ROW.employeeNumber,
+  name: DIRECTORY_ROW.name,
+  department: DIRECTORY_ROW.department,
+  position: DIRECTORY_ROW.position,
+  employmentStatus: DIRECTORY_ROW.employmentStatus,
+  accountStatus: DIRECTORY_ROW.accountStatus,
   mustChangePassword: true,
 })
 
@@ -33,6 +44,7 @@ const BASE_DETAIL = Object.freeze({
   resignDate: null,
   level: '3星',
   phone: '09000000000',
+  attendanceRequired: true,
   remark: null,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2026-07-14T00:00:00.000Z',
@@ -104,7 +116,7 @@ test('missing configuration fails before any RPC or Edge invocation', async () =
   assert.deepEqual(calls, { rpc: [], invoke: [] })
 })
 
-test('directory uses the exact RPC, maps seven safe fields, and removes SW-000', async () => {
+test('directory uses the exact RPC, maps the safe attendance policy, and removes SW-000', async () => {
   const { client, calls } = createClient({
     rpc: async () => ({
       data: [
@@ -247,6 +259,27 @@ test('provision sends an exact allowlisted and normalized profile', async () => 
   })
 })
 
+test('provision maps the database default when the provision Edge returns its legacy safe summary', async () => {
+  const { client } = createClient({
+    invoke: async () => ({
+      data: { employee: PROVISION_EMPLOYEE, initialPassword: 'SecureStart2A' },
+      error: null,
+    }),
+  })
+  const service = createEmployeeAdminService(client, { configured: true })
+
+  const result = await service.provisionEmployee({
+    requestId: REQUEST_ID,
+    profile: {
+      name: '员工',
+      department: '工程部',
+      position: '中工',
+    },
+  })
+
+  assert.equal(result.employee.attendanceRequired, true)
+})
+
 test('provision validates fixed required fields and rejects unknown or security fields locally', async () => {
   const invalidProfiles = [
     { department: '工程部', position: '中工' },
@@ -342,6 +375,28 @@ test('update sends only a non-empty normalized patch and rejects immutable field
   for (const patch of [{}, { employeeNumber: 'SW-999' }, { accountStatus: 'disabled' }, { permissions: [] }]) {
     await assert.rejects(
       service.updateProfile({ employeeId: EMPLOYEE_ID, patch }),
+      (error) => error.code === 'EMPLOYEE_ADMIN_INPUT_INVALID',
+    )
+  }
+  assert.equal(calls.invoke.length, 1)
+})
+
+test('update transports attendanceRequired as an exact boolean without coercion', async () => {
+  const { client, calls } = createClient()
+  const service = createEmployeeAdminService(client, { configured: true })
+
+  await service.updateProfile({
+    employeeId: EMPLOYEE_ID,
+    patch: { attendanceRequired: false },
+  })
+
+  assert.deepEqual(calls.invoke[0][1].body.patch, { attendanceRequired: false })
+  for (const attendanceRequired of ['false', 0, null]) {
+    await assert.rejects(
+      service.updateProfile({
+        employeeId: EMPLOYEE_ID,
+        patch: { attendanceRequired },
+      }),
       (error) => error.code === 'EMPLOYEE_ADMIN_INPUT_INVALID',
     )
   }
