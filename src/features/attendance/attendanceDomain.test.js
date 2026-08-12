@@ -138,6 +138,41 @@ test('attendance mutation input rejects mode shape errors and handwritten abnorm
   assert.equal(normalizeAbnormalReason(' 历史异常原因 '), '历史异常原因')
 })
 
+test('attendance mutation location is exact and rejects repaired timestamps or non-finite numbers', () => {
+  const requestId = '70000000-0000-4000-8000-000000000001'
+  const base = {
+    attendanceMode: 'project',
+    projectId: 'P001',
+    requestId,
+  }
+  const valid = {
+    latitude: 35,
+    longitude: 139,
+    accuracyMeters: 10,
+    deviceRecordedAt: null,
+  }
+  assert.deepEqual(normalizeAttendanceMutationInput({
+    ...base,
+    location: valid,
+  }, { action: 'clockIn' }).location, valid)
+
+  for (const location of [
+    { ...valid, source: 'browser' },
+    { latitude: 35, longitude: 139, accuracyMeters: 10 },
+    { ...valid, deviceRecordedAt: 123 },
+    { ...valid, deviceRecordedAt: '' },
+    { ...valid, deviceRecordedAt: 'not-a-date' },
+    { ...valid, latitude: Number.NaN },
+    { ...valid, longitude: Number.POSITIVE_INFINITY },
+    { ...valid, accuracyMeters: Number.NEGATIVE_INFINITY },
+  ]) {
+    assertAttendanceError(
+      () => normalizeAttendanceMutationInput({ ...base, location }, { action: 'clockIn' }),
+      'ATTENDANCE_MUTATION_INPUT_INVALID',
+    )
+  }
+})
+
 test('location preview preserves and validates the raw project radius', () => {
   const center = {
     latitude: 35.681236,

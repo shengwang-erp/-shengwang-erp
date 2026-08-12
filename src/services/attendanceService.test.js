@@ -382,3 +382,95 @@ test('browser clock mutations reject handwritten abnormal reasons before RPC', a
   )
   assert.equal(calls, 0)
 })
+
+test('clock-in and clock-out reject malformed nested locations before RPC', async () => {
+  let calls = 0
+  const service = createAttendanceService({ rpc: async () => {
+    calls += 1
+    return { data: savedFor(), error: null }
+  } }, { configured: true })
+  const malformedLocations = [
+    { ...LOCATION, unknown: true },
+    { latitude: 35, longitude: 139, accuracyMeters: 10 },
+    { ...LOCATION, deviceRecordedAt: 123 },
+    { ...LOCATION, deviceRecordedAt: 'not-a-date' },
+    { ...LOCATION, latitude: Number.NaN },
+    { ...LOCATION, accuracyMeters: Number.POSITIVE_INFINITY },
+  ]
+  for (const location of malformedLocations) {
+    await assert.rejects(
+      () => service.clockIn({
+        attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID, location,
+      }),
+      (error) => error.code === 'ATTENDANCE_MUTATION_INPUT_INVALID',
+    )
+    await assert.rejects(
+      () => service.clockOut({
+        attendanceMode: 'project', sessionId: SESSION_ID, requestId: REQUEST_ID, location,
+      }),
+      (error) => error.code === 'ATTENDANCE_MUTATION_INPUT_INVALID',
+    )
+  }
+  assert.equal(calls, 0)
+})
+
+test('saved clock-in response requires the requested event in the session clock-in slot', async () => {
+  const otherRequestId = '70000000-0000-4000-8000-000000000002'
+  const valid = savedFor()
+  const malformed = [
+    { ...valid, session: { ...valid.session, clockInEvent: null } },
+    { ...valid, session: { ...valid.session, clockInEvent: 'invalid-event' } },
+    { ...valid, session: {
+      ...valid.session,
+      clockInEvent: {
+        ...valid.session.clockInEvent,
+        eventId: '72000000-0000-4000-8000-000000000003',
+      },
+    } },
+    { ...valid, session: {
+      ...valid.session,
+      clockInEvent: { ...valid.session.clockInEvent, eventType: 'clock_out' },
+    } },
+    { ...valid, session: {
+      ...valid.session,
+      clockInEvent: { ...valid.session.clockInEvent, serverRecordedAt: '2026-07-15T08:00:01Z' },
+    } },
+    savedFor({ requestId: otherRequestId }),
+  ]
+  for (const data of malformed) {
+    const service = createAttendanceService({ rpc: async () => ({ data, error: null }) }, { configured: true })
+    await assert.rejects(
+      () => service.clockIn({
+        attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID, location: LOCATION,
+      }),
+      (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('saved clock-out response requires the requested event in the session clock-out slot', async () => {
+  const valid = savedFor({ eventType: 'clock_out' })
+  const malformed = [
+    { ...valid, session: { ...valid.session, clockOutEvent: null } },
+    { ...valid, session: {
+      ...valid.session,
+      clockOutEvent: {
+        ...valid.session.clockOutEvent,
+        requestId: '70000000-0000-4000-8000-000000000002',
+      },
+    } },
+    { ...valid, session: {
+      ...valid.session,
+      clockOutEvent: { ...valid.session.clockOutEvent, latitude: 35.5 },
+    } },
+  ]
+  for (const data of malformed) {
+    const service = createAttendanceService({ rpc: async () => ({ data, error: null }) }, { configured: true })
+    await assert.rejects(
+      () => service.clockOut({
+        attendanceMode: 'project', sessionId: SESSION_ID, requestId: REQUEST_ID, location: LOCATION,
+      }),
+      (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE',
+    )
+  }
+})

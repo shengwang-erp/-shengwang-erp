@@ -15,6 +15,7 @@ export class AttendanceValidationError extends Error {
 
 const textLength = (value) => [...String(value ?? '')].length
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const MUTATION_LOCATION_KEYS = ['latitude', 'longitude', 'accuracyMeters', 'deviceRecordedAt']
 const isNumberInRange = (value, minimum, maximum) =>
   typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum
 
@@ -25,6 +26,29 @@ function invalidMutationInput() {
 function hasOnlyKeys(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).every((key) => keys.includes(key))
+}
+
+function normalizeAttendanceMutationLocation(value) {
+  const recordedAtIsValid = value?.deviceRecordedAt === null || (
+    typeof value?.deviceRecordedAt === 'string' &&
+    value.deviceRecordedAt === value.deviceRecordedAt.trim() &&
+    value.deviceRecordedAt.length > 0 &&
+    Number.isFinite(Date.parse(value.deviceRecordedAt))
+  )
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).sort().join('|') !== [...MUTATION_LOCATION_KEYS].sort().join('|') ||
+      !isNumberInRange(value.latitude, -90, 90) ||
+      !isNumberInRange(value.longitude, -180, 180) ||
+      typeof value.accuracyMeters !== 'number' || !Number.isFinite(value.accuracyMeters) ||
+      value.accuracyMeters <= 0 || !recordedAtIsValid) {
+    invalidMutationInput()
+  }
+  return {
+    latitude: value.latitude,
+    longitude: value.longitude,
+    accuracyMeters: value.accuracyMeters,
+    deviceRecordedAt: value.deviceRecordedAt,
+  }
 }
 
 export function normalizeAttendanceMutationInput(value, { action } = {}) {
@@ -41,6 +65,7 @@ export function normalizeAttendanceMutationInput(value, { action } = {}) {
     invalidMutationInput()
   }
 
+  const location = normalizeAttendanceMutationLocation(value.location)
   const outOfRangeConfirmed = value.outOfRangeConfirmed ?? false
   if (value.attendanceMode === 'general' && outOfRangeConfirmed) invalidMutationInput()
 
@@ -54,7 +79,7 @@ export function normalizeAttendanceMutationInput(value, { action } = {}) {
       attendanceMode: value.attendanceMode,
       projectId: value.attendanceMode === 'project' ? projectId.trim() : null,
       requestId: value.requestId,
-      location: value.location,
+      location,
       outOfRangeConfirmed,
     }
   }
@@ -64,7 +89,7 @@ export function normalizeAttendanceMutationInput(value, { action } = {}) {
     attendanceMode: value.attendanceMode,
     sessionId: value.sessionId,
     requestId: value.requestId,
-    location: value.location,
+    location,
     outOfRangeConfirmed,
   }
 }

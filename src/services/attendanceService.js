@@ -288,7 +288,11 @@ function validateToday(value) {
   }
 }
 
-function validateClockResult(value, eventType, attendanceMode) {
+function eventsMatch(left, right) {
+  return EVENT_KEYS.every((key) => Object.is(left[key], right[key]))
+}
+
+function validateClockResult(value, eventType, attendanceMode, requestId) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidResponse()
   if (value.status === 'confirmation_required') {
     const row = exactObject(value, ['status', 'confirmation'])
@@ -311,7 +315,11 @@ function validateClockResult(value, eventType, attendanceMode) {
   if (row.status !== 'saved') throw invalidResponse()
   const session = validateSession(row.session)
   const event = validateEvent(row.event, session.attendanceMode)
-  if (event.eventType !== eventType || session.attendanceMode !== attendanceMode) throw invalidResponse()
+  const sessionEvent = eventType === 'clock_in' ? session.clockInEvent : session.clockOutEvent
+  if (event.eventType !== eventType || session.attendanceMode !== attendanceMode ||
+      event.requestId !== requestId || sessionEvent === null || !eventsMatch(event, sessionEvent)) {
+    throw invalidResponse()
+  }
   return { status: 'saved', session, event }
 }
 
@@ -400,13 +408,13 @@ export function createAttendanceService(client = supabase, { configured = isSupa
       if (request.attendanceMode === 'general') {
         return validateClockResult(await call('clock_in_general_secure', {
           ...clockArgs(request),
-        }), 'clock_in', request.attendanceMode)
+        }), 'clock_in', request.attendanceMode, request.requestId)
       }
       return validateClockResult(await call('clock_in_project_v2_secure', {
         p_project_id: request.projectId,
         ...clockArgs(request),
         p_out_of_range_confirmed: request.outOfRangeConfirmed,
-      }), 'clock_in', request.attendanceMode)
+      }), 'clock_in', request.attendanceMode, request.requestId)
     },
     async upsertWorkPoint(input) {
       const point = normalizeAttendanceWorkPointInput(input)
@@ -441,7 +449,7 @@ export function createAttendanceService(client = supabase, { configured = isSupa
         p_session_id: request.sessionId,
         ...clockArgs(request),
         p_out_of_range_confirmed: request.outOfRangeConfirmed,
-      }), 'clock_out', request.attendanceMode)
+      }), 'clock_out', request.attendanceMode, request.requestId)
     },
     async listAttendanceRecords({
       workDate,
