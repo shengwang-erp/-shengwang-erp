@@ -20,13 +20,24 @@
 
 ### 部门打卡模式 v2 的安全发布顺序
 
-1. Apply `202608120001_department_attendance_modes.sql`.
-2. Verify v1 and v2 RPC signatures are both executable.
-3. Deploy the frontend that calls v2 RPCs.
-4. Keep v1 RPCs until a later independently reviewed cleanup migration.
+生产发布必须按以下顺序逐项记录负责人、时间和结果；任一步失败立即停止，不能跳过数据库
+验证直接发布前端：
+
+1. 确认当前 Supabase 可恢复备份，并记录备份标识、时间和现有 migration versions。
+2. 应用 `202608120001_department_attendance_modes.sql`，验证 v1 与 v2 attendance RPC
+   均存在且可由各自授权角色执行。
+3. 应用 `202608120002_attendance_location_review_and_company_payroll.sql`，执行本文和
+   [考勤核算运维手册](./attendance-accounting-operations.md)中的只读会计/工资探针。
+4. 部署已经通过完整测试的 Vercel production build 到
+   `https://shengwang-erp.vercel.app/`。
+5. 依次用一个工程账号、一个通用打卡账号、一个免打卡账号、一个会计账号和一个无工资
+   权限账号执行 smoke test；不得使用同一高权限账号代替五种权限边界。
+6. 验证 Vercel main production alias 指向本次已验证部署，并继续保留 v1 RPC 作为数据库先行、
+   前端可回退期间的兼容边界。
 
 该顺序是兼容性边界：数据库迁移先为历史场次回填 `project` 模式并同时保留 v1/v2，前端随后
-切换到 v2。不得在同一迁移中删除或收回 v1 RPC；只有单独评审的后续清理迁移才能结束过渡期。
+切换到 v2。`202608120002` 必须在 `202608120001` 之后，Vercel 必须在两者及只读探针之后。
+不得在同一发布中删除或收回 v1 RPC；只有单独评审的后续清理迁移才能结束过渡期。
 
 ## 2. 私有照片桶设置
 
@@ -51,7 +62,7 @@
 从 attendance 实现工作树根目录执行：
 
 ```bash
-node --test src/features/attendance/attendanceDomain.test.js src/features/attendance/attendancePhotoDomain.test.js src/features/attendance/attendanceLocationService.test.js src/features/attendance/attendanceLocationAttempt.test.js src/features/attendance/attendancePhotoUploadState.test.js src/services/attendanceService.test.js src/services/attendancePhotoStorage.test.js src/services/attendanceSchema.test.js src/features/attendance/todayAttendancePageContract.test.js src/features/attendance/todayAttendanceAppIntegration.test.js src/auth/frontendAuthContract.test.js src/desktopAdminShell.test.js supabase/functions/attendance-photo-cleanup/handler.test.js
+node --test src/features/attendance/attendanceDomain.test.js src/features/attendance/attendancePhotoDomain.test.js src/features/attendance/attendanceLocationService.test.js src/features/attendance/attendanceLocationAttempt.test.js src/features/attendance/attendancePhotoUploadState.test.js src/services/attendanceService.test.js src/services/attendancePhotoStorage.test.js src/services/attendanceSchema.test.js src/features/attendance/todayAttendancePageContract.test.js src/features/attendance/todayAttendanceAppIntegration.test.js src/features/attendance/departmentAttendanceEndToEnd.test.js src/auth/frontendAuthContract.test.js src/desktopAdminShell.test.js supabase/functions/attendance-photo-cleanup/handler.test.js
 npm test
 npm run build
 git diff --check
@@ -248,18 +259,23 @@ commit;
 
 ## 9. 首发边界与验收清单
 
-首发明确不包含异常打卡审批/纠正，也不与工资、工时、劳务或考勤结算同步。异常记录只作为不可变事实保存；任何审批、修正或薪资联动必须另行设计、迁移、授权和审计。
+原始今日打卡首发不改写异常事实。部门模式扩展只增加结构化会计复核和工资单管理记录：
+“确认有效”和“判定异常”都不得自动扣薪、改变出勤人天或改变项目成本；它不是处分流程，也不
+允许会计改写坐标、事件、场次或照片事实。
 
 发布证据还必须逐项确认：
 
 - 一级菜单只有“借工具”和取代旧“还工具”位置的“今日打卡”；归还流程仍在“借工具”内部。
 - 有效 active 零模块员工可进入今日打卡。
 - 同一天可按项目顺序创建多个场次，但任一时刻最多一个 open 场次。
-- 每次上下班打卡都重新请求 GPS；范围外或精度不足时只能提交 1–500 字异常原因。
+- 每次上下班打卡都重新请求 GPS；项目模式范围外或精度不足时先显示一次确认，可取消重新定位，
+  也可选择“仍然打卡”并由服务器记录越界确认。通用模式只验证有效当前位置，不做项目半径判断。
 - 最多七个点位、每点开工前/完工照片成对；至少一个完整点位即可下班打卡，其他点位可以不完整。
 - 页面和数据中不出现“资料未完整”标签。
 - 照片私有、不可覆盖，读取 URL 只存活 300 秒。
 - 关闭场次只读；经理记录页只由服务器 scope 开启。
-- 桌面 1440×900 与移动 390×844 下均检查键盘焦点、照片 modal 关闭和至少 44px 的触控目标。
+- 桌面 1440×1000 与移动 390×844 下均检查工程项目选择、点位/照片、通用一键定位、免打卡说明、
+  上下班越界确认的取消与继续、会计复核必填、项目/公司成本、Excel 下载和打印/PDF 预览；同时
+  检查控制台错误、dialog 裁切、隐藏的主操作、移动横向溢出、键盘焦点和至少 44px 的触控目标。
 
 任何缺少匹配账号、浏览器定位权限、Docker、本地凭证或真实隔离栈的路径，都必须明确标记“未验证”，不能用静态契约替代实测结论。

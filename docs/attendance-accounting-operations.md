@@ -41,6 +41,53 @@ where status <> 'deleted';
 
 迁移后确认五张核算表均启用 RLS，浏览器角色没有表级写权限，只能调用显式授权的 security-definer RPC。`docs/supabase-schema.sql` 是审查参考，不代替有序迁移。
 
+### 本次生产发布记录顺序
+
+1. 确认 Supabase 当前可恢复备份，记录备份标识、备份时间、负责人及
+   `supabase_migrations.schema_migrations` 当前版本清单。
+2. 应用 `202608120001`，确认 v1/v2 今日考勤 RPC 同时存在；不得删除 v1。
+3. 应用 `202608120002`，执行下列只读探针；任何对象缺失、约束未验证或异常计数不符合预期时停止。
+4. 部署通过完整 Node、pgTAP、build 和浏览器矩阵的 Vercel production build。
+5. 对工程、通用、免打卡、会计和工资禁止五类账号逐个 smoke test。
+6. 确认 `https://shengwang-erp.vercel.app/` main alias 指向本次部署，并把部署 URL、commit、
+   migration versions、探针结果和 smoke test 结果附到发布记录。
+
+迁移后的数据库探针只返回对象/约束状态和聚合计数，不读取姓名、工资金额、坐标或复核说明：
+
+```sql
+select version
+from supabase_migrations.schema_migrations
+where version in ('202608120001', '202608120002')
+order by version;
+
+select
+  to_regprocedure('public.get_my_today_attendance_secure()') is not null as attendance_v1_exists,
+  to_regprocedure('public.get_my_today_attendance_v2_secure()') is not null as attendance_v2_exists,
+  to_regprocedure('public.list_monthly_payroll_secure(date,text,uuid,boolean)') is not null
+    as monthly_payroll_exists;
+
+select conname, convalidated
+from pg_constraint
+where conname in (
+  'attendance_session_mode_payload_check',
+  'attendance_day_resolutions_location_review_issue_check',
+  'attendance_monthly_payrolls_company_cost_yen_check'
+)
+order by conname;
+
+select attendance_mode, count(*)::bigint as session_count
+from public.project_attendance_sessions
+group by attendance_mode
+order by attendance_mode;
+
+select attendance_method_snapshot, accounting_status, count(*)::bigint as payroll_count
+from public.attendance_monthly_payrolls
+group by attendance_method_snapshot, accounting_status
+order by attendance_method_snapshot, accounting_status;
+```
+
+三个约束都必须各返回一行且 `convalidated = true`；探针返回空行或 `false` 不能用人工解释为成功。
+
 ## 权限矩阵
 
 权限必须通过系统设置中的部门/职位模板授予，不能依赖前端角色名称或浏览器本地数据。
@@ -119,7 +166,7 @@ npm test
 npm run build
 npx supabase db reset --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db supabase/tests/attendance_accounting.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
-npx supabase test db supabase/tests/attendance_accounting.sql supabase/tests/attendance_location_review_and_company_payroll.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
+npx supabase test db supabase/tests/today_attendance.sql supabase/tests/department_attendance_modes.sql supabase/tests/attendance_accounting.sql supabase/tests/attendance_location_review_and_company_payroll.sql --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-accounting-db
 ```
 
@@ -130,7 +177,7 @@ npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-account
 
 ## 验收清单
 
-在与目标版本一致的本地或测试环境，以桌面宽度和窄屏手机宽度分别检查：
+在与目标版本一致的本地或测试环境，以桌面 1440×1000 和手机 390×844 分别检查：
 
 - [ ] `SW-000` 能查看和操作完整页面，审计身份来自当前服务端账号。
 - [ ] 会计账号按权限矩阵查看工资、日结、项目分摊和月工资。
@@ -151,6 +198,10 @@ npx supabase test db --local --workdir /private/tmp/kaobeierp-attendance-account
 - [ ] 项目标签能查询选定月份和整个项目累计用工费用，并下载 UTF-8、金额可读且防公式注入的 CSV。
 - [ ] 两个会计同时编辑旧版本时出现版本冲突，不覆盖较新的日结、工资或设置。
 - [ ] 会计成本、老板驾驶舱和项目金额使用正式桥接值替换旧估算，不把两者相加。
+- [ ] 月度工资当前筛选的可见行、人数与金额合计，在页面、Excel 和打印/PDF 中完全一致。
+- [ ] Excel 为白色 A4 原色、列宽适中、日期为可排序日期单元格；打印预览没有黑金页面背景。
+- [ ] 工资禁止账号的页面状态、打印 DOM 和 Excel 都不能取得个人工资金额。
+- [ ] 两种宽度都没有控制台错误、dialog 裁切、隐藏主操作或页面级横向溢出。
 
 将测试输出、浏览器账号矩阵、日期、截图和核对结论附到发布记录。涉及真实工资的截图必须按公司敏感信息规则保存。
 
