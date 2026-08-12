@@ -37,6 +37,18 @@ test('server-owned fact mode forbids project money for general attendance', () =
     migration,
     /attendance_write_resolution_with_review[\s\S]+pg_advisory_xact_lock_shared[\s\S]+hashtextextended\('attendance_accounting_settings', 0\)[\s\S]+pg_advisory_xact_lock[\s\S]+hashtextextended\(p_employee_profile_id::text, 1\)[\s\S]+attendance_fact_mode/iu,
   )
+  assert.match(
+    migration,
+    /require_attendance_resolution_update[\s\S]+attendance resolution update permission required/iu,
+  )
+  assert.match(
+    migration,
+    /attendance_write_resolution_with_review[\s\S]+perform private\.require_attendance_resolution_update\(\)[\s\S]+pg_advisory_xact_lock_shared[\s\S]+for update[\s\S]+attendance_fact_mode/iu,
+  )
+  assert.match(
+    migration,
+    /create or replace function private\.attendance_write_resolution\([\s\S]+perform private\.require_attendance_resolution_update\(\)[\s\S]+pg_advisory_xact_lock_shared[\s\S]+return private\.attendance_write_resolution_with_review/iu,
+  )
 })
 
 test('monthly payroll snapshots company cost and exact attendance method', () => {

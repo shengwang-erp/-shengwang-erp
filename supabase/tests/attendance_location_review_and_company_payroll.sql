@@ -5,7 +5,7 @@ create extension if not exists dblink with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 select no_plan();
 
-create or replace function pg_temp.wait_for_task5_employee_lock(
+create or replace function pg_temp.wait_for_task5_lock(
   p_application_name text
 )
 returns boolean
@@ -14,13 +14,9 @@ as $$
 begin
   for attempt in 1..500 loop
     if exists (
-      select 1
-      from pg_catalog.pg_locks lock_row
-      join pg_catalog.pg_stat_activity activity
-        on activity.pid = lock_row.pid
+      select 1 from pg_catalog.pg_stat_activity activity
       where activity.application_name = p_application_name
-        and lock_row.locktype = 'advisory'
-        and not lock_row.granted
+        and activity.wait_event_type = 'Lock'
     ) then
       return true;
     end if;
@@ -30,81 +26,316 @@ begin
 end;
 $$;
 
+create temporary table task5_race_results(
+  scenario text primary key,
+  payload jsonb,
+  error_message text
+);
+
 select extensions.dblink_connect(
-  'task5_lock_holder',
+  'task5_setup',
   format(
-    'dbname=%I user=postgres password=postgres application_name=task5_lock_holder',
+    'dbname=%I user=postgres password=postgres application_name=task5_setup',
+    current_database()
+  )
+);
+select extensions.dblink_exec('task5_setup', $setup$
+  delete from public.attendance_project_allocations
+  where resolution_id in (
+    select resolution_id from public.attendance_day_resolutions
+    where employee_profile_id =
+      '86f00000-0000-4000-8000-000000000003'::uuid
+  );
+  delete from public.attendance_day_resolutions
+  where employee_profile_id =
+    '86f00000-0000-4000-8000-000000000003'::uuid;
+  delete from public.attendance_monthly_payrolls
+  where employee_profile_id =
+    '86f00000-0000-4000-8000-000000000003'::uuid;
+  delete from public.attendance_accounting_settings
+  where updated_by_employee_profile_id =
+    '86f00000-0000-4000-8000-000000000001'::uuid;
+  delete from public.employee_profiles where id in (
+    '86f00000-0000-4000-8000-000000000001'::uuid,
+    '86f00000-0000-4000-8000-000000000002'::uuid,
+    '86f00000-0000-4000-8000-000000000003'::uuid
+  );
+  delete from auth.users where id in (
+    '85f00000-0000-4000-8000-000000000001'::uuid,
+    '85f00000-0000-4000-8000-000000000002'::uuid
+  );
+  delete from public.permission_grants
+  where subject_type = 'position'
+    and subject_code in ('主任设计师', '设计师')
+    and permission_key in ('module.labor.view', 'module.labor.update')
+    and created_at = timestamptz '2099-12-31 00:00:00+00';
+
+  insert into auth.users(
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
+    created_at, updated_at
+  ) values
+    ('00000000-0000-0000-0000-000000000000',
+     '85f00000-0000-4000-8000-000000000001', 'authenticated',
+     'authenticated', 'task5-race-accountant@auth.invalid', '', now(),
+     '{}'::jsonb, '{}'::jsonb, now(), now()),
+    ('00000000-0000-0000-0000-000000000000',
+     '85f00000-0000-4000-8000-000000000002', 'authenticated',
+     'authenticated', 'task5-race-viewer@auth.invalid', '', now(),
+     '{}'::jsonb, '{}'::jsonb, now(), now());
+  insert into public.employee_profiles(
+    id, employee_number, auth_user_id, name, department, position,
+    employment_status, hire_date, account_status, must_change_password,
+    is_hidden_system_account, attendance_required, daily_salary
+  ) values
+    ('86f00000-0000-4000-8000-000000000001', 'SW-8691',
+     '85f00000-0000-4000-8000-000000000001', '并发会计', '财务部',
+     '主任设计师', '在职', '2026-01-01', 'active', false, false, true,
+     null),
+    ('86f00000-0000-4000-8000-000000000002', 'SW-8692',
+     '85f00000-0000-4000-8000-000000000002', '只读会计', '财务部',
+     '设计师', '在职', '2026-01-01', 'active', false, false, true,
+     null),
+    ('86f00000-0000-4000-8000-000000000003', 'SW-8693', null,
+     '无场次政策员工', '总务部', '大工', '在职', '2026-01-01',
+     'active', true, false, true, 10000);
+  insert into public.permission_grants(
+    subject_type, subject_code, permission_key,
+    created_at, updated_at, created_by_auth_user_id, updated_by_auth_user_id
+  ) values
+    ('position', '主任设计师', 'module.labor.view',
+     '2099-12-31 00:00:00+00', '2099-12-31 00:00:00+00',
+     '85f00000-0000-4000-8000-000000000001',
+     '85f00000-0000-4000-8000-000000000001'),
+    ('position', '主任设计师', 'module.labor.update',
+     '2099-12-31 00:00:00+00', '2099-12-31 00:00:00+00',
+     '85f00000-0000-4000-8000-000000000001',
+     '85f00000-0000-4000-8000-000000000001'),
+    ('position', '设计师', 'module.labor.view',
+     '2099-12-31 00:00:00+00', '2099-12-31 00:00:00+00',
+     '85f00000-0000-4000-8000-000000000002',
+     '85f00000-0000-4000-8000-000000000002')
+  on conflict do nothing;
+  insert into public.attendance_accounting_settings(
+    effective_from, work_weekdays, updated_by_employee_profile_id
+  ) values (
+    '2026-08-01', array[1,2,3,4,5]::smallint[],
+    '86f00000-0000-4000-8000-000000000001'
+  );
+$setup$);
+select extensions.dblink_disconnect('task5_setup');
+
+select extensions.dblink_connect(
+  'task5_policy_updater',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_policy_updater',
     current_database()
   )
 );
 select extensions.dblink_connect(
-  'task5_lock_contender',
+  'task5_policy_confirmer',
   format(
-    'dbname=%I user=postgres password=postgres application_name=task5_lock_contender',
+    'dbname=%I user=postgres password=postgres application_name=task5_policy_confirmer',
     current_database()
   )
 );
-select extensions.dblink_exec('task5_lock_holder', 'begin');
-select is(
-  (
-    select acquired
-    from extensions.dblink(
-      'task5_lock_holder',
-      format(
-        'select pg_catalog.pg_try_advisory_xact_lock(%s)',
-        pg_catalog.hashtextextended(
-          '86f00000-0000-4000-8000-000000000001', 1
-        )
-      )
-    ) as held(acquired boolean)
-  ),
-  true,
-  'a separate session holds the canonical employee attendance lock'
+select extensions.dblink_exec('task5_policy_updater', 'begin');
+select extensions.dblink_exec(
+  'task5_policy_updater',
+  $$ update public.employee_profiles
+     set attendance_required = false
+     where id = '86f00000-0000-4000-8000-000000000003'::uuid $$
 );
+select extensions.dblink_exec('task5_policy_confirmer', 'set role authenticated');
+select * from extensions.dblink(
+  'task5_policy_confirmer',
+  $$ select set_config(
+       'request.jwt.claim.sub',
+       '85f00000-0000-4000-8000-000000000001', false
+     ) $$
+) as configured(value text);
+select extensions.dblink_exec('task5_policy_confirmer', 'begin');
 select is(
   extensions.dblink_send_query(
-    'task5_lock_contender',
+    'task5_policy_confirmer',
     $remote$
-      select private.attendance_write_resolution_with_review(
-        '86f00000-0000-4000-8000-000000000001'::uuid,
+      select public.confirm_attendance_resolution_secure(
+        '86f00000-0000-4000-8000-000000000003'::uuid,
         '2026-08-06'::date, 'full_day', 1, 0, '[]'::jsonb,
-        '', null, '', 0, true
+        '', null, '', 0
       )
     $remote$
   ),
   1,
-  'reviewed confirmation starts in an independent contender session'
+  'policy-sensitive confirmation starts in an independent session'
 );
 select ok(
-  pg_temp.wait_for_task5_employee_lock('task5_lock_contender'),
-  'reviewed confirmation waits on the employee lock before reading attendance facts'
+  pg_temp.wait_for_task5_lock('task5_policy_confirmer'),
+  'sessionless confirmation waits for an uncommitted attendance policy update'
 );
-select extensions.dblink_exec('task5_lock_holder', 'rollback');
+select extensions.dblink_exec('task5_policy_updater', 'commit');
 do $$
+declare
+  result_payload jsonb;
+  remote_error text;
 begin
   for attempt in 1..500 loop
-    exit when extensions.dblink_is_busy('task5_lock_contender') = 0;
+    exit when extensions.dblink_is_busy('task5_policy_confirmer') = 0;
     perform pg_catalog.pg_sleep(0.01);
   end loop;
-  if extensions.dblink_is_busy('task5_lock_contender') <> 0 then
-    perform extensions.dblink_cancel_query('task5_lock_contender');
-    raise exception 'Task5 lock contender did not finish after holder rollback';
+  if extensions.dblink_is_busy('task5_policy_confirmer') <> 0 then
+    perform extensions.dblink_cancel_query('task5_policy_confirmer');
+    raise exception 'Task5 policy confirmer did not finish after policy commit';
   end if;
+  select response.result into result_payload
+  from extensions.dblink_get_result(
+    'task5_policy_confirmer', false
+  ) response(result jsonb);
+  remote_error := extensions.dblink_error_message('task5_policy_confirmer');
   perform 1
   from extensions.dblink_get_result(
-    'task5_lock_contender', false
+    'task5_policy_confirmer', false
   ) response(result jsonb);
-  perform 1
-  from extensions.dblink_get_result(
-    'task5_lock_contender', false
-  ) response(result jsonb);
-  perform extensions.dblink_exec(
-    'task5_lock_contender', 'rollback', false
+  insert into task5_race_results values (
+    'policy_commit', result_payload, remote_error
   );
 end;
 $$;
-select extensions.dblink_disconnect('task5_lock_contender');
-select extensions.dblink_disconnect('task5_lock_holder');
+select extensions.dblink_exec(
+  'task5_policy_confirmer', 'rollback', false
+);
+select ok(
+  (select payload is null
+      and error_message like '%exempt attendance does not create daily resolutions%'
+   from task5_race_results where scenario = 'policy_commit'),
+  'confirmation re-reads committed attendance policy and rejects exempt daily facts'
+);
+select extensions.dblink_exec('task5_policy_confirmer', 'reset role');
+select extensions.dblink_disconnect('task5_policy_confirmer');
+select extensions.dblink_disconnect('task5_policy_updater');
+
+select extensions.dblink_connect(
+  'task5_unauthorized_holder',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_unauthorized_holder',
+    current_database()
+  )
+);
+select extensions.dblink_connect(
+  'task5_unauthorized_caller',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_unauthorized_caller',
+    current_database()
+  )
+);
+select extensions.dblink_exec('task5_unauthorized_holder', 'begin');
+select * from extensions.dblink(
+  'task5_unauthorized_holder',
+  format(
+    'select pg_catalog.pg_try_advisory_xact_lock(%s)',
+    pg_catalog.hashtextextended(
+      '86f00000-0000-4000-8000-000000000003', 1
+    )
+  )
+) as held(acquired boolean);
+select extensions.dblink_exec('task5_unauthorized_caller', 'set role authenticated');
+select * from extensions.dblink(
+  'task5_unauthorized_caller',
+  $$ select set_config(
+       'request.jwt.claim.sub',
+       '85f00000-0000-4000-8000-000000000002', false
+     ) $$
+) as configured(value text);
+select is(
+  extensions.dblink_send_query(
+    'task5_unauthorized_caller',
+    $remote$
+      select public.confirm_attendance_resolution_secure(
+        '86f00000-0000-4000-8000-000000000003'::uuid,
+        '2026-08-06'::date, 'full_day', 1, 0, '[]'::jsonb,
+        '', null, '', 0
+      )
+    $remote$
+  ), 1,
+  'view-only confirmation begins while the employee advisory lock is held'
+);
+do $$
+declare
+  result_payload jsonb;
+  remote_error text;
+begin
+  for attempt in 1..50 loop
+    exit when extensions.dblink_is_busy('task5_unauthorized_caller') = 0;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+  if extensions.dblink_is_busy('task5_unauthorized_caller') <> 0 then
+    perform extensions.dblink_cancel_query('task5_unauthorized_caller');
+  else
+    select response.result into result_payload
+    from extensions.dblink_get_result(
+      'task5_unauthorized_caller', false
+    ) response(result jsonb);
+    remote_error := extensions.dblink_error_message('task5_unauthorized_caller');
+    perform 1 from extensions.dblink_get_result(
+      'task5_unauthorized_caller', false
+    ) response(result jsonb);
+  end if;
+  insert into task5_race_results values (
+    'unauthorized', result_payload,
+    case when extensions.dblink_is_busy('task5_unauthorized_caller') <> 0
+      then 'LOCK_WAIT_TIMEOUT' else remote_error end
+  );
+end;
+$$;
+select ok(
+  (select error_message like '%attendance resolution update permission required%'
+   from task5_race_results where scenario = 'unauthorized'),
+  'view-only confirmation is rejected before waiting on attendance locks'
+);
+select extensions.dblink_exec('task5_unauthorized_holder', 'rollback');
+select extensions.dblink_exec('task5_unauthorized_caller', 'reset role', false);
+select extensions.dblink_disconnect('task5_unauthorized_caller');
+select extensions.dblink_disconnect('task5_unauthorized_holder');
+
+select extensions.dblink_connect(
+  'task5_cleanup',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_cleanup',
+    current_database()
+  )
+);
+select extensions.dblink_exec('task5_cleanup', $cleanup$
+  delete from public.attendance_project_allocations
+  where resolution_id in (
+    select resolution_id from public.attendance_day_resolutions
+    where employee_profile_id =
+      '86f00000-0000-4000-8000-000000000003'::uuid
+  );
+  delete from public.attendance_day_resolutions
+  where employee_profile_id =
+    '86f00000-0000-4000-8000-000000000003'::uuid;
+  delete from public.attendance_monthly_payrolls
+  where employee_profile_id =
+    '86f00000-0000-4000-8000-000000000003'::uuid;
+  delete from public.attendance_accounting_settings
+  where updated_by_employee_profile_id =
+    '86f00000-0000-4000-8000-000000000001'::uuid;
+  delete from public.employee_profiles where id in (
+    '86f00000-0000-4000-8000-000000000001'::uuid,
+    '86f00000-0000-4000-8000-000000000002'::uuid,
+    '86f00000-0000-4000-8000-000000000003'::uuid
+  );
+  delete from auth.users where id in (
+    '85f00000-0000-4000-8000-000000000001'::uuid,
+    '85f00000-0000-4000-8000-000000000002'::uuid
+  );
+  delete from public.permission_grants
+  where subject_type = 'position'
+    and subject_code in ('主任设计师', '设计师')
+    and permission_key in ('module.labor.view', 'module.labor.update')
+    and created_at = timestamptz '2099-12-31 00:00:00+00';
+$cleanup$);
+select extensions.dblink_disconnect('task5_cleanup');
 
 select col_type_is(
   'public', 'attendance_day_resolutions', 'location_review_status', 'text',

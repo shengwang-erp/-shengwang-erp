@@ -492,6 +492,25 @@ for each row execute function private.set_attendance_location_review();
 revoke all on function private.set_attendance_location_review()
   from public, anon, authenticated, service_role;
 
+create or replace function private.require_attendance_resolution_update()
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  perform private.current_attendance_accountant();
+  if not public.has_current_permission('module.labor.update') then
+    raise exception using
+      errcode = '42501',
+      message = 'attendance resolution update permission required';
+  end if;
+end;
+$$;
+
+revoke all on function private.require_attendance_resolution_update()
+  from public, anon, authenticated, service_role;
+
 alter function private.attendance_write_resolution(
   uuid, date, text, numeric, numeric, jsonb, text, integer, boolean
 ) rename to attendance_write_resolution_v1;
@@ -515,12 +534,14 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
+  locked_employee public.employee_profiles%rowtype;
   fact_mode text;
   has_abnormal_location boolean;
   normalized_review_note text;
   existing_resolution public.attendance_day_resolutions%rowtype;
   result jsonb;
 begin
+  perform private.require_attendance_resolution_update();
   if p_location_review_note is null
       or char_length(btrim(p_location_review_note)) > 2000 then
     raise exception using
@@ -551,6 +572,16 @@ begin
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended(p_employee_profile_id::text, 1)
   );
+
+  select employee.* into locked_employee
+  from public.employee_profiles employee
+  where employee.id = p_employee_profile_id
+  for update;
+  if not found then
+    raise exception using
+      errcode = '22023',
+      message = 'eligible employee and activated date required';
+  end if;
 
   fact_mode := private.attendance_fact_mode(p_employee_profile_id, p_work_date);
   if fact_mode = 'general' and (
@@ -658,6 +689,7 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  perform private.require_attendance_resolution_update();
   perform pg_catalog.pg_advisory_xact_lock_shared(
     pg_catalog.hashtextextended('attendance_accounting_settings', 0)
   );
