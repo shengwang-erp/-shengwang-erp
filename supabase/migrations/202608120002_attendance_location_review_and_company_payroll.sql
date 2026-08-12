@@ -65,6 +65,54 @@ alter table public.attendance_monthly_payrolls
   add constraint attendance_monthly_payrolls_location_review_summary_check
     check (location_review_summary = btrim(location_review_summary));
 
+-- Legacy frozen abnormal-location facts predate structured review. Preserve the
+-- original confirmer and timestamp for finalized rows; never invent either.
+-- Any finalized legacy row missing that canonical pair is deliberately left
+-- unresolved so the validated invariant below aborts this migration.
+update public.attendance_day_resolutions resolution
+set location_review_status = 'recorded_abnormal',
+    location_review_note =
+      '迁移记录：既有已确认定位异常，按原确认记录登记为异常',
+    location_reviewed_by_employee_profile_id =
+      resolution.confirmed_by_employee_profile_id,
+    location_reviewed_at = resolution.confirmed_at
+where resolution.accounting_status in ('confirmed', 'month_locked')
+  and resolution.issue_codes_snapshot
+    @> array['abnormal_location']::text[]
+  and resolution.location_review_status is null
+  and resolution.confirmed_by_employee_profile_id is not null
+  and resolution.confirmed_at is not null;
+
+-- Draft snapshots carry no confirmed reviewer identity. Give them an explicit
+-- migration state while keeping reviewer/time null until accounting confirms.
+update public.attendance_day_resolutions resolution
+set location_review_status = 'recorded_abnormal',
+    location_review_note =
+      '迁移记录：既有草稿定位异常，待会计复核确认'
+where resolution.accounting_status = 'draft'
+  and resolution.issue_codes_snapshot
+    @> array['abnormal_location']::text[]
+  and resolution.location_review_status is null;
+
+alter table public.attendance_day_resolutions
+  add constraint attendance_day_resolutions_location_review_issue_check check (
+    (
+      issue_codes_snapshot @> array['abnormal_location']::text[]
+      and location_review_status is not null
+      and location_review_status in ('confirmed_valid', 'recorded_abnormal')
+    )
+    or (
+      not (issue_codes_snapshot @> array['abnormal_location']::text[])
+      and location_review_status is null
+      and location_review_note = ''
+      and location_reviewed_by_employee_profile_id is null
+      and location_reviewed_at is null
+    )
+  ) not valid;
+
+alter table public.attendance_day_resolutions
+  validate constraint attendance_day_resolutions_location_review_issue_check;
+
 create or replace function private.attendance_fact_mode(
   p_employee_profile_id uuid,
   p_work_date date
@@ -106,7 +154,7 @@ begin
 end;
 $$;
 
-create or replace function private.attendance_month_method(
+create or replace function private.attendance_historical_month_method(
   p_employee_profile_id uuid,
   p_month date
 )
@@ -117,17 +165,8 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  saved_method text;
   employee public.employee_profiles%rowtype;
 begin
-  select payroll.attendance_method_snapshot into saved_method
-  from public.attendance_monthly_payrolls payroll
-  where payroll.employee_profile_id = p_employee_profile_id
-    and payroll.salary_month = p_month
-    and payroll.status = 'confirmed';
-  if found then
-    return saved_method;
-  end if;
   if exists (
     select 1 from public.project_attendance_sessions attendance_session
     where attendance_session.employee_profile_id = p_employee_profile_id
@@ -158,6 +197,33 @@ begin
 end;
 $$;
 
+create or replace function private.attendance_month_method(
+  p_employee_profile_id uuid,
+  p_month date
+)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  saved_method text;
+begin
+  select payroll.attendance_method_snapshot into saved_method
+  from public.attendance_monthly_payrolls payroll
+  where payroll.employee_profile_id = p_employee_profile_id
+    and payroll.salary_month = p_month
+    and payroll.status = 'confirmed';
+  if found then
+    return saved_method;
+  end if;
+  return private.attendance_historical_month_method(
+    p_employee_profile_id, p_month
+  );
+end;
+$$;
+
 create or replace function private.attendance_location_review_metrics(
   p_employee_profile_id uuid,
   p_month date
@@ -179,8 +245,6 @@ as $$
           || ' 确认有效：' || resolution.location_review_note
         when 'recorded_abnormal' then to_char(resolution.work_date, 'YYYY-MM-DD')
           || ' 判定异常：' || resolution.location_review_note
-        else to_char(resolution.work_date, 'YYYY-MM-DD')
-          || ' 历史定位异常：未结构化复核'
       end,
       '；' order by resolution.work_date, resolution.resolution_id
     ) filter (
@@ -195,7 +259,36 @@ as $$
     and resolution.accounting_status in ('confirmed', 'month_locked');
 $$;
 
+-- Rewrite pre-existing confirmed payroll snapshots from historical sessions
+-- before current policy. Project wins over general when both exist; only a
+-- month without sessions consults the employee's current policy.
+with historical_payroll as (
+  select payroll.payroll_id,
+         private.attendance_historical_month_method(
+           payroll.employee_profile_id, payroll.salary_month
+         ) as attendance_method,
+         private.attendance_location_review_metrics(
+           payroll.employee_profile_id, payroll.salary_month
+         ) as review_metrics
+  from public.attendance_monthly_payrolls payroll
+  where payroll.status = 'confirmed'
+)
+update public.attendance_monthly_payrolls payroll
+set attendance_method_snapshot = historical_payroll.attendance_method,
+    company_personnel_cost = case
+      when historical_payroll.attendance_method in ('general', 'exempt')
+        then payroll.net_salary
+      else 0
+    end,
+    location_abnormal_count =
+      (historical_payroll.review_metrics->>'count')::integer,
+    location_review_summary = historical_payroll.review_metrics->>'summary'
+from historical_payroll
+where payroll.payroll_id = historical_payroll.payroll_id;
+
 revoke all on function private.attendance_fact_mode(uuid, date)
+  from public, anon, authenticated, service_role;
+revoke all on function private.attendance_historical_month_method(uuid, date)
   from public, anon, authenticated, service_role;
 revoke all on function private.attendance_month_method(uuid, date)
   from public, anon, authenticated, service_role;
@@ -445,9 +538,25 @@ begin
     raise exception using errcode = '22023', message = 'invalid project allocations';
   end if;
 
+  if p_employee_profile_id is null then
+    raise exception using
+      errcode = '22023',
+      message = 'eligible employee and activated date required';
+  end if;
+  -- Match the canonical attendance mutation lock order before reading session,
+  -- event, employee-policy, or frozen-resolution facts.
+  perform pg_catalog.pg_advisory_xact_lock_shared(
+    pg_catalog.hashtextextended('attendance_accounting_settings', 0)
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(p_employee_profile_id::text, 1)
+  );
+
   fact_mode := private.attendance_fact_mode(p_employee_profile_id, p_work_date);
   if fact_mode = 'general' and (
-    p_final_project_cost <> 0 or jsonb_array_length(p_allocations) <> 0
+    p_final_project_cost is null
+    or p_final_project_cost <> 0
+    or jsonb_array_length(p_allocations) <> 0
   ) then
     raise exception using
       errcode = '22023',

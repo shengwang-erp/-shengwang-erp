@@ -755,6 +755,20 @@ pgTAP session 代替。
 备份恢复完整数据库或经审计恢复所需授权；不要只恢复旧 project policies 或状态触发器。
 # Project documents
 
+## 部门考勤复核与公司人员成本
+
+`202608120002_attendance_location_review_and_company_payroll.sql` 在日结中固化
+`location_review_status/note/reviewer/time`，并用已验证 CHECK 要求冻结事实含
+`abnormal_location` 时必须存在结构化复核。历史已确认异常只复用原
+`confirmed_by_employee_profile_id` 与 `confirmed_at`；缺失任一字段时约束验证
+会中止迁移。
+
+月工资保存 `attendance_method_snapshot`、`company_personnel_cost`、
+`location_abnormal_count` 和 `location_review_summary`。历史已确认工资先按该月
+服务端场次回填：`project` 优先于 `general`，只有完全没有场次时才使用
+当前员工政策判定 `exempt/general/project`。`general` 与 `exempt` 的净工资
+记入公司人员成本，项目成本和分摊保持为零。
+
 Migration `202607150002_project_documents.sql` adds immutable logical/versioned
 document metadata, a private `erp-project-documents` Storage bucket, and
 security-definer RPCs for safe browser projections. Base tables remain closed

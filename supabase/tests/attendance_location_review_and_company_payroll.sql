@@ -1,8 +1,110 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
+create extension if not exists dblink with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
 select no_plan();
+
+create or replace function pg_temp.wait_for_task5_employee_lock(
+  p_application_name text
+)
+returns boolean
+language plpgsql
+as $$
+begin
+  for attempt in 1..500 loop
+    if exists (
+      select 1
+      from pg_catalog.pg_locks lock_row
+      join pg_catalog.pg_stat_activity activity
+        on activity.pid = lock_row.pid
+      where activity.application_name = p_application_name
+        and lock_row.locktype = 'advisory'
+        and not lock_row.granted
+    ) then
+      return true;
+    end if;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+  return false;
+end;
+$$;
+
+select extensions.dblink_connect(
+  'task5_lock_holder',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_lock_holder',
+    current_database()
+  )
+);
+select extensions.dblink_connect(
+  'task5_lock_contender',
+  format(
+    'dbname=%I user=postgres password=postgres application_name=task5_lock_contender',
+    current_database()
+  )
+);
+select extensions.dblink_exec('task5_lock_holder', 'begin');
+select is(
+  (
+    select acquired
+    from extensions.dblink(
+      'task5_lock_holder',
+      format(
+        'select pg_catalog.pg_try_advisory_xact_lock(%s)',
+        pg_catalog.hashtextextended(
+          '86f00000-0000-4000-8000-000000000001', 1
+        )
+      )
+    ) as held(acquired boolean)
+  ),
+  true,
+  'a separate session holds the canonical employee attendance lock'
+);
+select is(
+  extensions.dblink_send_query(
+    'task5_lock_contender',
+    $remote$
+      select private.attendance_write_resolution_with_review(
+        '86f00000-0000-4000-8000-000000000001'::uuid,
+        '2026-08-06'::date, 'full_day', 1, 0, '[]'::jsonb,
+        '', null, '', 0, true
+      )
+    $remote$
+  ),
+  1,
+  'reviewed confirmation starts in an independent contender session'
+);
+select ok(
+  pg_temp.wait_for_task5_employee_lock('task5_lock_contender'),
+  'reviewed confirmation waits on the employee lock before reading attendance facts'
+);
+select extensions.dblink_exec('task5_lock_holder', 'rollback');
+do $$
+begin
+  for attempt in 1..500 loop
+    exit when extensions.dblink_is_busy('task5_lock_contender') = 0;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+  if extensions.dblink_is_busy('task5_lock_contender') <> 0 then
+    perform extensions.dblink_cancel_query('task5_lock_contender');
+    raise exception 'Task5 lock contender did not finish after holder rollback';
+  end if;
+  perform 1
+  from extensions.dblink_get_result(
+    'task5_lock_contender', false
+  ) response(result jsonb);
+  perform 1
+  from extensions.dblink_get_result(
+    'task5_lock_contender', false
+  ) response(result jsonb);
+  perform extensions.dblink_exec(
+    'task5_lock_contender', 'rollback', false
+  );
+end;
+$$;
+select extensions.dblink_disconnect('task5_lock_contender');
+select extensions.dblink_disconnect('task5_lock_holder');
 
 select col_type_is(
   'public', 'attendance_day_resolutions', 'location_review_status', 'text',
@@ -334,6 +436,16 @@ select ok(
 );
 
 select throws_ok(
+  $$ update public.attendance_day_resolutions
+     set issue_codes_snapshot = array['abnormal_location']::text[]
+     where employee_profile_id =
+       '86000000-0000-4000-8000-000000000002'::uuid
+       and work_date = '2026-08-05'::date $$,
+  '23514', null,
+  'direct writes cannot persist an abnormal frozen issue without structured review'
+);
+
+select throws_ok(
   $$ select public.confirm_attendance_resolution_secure(
     '86000000-0000-4000-8000-000000000003'::uuid, '2026-08-04'::date,
     'full_day', 1, 12000,
@@ -342,6 +454,24 @@ select throws_ok(
   ) $$,
   '22023', 'general attendance cannot create project labor cost',
   'general attendance rejects project cost and allocations from the client'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000003'::uuid, '2026-08-04'::date,
+    'full_day', 1, null, '[]'::jsonb, '', 0
+  ) $$,
+  '22023', 'general attendance cannot create project labor cost',
+  'legacy general confirmation rejects a null project cost explicitly'
+);
+
+select throws_ok(
+  $$ select public.confirm_attendance_resolution_secure(
+    '86000000-0000-4000-8000-000000000003'::uuid, '2026-08-04'::date,
+    'full_day', 1, null, '[]'::jsonb, '', null, '', 0
+  ) $$,
+  '22023', 'general attendance cannot create project labor cost',
+  'reviewed general confirmation rejects a null project cost explicitly'
 );
 
 select lives_ok(
