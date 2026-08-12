@@ -39,6 +39,7 @@ export default function ActiveAttendanceSession({
   onOpenPhoto,
   onClockOut,
   onClockOutSuccess,
+  onConfirmationRequired,
 }) {
   if (!session) return null
   const displayPoints = sortedDisplayPoints(points ?? session.workPoints)
@@ -70,6 +71,7 @@ export default function ActiveAttendanceSession({
         <p className="attendance-session-address">{session.projectAddressSnapshot}</p>
       </header>
 
+      <h3>施工点位</h3>
       <div className="attendance-work-point-grid">
         {displayPoints.map((workPoint) => {
           const stateKey = workPoint.workPointId || `ordinal-${workPoint.ordinal}`
@@ -113,11 +115,13 @@ export default function ActiveAttendanceSession({
       <div className="attendance-clock-out">
         <AttendanceLocationAction
           action="clock_out"
+          attendanceMode="project"
           targetLocation={clockOutTarget}
           locationService={locationService}
           createRequestId={createRequestId}
           onSubmit={onClockOut}
           onSuccess={onClockOutSuccess}
+          onConfirmationRequired={onConfirmationRequired}
           disabled={!clockOutAllowed || mutationPending}
           disabledReason={clockOutDisabledReason}
         />

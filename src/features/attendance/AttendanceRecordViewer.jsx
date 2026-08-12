@@ -195,7 +195,9 @@ function AttendanceRecordEvent({ label, event }) {
   return (
     <div className="attendance-record-event">
       <p>
-        <strong>{label}：{event.result === 'abnormal' ? '异常' : '正常'}</strong>
+        <strong>{label}：{event.result === 'not_applicable'
+          ? '已记录'
+          : event.result === 'abnormal' ? '异常' : '正常'}</strong>
         {' '}
         <time dateTime={event.serverRecordedAt}>{formatRecordTime(event.serverRecordedAt)}</time>
       </p>
@@ -217,15 +219,20 @@ function AttendanceRecordCard({ attendanceSession, onOpenPhoto }) {
           {attendanceSession.employeeNameSnapshot}（{attendanceSession.employeeNumberSnapshot}）
         </p>
         <h3 id={`attendance-record-${attendanceSession.sessionId}`}>
-          {attendanceSession.projectNameSnapshot}
+          {attendanceSession.attendanceMode === 'general'
+            ? '公司 / 非项目'
+            : attendanceSession.projectNameSnapshot}
         </h3>
-        <p>{attendanceSession.projectAddressSnapshot}</p>
+        {attendanceSession.attendanceMode === 'project' ? (
+          <p>{attendanceSession.projectAddressSnapshot}</p>
+        ) : null}
       </header>
       <div className="attendance-record-events">
         <AttendanceRecordEvent label="上班" event={attendanceSession.clockInEvent} />
         <AttendanceRecordEvent label="下班" event={attendanceSession.clockOutEvent} />
       </div>
-      <div className="attendance-work-point-grid">
+      {attendanceSession.attendanceMode === 'project' ? (
+        <div className="attendance-work-point-grid">
         {[...(attendanceSession.workPoints || [])]
           .sort((left, right) => Number(left.ordinal) - Number(right.ordinal))
           .slice(0, 7)
@@ -245,7 +252,8 @@ function AttendanceRecordCard({ attendanceSession, onOpenPhoto }) {
               })}
             />
           ))}
-      </div>
+        </div>
+      ) : null}
     </article>
   )
 }

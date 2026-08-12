@@ -11,9 +11,12 @@ import { attendancePhotoStorage } from '../../services/attendancePhotoStorage.js
 import { attendanceService } from '../../services/attendanceService.js'
 import ActiveAttendanceSession from './ActiveAttendanceSession.jsx'
 import AttendanceLocationAction from './AttendanceLocationAction.jsx'
+import AttendanceOutOfRangeDialog from './AttendanceOutOfRangeDialog.jsx'
 import AttendanceProjectPicker from './AttendanceProjectPicker.jsx'
 import AttendanceRecordViewer from './AttendanceRecordViewer.jsx'
+import GeneralAttendanceSession from './GeneralAttendanceSession.jsx'
 import { attendanceLocationService } from './attendanceLocationService.js'
+import { resolveAttendanceExperience } from './attendancePolicy.js'
 import {
   isAttendanceProjectEligible,
   normalizeAttendanceWorkPointInput,
@@ -356,24 +359,29 @@ export function createAttendanceClockController({
   const ownsWriteGuard = !providedWriteGuard
   let mounted = true
   let activeOperation = null
+  let pendingConfirmation = null
 
   const submit = async (kind, submission) => {
     const writeToken = writeGuard.begin()
     if (writeToken === null) return { status: 'busy' }
     const attendanceSession = getToday?.()?.activeSession
+    const attendanceMode = attendanceSession?.attendanceMode ||
+      getToday?.()?.policy?.attendanceMode || 'project'
     const selectedProject = getSelectedProject?.()
     const targetId = kind === 'clock_out'
       ? attendanceSession?.sessionId
-      : selectedProject?.projectId
-    if (!mounted || !isNonBlankString(targetId) ||
+      : attendanceMode === 'project' ? selectedProject?.projectId : null
+    if (!mounted || !['project', 'general'].includes(attendanceMode) ||
+        (attendanceMode === 'project' && !isNonBlankString(targetId)) ||
+        (kind === 'clock_out' && !isNonBlankString(targetId)) ||
         (kind === 'clock_out' && attendanceSession?.status !== 'open') ||
         (kind === 'clock_in' && attendanceSession)) {
       writeGuard.finish(writeToken)
       return { status: 'invalid' }
     }
     const input = kind === 'clock_out'
-      ? { sessionId: targetId, ...submission }
-      : { projectId: targetId, ...submission }
+      ? { attendanceMode, sessionId: targetId, ...submission }
+      : { attendanceMode, projectId: targetId, ...submission }
     try {
       const result = kind === 'clock_out'
         ? await service.clockOut(input)
@@ -381,6 +389,11 @@ export function createAttendanceClockController({
       if (!mounted || !writeGuard.isCurrent(writeToken)) {
         writeGuard.finish(writeToken)
         return { status: 'stale' }
+      }
+      if (result?.status === 'confirmation_required') {
+        pendingConfirmation = { kind, input, confirmation: result.confirmation }
+        writeGuard.finish(writeToken)
+        return { status: 'confirmation_required', confirmation: result.confirmation }
       }
       activeOperation = { writeToken, kind, targetId, result }
       return { status: 'submitted', result }
@@ -405,6 +418,46 @@ export function createAttendanceClockController({
     clockOut(submission) {
       return submit('clock_out', submission)
     },
+    async confirmOutOfRange() {
+      const pending = pendingConfirmation
+      if (!pending) return { status: 'invalid' }
+      const writeToken = writeGuard.begin()
+      if (writeToken === null) return { status: 'busy' }
+      pendingConfirmation = null
+      try {
+        const result = pending.kind === 'clock_out'
+          ? await service.clockOut({ ...pending.input, outOfRangeConfirmed: true })
+          : await service.clockIn({ ...pending.input, outOfRangeConfirmed: true })
+        if (!mounted || !writeGuard.isCurrent(writeToken)) {
+          writeGuard.finish(writeToken)
+          return { status: 'stale' }
+        }
+        if (result?.status !== 'saved') {
+          pendingConfirmation = pending
+          writeGuard.finish(writeToken)
+          return { status: 'invalid' }
+        }
+        activeOperation = {
+          writeToken,
+          kind: pending.kind,
+          targetId: pending.kind === 'clock_out'
+            ? pending.input.sessionId
+            : pending.input.projectId,
+          result,
+        }
+        return { status: 'submitted', result }
+      } catch (error) {
+        if (mounted) pendingConfirmation = pending
+        if (mounted && writeGuard.isCurrent(writeToken)) forwardAuthInvalid(error, onAuthInvalid)
+        writeGuard.finish(writeToken)
+        throw error
+      }
+    },
+    cancelOutOfRange() {
+      if (!pendingConfirmation) return { status: 'invalid' }
+      pendingConfirmation = null
+      return { status: 'cancelled' }
+    },
     async refreshAfterClock() {
       const operation = activeOperation
       if (!operation || !writeGuard.isCurrent(operation.writeToken)) {
@@ -425,6 +478,7 @@ export function createAttendanceClockController({
       mounted = false
       if (activeOperation) writeGuard.finish(activeOperation.writeToken)
       activeOperation = null
+      pendingConfirmation = null
       if (ownsWriteGuard) writeGuard.unmount()
     },
   })
@@ -1026,6 +1080,8 @@ export function TodayAttendanceView({
   recordService,
   handlers = {},
   preview = null,
+  confirmation = null,
+  confirmationPending = false,
   onTabChange,
   onBack,
   onAuthInvalid,
@@ -1035,6 +1091,9 @@ export function TodayAttendanceView({
   const access = today?.viewerAccess
   const activeTab = resolveAttendanceViewTab(tab, access)
   const activeSession = today?.activeSession
+  const experience = today
+    ? resolveAttendanceExperience(today.policy, activeSession)
+    : null
   const points = overlayAttendanceDrafts(activeSession, drafts)
   const selectedProject = snapshot.projects.find(
     (project) => project.projectId === snapshot.selectedProjectId,
@@ -1125,7 +1184,7 @@ export function TodayAttendanceView({
               </button>
             </div>
           ) : null}
-          {today && !activeSession ? (
+          {experience?.kind === 'project-clock-in' ? (
             <section className="attendance-clock-in-card attendance-session-card">
               <AttendanceProjectPicker
                 projects={snapshot.projects}
@@ -1135,11 +1194,13 @@ export function TodayAttendanceView({
               />
               <AttendanceLocationAction
                 action="clock_in"
+                attendanceMode="project"
                 targetLocation={selectedProject}
                 locationService={locationService}
                 createRequestId={createRequestId}
                 onSubmit={handlers.clockIn}
                 onSuccess={handlers.clockRefresh}
+                onConfirmationRequired={handlers.openClockConfirmation}
                 disabled={mutationPending || !selectedProject}
                 disabledReason={mutationPending
                   ? '其他考勤操作正在处理中，请稍候。'
@@ -1147,7 +1208,7 @@ export function TodayAttendanceView({
               />
             </section>
           ) : null}
-          {activeSession ? (
+          {experience?.kind === 'project-active' ? (
             <ActiveAttendanceSession
               session={activeSession}
               points={points}
@@ -1165,7 +1226,58 @@ export function TodayAttendanceView({
               onOpenPhoto={handlers.openPhoto}
               onClockOut={handlers.clockOut}
               onClockOutSuccess={handlers.clockRefresh}
+              onConfirmationRequired={handlers.openClockConfirmation}
             />
+          ) : null}
+          {experience?.kind === 'general-clock-in' ? (
+            <section className="attendance-general-clock-in attendance-session-card">
+              <p className="attendance-session-eyebrow">公司考勤</p>
+              <h2>按当前位置完成公司上班打卡</h2>
+              <AttendanceLocationAction
+                action="clock_in"
+                attendanceMode="general"
+                buttonLabel="按当前位置打卡上班"
+                targetLocation={null}
+                locationService={locationService}
+                createRequestId={createRequestId}
+                onSubmit={handlers.clockIn}
+                onSuccess={handlers.clockRefresh}
+                onConfirmationRequired={handlers.openClockConfirmation}
+                disabled={mutationPending}
+                disabledReason="其他考勤操作正在处理中，请稍候。"
+              />
+            </section>
+          ) : null}
+          {experience?.kind === 'general-active' ? (
+            <GeneralAttendanceSession
+              session={activeSession}
+              mutationPending={mutationPending}
+              locationService={locationService}
+              createRequestId={createRequestId}
+              onClockOut={handlers.clockOut}
+              onClockOutSuccess={handlers.clockRefresh}
+              onConfirmationRequired={handlers.openClockConfirmation}
+            />
+          ) : null}
+          {experience?.kind === 'exempt' ? (
+            <section className="attendance-exempt-card attendance-session-card" role="status">
+              <p className="attendance-session-eyebrow">免每日打卡</p>
+              <h2>已设置为免每日打卡</h2>
+              <p>本月按正常出勤工资规则处理，无需每天打卡上班或下班。</p>
+            </section>
+          ) : null}
+          {experience?.kind === 'policy-conflict' ? (
+            <section className="attendance-policy-conflict attendance-session-card" role="alert">
+              <h2>人员打卡设置已变化，请重新读取</h2>
+              <button
+                className="attendance-retry-refresh"
+                type="button"
+                disabled={loading || mutationPending}
+                onClick={() => handlers.retryRefresh?.()}
+              >
+                重新读取服务器记录
+              </button>
+            </section>
           ) : null}
           {today ? (
             <TodayAttendanceHistory
@@ -1192,6 +1304,13 @@ export function TodayAttendanceView({
       )}
 
       <AttendancePhotoModal preview={preview} onClose={onClosePreview} />
+      <AttendanceOutOfRangeDialog
+        confirmation={confirmation?.confirmation}
+        pending={confirmationPending}
+        returnFocus={confirmation?.returnFocus}
+        onCancel={handlers.cancelClockConfirmation}
+        onConfirm={handlers.confirmClock}
+      />
     </main>
   )
 }
@@ -1226,6 +1345,8 @@ export default function TodayAttendancePage({
   const [photoStates, setPhotoStates] = useState({})
   const [mutationPending, setMutationPending] = useState(false)
   const [preview, setPreview] = useState(null)
+  const [clockConfirmation, setClockConfirmation] = useState(null)
+  const [confirmationPending, setConfirmationPending] = useState(false)
   const returnFocusRef = useRef(null)
   const pendingCountRef = useRef(0)
   const clockPendingRef = useRef(false)
@@ -1390,6 +1511,10 @@ export default function TodayAttendancePage({
     try {
       const result = await clockController[method](submission)
       if (result.status !== 'submitted') {
+        if (result.status === 'confirmation_required') {
+          endPending()
+          return result
+        }
         throw operationError('ATTENDANCE_WRITE_BUSY')
       }
       clockPendingRef.current = true
@@ -1399,6 +1524,16 @@ export default function TodayAttendancePage({
       throw error
     }
   }, [beginPending, clockController, endPending])
+
+  const openClockConfirmation = useCallback((value) => {
+    setClockConfirmation(value)
+  }, [])
+
+  const cancelClockConfirmation = useCallback(() => {
+    if (confirmationPending) return
+    clockController.cancelOutOfRange()
+    setClockConfirmation(null)
+  }, [clockController, confirmationPending])
 
   const refreshAfterClock = useCallback(async () => {
     try {
@@ -1413,6 +1548,22 @@ export default function TodayAttendancePage({
       }
     }
   }, [clockController, endPending])
+
+  const confirmClock = useCallback(() => {
+    if (confirmationPending) return
+    setConfirmationPending(true)
+    setErrorCode(null)
+    beginPending()
+    void clockController.confirmOutOfRange().then(async (result) => {
+      if (result.status !== 'submitted') throw operationError('ATTENDANCE_WRITE_BUSY')
+      clockPendingRef.current = true
+      setClockConfirmation(null)
+      await refreshAfterClock()
+    }).catch((error) => {
+      if (!clockPendingRef.current) endPending()
+      setErrorCode(safeErrorCode(error, 'ATTENDANCE_SERVICE_UNAVAILABLE'))
+    }).finally(() => setConfirmationPending(false))
+  }, [beginPending, clockController, confirmationPending, endPending, refreshAfterClock])
 
   const handleOpenPhoto = useCallback((photo, suppliedContext) => {
     if (photo?.uploadStatus !== 'active') return
@@ -1469,6 +1620,9 @@ export default function TodayAttendancePage({
     clockIn: (submission) => submitClock('clockIn', submission),
     clockOut: (submission) => submitClock('clockOut', submission),
     clockRefresh: refreshAfterClock,
+    openClockConfirmation,
+    cancelClockConfirmation,
+    confirmClock,
     retryRefresh: retryAuthoritativeSnapshot,
   }
 
@@ -1487,6 +1641,8 @@ export default function TodayAttendancePage({
       recordService={service}
       handlers={handlers}
       preview={preview}
+      confirmation={clockConfirmation}
+      confirmationPending={confirmationPending}
       onTabChange={(nextTab) => {
         const resolvedTab = resolveAttendanceViewTab(
           nextTab,

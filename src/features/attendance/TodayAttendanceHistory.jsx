@@ -20,7 +20,9 @@ function TokyoTime({ value }) {
 
 function AttendanceEvent({ label, event }) {
   if (!event) return null
-  const resultLabel = event.result === 'abnormal' ? '异常' : '正常'
+  const resultLabel = event.result === 'not_applicable'
+    ? '已记录'
+    : event.result === 'abnormal' ? '异常' : '正常'
   return (
     <div className="attendance-history-event">
       <p>
@@ -62,9 +64,13 @@ export default function TodayAttendanceHistory({
         >
           <header className="attendance-history-session-heading">
             <h3 id={`attendance-history-${attendanceSession.sessionId}`}>
-              {attendanceSession.projectNameSnapshot}
+              {attendanceSession.attendanceMode === 'general'
+                ? '公司 / 非项目'
+                : attendanceSession.projectNameSnapshot}
             </h3>
-            <p>{attendanceSession.projectAddressSnapshot}</p>
+            {attendanceSession.attendanceMode === 'project' ? (
+              <p>{attendanceSession.projectAddressSnapshot}</p>
+            ) : null}
           </header>
 
           <div className="attendance-history-events">
@@ -72,7 +78,8 @@ export default function TodayAttendanceHistory({
             <AttendanceEvent label="下班" event={attendanceSession.clockOutEvent} />
           </div>
 
-          <div className="attendance-work-point-grid">
+          {attendanceSession.attendanceMode === 'project' ? (
+            <div className="attendance-work-point-grid">
             {[...(attendanceSession.workPoints || [])]
               .sort((left, right) => Number(left.ordinal) - Number(right.ordinal))
               .slice(0, 7)
@@ -86,7 +93,8 @@ export default function TodayAttendanceHistory({
                   onOpenPhoto={openPhoto}
                 />
               ))}
-          </div>
+            </div>
+          ) : null}
         </article>
       ))}
     </section>

@@ -89,6 +89,22 @@ async function loadDesktopShell() {
 
 const desktopShellModule = await loadDesktopShell()
 
+async function loadAttendancePage() {
+  const server = await createServer({
+    root: process.cwd(),
+    logLevel: 'silent',
+    appType: 'custom',
+    server: { middlewareMode: true },
+  })
+  try {
+    return await server.ssrLoadModule('/src/features/attendance/TodayAttendancePage.jsx')
+  } finally {
+    await server.close()
+  }
+}
+
+const attendancePageModule = await loadAttendancePage()
+
 test('today attendance remains in the centralized desktop routes and Home cards', () => {
   const menuViews = ADMIN_ROUTES.filter(({ desktop }) => desktop).map(({ view }) => view)
 
@@ -210,6 +226,35 @@ test('one attendance route passes only identity, auth invalidation, and Home nav
     (authenticatedApp.match(/return renderInDesktopShell\(/gu) || []).length,
     20,
   )
+})
+
+test('attendance route real-renders general and exempt employee experiences without project controls', () => {
+  const commonToday = {
+    workDate: '2026-08-12',
+    viewerAccess: { scope: 'own', canViewScopedRecords: false },
+    activeSession: null,
+    completedSessions: [],
+    pendingPhotoReservations: [],
+  }
+  const renderView = (policy) => renderToStaticMarkup(createElement(
+    attendancePageModule.TodayAttendanceView,
+    {
+      snapshot: {
+        projects: [], selectedProjectId: '', today: { ...commonToday, policy },
+      },
+      handlers: {},
+      locationService: { getCurrentLocation: async () => ({}) },
+      createRequestId: () => 'request-1',
+    },
+  ))
+
+  const general = renderView({ attendanceRequired: true, attendanceMode: 'general' })
+  assert.match(general, /按当前位置打卡上班/u)
+  assert.doesNotMatch(general, /选择打卡项目/u)
+
+  const exempt = renderView({ attendanceRequired: false, attendanceMode: 'exempt' })
+  assert.match(exempt, /已设置为免每日打卡/u)
+  assert.doesNotMatch(exempt, /attendance-location-start/u)
 })
 
 test('mobile shell routes use projected Home, workbench, message, and profile models', () => {

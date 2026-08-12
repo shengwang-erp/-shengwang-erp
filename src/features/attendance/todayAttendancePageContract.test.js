@@ -13,6 +13,8 @@ import {
 const COMPONENT_FILES = Object.freeze({
   picker: 'AttendanceProjectPicker.jsx',
   location: 'AttendanceLocationAction.jsx',
+  confirmation: 'AttendanceOutOfRangeDialog.jsx',
+  general: 'GeneralAttendanceSession.jsx',
   point: 'AttendanceWorkPointCard.jsx',
   active: 'ActiveAttendanceSession.jsx',
   history: 'TodayAttendanceHistory.jsx',
@@ -105,6 +107,14 @@ function task9Module(name) {
 
 function render(Component, props) {
   return renderToStaticMarkup(createElement(Component, props))
+}
+
+function text(markup) {
+  return String(markup)
+    .replace(/<[^>]*>/gu, ' ')
+    .replace(/&nbsp;/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
 }
 
 function cssBlockAfter(source, marker) {
@@ -237,6 +247,7 @@ function clockEvent(eventType, result, timestamp, abnormalReason = null) {
 function session(overrides = {}) {
   return {
     sessionId: 'session-1',
+    attendanceMode: 'project',
     employeeProfileId: 'employee-1',
     employeeNumberSnapshot: 'SW-001',
     employeeNameSnapshot: '山田太郎',
@@ -257,7 +268,7 @@ function session(overrides = {}) {
   }
 }
 
-test('all five JSX files compile independently through the Vite JSX transform', async () => {
+test('all attendance JSX files compile independently through the Vite JSX transform', async () => {
   for (const [key, name] of Object.entries(COMPONENT_FILES)) {
     assert.ok(sources[key], `${name} must exist`)
     const result = await transformWithEsbuild(sources[key], name, {
@@ -350,9 +361,8 @@ test('location action exposes fresh clock labels, live status, and the server-au
     if (action === 'clock_out') assert.match(markup, /aria-describedby=/u)
   }
   assert.match(sources.location, /定位预览，服务器结果为准/u)
-  assert.match(sources.location, /异常原因/u)
+  assert.doesNotMatch(sources.location, /异常原因|abnormalReason/u)
   assert.match(sources.location, /useId\(/u)
-  assert.match(sources.location, /\.focus\(\)/u)
 })
 
 test('location preview renders its exact result marker through abnormal submission', () => {
@@ -424,62 +434,44 @@ test('location action fails closed with an explained disabled control when targe
   }
 })
 
-test('location action consumes guarded helpers and isolates retry from geolocation', () => {
-  assert.match(sources.location, /createAttendanceLocationOperationGuard/u)
-  assert.match(sources.location, /acquireAttendanceLocationAttempt/u)
-  assert.match(sources.location, /submitAttendanceLocationAttempt/u)
+test('location action owns one reusable request and isolates retry from geolocation', () => {
+  assert.match(sources.location, /createAttendanceLocationSubmissionController/u)
   assert.match(sources.location, /targetSignature/u)
   assert.match(sources.location, /currentTargetSignatureRef\.current = targetSignature/u)
   assert.match(sources.location, /useLayoutEffect\(/u)
-  assert.match(sources.location, /createAttendanceLocationOperationContext/u)
-  assert.match(sources.location, /operationContext/u)
-  assert.doesNotMatch(sources.location, /latestRef/u)
-  assert.match(sources.location, /controllerRef\.current\?\.abort\(\)/u)
-  assert.match(sources.location, /guardRef\.current\.invalidate\(\)/u)
-  assert.match(sources.location, /guardRef\.current\.unmount\(\)/u)
+  assert.match(sources.location, /previous\.unmount\(\)/u)
 
   const retryBody = sources.location.match(
-    /const handleRetrySubmit = [\s\S]*?\n\s*const handleRelocate =/u,
+    /async retry\(returnFocus = null\) \{[\s\S]*?\n\s*\},\n\s*abort\(\)/u,
   )?.[0] || ''
-  assert.match(retryBody, /buildAttendanceSubmission/u)
-  assert.match(retryBody, /submitCurrentAttempt/u)
+  assert.match(retryBody, /submitReusable/u)
   assert.doesNotMatch(retryBody, /acquireAttendanceLocationAttempt|getCurrentLocation|createRequestId/u)
-
-  const relocateBody = sources.location.match(
-    /const handleRelocate = [\s\S]*?\n\s*return \(/u,
-  )?.[0] || ''
-  assert.match(relocateBody, /invalidateCurrentOperation/u)
-  assert.match(relocateBody, /beginLocation/u)
 })
 
-test('location action reactivates its guard before generation restart and tears down only in cleanup', () => {
-  const lifecycle = sources.location.match(
-    /useEffect\(\(\) => \{[\s\S]*?guardRef\.current\.unmount\(\)[\s\S]*?\n\s*\}, \[\]\)/u,
-  )?.[0] || ''
-  assert.ok(lifecycle)
+test('location submission never opens confirmation or writes after positioning failure', async () => {
+  const location = componentModule('location')
+  const calls = []
+  const confirmation = []
+  const failure = Object.assign(new Error('denied'), { code: 'GEOLOCATION_PERMISSION_DENIED' })
+  const controller = location.createAttendanceLocationSubmissionController({
+    attendanceMode: 'project',
+    targetLocation: eligibleProject,
+    locationService: { async getCurrentLocation() { calls.push('locate'); throw failure } },
+    createRequestId: () => 'request-never-created',
+    async onSubmit() { calls.push('submit'); return { status: 'saved' } },
+    async onSuccess() { calls.push('refresh') },
+    onConfirmationRequired(value) { confirmation.push(value) },
+  })
 
-  const mountIndex = lifecycle.indexOf('guardRef.current.mount()')
-  const restartIndex = lifecycle.indexOf("dispatch({ type: 'restart', generation })")
-  const cleanupIndex = lifecycle.indexOf('return () => {')
-  const abortIndex = lifecycle.indexOf('controllerRef.current?.abort()')
-  const clearTargetIndex = lifecycle.indexOf('attemptTargetSignatureRef.current = null')
-  const unmountIndex = lifecycle.indexOf('guardRef.current.unmount()')
-
-  assert.ok(mountIndex >= 0)
-  assert.ok(restartIndex > mountIndex)
-  assert.ok(cleanupIndex > restartIndex)
-  assert.ok(abortIndex > cleanupIndex)
-  assert.ok(clearTargetIndex > abortIndex)
-  assert.ok(unmountIndex > clearTargetIndex)
-  assert.doesNotMatch(
-    lifecycle.slice(0, cleanupIndex),
-    /beginLocation|submitCurrentAttempt|guardRef\.current\.begin\(/u,
-  )
+  const result = await controller.begin()
+  assert.equal(result.status, 'failed')
+  assert.equal(result.stage, 'locate')
+  assert.deepEqual(calls, ['locate'])
+  assert.deepEqual(confirmation, [])
 })
 
 test('every disabled location recovery control references its rendered explanation', () => {
   for (const className of [
-    'attendance-location-submit',
     'attendance-location-retry',
     'attendance-location-relocate',
   ]) {
@@ -905,7 +897,8 @@ test('history exposes no mutation contract and all new classes stay attendance-p
     .flatMap((match) => (match[1] || match[2]).split(/\s+/u))
     .filter((name) => name && !name.includes('${'))
   assert.ok(classNames.length >= 20)
-  assert.ok(classNames.every((name) => name.startsWith('attendance-')))
+  assert.ok(classNames.every((name) =>
+    name.startsWith('attendance-') || name === 'primary-button'))
 })
 
 test('buttons are explicit non-submit controls and progress/errors use accessible live semantics', () => {
@@ -1551,16 +1544,98 @@ test('clock controller sends the immutable server target and holds its lock thro
     abnormalReason: null,
   }
   assert.equal((await controller.clockOut(submission)).status, 'submitted')
-  assert.deepEqual(calls[0], ['clock-out', { sessionId: 'session-1', ...submission }])
+  assert.deepEqual(calls[0], ['clock-out', {
+    attendanceMode: 'project', sessionId: 'session-1', ...submission,
+  }])
   assert.equal(Object.hasOwn(calls[0][1], 'projectId'), false)
   assert.deepEqual(await controller.clockIn(submission), { status: 'busy' })
   assert.deepEqual(await controller.refreshAfterClock(), { status: 'succeeded' })
 
   today = { activeSession: null }
   assert.equal((await controller.clockIn(submission)).status, 'submitted')
-  assert.deepEqual(calls[2], ['clock-in', { projectId: 'P001', ...submission }])
+  assert.deepEqual(calls[2], ['clock-in', {
+    attendanceMode: 'project', projectId: 'P001', ...submission,
+  }])
   assert.equal(Object.hasOwn(calls[2][1], 'sessionId'), false)
   assert.deepEqual(await controller.refreshAfterClock(), { status: 'succeeded' })
+})
+
+test('clock controller keeps one project submission through confirmation and refreshes only after save', async () => {
+  const page = task9Module('page')
+  const location = Object.freeze({
+    latitude: 35.7, longitude: 139.7, accuracyMeters: 12,
+    deviceRecordedAt: '2026-08-12T01:00:00.000Z',
+  })
+  for (const kind of ['clockIn', 'clockOut']) {
+    const calls = []
+    const activeSession = kind === 'clockOut'
+      ? session({ attendanceMode: 'project', status: 'open' })
+      : null
+    const serviceMethod = kind === 'clockOut' ? 'clockOut' : 'clockIn'
+    const controller = page.createAttendanceClockController({
+      service: {
+        async [serviceMethod](input) {
+          calls.push(['write', input])
+          return calls.length === 1
+            ? { status: 'confirmation_required', confirmation: {
+              projectId: 'P001', projectName: '东京站现场', distanceMeters: 412.7,
+              radiusMeters: 300, accuracyMeters: 12,
+            } }
+            : { status: 'saved', session: activeSession || session(), event: {} }
+        },
+      },
+      getToday: () => ({
+        policy: { attendanceRequired: true, attendanceMode: 'project' },
+        activeSession,
+      }),
+      getSelectedProject: () => eligibleProject,
+      async refreshToday() { calls.push(['refresh']); return { status: 'accepted' } },
+    })
+    const submission = { requestId: 'request-1', location }
+
+    const first = await controller[kind](submission)
+    assert.equal(first.status, 'confirmation_required')
+    assert.equal(calls.filter(([name]) => name === 'refresh').length, 0)
+    assert.equal((await controller.refreshAfterClock()).status, 'invalid')
+
+    const retry = await controller.confirmOutOfRange()
+    assert.equal(retry.status, 'submitted')
+    assert.equal(calls.filter(([name]) => name === 'refresh').length, 0)
+    const writeInputs = calls.filter(([name]) => name === 'write').map(([, input]) => input)
+    assert.equal(writeInputs.length, 2)
+    assert.equal(writeInputs[1].requestId, writeInputs[0].requestId)
+    assert.equal(writeInputs[1].location, writeInputs[0].location)
+    assert.equal(writeInputs[1].outOfRangeConfirmed, true)
+    assert.deepEqual(await controller.refreshAfterClock(), { status: 'succeeded' })
+    assert.equal(calls.filter(([name]) => name === 'refresh').length, 1)
+  }
+})
+
+test('cancelled project confirmation performs no second write', async () => {
+  const page = task9Module('page')
+  const writes = []
+  const controller = page.createAttendanceClockController({
+    service: {
+      async clockIn(input) {
+        writes.push(input)
+        return { status: 'confirmation_required', confirmation: {
+          projectId: 'P001', projectName: '东京站现场', distanceMeters: 401,
+          radiusMeters: 300, accuracyMeters: 10,
+        } }
+      },
+    },
+    getToday: () => ({
+      policy: { attendanceRequired: true, attendanceMode: 'project' },
+      activeSession: null,
+    }),
+    getSelectedProject: () => eligibleProject,
+    async refreshToday() { throw new Error('must not refresh') },
+  })
+  assert.equal((await controller.clockIn({ requestId: 'request-1', location: {} })).status,
+    'confirmation_required')
+  assert.deepEqual(controller.cancelOutOfRange(), { status: 'cancelled' })
+  assert.equal(writes.length, 1)
+  assert.deepEqual(await controller.confirmOutOfRange(), { status: 'invalid' })
 })
 
 test('signed preview is component-memory only and invalidates older, closed, and unmounted requests', async () => {
@@ -1729,6 +1804,7 @@ test('today view composes picker or committed active-session props with accessib
   }
   const noSessionToday = {
     workDate: '2026-07-16',
+    policy: { attendanceRequired: true, attendanceMode: 'project' },
     viewerAccess: { scope: 'all', canViewScopedRecords: true },
     activeSession: null, completedSessions: [], pendingPhotoReservations: [],
   }
@@ -1764,6 +1840,103 @@ test('today view composes picker or committed active-session props with accessib
   const clockOutButton = activeMarkup.match(/<button[^>]*>打卡下班<\/button>/u)?.[0] || ''
   assert.match(clockOutButton, /disabled=""/u)
   assert.match(activeMarkup, /至少完成一个含开工前和完工照片的点位后可打卡下班。/u)
+})
+
+test('today view renders project, general, exempt, and conflict policies without leaking project UI', () => {
+  const page = task9Module('page')
+  const common = {
+    loading: false, drafts: {}, saveStates: {}, photoStates: {}, mutationPending: false,
+    locationService: { getCurrentLocation: async () => ({}) },
+    createRequestId: () => 'request-1', handlers: {}, onTabChange() {}, onBack() {},
+  }
+  const today = (policy, activeSession = null) => ({
+    workDate: '2026-08-12', policy,
+    viewerAccess: { scope: 'own', canViewScopedRecords: false },
+    activeSession, completedSessions: [], pendingPhotoReservations: [],
+  })
+  const view = (policy, activeSession = null) => text(render(page.TodayAttendanceView, {
+    ...common,
+    snapshot: { projects: [eligibleProject], selectedProjectId: 'P001', today: today(policy, activeSession) },
+  }))
+
+  const projectClockIn = view({ attendanceRequired: true, attendanceMode: 'project' })
+  assert.equal(projectClockIn.includes('选择打卡项目'), true)
+  const projectActive = view(
+    { attendanceRequired: true, attendanceMode: 'project' },
+    session({ attendanceMode: 'project', workPoints: [point()] }),
+  )
+  assert.equal(projectActive.includes('施工点位'), true)
+
+  const generalClockIn = view({ attendanceRequired: true, attendanceMode: 'general' })
+  assert.equal(generalClockIn.includes('按当前位置打卡上班'), true)
+  assert.equal(generalClockIn.includes('选择打卡项目'), false)
+  const generalActive = view(
+    { attendanceRequired: true, attendanceMode: 'general' },
+    session({
+      attendanceMode: 'general', projectId: null, projectNameSnapshot: null,
+      projectAddressSnapshot: null, projectLatitudeSnapshot: null,
+      projectLongitudeSnapshot: null, attendanceRadiusMetersSnapshot: null,
+    }),
+  )
+  assert.equal(generalActive.includes('按当前位置打卡下班'), true)
+  assert.equal(generalActive.includes('点位'), false)
+
+  const exempt = view({ attendanceRequired: false, attendanceMode: 'exempt' })
+  assert.equal(exempt.includes('已设置为免每日打卡'), true)
+  assert.equal(exempt.includes('尚未获取本次打卡位置'), false)
+
+  const conflict = view(
+    { attendanceRequired: true, attendanceMode: 'general' },
+    session({ attendanceMode: 'project' }),
+  )
+  assert.equal(conflict.includes('人员打卡设置已变化，请重新读取'), true)
+  assert.equal(conflict.includes('打卡下班'), false)
+})
+
+test('out-of-range dialog exposes project distance, radius and accessible idle or busy actions', () => {
+  const Dialog = componentModule('confirmation').default
+  const confirmation = {
+    projectId: 'P001', projectName: '东京站现场', distanceMeters: 412.7,
+    radiusMeters: 300, accuracyMeters: 12,
+  }
+  const idle = render(Dialog, { confirmation, pending: false, onCancel() {}, onConfirm() {} })
+  assert.match(idle, /role="dialog"/u)
+  assert.match(idle, /aria-modal="true"/u)
+  assert.match(idle, /东京站现场/u)
+  assert.match(idle, /413 米/u)
+  assert.match(idle, /300 米/u)
+  assert.match(idle, /取消，重新定位/u)
+  assert.match(idle, /仍然打卡/u)
+  const busy = render(Dialog, { confirmation, pending: true })
+  assert.equal((busy.match(/disabled=""/gu) || []).length, 2)
+  assert.match(sources.confirmation, /Escape/u)
+  assert.match(sources.confirmation, /focusable|FOCUSABLE/u)
+  assert.match(sources.confirmation, /returnFocus/u)
+})
+
+test('general history and records label company non-project sessions without work points', () => {
+  const generalSession = session({
+    attendanceMode: 'general', status: 'closed', projectId: null,
+    projectNameSnapshot: null, projectAddressSnapshot: null,
+    projectLatitudeSnapshot: null, projectLongitudeSnapshot: null,
+    attendanceRadiusMetersSnapshot: null, workPoints: [],
+  })
+  const historyMarkup = render(componentModule('history').default, {
+    completedSessions: [generalSession],
+  })
+  assert.match(historyMarkup, /公司 \/ 非项目/u)
+  assert.doesNotMatch(historyMarkup, /attendance-work-point-card/u)
+
+  const viewer = task9Module('viewer')
+  const viewerMarkup = render(viewer.AttendanceRecordViewerView, {
+    state: {
+      filters: { workDate: '2026-08-12', projectId: null, employeeProfileId: null },
+      access: { scope: 'all' }, filterOptions: { projects: [], employees: [] },
+      items: [generalSession], nextCursor: null, loading: false, errorCode: null,
+    },
+  })
+  assert.match(viewerMarkup, /公司 \/ 非项目/u)
+  assert.doesNotMatch(viewerMarkup, /attendance-work-point-card/u)
 })
 
 test('record viewer SSR is authorization-gated, filter-driven, and read-only', () => {
@@ -1883,6 +2056,12 @@ test('attendance styles are scoped, responsive and touch accessible', () => {
   assert.match(mobileActionsRule, /width:\s*100%/u)
 
   assert.match(task9Css, /\.attendance-page \.attendance-photo-modal\s*\{/u)
+  const confirmationPanelRule = cssBlockAfter(
+    task9Css,
+    '.attendance-page .attendance-out-of-range-panel',
+  )
+  assert.match(confirmationPanelRule, /max-width:\s*520px/u)
+  assert.match(mobileRules, /\.attendance-page \.attendance-out-of-range-panel[\s\S]*?width:\s*calc\(100vw - 32px\)/u)
   assert.match(task9Css, /\.attendance-page :focus-visible\s*\{/u)
   assert.doesNotMatch(task9Css, /资料未完整/u)
 })
@@ -2561,7 +2740,13 @@ test('confirmed photo refresh failure has an authoritative-only retry and visibl
   ).length, mutationCallsBeforeRetry)
 
   const markup = render(page.TodayAttendanceView, {
-    snapshot: { projects: [], selectedProjectId: '', today: harness.getToday() },
+    snapshot: {
+      projects: [], selectedProjectId: '',
+      today: {
+        ...harness.getToday(),
+        policy: { attendanceRequired: true, attendanceMode: 'project' },
+      },
+    },
     errorCode: 'REFRESH_FAILED',
     handlers: { retryRefresh() {} },
   })
@@ -2602,7 +2787,9 @@ test('attendance tabs expose roving focus and deterministic arrow-key navigation
     snapshot: {
       projects: [], selectedProjectId: '',
       today: {
-        workDate: '2026-07-16', activeSession: null, completedSessions: [],
+        workDate: '2026-07-16',
+        policy: { attendanceRequired: true, attendanceMode: 'project' },
+        activeSession: null, completedSessions: [],
         viewerAccess: { scope: 'all', canViewScopedRecords: true },
       },
     },
