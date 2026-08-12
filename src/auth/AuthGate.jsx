@@ -36,7 +36,7 @@ function AuthStatusPage({ title, message, kind = 'loading', children }) {
       <section className="auth-panel auth-status-panel" role="status" aria-live="polite">
         <img
           className="auth-brand-mark"
-          src="/sw-erp-logo.jpg"
+          src="/sw-sidebar-mark.png"
           alt="生旺株式会社标志"
         />
         <p>生旺株式会社 · ERP 数据中心</p>

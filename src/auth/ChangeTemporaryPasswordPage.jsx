@@ -50,7 +50,7 @@ export default function ChangeTemporaryPasswordPage({
         <header className="auth-brand auth-brand-compact">
           <img
             className="auth-brand-mark"
-            src="/sw-erp-logo.jpg"
+            src="/sw-sidebar-mark.png"
             alt="生旺株式会社标志"
           />
           <div>

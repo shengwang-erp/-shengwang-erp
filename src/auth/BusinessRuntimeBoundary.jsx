@@ -109,7 +109,7 @@ export default class BusinessRuntimeBoundary extends Component {
     return (
       <main className="auth-shell business-runtime-error-shell">
         <section className="auth-panel auth-status-panel">
-          <img className="auth-brand-mark" src="/sw-erp-logo.jpg" alt="生旺株式会社标志" />
+          <img className="auth-brand-mark" src="/sw-sidebar-mark.png" alt="生旺株式会社标志" />
           <p>生旺株式会社 · ERP 数据中心</p>
           <div className="business-runtime-error-summary" role="alert">
             <h1>系统页面发生错误</h1>

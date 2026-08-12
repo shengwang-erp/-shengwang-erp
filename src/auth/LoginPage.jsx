@@ -25,7 +25,7 @@ export default function LoginPage({ onLogin }) {
         <header className="auth-brand">
           <img
             className="auth-brand-mark"
-            src="/sw-erp-logo.jpg"
+            src="/sw-sidebar-mark.png"
             alt="生旺株式会社标志"
           />
           <div>

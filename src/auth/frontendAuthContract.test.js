@@ -149,8 +149,8 @@ test('browser client uses only publishable configuration with anon migration fal
 })
 
 test('black-gold branded auth states use the company logo and accessible status regions', () => {
-  assert.match(loginSource, /\/sw-erp-logo\.jpg/)
-  assert.match(authGateSource, /\/sw-erp-logo\.jpg/)
+  assert.match(loginSource, /\/sw-sidebar-mark\.png/)
+  assert.match(authGateSource, /\/sw-sidebar-mark\.png/)
   assert.match(cssSource, /\.auth-shell[\s\S]*#0b0b09/)
   assert.match(cssSource, /\.auth-brand-mark/)
   assert.match(cssSource, /\.auth-form-error/)

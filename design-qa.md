@@ -58,4 +58,14 @@
 
 - P3: if this control group is later formalized as ARIA tabs, add `tablist`/`tab`/`aria-selected` semantics as one coordinated accessibility enhancement; the current native-button interaction and visible focus are functional.
 
+## Authentication brand mark follow-up — 2026-08-12
+
+- Visual target: the existing transparent horizontal oval `public/sw-sidebar-mark.png`, confirmed by the user as the approved later SW mark.
+- Root cause: authentication surfaces still referenced the earlier square `sw-erp-logo.jpg` and forced it through a square, circular crop. When the image was unavailable in the reported browser state, its Chinese alt text occupied that circular box.
+- Implementation: Login, authentication status, temporary-password, business-runtime failure, and persistence-failure surfaces now share the oval PNG. The mark uses a 106 × 76 desktop slot and an 87 × 62 narrow slot with `object-fit: contain`, no border, and no circular clipping.
+- Comparison: the source oval asset and the 1440 × 1000 local authentication rendering were opened together. The complete gold rim and SW letterform remain visible, the asset is not distorted or cropped, and its surrounding spacing remains balanced.
+- Browser evidence: rendered asset dimensions 1120 × 800; desktop display 106 × 76; `object-fit: contain`; border radius 0; zero console warnings/errors.
+- Automated evidence: the real rendered Login component selects the approved PNG, the PNG signature/dimensions/alpha are validated, and CSS behavior protects the horizontal, unclipped presentation.
+- Result: no P0/P1/P2 issue remains.
+
 final result: passed
