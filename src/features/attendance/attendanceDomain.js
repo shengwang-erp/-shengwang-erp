@@ -14,8 +14,60 @@ export class AttendanceValidationError extends Error {
 }
 
 const textLength = (value) => [...String(value ?? '')].length
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const isNumberInRange = (value, minimum, maximum) =>
   typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum
+
+function invalidMutationInput() {
+  throw new AttendanceValidationError('ATTENDANCE_MUTATION_INPUT_INVALID', '打卡请求数据无效')
+}
+
+function hasOnlyKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).every((key) => keys.includes(key))
+}
+
+export function normalizeAttendanceMutationInput(value, { action } = {}) {
+  const isClockIn = action === 'clockIn'
+  const isClockOut = action === 'clockOut'
+  const keys = isClockIn
+    ? ['attendanceMode', 'projectId', 'requestId', 'location', 'outOfRangeConfirmed']
+    : ['attendanceMode', 'sessionId', 'requestId', 'location', 'outOfRangeConfirmed']
+  if ((!isClockIn && !isClockOut) || !hasOnlyKeys(value, keys) ||
+      !['project', 'general'].includes(value.attendanceMode) ||
+      typeof value.requestId !== 'string' || !UUID.test(value.requestId) ||
+      !value.location || typeof value.location !== 'object' || Array.isArray(value.location) ||
+      (value.outOfRangeConfirmed !== undefined && typeof value.outOfRangeConfirmed !== 'boolean')) {
+    invalidMutationInput()
+  }
+
+  const outOfRangeConfirmed = value.outOfRangeConfirmed ?? false
+  if (value.attendanceMode === 'general' && outOfRangeConfirmed) invalidMutationInput()
+
+  if (isClockIn) {
+    const projectId = value.projectId ?? null
+    if ((value.attendanceMode === 'project' && (typeof projectId !== 'string' || !projectId.trim())) ||
+        (value.attendanceMode === 'general' && projectId !== null)) {
+      invalidMutationInput()
+    }
+    return {
+      attendanceMode: value.attendanceMode,
+      projectId: value.attendanceMode === 'project' ? projectId.trim() : null,
+      requestId: value.requestId,
+      location: value.location,
+      outOfRangeConfirmed,
+    }
+  }
+
+  if (typeof value.sessionId !== 'string' || !UUID.test(value.sessionId)) invalidMutationInput()
+  return {
+    attendanceMode: value.attendanceMode,
+    sessionId: value.sessionId,
+    requestId: value.requestId,
+    location: value.location,
+    outOfRangeConfirmed,
+  }
+}
 
 export function isAttendanceProjectEligible(project) {
   return Boolean(

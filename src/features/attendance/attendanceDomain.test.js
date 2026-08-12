@@ -10,6 +10,7 @@ import {
   isCompleteAttendanceWorkPoint,
   normalizeAbnormalReason,
   normalizeAttendanceLocation,
+  normalizeAttendanceMutationInput,
   normalizeAttendanceWorkPointInput,
   previewAttendanceLocation,
   surfaceDistanceMeters,
@@ -79,6 +80,62 @@ test('location normalization accepts raw valid numbers and rejects repaired inpu
     () => normalizeAttendanceLocation(location),
     'ATTENDANCE_LOCATION_INVALID',
   )
+})
+
+test('attendance mutation input accepts only the stable v2 browser contract', () => {
+  const location = {
+    latitude: 35,
+    longitude: 139,
+    accuracyMeters: 10,
+    deviceRecordedAt: '2026-07-15T00:00:00Z',
+  }
+  const requestId = '70000000-0000-4000-8000-000000000001'
+  assert.deepEqual(normalizeAttendanceMutationInput({
+    attendanceMode: 'project',
+    projectId: 'P001',
+    requestId,
+    location,
+  }, { action: 'clockIn' }), {
+    attendanceMode: 'project',
+    projectId: 'P001',
+    requestId,
+    location,
+    outOfRangeConfirmed: false,
+  })
+  assert.deepEqual(normalizeAttendanceMutationInput({
+    attendanceMode: 'general',
+    sessionId: '71000000-0000-4000-8000-000000000001',
+    requestId,
+    location,
+  }, { action: 'clockOut' }), {
+    attendanceMode: 'general',
+    sessionId: '71000000-0000-4000-8000-000000000001',
+    requestId,
+    location,
+    outOfRangeConfirmed: false,
+  })
+})
+
+test('attendance mutation input rejects mode shape errors and handwritten abnormal reasons', () => {
+  const location = { latitude: 35, longitude: 139, accuracyMeters: 10 }
+  const requestId = '70000000-0000-4000-8000-000000000001'
+  const invalid = [
+    [{ attendanceMode: 'project', projectId: null, requestId, location }, 'clockIn'],
+    [{ attendanceMode: 'general', projectId: 'P001', requestId, location }, 'clockIn'],
+    [{ attendanceMode: 'general', requestId, location, outOfRangeConfirmed: true }, 'clockIn'],
+    [{ attendanceMode: 'project', projectId: 'P001', requestId, location, abnormalReason: '交通管制' }, 'clockIn'],
+    [{ attendanceMode: 'office', sessionId: '71000000-0000-4000-8000-000000000001', requestId, location }, 'clockOut'],
+    [{ attendanceMode: 'project', sessionId: null, requestId, location }, 'clockOut'],
+    [{ attendanceMode: 'project', sessionId: '71000000-0000-4000-8000-000000000001', requestId, location, extra: true }, 'clockOut'],
+  ]
+  for (const [input, action] of invalid) {
+    assertAttendanceError(
+      () => normalizeAttendanceMutationInput(input, { action }),
+      'ATTENDANCE_MUTATION_INPUT_INVALID',
+    )
+  }
+
+  assert.equal(normalizeAbnormalReason(' 历史异常原因 '), '历史异常原因')
 })
 
 test('location preview preserves and validates the raw project radius', () => {

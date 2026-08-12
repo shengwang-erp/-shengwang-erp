@@ -1,6 +1,6 @@
 import {
-  normalizeAbnormalReason,
   normalizeAttendanceLocation,
+  normalizeAttendanceMutationInput,
   normalizeAttendanceWorkPointInput,
 } from '../features/attendance/attendanceDomain.js'
 import { normalizeAttendancePhotoPhase } from '../features/attendance/attendancePhotoDomain.js'
@@ -20,10 +20,13 @@ const SAFE_ERRORS = Object.freeze({
 const INVALID_RESPONSE_MESSAGE = '考勤服务返回了无效数据'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const PROJECT_KEYS = ['projectId', 'projectName', 'status', 'address', 'latitude', 'longitude', 'attendanceRadiusMeters', 'locationConfirmedAt', 'locationAddressSnapshot']
-const EVENT_KEYS = ['eventId', 'requestId', 'eventType', 'serverRecordedAt', 'deviceRecordedAt', 'latitude', 'longitude', 'accuracyMeters', 'distanceMeters', 'radiusMeters', 'result', 'abnormalReason']
+const POLICY_KEYS = ['attendanceRequired', 'attendanceMode']
+const EVENT_KEYS = ['eventId', 'requestId', 'eventType', 'serverRecordedAt', 'deviceRecordedAt', 'latitude', 'longitude', 'accuracyMeters', 'distanceMeters', 'radiusMeters', 'result', 'abnormalReason', 'outOfRangeConfirmedAt']
+const LEGACY_EVENT_KEYS = EVENT_KEYS.filter((key) => key !== 'outOfRangeConfirmedAt')
 const PHOTO_KEYS = ['photoId', 'workPointId', 'phase', 'bucketId', 'objectPath', 'originalFileName', 'contentType', 'sizeBytes', 'uploadStatus', 'capturedAt', 'createdAt']
 const POINT_KEYS = ['workPointId', 'sessionId', 'ordinal', 'areaName', 'workDescription', 'completionNote', 'createdAt', 'updatedAt', 'photos']
-const SESSION_KEYS = ['sessionId', 'employeeProfileId', 'employeeNumberSnapshot', 'employeeNameSnapshot', 'projectId', 'projectNameSnapshot', 'projectAddressSnapshot', 'projectLatitudeSnapshot', 'projectLongitudeSnapshot', 'attendanceRadiusMetersSnapshot', 'workDate', 'status', 'openedAt', 'closedAt', 'clockInEvent', 'clockOutEvent', 'workPoints']
+const SESSION_KEYS = ['sessionId', 'attendanceMode', 'employeeProfileId', 'employeeNumberSnapshot', 'employeeNameSnapshot', 'projectId', 'projectNameSnapshot', 'projectAddressSnapshot', 'projectLatitudeSnapshot', 'projectLongitudeSnapshot', 'attendanceRadiusMetersSnapshot', 'workDate', 'status', 'openedAt', 'closedAt', 'clockInEvent', 'clockOutEvent', 'workPoints']
+const LEGACY_SESSION_KEYS = SESSION_KEYS.filter((key) => key !== 'attendanceMode')
 
 export class AttendanceServiceError extends Error {
   constructor(code, message, { authInvalid = false } = {}) {
@@ -61,15 +64,49 @@ function finiteNumber(value) {
   return value
 }
 
-function validateEvent(value) {
+function nullableFiniteNumber(value) {
+  return value === null ? null : finiteNumber(value)
+}
+
+function validatePolicy(value) {
+  const row = exactObject(value, POLICY_KEYS)
+  if (typeof row.attendanceRequired !== 'boolean' ||
+      (row.attendanceRequired === false && row.attendanceMode !== 'exempt') ||
+      (row.attendanceRequired === true && !['project', 'general'].includes(row.attendanceMode))) {
+    throw invalidResponse()
+  }
+  return {
+    attendanceRequired: row.attendanceRequired,
+    attendanceMode: row.attendanceMode,
+  }
+}
+
+function validateEvent(value, attendanceMode, { allowLegacyAbnormal = false } = {}) {
   const row = exactObject(value, EVENT_KEYS)
   const eventType = stringValue(row.eventType)
   const result = stringValue(row.result)
-  if (!['clock_in', 'clock_out'].includes(eventType) || !['normal', 'abnormal'].includes(result)) {
+  if (!['clock_in', 'clock_out'].includes(eventType) ||
+      !['normal', 'abnormal', 'not_applicable'].includes(result)) {
     throw invalidResponse()
   }
   const abnormalReason = row.abnormalReason === null ? null : stringValue(row.abnormalReason)
-  if ((result === 'normal' && abnormalReason !== null) || (result === 'abnormal' && abnormalReason === null)) {
+  const outOfRangeConfirmedAt = row.outOfRangeConfirmedAt === null
+    ? null
+    : stringValue(row.outOfRangeConfirmedAt)
+  const distanceMeters = nullableFiniteNumber(row.distanceMeters)
+  const radiusMeters = nullableFiniteNumber(row.radiusMeters)
+  if ((attendanceMode === 'general' && (
+        result !== 'not_applicable' || distanceMeters !== null || radiusMeters !== null ||
+        abnormalReason !== null || outOfRangeConfirmedAt !== null
+      )) ||
+      (attendanceMode === 'project' && (
+        !['normal', 'abnormal'].includes(result) || distanceMeters === null || distanceMeters < 0 ||
+        radiusMeters === null || radiusMeters <= 0 ||
+        (result === 'normal' && (abnormalReason !== null || outOfRangeConfirmedAt !== null)) ||
+        (result === 'abnormal' && (
+          abnormalReason === null || (!allowLegacyAbnormal && outOfRangeConfirmedAt === null)
+        ))
+      ))) {
     throw invalidResponse()
   }
   return {
@@ -81,10 +118,11 @@ function validateEvent(value) {
     latitude: finiteNumber(row.latitude),
     longitude: finiteNumber(row.longitude),
     accuracyMeters: finiteNumber(row.accuracyMeters),
-    distanceMeters: finiteNumber(row.distanceMeters),
-    radiusMeters: finiteNumber(row.radiusMeters),
+    distanceMeters,
+    radiusMeters,
     result,
     abnormalReason,
+    outOfRangeConfirmedAt,
   }
 }
 
@@ -129,30 +167,82 @@ function validateWorkPoint(value) {
   }
 }
 
-function validateSession(value) {
+function validateSession(value, { allowLegacyAbnormal = false } = {}) {
   const row = exactObject(value, SESSION_KEYS)
-  if (!['open', 'closed'].includes(row.status) || !Array.isArray(row.workPoints)) {
+  if (!['project', 'general'].includes(row.attendanceMode) ||
+      !['open', 'closed'].includes(row.status) || !Array.isArray(row.workPoints)) {
     throw invalidResponse()
   }
+  const projectValues = [
+    row.projectId,
+    row.projectNameSnapshot,
+    row.projectAddressSnapshot,
+    row.projectLatitudeSnapshot,
+    row.projectLongitudeSnapshot,
+    row.attendanceRadiusMetersSnapshot,
+  ]
+  if ((row.attendanceMode === 'general' &&
+       (projectValues.some((candidate) => candidate !== null) || row.workPoints.length !== 0)) ||
+      (row.attendanceMode === 'project' && projectValues.some((candidate) => candidate === null))) {
+    throw invalidResponse()
+  }
+  const projectId = row.attendanceMode === 'project' ? stringValue(row.projectId) : null
+  const projectNameSnapshot = row.attendanceMode === 'project' ? stringValue(row.projectNameSnapshot) : null
+  const projectAddressSnapshot = row.attendanceMode === 'project' ? stringValue(row.projectAddressSnapshot) : null
+  const projectLatitudeSnapshot = row.attendanceMode === 'project' ? finiteNumber(row.projectLatitudeSnapshot) : null
+  const projectLongitudeSnapshot = row.attendanceMode === 'project' ? finiteNumber(row.projectLongitudeSnapshot) : null
+  const attendanceRadiusMetersSnapshot = row.attendanceMode === 'project'
+    ? finiteNumber(row.attendanceRadiusMetersSnapshot)
+    : null
+  if (attendanceRadiusMetersSnapshot !== null && attendanceRadiusMetersSnapshot <= 0) throw invalidResponse()
   return {
     sessionId: stringValue(row.sessionId, { uuid: true }),
+    attendanceMode: row.attendanceMode,
     employeeProfileId: stringValue(row.employeeProfileId, { uuid: true }),
     employeeNumberSnapshot: stringValue(row.employeeNumberSnapshot),
     employeeNameSnapshot: stringValue(row.employeeNameSnapshot),
-    projectId: stringValue(row.projectId),
-    projectNameSnapshot: stringValue(row.projectNameSnapshot),
-    projectAddressSnapshot: stringValue(row.projectAddressSnapshot),
-    projectLatitudeSnapshot: finiteNumber(row.projectLatitudeSnapshot),
-    projectLongitudeSnapshot: finiteNumber(row.projectLongitudeSnapshot),
-    attendanceRadiusMetersSnapshot: finiteNumber(row.attendanceRadiusMetersSnapshot),
+    projectId,
+    projectNameSnapshot,
+    projectAddressSnapshot,
+    projectLatitudeSnapshot,
+    projectLongitudeSnapshot,
+    attendanceRadiusMetersSnapshot,
     workDate: stringValue(row.workDate),
     status: row.status,
     openedAt: stringValue(row.openedAt),
     closedAt: row.closedAt === null ? null : stringValue(row.closedAt),
-    clockInEvent: row.clockInEvent === null ? null : validateEvent(row.clockInEvent),
-    clockOutEvent: row.clockOutEvent === null ? null : validateEvent(row.clockOutEvent),
+    clockInEvent: row.clockInEvent === null
+      ? null
+      : validateEvent(row.clockInEvent, row.attendanceMode, { allowLegacyAbnormal }),
+    clockOutEvent: row.clockOutEvent === null
+      ? null
+      : validateEvent(row.clockOutEvent, row.attendanceMode, { allowLegacyAbnormal }),
     workPoints: row.workPoints.map(validateWorkPoint),
   }
+}
+
+function validateLegacySession(value) {
+  const row = exactObject(value, LEGACY_SESSION_KEYS)
+  const projectValues = [
+    row.projectId,
+    row.projectNameSnapshot,
+    row.projectAddressSnapshot,
+    row.projectLatitudeSnapshot,
+    row.projectLongitudeSnapshot,
+    row.attendanceRadiusMetersSnapshot,
+  ]
+  const attendanceMode = projectValues.every((candidate) => candidate === null)
+    ? 'general'
+    : 'project'
+  const adaptEvent = (event) => event === null
+    ? null
+    : { ...exactObject(event, LEGACY_EVENT_KEYS), outOfRangeConfirmedAt: null }
+  return validateSession({
+    ...row,
+    attendanceMode,
+    clockInEvent: adaptEvent(row.clockInEvent),
+    clockOutEvent: adaptEvent(row.clockOutEvent),
+  }, { allowLegacyAbnormal: true })
 }
 
 function validateProjectList(value) {
@@ -174,7 +264,8 @@ function validateProjectList(value) {
 }
 
 function validateToday(value) {
-  const row = exactObject(value, ['workDate', 'viewerAccess', 'activeSession', 'completedSessions', 'pendingPhotoReservations'])
+  const row = exactObject(value, ['workDate', 'policy', 'viewerAccess', 'activeSession', 'completedSessions', 'pendingPhotoReservations'])
+  const policy = validatePolicy(row.policy)
   const access = exactObject(row.viewerAccess, ['scope', 'canViewScopedRecords'])
   if (!['own', 'assigned_projects', 'all'].includes(access.scope) ||
       typeof access.canViewScopedRecords !== 'boolean' ||
@@ -182,20 +273,46 @@ function validateToday(value) {
       !Array.isArray(row.pendingPhotoReservations)) {
     throw invalidResponse()
   }
+  const activeSession = row.activeSession === null ? null : validateSession(row.activeSession)
+  if ((policy.attendanceMode === 'exempt' && activeSession !== null) ||
+      (activeSession !== null && activeSession.attendanceMode !== policy.attendanceMode)) {
+    throw invalidResponse()
+  }
   return {
     workDate: stringValue(row.workDate),
+    policy,
     viewerAccess: { ...access },
-    activeSession: row.activeSession === null ? null : validateSession(row.activeSession),
-    completedSessions: row.completedSessions.map(validateSession),
+    activeSession,
+    completedSessions: row.completedSessions.map((session) => validateSession(session)),
     pendingPhotoReservations: row.pendingPhotoReservations.map((photo) => validatePhoto(photo, 'pending')),
   }
 }
 
-function validateClockResult(value, eventType) {
-  const row = exactObject(value, ['session', 'event'])
-  const event = validateEvent(row.event)
-  if (event.eventType !== eventType) throw invalidResponse()
-  return { session: validateSession(row.session), event }
+function validateClockResult(value, eventType, attendanceMode) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidResponse()
+  if (value.status === 'confirmation_required') {
+    const row = exactObject(value, ['status', 'confirmation'])
+    const confirmation = exactObject(row.confirmation, [
+      'projectId', 'projectName', 'distanceMeters', 'radiusMeters', 'accuracyMeters',
+    ])
+    if (attendanceMode !== 'project') throw invalidResponse()
+    return {
+      status: 'confirmation_required',
+      confirmation: {
+        projectId: stringValue(confirmation.projectId),
+        projectName: stringValue(confirmation.projectName),
+        distanceMeters: finiteNumber(confirmation.distanceMeters),
+        radiusMeters: finiteNumber(confirmation.radiusMeters),
+        accuracyMeters: finiteNumber(confirmation.accuracyMeters),
+      },
+    }
+  }
+  const row = exactObject(value, ['status', 'session', 'event'])
+  if (row.status !== 'saved') throw invalidResponse()
+  const session = validateSession(row.session)
+  const event = validateEvent(row.event, session.attendanceMode)
+  if (event.eventType !== eventType || session.attendanceMode !== attendanceMode) throw invalidResponse()
+  return { status: 'saved', session, event }
 }
 
 function validateRecordPage(value) {
@@ -222,7 +339,7 @@ function validateRecordPage(value) {
         employeeNameSnapshot: stringValue(item.employeeNameSnapshot),
       })),
     },
-    items: row.items.map(validateSession),
+    items: row.items.map(validateLegacySession),
     nextCursor: cursor === null ? null : {
       openedAt: stringValue(cursor.openedAt),
       sessionId: stringValue(cursor.sessionId, { uuid: true }),
@@ -261,7 +378,7 @@ export function createAttendanceService(client = supabase, { configured = isSupa
     if (result?.error) throw normalizeServiceError(result.error, result.status)
     return result?.data
   }
-  const clockArgs = ({ requestId, location, abnormalReason }) => {
+  const clockArgs = ({ requestId, location }) => {
     const position = normalizeAttendanceLocation(location)
     return {
       p_request_id: requestId,
@@ -269,21 +386,27 @@ export function createAttendanceService(client = supabase, { configured = isSupa
       p_longitude: position.longitude,
       p_accuracy_meters: position.accuracyMeters,
       p_device_recorded_at: position.deviceRecordedAt,
-      p_abnormal_reason: normalizeAbnormalReason(abnormalReason),
     }
   }
   return Object.freeze({
     async listAttendanceProjects() {
-      return validateProjectList(await call('list_attendance_projects_secure'))
+      return validateProjectList(await call('list_attendance_projects_v2_secure'))
     },
     async getMyTodayAttendance() {
-      return validateToday(await call('get_my_today_attendance_secure'))
+      return validateToday(await call('get_my_today_attendance_v2_secure'))
     },
     async clockIn(input) {
-      return validateClockResult(await call('clock_in_project_secure', {
-        p_project_id: input.projectId,
-        ...clockArgs(input),
-      }), 'clock_in')
+      const request = normalizeAttendanceMutationInput(input, { action: 'clockIn' })
+      if (request.attendanceMode === 'general') {
+        return validateClockResult(await call('clock_in_general_secure', {
+          ...clockArgs(request),
+        }), 'clock_in', request.attendanceMode)
+      }
+      return validateClockResult(await call('clock_in_project_v2_secure', {
+        p_project_id: request.projectId,
+        ...clockArgs(request),
+        p_out_of_range_confirmed: request.outOfRangeConfirmed,
+      }), 'clock_in', request.attendanceMode)
     },
     async upsertWorkPoint(input) {
       const point = normalizeAttendanceWorkPointInput(input)
@@ -313,10 +436,12 @@ export function createAttendanceService(client = supabase, { configured = isSupa
       return validatePhoto(await call('abandon_attendance_photo_secure', { p_photo_id: photoId }), 'cleanup_pending')
     },
     async clockOut(input) {
-      return validateClockResult(await call('clock_out_project_secure', {
-        p_session_id: input.sessionId,
-        ...clockArgs(input),
-      }), 'clock_out')
+      const request = normalizeAttendanceMutationInput(input, { action: 'clockOut' })
+      return validateClockResult(await call('clock_out_attendance_v2_secure', {
+        p_session_id: request.sessionId,
+        ...clockArgs(request),
+        p_out_of_range_confirmed: request.outOfRangeConfirmed,
+      }), 'clock_out', request.attendanceMode)
     },
     async listAttendanceRecords({
       workDate,

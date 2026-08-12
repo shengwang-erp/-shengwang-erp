@@ -6,11 +6,96 @@ import { AttendanceServiceError, createAttendanceService } from './attendanceSer
 
 const source = await readFile(new URL('./attendanceService.js', import.meta.url), 'utf8').catch(() => '')
 
+const REQUEST_ID = '70000000-0000-4000-8000-000000000001'
+const SESSION_ID = '71000000-0000-4000-8000-000000000001'
+const LOCATION = {
+  latitude: 35,
+  longitude: 139,
+  accuracyMeters: 10,
+  deviceRecordedAt: '2026-07-15T00:00:00Z',
+}
+
+function eventFor({ eventType = 'clock_in', attendanceMode = 'project', requestId = REQUEST_ID } = {}) {
+  return {
+    eventId: eventType === 'clock_out'
+      ? '72000000-0000-4000-8000-000000000002'
+      : '72000000-0000-4000-8000-000000000001',
+    requestId,
+    eventType,
+    serverRecordedAt: '2026-07-15T08:00:00Z',
+    deviceRecordedAt: LOCATION.deviceRecordedAt,
+    latitude: LOCATION.latitude,
+    longitude: LOCATION.longitude,
+    accuracyMeters: LOCATION.accuracyMeters,
+    distanceMeters: attendanceMode === 'general' ? null : 10,
+    radiusMeters: attendanceMode === 'general' ? null : 300,
+    result: attendanceMode === 'general' ? 'not_applicable' : 'normal',
+    abnormalReason: null,
+    outOfRangeConfirmedAt: null,
+  }
+}
+
+function sessionFor({ attendanceMode = 'project', eventType = 'clock_in', requestId = REQUEST_ID } = {}) {
+  const event = eventFor({ eventType, attendanceMode, requestId })
+  const clockInEvent = eventType === 'clock_in' ? event : eventFor({ attendanceMode })
+  return {
+    sessionId: SESSION_ID,
+    attendanceMode,
+    employeeProfileId: '52000000-0000-4000-8000-000000000001',
+    employeeNumberSnapshot: 'SW-5101',
+    employeeNameSnapshot: '普通员工',
+    projectId: attendanceMode === 'project' ? 'P001' : null,
+    projectNameSnapshot: attendanceMode === 'project' ? '东京站现场' : null,
+    projectAddressSnapshot: attendanceMode === 'project' ? '東京都 千代田区 1-1' : null,
+    projectLatitudeSnapshot: attendanceMode === 'project' ? 35.681236 : null,
+    projectLongitudeSnapshot: attendanceMode === 'project' ? 139.767125 : null,
+    attendanceRadiusMetersSnapshot: attendanceMode === 'project' ? 300 : null,
+    workDate: '2026-07-15',
+    status: eventType === 'clock_out' ? 'closed' : 'open',
+    openedAt: '2026-07-15T08:00:00Z',
+    closedAt: eventType === 'clock_out' ? '2026-07-15T17:00:00Z' : null,
+    clockInEvent,
+    clockOutEvent: eventType === 'clock_out' ? event : null,
+    workPoints: [],
+  }
+}
+
+function savedFor({ attendanceMode = 'project', eventType = 'clock_in', requestId = REQUEST_ID } = {}) {
+  return {
+    status: 'saved',
+    session: sessionFor({ attendanceMode, eventType, requestId }),
+    event: eventFor({ attendanceMode, eventType, requestId }),
+  }
+}
+
+function legacySessionFor({ attendanceMode = 'project', abnormal = false } = {}) {
+  const session = sessionFor({ attendanceMode })
+  const { attendanceMode: omittedMode, ...legacySession } = session
+  void omittedMode
+  const legacyEvent = (event) => {
+    if (event === null) return null
+    const { outOfRangeConfirmedAt: omittedConfirmation, ...candidate } = event
+    void omittedConfirmation
+    return abnormal
+      ? { ...candidate, result: 'abnormal', abnormalReason: '历史异常原因' }
+      : candidate
+  }
+  return {
+    ...legacySession,
+    clockInEvent: legacyEvent(session.clockInEvent),
+    clockOutEvent: legacyEvent(session.clockOutEvent),
+  }
+}
+
 function responseFor(name, args = {}) {
-  if (name === 'list_attendance_projects_secure') return []
-  if (name === 'get_my_today_attendance_secure') return {
-    workDate: '2026-07-15', viewerAccess: { scope: 'own', canViewScopedRecords: false },
-    activeSession: null, completedSessions: [], pendingPhotoReservations: [],
+  if (name === 'list_attendance_projects_v2_secure') return []
+  if (name === 'get_my_today_attendance_v2_secure') return {
+    workDate: '2026-07-15',
+    policy: { attendanceRequired: true, attendanceMode: 'project' },
+    viewerAccess: { scope: 'own', canViewScopedRecords: false },
+    activeSession: null,
+    completedSessions: [],
+    pendingPhotoReservations: [],
   }
   if (name === 'list_attendance_records_secure') return {
     access: { scope: 'own' }, filterOptions: { projects: [], employees: [] }, items: [], nextCursor: null,
@@ -21,89 +106,114 @@ function responseFor(name, args = {}) {
     objectPath: 'a/b/c/d/before', originalFileName: 'a.jpg', contentType: 'image/jpeg',
     sizeBytes: 1, uploadStatus: 'pending', capturedAt: null, createdAt: '2026-07-15T00:00:00Z',
   }
-  if (name.includes('photo')) return { ...responseFor('reserve_attendance_photo_secure'), uploadStatus: name.startsWith('finalize') ? 'active' : 'cleanup_pending' }
+  if (name.includes('photo')) {
+    return {
+      ...responseFor('reserve_attendance_photo_secure'),
+      uploadStatus: name.startsWith('finalize') ? 'active' : 'cleanup_pending',
+    }
+  }
   if (name.includes('work_point')) return {
-    workPointId: '73000000-0000-4000-8000-000000000001', sessionId: '71000000-0000-4000-8000-000000000001',
+    workPointId: '73000000-0000-4000-8000-000000000001', sessionId: SESSION_ID,
     ordinal: 1, areaName: '北侧', workDescription: '施工', completionNote: '',
     createdAt: '2026-07-15T00:00:00Z', updatedAt: '2026-07-15T00:00:00Z',
     photos: { before: null, after: null },
   }
-  const eventType = name.startsWith('clock_out') ? 'clock_out' : 'clock_in'
-  const event = {
-    eventId: eventType === 'clock_out'
-      ? '72000000-0000-4000-8000-000000000002'
-      : '72000000-0000-4000-8000-000000000001',
+  return savedFor({
+    attendanceMode: name === 'clock_in_general_secure' ? 'general' : 'project',
+    eventType: name.startsWith('clock_out') ? 'clock_out' : 'clock_in',
     requestId: args.p_request_id,
-    eventType,
-    serverRecordedAt: '2026-07-15T08:00:00Z',
-    deviceRecordedAt: args.p_device_recorded_at,
-    latitude: args.p_latitude,
-    longitude: args.p_longitude,
-    accuracyMeters: args.p_accuracy_meters,
-    distanceMeters: 10,
-    radiusMeters: 300,
-    result: 'normal',
-    abnormalReason: null,
-  }
-  const clockInEvent = eventType === 'clock_in' ? event : {
-    ...event,
-    eventId: '72000000-0000-4000-8000-000000000001',
-    requestId: '70000000-0000-4000-8000-000000000001',
-    eventType: 'clock_in',
-  }
-  return {
-    session: {
-      sessionId: '71000000-0000-4000-8000-000000000001',
-      employeeProfileId: '52000000-0000-4000-8000-000000000001',
-      employeeNumberSnapshot: 'SW-5101',
-      employeeNameSnapshot: '普通员工',
-      projectId: 'P001',
-      projectNameSnapshot: '东京站现场',
-      projectAddressSnapshot: '東京都 千代田区 1-1',
-      projectLatitudeSnapshot: 35.681236,
-      projectLongitudeSnapshot: 139.767125,
-      attendanceRadiusMetersSnapshot: 300,
-      workDate: '2026-07-15',
-      status: eventType === 'clock_out' ? 'closed' : 'open',
-      openedAt: '2026-07-15T08:00:00Z',
-      closedAt: eventType === 'clock_out' ? '2026-07-15T17:00:00Z' : null,
-      clockInEvent,
-      clockOutEvent: eventType === 'clock_out' ? event : null,
-      workPoints: [],
-    },
-    event,
-  }
+  })
 }
 
-test('clock calls send device facts but no trusted server fields', async () => {
+test('clock mutations route general, project and clock-out calls with exact v2 arguments', async () => {
   const calls = []
+  const responseModes = ['general', 'project', 'general', 'project']
   const service = createAttendanceService({ rpc: async (name, args) => {
     calls.push([name, args])
-    return { data: responseFor(name, args), error: null }
+    return {
+      data: savedFor({
+        attendanceMode: responseModes[calls.length - 1],
+        eventType: name.startsWith('clock_out') ? 'clock_out' : 'clock_in',
+        requestId: args.p_request_id,
+      }),
+      error: null,
+    }
   } }, { configured: true })
-  const location = { latitude: 35, longitude: 139, accuracyMeters: 10, deviceRecordedAt: '2026-07-15T00:00:00Z' }
-  const clockInRequestId = '70000000-0000-4000-8000-000000000001'
-  const clockOutRequestId = '70000000-0000-4000-8000-000000000002'
-  await service.clockIn({ projectId: 'P001', requestId: clockInRequestId, location, abnormalReason: null })
-  await service.clockOut({ sessionId: '71000000-0000-4000-8000-000000000001', requestId: clockOutRequestId, location, abnormalReason: ' 交通管制 ' })
+
+  await service.clockIn({ attendanceMode: 'general', requestId: REQUEST_ID, location: LOCATION })
+  await service.clockIn({ attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID, location: LOCATION })
+  await service.clockOut({ attendanceMode: 'general', sessionId: SESSION_ID, requestId: REQUEST_ID, location: LOCATION })
+  await service.clockOut({ attendanceMode: 'project', sessionId: SESSION_ID, requestId: REQUEST_ID, location: LOCATION })
+
   assert.deepEqual(calls, [
-    ['clock_in_project_secure', {
-      p_project_id: 'P001', p_request_id: clockInRequestId, p_latitude: 35, p_longitude: 139,
-      p_accuracy_meters: 10, p_device_recorded_at: '2026-07-15T00:00:00Z', p_abnormal_reason: null,
+    ['clock_in_general_secure', {
+      p_request_id: REQUEST_ID,
+      p_latitude: 35,
+      p_longitude: 139,
+      p_accuracy_meters: 10,
+      p_device_recorded_at: LOCATION.deviceRecordedAt,
     }],
-    ['clock_out_project_secure', {
-      p_session_id: '71000000-0000-4000-8000-000000000001',
-      p_request_id: clockOutRequestId, p_latitude: 35, p_longitude: 139,
-      p_accuracy_meters: 10, p_device_recorded_at: '2026-07-15T00:00:00Z', p_abnormal_reason: '交通管制',
+    ['clock_in_project_v2_secure', {
+      p_project_id: 'P001',
+      p_request_id: REQUEST_ID,
+      p_latitude: 35,
+      p_longitude: 139,
+      p_accuracy_meters: 10,
+      p_device_recorded_at: LOCATION.deviceRecordedAt,
+      p_out_of_range_confirmed: false,
+    }],
+    ['clock_out_attendance_v2_secure', {
+      p_session_id: SESSION_ID,
+      p_request_id: REQUEST_ID,
+      p_latitude: 35,
+      p_longitude: 139,
+      p_accuracy_meters: 10,
+      p_device_recorded_at: LOCATION.deviceRecordedAt,
+      p_out_of_range_confirmed: false,
+    }],
+    ['clock_out_attendance_v2_secure', {
+      p_session_id: SESSION_ID,
+      p_request_id: REQUEST_ID,
+      p_latitude: 35,
+      p_longitude: 139,
+      p_accuracy_meters: 10,
+      p_device_recorded_at: LOCATION.deviceRecordedAt,
+      p_out_of_range_confirmed: false,
     }],
   ])
-  for (const forbidden of [
-    'employeeId', 'employeeName', 'workDate', 'distanceMeters', 'result',
-    'radiusMeters', 'projectId', 'projectLatitude', 'p_employee_id',
-    'p_employee_name', 'p_work_date', 'p_distance_meters', 'p_result',
-    'p_radius_meters', 'p_project_id', 'p_project_latitude',
+})
+
+test('project mutation returns only a validated saved or confirmation-required result', async () => {
+  const confirmation = {
+    status: 'confirmation_required',
+    confirmation: {
+      projectId: 'P001',
+      projectName: '东京站现场',
+      distanceMeters: 420.5,
+      radiusMeters: 300,
+      accuracyMeters: 12,
+    },
+  }
+  const service = createAttendanceService({ rpc: async () => ({ data: confirmation, error: null }) }, { configured: true })
+  assert.deepEqual(await service.clockIn({
+    attendanceMode: 'project',
+    projectId: 'P001',
+    requestId: REQUEST_ID,
+    location: LOCATION,
+  }), confirmation)
+
+  for (const data of [
+    { ...confirmation, unknown: true },
+    { ...confirmation, status: 'pending_confirmation' },
+    { ...confirmation, confirmation: { ...confirmation.confirmation, distanceMeters: Number.NaN } },
+    { ...confirmation, confirmation: { ...confirmation.confirmation, radiusMeters: Number.POSITIVE_INFINITY } },
+    { ...confirmation, confirmation: { ...confirmation.confirmation, extra: 'secret' } },
   ]) {
-    assert.equal(Object.hasOwn(calls[1][1], forbidden), false)
+    const malformed = createAttendanceService({ rpc: async () => ({ data, error: null }) }, { configured: true })
+    await assert.rejects(
+      () => malformed.clockIn({ attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID, location: LOCATION }),
+      (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE',
+    )
   }
 })
 
@@ -133,7 +243,7 @@ test('all non-clock methods use exact secure RPC names and arguments', async () 
   await service.listAttendanceProjects()
   await service.getMyTodayAttendance()
   await service.upsertWorkPoint({
-    sessionId: '71000000-0000-4000-8000-000000000001', ordinal: 1,
+    sessionId: SESSION_ID, ordinal: 1,
     areaName: ' 北侧 ', workDescription: ' 施工 ', completionNote: '',
   })
   const metadata = {
@@ -150,10 +260,10 @@ test('all non-clock methods use exact secure RPC names and arguments', async () 
     beforeOpenedAt: null, beforeSessionId: null, limit: 50,
   })
   assert.deepEqual(calls, [
-    ['list_attendance_projects_secure', {}],
-    ['get_my_today_attendance_secure', {}],
+    ['list_attendance_projects_v2_secure', {}],
+    ['get_my_today_attendance_v2_secure', {}],
     ['upsert_attendance_work_point_secure', {
-      p_session_id: '71000000-0000-4000-8000-000000000001', p_ordinal: 1,
+      p_session_id: SESSION_ID, p_ordinal: 1,
       p_area_name: '北侧', p_work_description: '施工', p_completion_note: '',
     }],
     ['reserve_attendance_photo_secure', {
@@ -161,12 +271,8 @@ test('all non-clock methods use exact secure RPC names and arguments', async () 
       p_original_file_name: 'a.jpg', p_content_type: 'image/jpeg', p_size_bytes: 1,
       p_checksum_sha256: null, p_captured_at: null,
     }],
-    ['finalize_attendance_photo_secure', {
-      p_photo_id: '74000000-0000-4000-8000-000000000001',
-    }],
-    ['abandon_attendance_photo_secure', {
-      p_photo_id: '74000000-0000-4000-8000-000000000001',
-    }],
+    ['finalize_attendance_photo_secure', { p_photo_id: '74000000-0000-4000-8000-000000000001' }],
+    ['abandon_attendance_photo_secure', { p_photo_id: '74000000-0000-4000-8000-000000000001' }],
     ['list_attendance_records_secure', {
       p_work_date: '2026-07-15', p_project_id: 'P001',
       p_employee_profile_id: '52000000-0000-4000-8000-000000000001',
@@ -175,50 +281,104 @@ test('all non-clock methods use exact secure RPC names and arguments', async () 
   ])
 })
 
-test('known hints are safe and malformed DTOs fail closed', async () => {
+test('record read normalizes strict v1 project and general sessions without losing historical reasons', async () => {
+  const page = {
+    access: { scope: 'own' },
+    filterOptions: { projects: [], employees: [] },
+    items: [
+      legacySessionFor({ attendanceMode: 'project', abnormal: true }),
+      legacySessionFor({ attendanceMode: 'general' }),
+    ],
+    nextCursor: null,
+  }
+  const service = createAttendanceService({ rpc: async () => ({ data: page, error: null }) }, { configured: true })
+  const result = await service.listAttendanceRecords({ workDate: '2026-07-15' })
+  assert.equal(result.items[0].attendanceMode, 'project')
+  assert.equal(result.items[0].clockInEvent.abnormalReason, '历史异常原因')
+  assert.equal(result.items[0].clockInEvent.outOfRangeConfirmedAt, null)
+  assert.equal(result.items[1].attendanceMode, 'general')
+  assert.equal(result.items[1].clockInEvent.result, 'not_applicable')
+})
+
+test('known hints are safe and today policy rejects active-session mode mismatch', async () => {
   const known = createAttendanceService({ rpc: async () => ({
     data: null, error: { status: 400, hint: 'ATTENDANCE_COMPLETE_WORK_POINT_REQUIRED', message: 'private detail' },
   }) }, { configured: true })
   await assert.rejects(() => known.getMyTodayAttendance(), (error) =>
     error.code === 'ATTENDANCE_COMPLETE_WORK_POINT_REQUIRED' && !error.message.includes('private'))
-  const malformed = createAttendanceService({ rpc: async () => ({
-    data: { workDate: '2026-07-15', viewerAccess: { scope: 'root', canViewScopedRecords: true }, activeSession: null, completedSessions: [], pendingPhotoReservations: [] },
-    error: null,
-  }) }, { configured: true })
-  await assert.rejects(() => malformed.getMyTodayAttendance(), (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE')
+
+  const today = responseFor('get_my_today_attendance_v2_secure')
+  const cases = [
+    { ...today, policy: { attendanceRequired: true, attendanceMode: 'general' }, activeSession: sessionFor({ attendanceMode: 'project' }) },
+    { ...today, policy: { attendanceRequired: false, attendanceMode: 'exempt' }, activeSession: sessionFor({ attendanceMode: 'project' }) },
+    { ...today, policy: { attendanceRequired: false, attendanceMode: 'general' } },
+    { ...today, policy: { ...today.policy, unknownServerField: true } },
+  ]
+  for (const data of cases) {
+    const malformed = createAttendanceService({ rpc: async () => ({ data, error: null }) }, { configured: true })
+    await assert.rejects(() => malformed.getMyTodayAttendance(), (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE')
+  }
 })
 
-test('DTO validators reject missing, extra, invalid enum and malformed nested fields', async () => {
-  const valid = responseFor('clock_in_project_secure', {
-    p_request_id: '70000000-0000-4000-8000-000000000001',
-    p_latitude: 35, p_longitude: 139, p_accuracy_meters: 10,
-    p_device_recorded_at: null,
-  })
+test('v2 DTOs reject project shape, event semantics, extra keys and non-finite numbers', async () => {
+  const project = savedFor()
+  const general = savedFor({ attendanceMode: 'general' })
+  const abnormalEvent = {
+    ...project.event,
+    result: 'abnormal',
+    abnormalReason: 'outside attendance radius confirmed',
+    outOfRangeConfirmedAt: null,
+  }
   const cases = [
-    { session: { ...valid.session, projectId: undefined }, event: valid.event },
-    { session: { ...valid.session, unknownServerField: 'secret' }, event: valid.event },
-    { session: { ...valid.session, status: 'approved' }, event: valid.event },
-    { session: valid.session, event: { ...valid.event, result: 'outside' } },
-    { session: {
-      ...valid.session,
-      workPoints: [{
-        workPointId: '73000000-0000-4000-8000-000000000001',
-        sessionId: valid.session.sessionId, ordinal: 1, areaName: '', workDescription: '', completionNote: '',
-        createdAt: valid.session.openedAt, updatedAt: valid.session.openedAt,
-        photos: { before: { uploadStatus: 'active' }, after: null },
-      }],
-    }, event: valid.event },
+    { ...general, session: { ...general.session, projectId: 'P001' } },
+    { ...project, session: { ...project.session, projectNameSnapshot: null } },
+    { ...general, event: { ...general.event, distanceMeters: 1 } },
+    { ...project, event: abnormalEvent },
+    { ...project, event: { ...project.event, unknownServerField: 'secret' } },
+    { ...project, event: { ...project.event, latitude: Number.NaN } },
+    { ...project, session: { ...project.session, attendanceRadiusMetersSnapshot: Number.POSITIVE_INFINITY } },
+    { ...project, session: { ...project.session, attendanceMode: 'general' } },
   ]
-  delete cases[0].session.projectId
   for (const data of cases) {
     const service = createAttendanceService({ rpc: async () => ({ data, error: null }) }, { configured: true })
     await assert.rejects(
-      () => service.clockIn({
-        projectId: 'P001', requestId: valid.event.requestId,
-        location: { latitude: 35, longitude: 139, accuracyMeters: 10, deviceRecordedAt: null },
-        abnormalReason: null,
-      }),
+      () => service.clockIn({ attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID, location: LOCATION }),
       (error) => error.code === 'ATTENDANCE_INVALID_RESPONSE' && !error.message.includes('secret'),
     )
   }
+})
+
+test('historical abnormal reason remains readable only with structured v2 confirmation time', async () => {
+  const event = {
+    ...eventFor(),
+    result: 'abnormal',
+    abnormalReason: '历史异常原因',
+    outOfRangeConfirmedAt: '2026-07-15T08:00:01Z',
+  }
+  const activeSession = {
+    ...sessionFor(),
+    clockInEvent: event,
+  }
+  const today = {
+    ...responseFor('get_my_today_attendance_v2_secure'),
+    activeSession,
+  }
+  const service = createAttendanceService({ rpc: async () => ({ data: today, error: null }) }, { configured: true })
+  assert.equal((await service.getMyTodayAttendance()).activeSession.clockInEvent.abnormalReason, '历史异常原因')
+})
+
+test('browser clock mutations reject handwritten abnormal reasons before RPC', async () => {
+  let calls = 0
+  const service = createAttendanceService({ rpc: async () => {
+    calls += 1
+    return { data: savedFor(), error: null }
+  } }, { configured: true })
+  await assert.rejects(
+    () => service.clockIn({
+      attendanceMode: 'project', projectId: 'P001', requestId: REQUEST_ID,
+      location: LOCATION, abnormalReason: '交通管制',
+    }),
+    (error) => error.code === 'ATTENDANCE_MUTATION_INPUT_INVALID',
+  )
+  assert.equal(calls, 0)
 })
