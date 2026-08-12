@@ -1063,6 +1063,7 @@ declare
   employee_position text;
   payroll public.attendance_monthly_payrolls%rowtype;
   attendance_method text;
+  attendance_counts jsonb;
   review_metrics jsonb;
   abnormal_count integer;
   review_summary text;
@@ -1084,7 +1085,8 @@ begin
         'position', '',
         'attendanceMethod', 'project',
         'locationAbnormalCount', 0,
-        'locationReviewSummary', ''
+        'locationReviewSummary', '',
+        'scheduledAttendanceUnits', null
       );
       if can_view_salary then
         employee_item := employee_item || jsonb_build_object(
@@ -1118,11 +1120,14 @@ begin
           else 0
         end;
       end if;
+      attendance_counts := private.attendance_month_counts(employee_id, p_month);
       employee_item := employee_item || jsonb_build_object(
         'position', employee_position,
         'attendanceMethod', attendance_method,
         'locationAbnormalCount', abnormal_count,
-        'locationReviewSummary', review_summary
+        'locationReviewSummary', review_summary,
+        'scheduledAttendanceUnits',
+          (attendance_counts->>'scheduledAttendanceUnits')::integer
       );
       if can_view_salary then
         employee_item := employee_item || jsonb_build_object(

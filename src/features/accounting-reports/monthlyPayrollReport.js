@@ -46,6 +46,23 @@ function amount(value) {
   return Number.isFinite(number) ? number : 0
 }
 
+function nullableAmount(value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function tokyoBusinessDate(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const instant = value instanceof Date ? new Date(value.getTime()) : new Date(value)
+  if (Number.isNaN(instant.getTime())) return text(value)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(instant)
+  const part = (type) => parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
 function payrollRow(employee = {}) {
   const fullDays = amount(employee.fullDays)
   const halfDays = amount(employee.halfDays)
@@ -59,20 +76,20 @@ function payrollRow(employee = {}) {
     position: text(employee.position, '职位未记录'),
     attendanceMethod: ATTENDANCE_METHOD_LABELS[employee.attendanceMethod]
       || text(employee.attendanceMethod),
-    scheduledDays: fullDays + halfDays + excusedDays + absenceDays + pendingDays,
+    scheduledDays: nullableAmount(employee.scheduledAttendanceUnits),
     fullDays,
     halfDays,
     absenceDays,
     locationAbnormalCount: amount(employee.locationAbnormalCount),
-    basePay: amount(employee.basePay),
+    basePay: nullableAmount(employee.basePay),
     overtimePay: amount(employee.overtimePay),
     bonus: amount(employee.bonus),
     deduction: amount(employee.deduction),
-    netSalary: amount(employee.netSalary),
+    netSalary: nullableAmount(employee.netSalary),
     projectCost: amount(employee.projectAllocatedAmount) + amount(employee.projectUnallocatedAmount),
     companyPersonnelCost: amount(employee.companyPersonnelCost),
     status: PAYROLL_STATUS_LABELS[employee.status] || text(employee.status),
-    confirmedAt: text(employee.confirmedAt),
+    confirmedAt: tokyoBusinessDate(employee.confirmedAt),
     confirmationNote: text(employee.confirmationNote),
   }
 }
@@ -87,14 +104,15 @@ export function createMonthlyPayrollReport({
 } = {}) {
   const suppliedEmployees = Array.isArray(employees) ? employees : []
   const rows = suppliedEmployees.map(payrollRow)
+  const addAvailable = (total, value) => value === null || !Number.isFinite(value) ? total : total + value
   const totals = rows.reduce((current, row) => ({
-    netSalary: current.netSalary + row.netSalary,
-    projectCost: current.projectCost + row.projectCost,
-    companyPersonnelCost: current.companyPersonnelCost + row.companyPersonnelCost,
-    overtimePay: current.overtimePay + row.overtimePay,
-    bonus: current.bonus + row.bonus,
-    deduction: current.deduction + row.deduction,
-    locationAbnormalCount: current.locationAbnormalCount + row.locationAbnormalCount,
+    netSalary: addAvailable(current.netSalary, row.netSalary),
+    projectCost: addAvailable(current.projectCost, row.projectCost),
+    companyPersonnelCost: addAvailable(current.companyPersonnelCost, row.companyPersonnelCost),
+    overtimePay: addAvailable(current.overtimePay, row.overtimePay),
+    bonus: addAvailable(current.bonus, row.bonus),
+    deduction: addAvailable(current.deduction, row.deduction),
+    locationAbnormalCount: addAvailable(current.locationAbnormalCount, row.locationAbnormalCount),
   }), {
     netSalary: 0, projectCost: 0, companyPersonnelCost: 0,
     overtimePay: 0, bonus: 0, deduction: 0, locationAbnormalCount: 0,

@@ -21,15 +21,40 @@ const THIN_GRAY_BORDER = Object.freeze({
   right: { style: 'thin', color: { argb: COLORS.border } },
 })
 
+const EXACT_DATE = /^(\d{4})-(\d{2})-(\d{2})$/u
+const STRICT_ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:0\d|1[0-3]):[0-5]\d|[+-]14:00)$/u
+
+function validCalendarDate(year, month, day) {
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)))
+  return date.getUTCFullYear() === Number(year)
+    && date.getUTCMonth() === Number(month) - 1
+    && date.getUTCDate() === Number(day)
+}
+
+function nativeReportDate(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : new Date(value.getTime())
+  if (typeof value !== 'string') return null
+  const exact = EXACT_DATE.exec(value)
+  if (exact) {
+    if (!validCalendarDate(exact[1], exact[2], exact[3])) return null
+    return new Date(`${value}T00:00:00.000Z`)
+  }
+  const instant = STRICT_ISO_INSTANT.exec(value)
+  if (!instant || !validCalendarDate(instant[1], instant[2], instant[3])) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
 function writeCell(cell, value, format = 'text') {
-  if ((format === 'money' || format === 'number' || format === 'percent') &&
-      Number.isFinite(Number(value))) {
+  const numericFormat = format === 'money' || format === 'number' || format === 'percent'
+  if (numericFormat && (value === null || value === undefined || value === '')) {
+    cell.value = null
+  } else if (numericFormat &&
+      value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))) {
     cell.value = Number(value)
   } else if (format === 'date' && value !== null && value !== undefined && value !== '') {
-    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value)
-    cell.value = Number.isNaN(date.getTime())
-      ? escapeAccountingSpreadsheetText(formatAccountingReportDisplayValue(value, format))
-      : date
+    const date = nativeReportDate(value)
+    cell.value = date ?? escapeAccountingSpreadsheetText(String(value))
   } else {
     cell.value = escapeAccountingSpreadsheetText(formatAccountingReportDisplayValue(value, format))
   }
@@ -83,6 +108,7 @@ function writeSection(sheet, section, startRow) {
   }
 
   for (const data of section.rows) {
+    let estimatedLines = 1
     for (const [index, column] of section.columns.entries()) {
       const cell = sheet.getCell(rowNumber, index + 1)
       const resolvedCell = resolveAccountingReportCell(data, column)
@@ -93,8 +119,16 @@ function writeSection(sheet, section, startRow) {
         vertical: 'center',
         wrapText: true,
       }
+      const display = formatAccountingReportDisplayValue(resolvedCell.value, resolvedCell.format)
+      const width = Math.max(8, Number(column.width) || 10)
+      const lineCount = String(display).split(/\r?\n/u).reduce(
+        (count, line) => count + Math.max(1, Math.ceil(Array.from(line).length / width)), 0,
+      )
+      estimatedLines = Math.max(estimatedLines, lineCount)
     }
-    sheet.getRow(rowNumber).height = 26
+    sheet.getRow(rowNumber).height = estimatedLines <= 2
+      ? 26
+      : Math.min(120, estimatedLines * 15 + 6)
     rowNumber += 1
   }
   return { nextRow: rowNumber, headerRow }

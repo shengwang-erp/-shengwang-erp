@@ -583,7 +583,13 @@ export default function MonthlyPayrollTab({
   const [department, setDepartment] = useState('')
   const [employeeProfileId, setEmployeeProfileId] = useState('')
   const [onlyPending, setOnlyPending] = useState(false)
+  const currentQueryIdentity = JSON.stringify({
+    month, department, employeeProfileId, onlyPending,
+  })
   const [report, setReport] = useState(initialReport)
+  const [acceptedQueryIdentity, setAcceptedQueryIdentity] = useState(
+    initialReport ? currentQueryIdentity : '',
+  )
   const [loadState, setLoadState] = useState({
     status: initialReport ? 'success' : 'idle', error: '',
   })
@@ -644,6 +650,7 @@ export default function MonthlyPayrollTab({
   const loadReport = useCallback(async () => {
     if (!month) return { status: 'invalid' }
     const generation = ++loadGenerationRef.current
+    const requestQueryIdentity = currentQueryIdentity
     reportCurrentRef.current = false
     setLoadState((current) => ({ ...current, status: 'loading', error: '' }))
     try {
@@ -662,6 +669,7 @@ export default function MonthlyPayrollTab({
       canUpdateSalaryRef.current = value.permissions.canUpdateSalary
       reportCurrentRef.current = true
       setReport(value)
+      setAcceptedQueryIdentity(requestQueryIdentity)
       setDrafts(draftsFromReport(value))
       setLoadState({ status: 'success', error: '' })
       if (!department && !employeeProfileId && !onlyPending) {
@@ -682,7 +690,10 @@ export default function MonthlyPayrollTab({
       })
       return { status: 'error' }
     }
-  }, [department, employeeProfileId, month, onAuthInvalid, onlyPending, service])
+  }, [
+    currentQueryIdentity, department, employeeProfileId, month,
+    onAuthInvalid, onlyPending, service,
+  ])
 
   const requestMonthCalendar = useCallback(async ({ employee, requestedMonth }) => {
     const employeeProfileId = employee?.employeeProfileId
@@ -796,6 +807,7 @@ export default function MonthlyPayrollTab({
       contextGenerationRef.current += 1
       reportCurrentRef.current = false
       setReport(null)
+      setAcceptedQueryIdentity('')
       setLoadState({ status: 'idle', error: '' })
       setDrafts({})
       setReopenReasons({})
@@ -817,6 +829,7 @@ export default function MonthlyPayrollTab({
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
+    setAcceptedQueryIdentity('')
     setWriteLocked({})
     onMonthChange?.(nextMonth)
   }
@@ -826,6 +839,7 @@ export default function MonthlyPayrollTab({
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
+    setAcceptedQueryIdentity('')
     setWriteLocked({})
     setDepartment(value)
   }
@@ -835,6 +849,7 @@ export default function MonthlyPayrollTab({
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
+    setAcceptedQueryIdentity('')
     setWriteLocked({})
     setEmployeeProfileId(value)
   }
@@ -844,6 +859,7 @@ export default function MonthlyPayrollTab({
     loadGenerationRef.current += 1
     contextGenerationRef.current += 1
     reportCurrentRef.current = false
+    setAcceptedQueryIdentity('')
     setWriteLocked({})
     setOnlyPending(value)
   }
@@ -930,7 +946,8 @@ export default function MonthlyPayrollTab({
     ? employees.reduce((total, employee) => total + employee.companyPersonnelCost, 0)
     : 0, [employees, permissions.canViewSalary])
   const outputBlocked = loadState.status !== 'success' ||
-    report === null || permissions.canViewSalary !== true
+    report === null || permissions.canViewSalary !== true ||
+    acceptedQueryIdentity !== currentQueryIdentity
   const selectedEmployee = employeeProfileId
     ? employeeOptions.find((employee) => employee.employeeProfileId === employeeProfileId)
     : null
@@ -939,7 +956,8 @@ export default function MonthlyPayrollTab({
     : ''
   const payrollReport = useMemo(() => {
     if (loadState.status !== 'success' || report === null ||
-        report.permissions.canViewSalary !== true) return null
+        report.permissions.canViewSalary !== true ||
+        acceptedQueryIdentity !== currentQueryIdentity) return null
     return createMonthlyPayrollReport({
       employees,
       summary: report.summary,
@@ -950,14 +968,16 @@ export default function MonthlyPayrollTab({
       preparedBy: reportPreparedBy,
     })
   }, [
-    department, employeeLabel, employees, loadState.status, month,
-    onlyPending, report, reportPreparedBy,
+    acceptedQueryIdentity, currentQueryIdentity, department, employeeLabel,
+    employees, loadState.status, month, onlyPending, report, reportPreparedBy,
   ])
   const reportContextIdentity = JSON.stringify({
     month,
     department,
     employeeProfileId,
     onlyPending,
+    acceptedQueryIdentity,
+    currentQueryIdentity,
     rows: employees.map((row) => `${row.employeeProfileId}:${row.version}`).join('|'),
     outputBlocked,
   })

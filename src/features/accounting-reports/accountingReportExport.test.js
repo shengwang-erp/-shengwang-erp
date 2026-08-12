@@ -216,6 +216,7 @@ test('monthly payroll workbook round-trips three neutral A4 sheets with native v
     employees: [{
       employeeProfileId: 'E-1', employeeNumber: 'SW-001', employeeName: '=山田太郎',
       department: '工程部', position: '大工', attendanceMethod: 'project',
+      scheduledAttendanceUnits: 21,
       fullDays: 20, halfDays: 1, excusedDays: 0, absenceDays: 0, pendingDays: 1,
       locationAbnormalCount: 1, locationReviewSummary: '判定异常：距离现场 420 米。'.repeat(8),
       basePay: 290000, overtimePay: 10000, bonus: 0, deduction: 0, netSalary: 300000,
@@ -254,6 +255,7 @@ test('monthly payroll workbook round-trips three neutral A4 sheets with native v
 
   const anomaly = workbook.getWorksheet('定位异常记录')
   const anomalyHeader = findHeaderRow(anomaly, '员工编号')
+  assert.ok(anomaly.getRow(anomalyHeader + 1).height > 26)
   assert.equal(
     anomaly.getCell(anomalyHeader + 1, headerColumn(anomaly, anomalyHeader, '定位复核摘要')).alignment.wrapText,
     true,
@@ -268,6 +270,33 @@ test('monthly payroll workbook round-trips three neutral A4 sheets with native v
   assert.ok(loaded.getWorksheet('工资明细').getCell(
     detailRow, headerColumn(detail, detailHeader, '确认日期'),
   ).value instanceof Date)
+})
+
+test('writes only strict valid report dates as native Excel dates', () => {
+  const report = createReport({
+    sections: [{
+      id: 'dates', title: '日期边界', sheetName: '日期边界',
+      columns: [{ key: 'date', label: '日期', width: 16, align: 'center', format: 'date' }],
+      rows: [
+        { date: '2026-08-31' },
+        { date: '2026-08-31T00:30:00+09:00' },
+        { date: new Date('2026-08-31T00:00:00.000Z') },
+        { date: '2026-02-30' },
+        { date: '2026-08' },
+        { date: '08/31/2026' },
+        { date: '=DATE(2026,8,31)' },
+      ],
+      emptyText: '无记录',
+    }],
+  })
+  const sheet = createAccountingReportWorkbook(ExcelJS, report).getWorksheet('日期边界')
+  const header = findHeaderRow(sheet, '日期')
+
+  for (const offset of [1, 2, 3]) assert.ok(sheet.getCell(header + offset, 1).value instanceof Date)
+  assert.equal(sheet.getCell(header + 4, 1).value, '2026-02-30')
+  assert.equal(sheet.getCell(header + 5, 1).value, '2026-08')
+  assert.equal(sheet.getCell(header + 6, 1).value, '08/31/2026')
+  assert.equal(sheet.getCell(header + 7, 1).value, "'=DATE(2026,8,31)")
 })
 
 test('forced-multipage salary repeats its exact header while monthly repeats only safe metadata', () => {

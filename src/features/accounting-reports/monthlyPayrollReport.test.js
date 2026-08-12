@@ -22,6 +22,7 @@ const employees = Object.freeze([
     employeeNumber: 'SW-001', employeeName: '=工程员工', department: '工程部', position: '大工',
     attendanceMethod: 'project', locationAbnormalCount: 1,
     locationReviewSummary: '判定异常 1 条：距离现场 420 米，已由会计复核并保留管理记录。',
+    scheduledAttendanceUnits: 21,
     fullDays: 20, halfDays: 1, excusedDays: 0, absenceDays: 0, pendingDays: 1,
     basePay: 285000, overtimePay: 10000, bonus: 5000, deduction: 0, netSalary: 300000,
     projectAllocatedAmount: 250000, projectUnallocatedAmount: 50000, companyPersonnelCost: 0,
@@ -32,6 +33,7 @@ const employees = Object.freeze([
     employeeProfileId: '52000000-0000-4000-8000-000000000002',
     employeeNumber: 'SW-002', employeeName: '总务员工', department: '总务部', position: '总务',
     attendanceMethod: 'general', locationAbnormalCount: 0, locationReviewSummary: '',
+    scheduledAttendanceUnits: 22,
     fullDays: 21, halfDays: 0, excusedDays: 1, absenceDays: 0, pendingDays: 0,
     basePay: 300000, overtimePay: 0, bonus: 0, deduction: 0, netSalary: 300000,
     projectAllocatedAmount: 0, projectUnallocatedAmount: 0, companyPersonnelCost: 300000,
@@ -41,6 +43,7 @@ const employees = Object.freeze([
     employeeProfileId: '52000000-0000-4000-8000-000000000003',
     employeeNumber: 'SW-003', employeeName: '管理员工', department: '管理部', position: '经理',
     attendanceMethod: 'exempt', locationAbnormalCount: 0, locationReviewSummary: '',
+    scheduledAttendanceUnits: 22,
     fullDays: 22, halfDays: 0, excusedDays: 0, absenceDays: 0, pendingDays: 0,
     basePay: 310000, overtimePay: 0, bonus: 0, deduction: 10000, netSalary: 300000,
     projectAllocatedAmount: 0, projectUnallocatedAmount: 0, companyPersonnelCost: 300000,
@@ -108,14 +111,51 @@ test('adapts the supplied filtered cohort into exact leadership payroll totals a
     { item: '实发工资合计', amount: 900000 },
   ])
   assert.equal(report.sections[1].rows[0].employeeName, '=工程员工')
-  assert.equal(report.sections[1].rows[0].scheduledDays, 22)
+  assert.equal(report.sections[1].rows[0].scheduledDays, 21)
   assert.equal(typeof report.sections[1].rows[0].netSalary, 'number')
-  assert.equal(report.sections[1].rows[0].confirmedAt, '2026-08-31T09:00:00+09:00')
+  assert.equal(report.sections[1].rows[0].confirmedAt, '2026-08-31')
   assert.equal(report.sections[1].columns.find(({ key }) => key === 'confirmedAt').format, 'date')
   assert.deepEqual(report.sections[2].rows.map(({ employeeName }) => employeeName), ['=工程员工'])
   for (const section of report.sections) {
     for (const column of section.columns) assert.ok(column.width >= 10 && column.width <= 24)
   }
+})
+
+test('preserves missing salary as unavailable and excludes it from status-aware totals and Excel values', () => {
+  const unavailable = {
+    ...employees[0], employeeProfileId: '52000000-0000-4000-8000-000000000004',
+    employeeNumber: 'SW-004', employeeName: '工资未配置员工', status: 'salary_required',
+    basePay: null, netSalary: null, overtimePay: 0, bonus: 0, deduction: 0,
+    projectAllocatedAmount: 0, projectUnallocatedAmount: 0, companyPersonnelCost: 0,
+  }
+  const report = createReport({ employees: [...employees, unavailable] })
+  const row = report.sections[1].rows.find(({ employeeNumber }) => employeeNumber === 'SW-004')
+
+  assert.equal(row.basePay, null)
+  assert.equal(row.netSalary, null)
+  assert.deepEqual(report.sections[0].rows.find(({ item }) => item === '实发工资合计'), {
+    item: '实发工资合计', amount: 900000,
+  })
+
+  const detail = createAccountingReportWorkbook(ExcelJS, report).getWorksheet('工资明细')
+  const header = headerRow(detail, '员工编号')
+  const basePayColumn = headerColumn(detail, header, '基本工资')
+  const netSalaryColumn = headerColumn(detail, header, '实发工资')
+  assert.equal(detail.getCell(header + 4, basePayColumn).value, null)
+  assert.equal(detail.getCell(header + 4, netSalaryColumn).value, null)
+})
+
+test('normalizes confirmation instants to the Asia/Tokyo business date', () => {
+  const first = { ...employees[0], confirmedAt: '2026-08-31T00:30:00+09:00' }
+  const sameInstant = {
+    ...employees[0], employeeProfileId: '52000000-0000-4000-8000-000000000004',
+    employeeNumber: 'SW-004', confirmedAt: '2026-08-30T15:30:00Z',
+  }
+  const report = createReport({ employees: [first, sameInstant] })
+
+  assert.deepEqual(report.sections[1].rows.map(({ confirmedAt }) => confirmedAt), [
+    '2026-08-31', '2026-08-31',
+  ])
 })
 
 test('uses filter arguments only as labels and never re-filters supplied employees', () => {

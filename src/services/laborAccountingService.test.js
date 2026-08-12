@@ -230,7 +230,7 @@ function resolutionDetail({
 const MONTHLY_BASE_KEYS = [
   'employeeProfileId', 'employeeNumber', 'employeeName', 'department', 'position',
   'attendanceMethod', 'locationAbnormalCount', 'locationReviewSummary',
-  'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
+  'scheduledAttendanceUnits', 'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
   'issueCounts', 'status', 'payrollId', 'version',
 ]
 
@@ -250,6 +250,7 @@ function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
     attendanceMethod: legacy ? 'project' : 'project',
     locationAbnormalCount: 0,
     locationReviewSummary: '',
+    scheduledAttendanceUnits: legacy ? null : 22,
     fullDays: legacy ? 0 : 20,
     halfDays: legacy ? 0 : 1,
     excusedDays: 0,
@@ -974,6 +975,8 @@ test('monthly payroll validates canonical and legacy rows with salary-redacted a
     (() => { const row = monthlyPayroll(); row.summary.confirmedFullDays = 20; return row })(),
     (() => { const row = monthlyPayroll(); row.salaryMonth = '2026-08-01'; return row })(),
     (() => { const row = monthlyPayroll(); row.employees[0].attendanceMethod = 'clock'; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].scheduledAttendanceUnits = null; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].scheduledAttendanceUnits = 2.5; return row })(),
     (() => { const row = monthlyPayroll(); row.employees[0].companyPersonnelCost = -1; return row })(),
     (() => { const row = monthlyPayroll(); row.employees[0].attendanceMethod = 'general'; row.employees[0].companyPersonnelCost = 0; return row })(),
     (() => { const row = monthlyPayroll({ canViewSalary: false }); row.employees[0].companyPersonnelCost = 1; return row })(),
@@ -1000,11 +1003,12 @@ test('monthly DTOs preserve method, position, company cost, and location review 
     month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
   })
   assert.deepEqual(Object.fromEntries([
-    'position', 'attendanceMethod', 'companyPersonnelCost',
+    'position', 'attendanceMethod', 'scheduledAttendanceUnits', 'companyPersonnelCost',
     'locationAbnormalCount', 'locationReviewSummary',
   ].map((key) => [key, result.employees[0][key]])), {
     position: '大工',
     attendanceMethod: 'general',
+    scheduledAttendanceUnits: 22,
     companyPersonnelCost: 246000,
     locationAbnormalCount: 2,
     locationReviewSummary: '确认有效 1 条；判定异常 1 条',

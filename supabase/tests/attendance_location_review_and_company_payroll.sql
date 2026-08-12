@@ -829,6 +829,13 @@ select ok(
     )
     select result#>>'{employees,0,position}' = '会计'
       and result#>>'{employees,0,attendanceMethod}' = 'exempt'
+      and (result#>>'{employees,0,scheduledAttendanceUnits}')::integer = (
+        select payroll.scheduled_attendance_units
+        from public.attendance_monthly_payrolls payroll
+        where payroll.employee_profile_id =
+          '86000000-0000-4000-8000-000000000004'
+          and payroll.salary_month = '2026-08-01'
+      )
       and (result#>>'{employees,0,companyPersonnelCost}')::numeric = 320000
       and (result#>>'{employees,0,projectAllocatedAmount}')::numeric = 0
       and (result#>>'{employees,0,projectUnallocatedAmount}')::numeric = 0

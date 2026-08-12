@@ -8,6 +8,7 @@ import { createServer } from 'vite'
 import {
   findWarehouseTestElement,
   installWarehouseReactDom,
+  TestEvent,
 } from '../warehouse/warehouseReactDomTestUtils.js'
 
 const bootstrapDom = installWarehouseReactDom()
@@ -249,6 +250,7 @@ const monthlyEmployee = Object.freeze({
   attendanceMethod: 'project',
   locationAbnormalCount: 1,
   locationReviewSummary: '确认有效 1 条',
+  scheduledAttendanceUnits: 22,
   fullDays: 20,
   halfDays: 1,
   excusedDays: 1,
@@ -283,6 +285,7 @@ const legacyMonthlyEmployee = Object.freeze({
   attendanceMethod: 'project',
   locationAbnormalCount: 0,
   locationReviewSummary: '',
+  scheduledAttendanceUnits: null,
   fullDays: 0,
   halfDays: 0,
   excusedDays: 0,
@@ -1326,6 +1329,52 @@ test('monthly payroll, project costs, and settings render the approved accountin
   assert.match(settingsMarkup, /08:00/u)
   assert.match(settingsMarkup, /17:00/u)
   assert.match(settingsMarkup, /启用日期/u)
+})
+
+test('monthly payroll blocks stale report output immediately while a changed filter request is pending', async () => {
+  const { default: MonthlyPayrollTab } = moduleFor('monthly')
+  let requests = 0
+  let exports = 0
+  const service = {
+    listMonthlyPayroll() {
+      requests += 1
+      return requests === 1 ? Promise.resolve(monthlyReport) : new Promise(() => {})
+    },
+  }
+  const dom = installWarehouseReactDom()
+  const container = dom.createContainer()
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(createElement(MonthlyPayrollTab, {
+      service, month: '2026-07', initialReport: monthlyReport,
+      reportActionDependencies: {
+        exportExcel() { exports += 1 },
+        printReport() {},
+      },
+    })))
+    const departmentSelect = dialogElement(container, (element) =>
+      element.nodeName === 'SELECT' && element.getAttribute('aria-label') === '月度工资部门')
+    const oldExportButton = dialogButton(container, '导出 Excel')
+    assert.equal(oldExportButton.disabled, false)
+
+    await act(async () => {
+      departmentSelect.value = '工程部'
+      departmentSelect.dispatchEvent(new TestEvent('change'))
+    })
+    oldExportButton.click()
+
+    assert.equal(requests, 2)
+    assert.equal(dialogButton(container, '导出 Excel'), null)
+    assert.equal(exports, 0)
+    assert.match(sources.monthly, /acceptedQueryIdentity/u)
+    assert.match(
+      sources.monthly,
+      /acceptedQueryIdentity\s*!==\s*currentQueryIdentity/u,
+    )
+  } finally {
+    await act(async () => root.unmount())
+    dom.cleanup()
+  }
 })
 
 test('monthly rows distinguish project, general, and exempt attendance on desktop and mobile', () => {

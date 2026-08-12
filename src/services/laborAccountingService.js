@@ -91,7 +91,7 @@ const DASHBOARD_EMPLOYEE_KEYS = Object.freeze([
 const MONTHLY_EMPLOYEE_KEYS = Object.freeze([
   'employeeProfileId', 'employeeNumber', 'employeeName', 'department',
   'position', 'attendanceMethod', 'locationAbnormalCount', 'locationReviewSummary',
-  'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
+  'scheduledAttendanceUnits', 'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
   'issueCounts', 'status', 'payrollId', 'version',
 ])
 const MONTHLY_MONEY_KEYS = Object.freeze([
@@ -878,6 +878,9 @@ function validateMonthlyEmployee(value, canViewSalary) {
     attendanceMethod,
     locationAbnormalCount: safeInteger(row.locationAbnormalCount),
     locationReviewSummary: monthlyLocationReviewSummaryValue(row.locationReviewSummary),
+    scheduledAttendanceUnits: legacy
+      ? row.scheduledAttendanceUnits === null ? null : fail(invalidResponse)
+      : safeInteger(row.scheduledAttendanceUnits),
     fullDays: safeInteger(row.fullDays),
     halfDays: safeInteger(row.halfDays),
     excusedDays: safeInteger(row.excusedDays),
