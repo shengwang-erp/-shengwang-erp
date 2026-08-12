@@ -11,6 +11,12 @@ const PAYROLL_STATUS_LABELS = Object.freeze({
   ready: '可确认',
 })
 
+const ATTENDANCE_METHOD_LABELS = Object.freeze({
+  project: '项目打卡',
+  general: '非项目打卡',
+  exempt: '免打卡 · 默认全勤',
+})
+
 const POSIX_EDGE_SPACE = /^[\u0009-\u000d\u0020]+|[\u0009-\u000d\u0020]+$/gu
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/u
@@ -375,6 +381,13 @@ function MonthCalendarAction({ employee, month, disabled, onOpen }) {
   if (!canonical) {
     return <span className="labor-month-calendar-unavailable">历史人工记录无逐日考勤</span>
   }
+  if (employee.attendanceMethod === 'exempt') {
+    return (
+      <span className="labor-month-calendar-unavailable">
+        免打卡员工无虚构逐日记录
+      </span>
+    )
+  }
   return (
     <button
       type="button"
@@ -524,9 +537,20 @@ function PayrollCountFacts({ employee }) {
 
 function PayrollIssueFacts({ employee }) {
   return (
-    <span className="labor-payroll-issues">
-      迟到 {employee.issueCounts.late} · 早退 {employee.issueCounts.early} ·
-      定位异常 {employee.issueCounts.abnormalLocation} · 加班待确认 {employee.issueCounts.overtimePending}
+    <div className="labor-payroll-issues">
+      <span>
+        迟到 {employee.issueCounts.late} · 早退 {employee.issueCounts.early} ·
+        定位异常 {employee.locationAbnormalCount} 条 · 加班待确认 {employee.issueCounts.overtimePending}
+      </span>
+      {employee.locationReviewSummary && <small>{employee.locationReviewSummary}</small>}
+    </div>
+  )
+}
+
+function AttendanceMethodBadge({ employee }) {
+  return (
+    <span className="labor-attendance-method-badge" data-method={employee.attendanceMethod}>
+      {ATTENDANCE_METHOD_LABELS[employee.attendanceMethod] || employee.attendanceMethod}
     </span>
   )
 }
@@ -539,6 +563,7 @@ function PayrollMoneyFacts({ employee }) {
       <div><dt>实发工资</dt><dd>{employee.netSalary === null ? '—' : yen(employee.netSalary)}</dd></div>
       <div><dt>项目已分摊</dt><dd>{yen(employee.projectAllocatedAmount)}</dd></div>
       <div><dt>项目未分摊</dt><dd>{yen(employee.projectUnallocatedAmount)}</dd></div>
+      <div><dt>公司人员成本</dt><dd>{yen(employee.companyPersonnelCost)}</dd></div>
     </dl>
   )
 }
@@ -897,6 +922,9 @@ export default function MonthlyPayrollTab({
     ['已确认人天', report.summary.confirmedAttendanceUnits],
     ['待处理人次', report.summary.pendingCount],
   ] : [], [report])
+  const companyPersonnelCostTotal = useMemo(() => permissions.canViewSalary
+    ? employees.reduce((total, employee) => total + employee.companyPersonnelCost, 0)
+    : 0, [employees, permissions.canViewSalary])
 
   return (
     <div className="labor-report-tab labor-monthly-payroll-tab">
@@ -986,7 +1014,9 @@ export default function MonthlyPayrollTab({
             {permissions.canViewSalary && (
               <>
                 <article><small>工资预览总额</small><strong>{yen(report.summary.salaryPreviewTotal)}</strong></article>
+                <article><small>已分摊项目成本</small><strong>{yen(report.summary.projectAllocatedTotal)}</strong></article>
                 <article><small>未分摊项目成本</small><strong>{yen(report.summary.projectUnallocatedTotal)}</strong></article>
+                <article><small>公司人员成本</small><strong>{yen(companyPersonnelCostTotal)}</strong></article>
               </>
             )}
           </section>
@@ -1025,7 +1055,8 @@ export default function MonthlyPayrollTab({
                           <tr key={key}>
                             <th scope="row">
                               <strong>{row.employeeName}</strong>
-                              <small>{row.employeeNumber} · {row.department || '部门未记录'}</small>
+                              <small>{row.employeeNumber} · {row.department || '部门未记录'} · {row.position || '职务未记录'}</small>
+                              <AttendanceMethodBadge employee={row} />
                               <span className="labor-status-text" data-tone={row.status === 'confirmed' ? 'locked' : 'warning'}>
                                 <span className="labor-status-dot" aria-hidden="true" />
                                 {PAYROLL_STATUS_LABELS[row.status] || row.status}
@@ -1074,9 +1105,10 @@ export default function MonthlyPayrollTab({
                     return (
                       <article key={key} className="labor-report-mobile-card">
                         <header>
-                          <span><strong>{row.employeeName}</strong><small>{row.employeeNumber} · {row.department || '部门未记录'}</small></span>
+                          <span><strong>{row.employeeName}</strong><small>{row.employeeNumber} · {row.department || '部门未记录'} · {row.position || '职务未记录'}</small></span>
                           <span className="labor-accounting-badge">{PAYROLL_STATUS_LABELS[row.status] || row.status}</span>
                         </header>
+                        <AttendanceMethodBadge employee={row} />
                         {row.source === 'legacy' && <span className="labor-readonly-badge">历史人工记录</span>}
                         <PayrollCountFacts employee={row} />
                         <PayrollIssueFacts employee={row} />

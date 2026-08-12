@@ -1,6 +1,8 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import {
+  enforceAttendanceCostScope,
+  hasGeneralOnlyAttendanceFacts,
   suggestProjectCost,
   validateProjectAllocations,
 } from './laborAccountingDomain.js'
@@ -44,6 +46,7 @@ export function deriveFactProjects(detail) {
   const projects = []
   const seen = new Set()
   for (const session of detail?.facts?.sessions || []) {
+    if (session?.attendanceMode !== 'project') continue
     const projectId = typeof session?.projectId === 'string' ? session.projectId.trim() : ''
     if (!projectId || seen.has(projectId)) continue
     seen.add(projectId)
@@ -127,13 +130,23 @@ export function buildInitialResolutionDraft(detail) {
     }))
   }
 
-  return {
+  return enforceAttendanceCostScope(detail?.facts, {
     resolutionType,
     attendanceUnits,
     finalProjectCost,
     allocations,
     resolutionNote: String(detail?.resolution?.resolutionNote || ''),
+    locationReviewStatus: String(detail?.resolution?.locationReviewStatus || ''),
+    locationReviewNote: String(detail?.resolution?.locationReviewNote || ''),
     version: Number.isSafeInteger(detail?.resolution?.version) ? detail.resolution.version : 0,
+  })
+}
+
+export function updateLocationReviewDraft(draft, { status, note }) {
+  return {
+    ...draft,
+    locationReviewStatus: status,
+    locationReviewNote: note,
   }
 }
 
@@ -186,10 +199,19 @@ export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}
   if (writeBlockedReason) blockers.push(writeBlockedReason)
   if (saving) blockers.push('请求正在处理中')
   if (detail?.facts?.hasOpenSession) blockers.push('员工仍在打卡中，请完成下班打卡后确认')
+  if (detail?.facts?.issueCodes?.includes('abnormal_location')) {
+    if (!['confirmed_valid', 'recorded_abnormal'].includes(draft?.locationReviewStatus)) {
+      blockers.push('请选择定位异常处理结果')
+    }
+    if (typeof draft?.locationReviewNote !== 'string' || !draft.locationReviewNote.trim()) {
+      blockers.push('请填写定位异常处理备注')
+    }
+  }
   if (!validResolutionUnits(draft)) blockers.push('核算类型与确认人天不一致')
   if (!safeYen(draft?.finalProjectCost)) blockers.push('最终项目人工成本必须是非负整数日元')
 
   const allocations = Array.isArray(draft?.allocations) ? draft.allocations : []
+  const generalOnly = hasGeneralOnlyAttendanceFacts(detail?.facts)
   const moneyRequired = Number(draft?.attendanceUnits) > 0 ||
     Number(draft?.finalProjectCost) > 0 || allocations.length > 0
   if (moneyRequired && detail?.permissions?.canViewSalary !== true) {
@@ -197,7 +219,7 @@ export function resolutionConfirmBlockers(detail, draft, { saving = false } = {}
   } else if (moneyRequired && detail?.salary?.salaryType === '未设置') {
     blockers.push('员工工资标准未设置，请先到人员管理补充')
   }
-  if (moneyRequired && (
+  if (!generalOnly && moneyRequired && (
     detail?.permissions?.canViewProjectCosts !== true ||
     detail?.permissions?.canUpdateProjectCosts !== true
   )) {
@@ -311,17 +333,17 @@ function nextSuggestedCost(detail, attendanceUnits) {
 function draftForResolutionType(detail, previous, resolutionType) {
   const attendanceUnits = UNITS_BY_RESOLUTION[resolutionType]
   if (attendanceUnits === 0) {
-    return {
+    return enforceAttendanceCostScope(detail?.facts, {
       ...previous,
       resolutionType,
       attendanceUnits,
       finalProjectCost: 0,
       allocations: [],
-    }
+    })
   }
   const finalProjectCost = nextSuggestedCost(detail, attendanceUnits)
   const projects = deriveFactProjects(detail)
-  return {
+  return enforceAttendanceCostScope(detail?.facts, {
     ...previous,
     resolutionType,
     attendanceUnits,
@@ -331,7 +353,7 @@ function draftForResolutionType(detail, previous, resolutionType) {
       amount: projects.length === 1 ? finalProjectCost : 0,
       allocationNote: '',
     })),
-  }
+  })
 }
 
 function SalarySummary({ detail }) {
@@ -452,7 +474,9 @@ function AttendanceFacts({ detail }) {
         ) : facts.sessions.map((session, index) => (
           <article key={session.sessionId}>
             <header>
-              <strong>{session.projectName}</strong>
+              <strong>{session.attendanceMode === 'general'
+                ? '公司 / 非项目'
+                : session.projectName}</strong>
               <span>{session.status === 'open' ? '进行中' : `场次 ${index + 1}`}</span>
             </header>
             <div className="labor-session-events">
@@ -652,7 +676,12 @@ export default function AttendanceResolutionDialog({
   const titleId = useId()
   const dialogRef = useRef(null)
   const initialDraft = useMemo(
-    () => providedDraft ? { ...providedDraft, allocations: cloneAllocations(providedDraft.allocations) }
+    () => providedDraft ? enforceAttendanceCostScope(detail?.facts, {
+      ...providedDraft,
+      allocations: cloneAllocations(providedDraft.allocations),
+      locationReviewStatus: String(providedDraft.locationReviewStatus || ''),
+      locationReviewNote: String(providedDraft.locationReviewNote || ''),
+    })
       : buildInitialResolutionDraft(detail),
     [detail, providedDraft],
   )
@@ -661,11 +690,13 @@ export default function AttendanceResolutionDialog({
   const draftBlockers = resolutionDraftBlockers(detail, draft, { saving })
   const blockers = resolutionConfirmBlockers(detail, draft, { saving })
   const controlsDisabled = saving || Boolean(readOnlyReason)
+  const generalOnly = hasGeneralOnlyAttendanceFacts(detail?.facts)
   useLaborModalFocus(dialogRef, { onClose, saving })
 
   const changeDraft = (nextDraft) => {
-    setDraft(nextDraft)
-    onChange?.(nextDraft)
+    const scopedDraft = enforceAttendanceCostScope(detail?.facts, nextDraft)
+    setDraft(scopedDraft)
+    onChange?.(scopedDraft)
   }
 
   return (
@@ -736,20 +767,72 @@ export default function AttendanceResolutionDialog({
 
             <SalarySummary detail={detail} />
 
-            <section className="labor-project-allocation" aria-labelledby="labor-allocation-title">
-              <header>
-                <span>
-                  <small>确认后才进入正式项目成本</small>
-                  <h4 id="labor-allocation-title">项目分摊金额</h4>
-                </span>
-              </header>
-              <AllocationFields
-                detail={detail}
-                draft={draft}
-                disabled={controlsDisabled}
-                onDraftChange={changeDraft}
-              />
-            </section>
+            {detail.facts.issueCodes.includes('abnormal_location') && (
+              <fieldset className="labor-location-review" disabled={controlsDisabled}>
+                <legend>定位异常处理</legend>
+                <div className="labor-location-review-options">
+                  <label htmlFor={`${titleId}-location-confirmed-valid`}>
+                    <input
+                      id={`${titleId}-location-confirmed-valid`}
+                      type="radio"
+                      name={`${titleId}-location-review`}
+                      value="confirmed_valid"
+                      checked={draft.locationReviewStatus === 'confirmed_valid'}
+                      onChange={() => changeDraft(updateLocationReviewDraft(draft, {
+                        status: 'confirmed_valid', note: draft.locationReviewNote,
+                      }))}
+                    />
+                    <span>确认有效</span>
+                  </label>
+                  <label htmlFor={`${titleId}-location-recorded-abnormal`}>
+                    <input
+                      id={`${titleId}-location-recorded-abnormal`}
+                      type="radio"
+                      name={`${titleId}-location-review`}
+                      value="recorded_abnormal"
+                      checked={draft.locationReviewStatus === 'recorded_abnormal'}
+                      onChange={() => changeDraft(updateLocationReviewDraft(draft, {
+                        status: 'recorded_abnormal', note: draft.locationReviewNote,
+                      }))}
+                    />
+                    <span>判定异常</span>
+                  </label>
+                </div>
+                <textarea
+                  aria-label="定位异常处理备注"
+                  rows="3"
+                  maxLength="2000"
+                  value={draft.locationReviewNote}
+                  placeholder="填写现场核对依据与处理结论"
+                  onChange={(event) => changeDraft(updateLocationReviewDraft(draft, {
+                    status: draft.locationReviewStatus, note: event.target.value,
+                  }))}
+                />
+                <small>两种结论均不自动扣工资，也不改变人天和项目人工成本。</small>
+              </fieldset>
+            )}
+
+            {generalOnly ? (
+              <div className="labor-company-cost-notice" role="note">
+                <strong>公司 / 非项目</strong>
+                <span>该员工工资计入公司人员成本，不进入项目成本。</span>
+              </div>
+            ) : (
+              <section className="labor-project-allocation" aria-labelledby="labor-allocation-title">
+                <header>
+                  <span>
+                    <small>确认后才进入正式项目成本</small>
+                    <h4 id="labor-allocation-title">项目分摊金额</h4>
+                  </span>
+                </header>
+                <AllocationFields
+                  detail={detail}
+                  draft={draft}
+                  disabled={controlsDisabled}
+                  onDraftChange={changeDraft}
+                />
+              </section>
+            )}
 
             <label className="labor-resolution-note">
               <span>会计处理备注</span>

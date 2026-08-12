@@ -7,6 +7,7 @@ import {
   buildProjectLaborCsv,
   calculatePayrollPreview,
   classifyAttendanceDay,
+  enforceAttendanceCostScope,
   suggestProjectCost,
   validateProjectAllocations,
 } from './laborAccountingDomain.js'
@@ -91,6 +92,29 @@ test('project cost suggestions distinguish valid zero from forbidden daily units
   ]) {
     assert.equal(suggestProjectCost({ ...input, attendanceUnits }), null)
   }
+})
+
+test('general-only attendance facts force company cost scope without changing attendance conclusions', () => {
+  const draft = {
+    resolutionType: 'full_day', attendanceUnits: 1, finalProjectCost: 12000,
+    allocations: [{ projectId: 'P1', amount: 12000, allocationNote: '' }],
+    resolutionNote: '', locationReviewStatus: 'confirmed_valid',
+    locationReviewNote: '现场已核对', version: 0,
+  }
+  assert.deepEqual(enforceAttendanceCostScope({ sessions: [{
+    attendanceMode: 'general', projectId: null, projectName: null,
+  }] }, draft), {
+    ...draft,
+    finalProjectCost: 0,
+    allocations: [],
+  })
+  assert.strictEqual(enforceAttendanceCostScope({ sessions: [{
+    attendanceMode: 'project', projectId: 'P1', projectName: '项目一',
+  }] }, draft), draft)
+  assert.strictEqual(enforceAttendanceCostScope({ sessions: [
+    { attendanceMode: 'general', projectId: null, projectName: null },
+    { attendanceMode: 'project', projectId: 'P1', projectName: '项目一' },
+  ] }, draft), draft)
 })
 
 test('allocation validation rejects malformed money without coercing it to zero', () => {

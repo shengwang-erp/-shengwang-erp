@@ -52,6 +52,7 @@ function attendanceEvent(eventType) {
 function attendanceSession() {
   return {
     sessionId: SESSION_ID,
+    attendanceMode: 'project',
     projectId: 'P001',
     projectName: '东京站现场',
     status: 'closed',
@@ -70,6 +71,10 @@ function compactResolution() {
     accountingStatus: 'confirmed',
     scheduleRequired: true,
     resolutionNote: '',
+    locationReviewStatus: null,
+    locationReviewNote: '',
+    locationReviewedByEmployeeProfileId: null,
+    locationReviewedAt: null,
     confirmedAt: '2026-07-18T17:05:00+09:00',
     version: 1,
   }
@@ -223,7 +228,8 @@ function resolutionDetail({
 }
 
 const MONTHLY_BASE_KEYS = [
-  'employeeProfileId', 'employeeNumber', 'employeeName', 'department',
+  'employeeProfileId', 'employeeNumber', 'employeeName', 'department', 'position',
+  'attendanceMethod', 'locationAbnormalCount', 'locationReviewSummary',
   'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
   'issueCounts', 'status', 'payrollId', 'version',
 ]
@@ -231,7 +237,7 @@ const MONTHLY_BASE_KEYS = [
 const MONTHLY_MONEY_KEYS = [
   'salaryType', 'baseSalarySnapshot', 'basePay', 'overtimePay', 'bonus',
   'deduction', 'netSalary', 'projectAllocatedAmount',
-  'projectUnallocatedAmount', 'confirmationNote', 'confirmedAt',
+  'projectUnallocatedAmount', 'companyPersonnelCost', 'confirmationNote', 'confirmedAt',
 ]
 
 function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
@@ -240,6 +246,10 @@ function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
     employeeNumber: legacy ? 'LEG-001' : 'SW-001',
     employeeName: legacy ? '旧员工' : '山田太郎',
     department: legacy ? '' : '工程部',
+    position: legacy ? '' : '大工',
+    attendanceMethod: legacy ? 'project' : 'project',
+    locationAbnormalCount: 0,
+    locationReviewSummary: '',
     fullDays: legacy ? 0 : 20,
     halfDays: legacy ? 0 : 1,
     excusedDays: 0,
@@ -262,6 +272,7 @@ function monthlyEmployee({ legacy = false, canViewSalary = true } = {}) {
       netSalary: legacy ? 300000 : 246000,
       projectAllocatedAmount: 12000,
       projectUnallocatedAmount: 0,
+      companyPersonnelCost: 0,
       confirmationNote: '',
       confirmedAt: null,
     })
@@ -341,6 +352,9 @@ function payrollResult({ canViewSalary = true } = {}) {
     halfDays: 1,
     absenceDays: 0,
     status: 'draft',
+    attendanceMethodSnapshot: 'project',
+    locationAbnormalCount: 0,
+    locationReviewSummary: '',
     confirmedAt: null,
     version: 1,
   }
@@ -353,6 +367,7 @@ function payrollResult({ canViewSalary = true } = {}) {
       bonus: 2000,
       deduction: 500,
       netSalary: 248500,
+      companyPersonnelCost: 0,
       confirmationNote: '',
     })
   }
@@ -362,6 +377,7 @@ function payrollResult({ canViewSalary = true } = {}) {
       employeeNumber: 'SW-001',
       employeeName: '山田太郎',
       department: '工程部',
+      position: '大工',
     },
     payroll,
   }
@@ -506,6 +522,8 @@ const resolutionPayload = () => ({
   finalProjectCost: 12000,
   allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
   resolutionNote: '',
+  locationReviewStatus: '',
+  locationReviewNote: '',
   version: 1,
 })
 
@@ -558,14 +576,16 @@ test('all fifteen methods use exact secure RPC names and arguments', async () =>
       p_resolution_type: 'full_day', p_attendance_units: 1,
       p_final_project_cost: 12000,
       p_allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
-      p_resolution_note: '', p_version: 1,
+      p_resolution_note: '', p_location_review_status: null,
+      p_location_review_note: '', p_version: 1,
     }],
     ['confirm_attendance_resolution_secure', {
       p_employee_profile_id: EMPLOYEE_ID, p_work_date: WORK_DATE,
       p_resolution_type: 'full_day', p_attendance_units: 1,
       p_final_project_cost: 12000,
       p_allocations: [{ projectId: 'P001', amount: 12000, allocationNote: '' }],
-      p_resolution_note: '', p_version: 1,
+      p_resolution_note: '', p_location_review_status: null,
+      p_location_review_note: '', p_version: 1,
     }],
     ['list_monthly_payroll_secure', {
       p_month: '2026-07-01', p_search: '工程部',
@@ -648,6 +668,56 @@ test('daily dashboard validates both salary permission variants and exact issue 
     const { service } = serviceWithResponder(() => malformed)
     await assert.rejects(
       () => service.listDailyDashboard({ workDate: WORK_DATE }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('daily DTOs require exact attendance modes, nullable general project identity, and review metadata', async () => {
+  const general = dailyDashboard()
+  Object.assign(general.employees[0].sessions[0], {
+    attendanceMode: 'general', projectId: null, projectName: null,
+  })
+  const generalResult = await serviceWithResponder(() => general).service
+    .listDailyDashboard({ workDate: WORK_DATE })
+  assert.deepEqual(
+    Object.fromEntries(['attendanceMode', 'projectId', 'projectName'].map((key) => [
+      key, generalResult.employees[0].sessions[0][key],
+    ])),
+    { attendanceMode: 'general', projectId: null, projectName: null },
+  )
+
+  const reviewed = resolutionDetail()
+  Object.assign(reviewed.facts, {
+    issueCodes: ['abnormal_location'], hasAbnormalLocation: true,
+  })
+  reviewed.facts.sessions[0].clockInEvent.result = 'abnormal'
+  reviewed.facts.sessions[0].clockInEvent.abnormalReason = '定位距离现场 420 米'
+  Object.assign(reviewed.resolution, {
+    locationReviewStatus: 'confirmed_valid',
+    locationReviewNote: '已核对现场负责人',
+    locationReviewedByEmployeeProfileId: EMPLOYEE_ID_2,
+    locationReviewedAt: '2026-07-18T17:05:00+09:00',
+  })
+  const reviewedResult = await serviceWithResponder(() => reviewed).service
+    .getResolutionDetail({ employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE })
+  assert.equal(reviewedResult.resolution.locationReviewStatus, 'confirmed_valid')
+  assert.equal(reviewedResult.resolution.locationReviewNote, '已核对现场负责人')
+
+  for (const mutate of [
+    (row) => { delete row.employees[0].sessions[0].attendanceMode },
+    (row) => { row.employees[0].sessions[0].attendanceMode = 'unknown' },
+    (row) => { row.employees[0].sessions[0].attendanceMode = 'general' },
+    (row) => { row.employees[0].sessions[0].projectId = null },
+    (row) => { row.employees[0].resolution.locationReviewStatus = 'ignored' },
+    (row) => { row.employees[0].resolution.locationReviewNote = 'missing status' },
+    (row) => { row.employees[0].resolution.locationReviewStatus = 'recorded_abnormal' },
+  ]) {
+    const malformed = dailyDashboard()
+    mutate(malformed)
+    await assert.rejects(
+      () => serviceWithResponder(() => malformed).service
+        .listDailyDashboard({ workDate: WORK_DATE }),
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
@@ -746,6 +816,81 @@ test('resolution detail accepts only explicit salary and project-money variants'
   )
 })
 
+test('general resolution detail accepts zero suggested cost without project-cost permission', async () => {
+  const data = resolutionDetail({ canViewSalary: true, canViewProjectCosts: false })
+  Object.assign(data.facts.sessions[0], {
+    attendanceMode: 'general', projectId: null, projectName: null,
+  })
+  data.salary.suggestedProjectCost = 0
+  data.allocations = []
+  data.hasMoneyScope = false
+  const result = await serviceWithResponder(() => data).service.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+  })
+  assert.equal(result.salary.suggestedProjectCost, 0)
+  assert.deepEqual(result.availableProjects, [])
+
+  const visible = resolutionDetail()
+  Object.assign(visible.facts.sessions[0], {
+    attendanceMode: 'general', projectId: null, projectName: null,
+  })
+  visible.salary.suggestedProjectCost = 0
+  visible.resolution.suggestedProjectCost = 0
+  visible.resolution.finalProjectCost = 0
+  visible.allocations = []
+  visible.availableProjects = []
+  visible.hasMoneyScope = false
+  await serviceWithResponder(() => visible).service.getResolutionDetail({
+    employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+  })
+
+  for (const mutate of [
+    (row) => { row.resolution.finalProjectCost = 1 },
+    (row) => { row.salary.suggestedProjectCost = 1 },
+    (row) => { row.resolution.suggestedProjectCost = 1 },
+    (row) => { row.hasMoneyScope = true },
+    (row) => { row.availableProjects = [{ projectId: 'P001', projectName: '东京站现场' }] },
+  ]) {
+    const malformed = clone(visible)
+    mutate(malformed)
+    await assert.rejects(
+      () => serviceWithResponder(() => malformed).service.getResolutionDetail({
+        employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+      }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
+})
+
+test('resolution detail review metadata must match immutable abnormal-location facts', async () => {
+  const abnormalWithoutReview = resolutionDetail()
+  Object.assign(abnormalWithoutReview.facts, {
+    issueCodes: ['abnormal_location'], hasAbnormalLocation: true,
+  })
+  abnormalWithoutReview.facts.sessions[0].clockInEvent.result = 'abnormal'
+  abnormalWithoutReview.facts.sessions[0].clockInEvent.abnormalReason = '定位距离现场 420 米'
+  await assert.rejects(
+    () => serviceWithResponder(() => abnormalWithoutReview).service.getResolutionDetail({
+      employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+    }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
+
+  const normalWithReview = resolutionDetail()
+  Object.assign(normalWithReview.resolution, {
+    locationReviewStatus: 'recorded_abnormal',
+    locationReviewNote: '不应出现',
+    locationReviewedByEmployeeProfileId: EMPLOYEE_ID_2,
+    locationReviewedAt: '2026-07-18T17:05:00+09:00',
+  })
+  await assert.rejects(
+    () => serviceWithResponder(() => normalWithReview).service.getResolutionDetail({
+      employeeProfileId: EMPLOYEE_ID, workDate: WORK_DATE,
+    }),
+    (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+  )
+})
+
 test('resolution detail preserves server money scope independently of visible money and attendance units', async () => {
   const hiddenMoney = resolutionDetail({
     canViewSalary: false, canViewProjectCosts: false, hasMoneyScope: true,
@@ -828,6 +973,10 @@ test('monthly payroll validates canonical and legacy rows with salary-redacted a
     (() => { const row = monthlyPayroll(); row.summary.scheduledAttendanceUnits = 2.5; return row })(),
     (() => { const row = monthlyPayroll(); row.summary.confirmedFullDays = 20; return row })(),
     (() => { const row = monthlyPayroll(); row.salaryMonth = '2026-08-01'; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].attendanceMethod = 'clock'; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].companyPersonnelCost = -1; return row })(),
+    (() => { const row = monthlyPayroll(); row.employees[0].attendanceMethod = 'general'; row.employees[0].companyPersonnelCost = 0; return row })(),
+    (() => { const row = monthlyPayroll({ canViewSalary: false }); row.employees[0].companyPersonnelCost = 1; return row })(),
   ]) {
     const { service } = serviceWithResponder(() => malformed)
     await assert.rejects(
@@ -835,6 +984,31 @@ test('monthly payroll validates canonical and legacy rows with salary-redacted a
       (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
     )
   }
+})
+
+test('monthly DTOs preserve method, position, company cost, and location review summary', async () => {
+  const data = monthlyPayroll()
+  Object.assign(data.employees[0], {
+    attendanceMethod: 'general',
+    companyPersonnelCost: 246000,
+    projectAllocatedAmount: 0,
+    projectUnallocatedAmount: 0,
+    locationAbnormalCount: 2,
+    locationReviewSummary: '确认有效 1 条；判定异常 1 条',
+  })
+  const result = await serviceWithResponder(() => data).service.listMonthlyPayroll({
+    month: MONTH, department: '', employeeProfileId: null, onlyPending: false,
+  })
+  assert.deepEqual(Object.fromEntries([
+    'position', 'attendanceMethod', 'companyPersonnelCost',
+    'locationAbnormalCount', 'locationReviewSummary',
+  ].map((key) => [key, result.employees[0][key]])), {
+    position: '大工',
+    attendanceMethod: 'general',
+    companyPersonnelCost: 246000,
+    locationAbnormalCount: 2,
+    locationReviewSummary: '确认有效 1 条；判定异常 1 条',
+  })
 })
 
 test('employee month calendar validates exact identity, month coverage, order, and safe day facts', async () => {
@@ -1006,6 +1180,31 @@ test('payroll write DTOs validate the explicit salary visibility alternatives', 
     () => service.saveMonthlyPayrollDraft(payrollPayload()),
     (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
   )
+
+  const general = payrollResult()
+  Object.assign(general.payroll, {
+    attendanceMethodSnapshot: 'general',
+    companyPersonnelCost: general.payroll.netSalary,
+    locationAbnormalCount: 1,
+    locationReviewSummary: '判定异常 1 条',
+  })
+  const generalResult = await serviceWithResponder(() => general).service
+    .confirmMonthlyPayroll(payrollPayload())
+  assert.equal(generalResult.employee.position, '大工')
+  assert.equal(generalResult.payroll.attendanceMethodSnapshot, 'general')
+  assert.equal(generalResult.payroll.companyPersonnelCost, 248500)
+
+  for (const malformed of [
+    (() => { const row = payrollResult(); row.payroll.attendanceMethodSnapshot = 'unknown'; return row })(),
+    (() => { const row = payrollResult(); row.payroll.companyPersonnelCost = -1; return row })(),
+    (() => { const row = payrollResult({ canViewSalary: false }); row.payroll.companyPersonnelCost = 1; return row })(),
+  ]) {
+    await assert.rejects(
+      () => serviceWithResponder(() => malformed).service
+        .saveMonthlyPayrollDraft(payrollPayload()),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_RESPONSE',
+    )
+  }
 })
 
 test('project reporting validates salary redaction and all confirmed/pending detail variants', async () => {
@@ -1331,6 +1530,35 @@ test('allocation arrays are dense, exact, unique after POSIX trimming, and safel
   assert.equal(callCount, 1)
 })
 
+test('resolution review input trims notes, sends exact RPC arguments, and rejects incomplete review pairs', async () => {
+  const { service, calls } = serviceWithResponder()
+  await service.confirmResolution({
+    ...resolutionPayload(),
+    locationReviewStatus: 'recorded_abnormal',
+    locationReviewNote: '\t 已向现场负责人确认 \n',
+  })
+  assert.equal(calls[0][1].p_location_review_status, 'recorded_abnormal')
+  assert.equal(calls[0][1].p_location_review_note, '已向现场负责人确认')
+
+  let callCount = 0
+  const rejecting = createLaborAccountingService({
+    rpc: async () => { callCount += 1; return { data: resolutionDetail(), error: null } },
+  }, { configured: true })
+  for (const review of [
+    { locationReviewStatus: 'unknown', locationReviewNote: '说明' },
+    { locationReviewStatus: 'confirmed_valid', locationReviewNote: '' },
+    { locationReviewStatus: 'recorded_abnormal', locationReviewNote: ' \t\n' },
+    { locationReviewStatus: '', locationReviewNote: '无结论备注' },
+    { locationReviewStatus: '', locationReviewNote: 'x'.repeat(2001) },
+  ]) {
+    await assert.rejects(
+      () => rejecting.saveResolutionDraft({ ...resolutionPayload(), ...review }),
+      (error) => error.code === 'LABOR_ACCOUNTING_INVALID_INPUT',
+    )
+  }
+  assert.equal(callCount, 0)
+})
+
 test('settings input enforces unique weekdays, minute times, schedule arithmetic, and safe integers', async () => {
   let callCount = 0
   const service = createLaborAccountingService({
@@ -1366,7 +1594,7 @@ test('settings input enforces unique weekdays, minute times, schedule arithmetic
   assert.equal(callCount, 0)
 })
 
-test('only the six approved hints produce specific safe errors and causes stay non-enumerable', async () => {
+test('only the approved hints produce specific safe errors and causes stay non-enumerable', async () => {
   const safeErrors = {
     ATTENDANCE_ACCOUNTING_VERSION_CONFLICT: '记录已被其他人更新，请刷新后重试',
     ATTENDANCE_ACCOUNTING_ALLOCATION_UNBALANCED: '项目分摊金额与确认人工成本不一致',
@@ -1374,6 +1602,7 @@ test('only the six approved hints produce specific safe errors and causes stay n
     ATTENDANCE_ACCOUNTING_OPEN_SESSION: '员工仍在打卡中，暂不能确认当日核算',
     ATTENDANCE_ACCOUNTING_MONTH_INCOMPLETE: '本月仍有未处理考勤，暂不能确认工资',
     ATTENDANCE_ACCOUNTING_MONTH_LOCKED: '该月份工资已经确认，请先重新打开',
+    ATTENDANCE_GENERAL_PROJECT_COST_FORBIDDEN: '非项目考勤不能计入项目人工成本',
   }
   for (const [hint, message] of Object.entries(safeErrors)) {
     const cause = { hint, message: 'private SQL relation employees_secret', details: 'password=secret' }

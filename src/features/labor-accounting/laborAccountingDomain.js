@@ -199,6 +199,19 @@ export function suggestProjectCost(input) {
   return yen(fullDay * input.attendanceUnits)
 }
 
+export function hasGeneralOnlyAttendanceFacts(facts) {
+  const sessions = Array.isArray(facts?.sessions) ? facts.sessions : []
+  return sessions.length > 0 && sessions.every(
+    (session) => session?.attendanceMode === 'general',
+  )
+}
+
+export function enforceAttendanceCostScope(facts, draft) {
+  return hasGeneralOnlyAttendanceFacts(facts)
+    ? { ...draft, finalProjectCost: 0, allocations: [] }
+    : draft
+}
+
 export function validateProjectAllocations(input = {}) {
   const finalProjectCost = input?.finalProjectCost
   const allocations = input?.allocations

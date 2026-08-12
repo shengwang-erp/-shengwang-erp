@@ -57,6 +57,7 @@ function render(Component, props) {
 
 const session = Object.freeze({
   sessionId: '71000000-0000-4000-8000-000000000001',
+  attendanceMode: 'project',
   projectId: 'PROJECT-001',
   projectName: '东京站现场',
   status: 'closed',
@@ -216,6 +217,8 @@ const draft = Object.freeze({
   finalProjectCost: 12000,
   allocations: [{ projectId: 'PROJECT-001', amount: 12000, allocationNote: '' }],
   resolutionNote: '',
+  locationReviewStatus: '',
+  locationReviewNote: '',
   version: 0,
 })
 
@@ -224,6 +227,10 @@ const monthlyEmployee = Object.freeze({
   employeeNumber: employee.employeeNumber,
   employeeName: employee.name,
   department: employee.department,
+  position: employee.position,
+  attendanceMethod: 'project',
+  locationAbnormalCount: 1,
+  locationReviewSummary: '确认有效 1 条',
   fullDays: 20,
   halfDays: 1,
   excusedDays: 1,
@@ -242,6 +249,7 @@ const monthlyEmployee = Object.freeze({
   netSalary: 248500,
   projectAllocatedAmount: 246000,
   projectUnallocatedAmount: 0,
+  companyPersonnelCost: 0,
   confirmationNote: '七月工资',
   confirmedAt: null,
 })
@@ -253,6 +261,10 @@ const legacyMonthlyEmployee = Object.freeze({
   employeeNumber: 'LEG-001',
   employeeName: '历史员工',
   department: '',
+  position: '',
+  attendanceMethod: 'project',
+  locationAbnormalCount: 0,
+  locationReviewSummary: '',
   fullDays: 0,
   halfDays: 0,
   excusedDays: 0,
@@ -289,7 +301,7 @@ const redactedMonthlyReport = Object.freeze({
   employees: [Object.fromEntries(Object.entries(monthlyEmployee).filter(([key]) => ![
     'salaryType', 'baseSalarySnapshot', 'basePay', 'overtimePay', 'bonus',
     'deduction', 'netSalary', 'projectAllocatedAmount', 'projectUnallocatedAmount',
-    'confirmationNote', 'confirmedAt',
+    'companyPersonnelCost', 'confirmationNote', 'confirmedAt',
   ].includes(key)))],
   reconciliation: { postActivationLegacyRows: 0, globalMalformedLegacyRows: 0 },
 })
@@ -424,6 +436,10 @@ test('resolution dialog keeps immutable facts separate from whole and half-day a
   assert.match(markup, /整天/u)
   assert.match(markup, /半天/u)
   assert.match(markup, /项目分摊金额/u)
+  assert.match(markup, /确认有效/u)
+  assert.match(markup, /判定异常/u)
+  assert.match(markup, /定位异常处理备注/u)
+  assert.match(markup, /两种结论均不自动扣工资，也不改变人天和项目人工成本/u)
   assert.match(markup, /定位距离现场 420 米/u)
   assert.doesNotMatch(markup, /修改打卡时间/u)
 })
@@ -433,12 +449,25 @@ test('resolution helpers derive projects and corrected draft defaults from facts
     buildInitialResolutionDraft,
     deriveFactProjects,
     resolutionConfirmBlockers,
+    updateLocationReviewDraft,
   } = moduleFor('dialog')
   assert.deepEqual(deriveFactProjects(detail), [
     { projectId: 'PROJECT-001', projectName: '东京站现场' },
   ])
   assert.deepEqual(buildInitialResolutionDraft(detail), draft)
-  assert.deepEqual(resolutionConfirmBlockers(detail, draft), [])
+  assert.deepEqual(resolutionConfirmBlockers(detail, draft), [
+    '请选择定位异常处理结果',
+    '请填写定位异常处理备注',
+  ])
+  const reviewedDraft = updateLocationReviewDraft(draft, {
+    status: 'confirmed_valid', note: ' 现场负责人已确认 ',
+  })
+  assert.equal(reviewedDraft.resolutionType, draft.resolutionType)
+  assert.equal(reviewedDraft.attendanceUnits, draft.attendanceUnits)
+  assert.equal(reviewedDraft.finalProjectCost, draft.finalProjectCost)
+  assert.deepEqual(reviewedDraft.allocations, draft.allocations)
+  assert.equal(reviewedDraft.locationReviewStatus, 'confirmed_valid')
+  assert.equal(reviewedDraft.locationReviewNote, ' 现场负责人已确认 ')
 
   const multiple = {
     ...detail,
@@ -462,6 +491,8 @@ test('resolution helpers derive projects and corrected draft defaults from facts
       accountingStatus: 'confirmed',
       finalProjectCost: 13500,
       resolutionNote: '现场补贴计入项目成本',
+      locationReviewStatus: 'confirmed_valid',
+      locationReviewNote: '现场负责人已确认',
       version: 2,
     },
     allocations: [{
@@ -499,7 +530,12 @@ test('no-session whole-day drafts can add, remove, and balance distinct availabl
       { projectId: 'PROJECT-002', projectName: '新宿改修' },
     ],
   }
-  const emptyDraft = { ...draft, allocations: [] }
+  const emptyDraft = {
+    ...draft,
+    allocations: [],
+    locationReviewStatus: 'confirmed_valid',
+    locationReviewNote: '已核对',
+  }
   const markup = render(AttendanceResolutionDialog, {
     detail: noSessionDetail,
     draft: emptyDraft,
@@ -542,6 +578,59 @@ test('no-session whole-day drafts can add, remove, and balance distinct availabl
   assert.deepEqual(removeProjectAllocation(second, 'PROJECT-001').allocations, [
     { projectId: 'PROJECT-002', amount: 0, allocationNote: '' },
   ])
+})
+
+test('general attendance renders company facts and never exposes project allocation controls', () => {
+  const {
+    default: AttendanceResolutionDialog,
+    buildInitialResolutionDraft,
+    resolutionConfirmBlockers,
+  } = moduleFor('dialog')
+  const generalDetail = {
+    ...detail,
+    hasMoneyScope: false,
+    facts: {
+      ...detail.facts,
+      issueCodes: [],
+      hasAbnormalLocation: false,
+      sessions: [{
+        ...session,
+        attendanceMode: 'general',
+        projectId: null,
+        projectName: null,
+        clockInEvent: { ...session.clockInEvent, result: 'normal', abnormalReason: null },
+      }],
+    },
+    salary: { ...detail.salary, suggestedProjectCost: 0 },
+    allocations: [],
+    availableProjects: [],
+  }
+  const initial = buildInitialResolutionDraft(generalDetail)
+  assert.deepEqual(initial, {
+    resolutionType: 'full_day', attendanceUnits: 1,
+    finalProjectCost: 0, allocations: [],
+    resolutionNote: '', locationReviewStatus: '', locationReviewNote: '', version: 0,
+  })
+  assert.deepEqual(resolutionConfirmBlockers(generalDetail, initial), [])
+  assert.deepEqual(resolutionConfirmBlockers({
+    ...generalDetail,
+    permissions: {
+      ...generalDetail.permissions,
+      canViewProjectCosts: false,
+      canUpdateProjectCosts: false,
+    },
+  }, initial), [])
+
+  const markup = render(AttendanceResolutionDialog, {
+    detail: generalDetail,
+    draft: { ...draft, finalProjectCost: 12000 },
+    saving: false,
+    error: '',
+    onChange() {}, onSaveDraft() {}, onConfirm() {}, onClose() {},
+  })
+  assert.match(markup, /公司 \/ 非项目/u)
+  assert.match(markup, /该员工工资计入公司人员成本，不进入项目成本/u)
+  assert.doesNotMatch(markup, /项目分摊金额|最终项目人工成本|选择待添加项目/u)
 })
 
 test('available-project allocation controls honor project permissions and day locks', () => {
@@ -754,6 +843,7 @@ test('zero-unit zero-cost excused conclusions can confirm without salary or mone
   const { resolutionConfirmBlockers } = moduleFor('dialog')
   const nonMoneyDetail = {
     ...detail,
+    facts: { ...detail.facts, issueCodes: [], hasAbnormalLocation: false },
     permissions: {
       canResolve: true,
       canViewSalary: false,
@@ -769,6 +859,8 @@ test('zero-unit zero-cost excused conclusions can confirm without salary or mone
       finalProjectCost: 0,
       allocations: [],
       resolutionNote: '',
+      locationReviewStatus: '',
+      locationReviewNote: '',
       version: 0,
     }), [])
   }
@@ -866,6 +958,7 @@ test('revoked money permissions lock an existing monetary resolution but not a n
   const positiveUnitsButNoExistingMoney = {
     ...permissionsRevoked,
     hasMoneyScope: false,
+    facts: { ...permissionsRevoked.facts, issueCodes: [], hasAbnormalLocation: false },
     resolution: {
       ...permissionsRevoked.resolution,
       resolutionType: 'full_day',
@@ -1095,7 +1188,8 @@ test('monthly payroll, project costs, and settings render the approved accountin
     /<section class="labor-report-summary"[^>]*>([\s\S]*?)<\/section>/u,
   )?.[1] || ''
   for (const label of [
-    '应出勤人天', '已确认人天', '待处理人次', '工资预览总额', '未分摊项目成本',
+    '应出勤人天', '已确认人天', '待处理人次', '工资预览总额',
+    '已分摊项目成本', '未分摊项目成本', '公司人员成本',
   ]) assert.match(monthlySummaryMarkup, new RegExp(label, 'u'))
   for (const legacyLabel of [
     '员工人数', '确认整天', '确认半天', '缺勤', '项目已分摊',
@@ -1105,6 +1199,10 @@ test('monthly payroll, project costs, and settings render the approved accountin
   assert.equal((monthlyMarkup.match(/历史人工记录无逐日考勤/gu) || []).length, 2)
   assert.match(monthlyMarkup, /aria-label="查看山田太郎 2026-07 整月考勤"/u)
   assert.doesNotMatch(monthlyMarkup, /aria-label="查看历史员工 2026-07 整月考勤"/u)
+  assert.match(monthlyMarkup, /大工/u)
+  assert.match(monthlyMarkup, /项目打卡/u)
+  assert.match(monthlyMarkup, /确认有效 1 条/u)
+  assert.match(monthlyMarkup, /公司人员成本/u)
 
   const projectMarkup = render(ProjectLaborCostTab, {
     service: {},
@@ -1133,6 +1231,52 @@ test('monthly payroll, project costs, and settings render the approved accountin
   assert.match(settingsMarkup, /启用日期/u)
 })
 
+test('monthly rows distinguish project, general, and exempt attendance on desktop and mobile', () => {
+  const { default: MonthlyPayrollTab } = moduleFor('monthly')
+  const general = {
+    ...monthlyEmployee,
+    employeeProfileId: '52000000-0000-4000-8000-000000000002',
+    employeeNumber: 'SW-002',
+    employeeName: '公司员工',
+    position: '总务',
+    attendanceMethod: 'general',
+    companyPersonnelCost: monthlyEmployee.netSalary,
+    projectAllocatedAmount: 0,
+    projectUnallocatedAmount: 0,
+    locationAbnormalCount: 2,
+    locationReviewSummary: '确认有效 1 条；判定异常 1 条',
+  }
+  const exempt = {
+    ...monthlyEmployee,
+    employeeProfileId: '52000000-0000-4000-8000-000000000003',
+    employeeNumber: 'SW-003',
+    employeeName: '免打卡员工',
+    position: '管理',
+    attendanceMethod: 'exempt',
+    companyPersonnelCost: monthlyEmployee.netSalary,
+    projectAllocatedAmount: 0,
+    projectUnallocatedAmount: 0,
+    locationAbnormalCount: 0,
+    locationReviewSummary: '',
+  }
+  const markup = render(MonthlyPayrollTab, {
+    service: {}, month: '2026-07',
+    initialReport: {
+      ...monthlyReport,
+      summary: { ...monthlyReport.summary, employeeCount: 3 },
+      employees: [monthlyEmployee, general, exempt],
+    },
+  })
+  assert.ok((markup.match(/项目打卡/gu) || []).length >= 2)
+  assert.ok((markup.match(/非项目打卡/gu) || []).length >= 2)
+  assert.ok((markup.match(/免打卡 · 默认全勤/gu) || []).length >= 2)
+  assert.ok((markup.match(/公司人员成本/gu) || []).length >= 3)
+  assert.match(markup, /定位异常 2 条/u)
+  assert.match(markup, /确认有效 1 条；判定异常 1 条/u)
+  assert.ok((markup.match(/免打卡员工无虚构逐日记录/gu) || []).length >= 2)
+  assert.doesNotMatch(markup, /aria-label="查看免打卡员工 2026-07 整月考勤"/u)
+})
+
 test('salary and employee-level project data are absent under redacted permission variants', () => {
   const { default: MonthlyPayrollTab } = moduleFor('monthly')
   const { default: ProjectLaborCostTab } = moduleFor('project')
@@ -1151,7 +1295,10 @@ test('salary and employee-level project data are absent under redacted permissio
   for (const label of ['应出勤人天', '已确认人天', '待处理人次']) {
     assert.match(redactedSummaryMarkup, new RegExp(label, 'u'))
   }
-  assert.doesNotMatch(redactedSummaryMarkup, /工资预览总额|未分摊项目成本/u)
+  assert.doesNotMatch(
+    redactedSummaryMarkup,
+    /工资预览总额|已分摊项目成本|未分摊项目成本|公司人员成本/u,
+  )
 
   const projectMarkup = render(ProjectLaborCostTab, {
     service: {}, month: '2026-07', initialReport: redactedProjectReport,
@@ -1566,6 +1713,8 @@ test('styles are fully scoped and turn the desktop table into narrow employee ca
   assert.match(css, /\.labor-accounting-page\s+\.labor-salary-summary\s*>\s*section\s*\{/u)
   assert.match(css, /\.labor-accounting-page\s+\.labor-salary-summary\s+section\s*>\s*dl\s*\{/u)
   assert.match(css, /\.labor-accounting-page\s+\.labor-allocation-project-picker\s*\{/u)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-location-review\s*\{/u)
+  assert.match(css, /\.labor-accounting-page\s+\.labor-attendance-method-badge\s*\{/u)
   assert.match(
     css,
     /\.labor-accounting-page\s+\.labor-month-calendar-week\s*\{[^}]*grid-template-columns:\s*repeat\(7,/su,

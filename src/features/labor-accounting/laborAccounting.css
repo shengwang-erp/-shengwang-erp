@@ -950,6 +950,77 @@
   font-size: 0.68rem;
 }
 
+.labor-accounting-page .labor-location-review {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #e3c887;
+  border-radius: 11px;
+  background: #fff9eb;
+}
+
+.labor-accounting-page .labor-location-review legend {
+  padding: 0 5px;
+  color: #554a33;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-location-review-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.labor-accounting-page .labor-location-review-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #dfd1b1;
+  border-radius: 9px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.labor-accounting-page .labor-location-review-options label:has(input:checked) {
+  border-color: var(--labor-gold);
+  box-shadow: inset 0 0 0 1px var(--labor-gold);
+}
+
+.labor-accounting-page .labor-location-review-options input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  accent-color: var(--labor-gold);
+}
+
+.labor-accounting-page .labor-location-review textarea {
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+}
+
+.labor-accounting-page .labor-location-review > small {
+  color: #756540;
+  line-height: 1.45;
+}
+
+.labor-accounting-page .labor-company-cost-notice {
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: 1px solid #b9d7c5;
+  border-radius: 11px;
+  background: #eef8f2;
+  color: #2f6848;
+}
+
+.labor-accounting-page .labor-company-cost-notice span {
+  font-size: 0.78rem;
+}
+
 .labor-accounting-page .labor-redacted-note,
 .labor-accounting-page .labor-salary-warning {
   display: grid;
@@ -1525,9 +1596,37 @@
 }
 
 .labor-accounting-page .labor-payroll-issues {
-  display: block;
+  display: grid;
   min-width: 190px;
+  gap: 4px;
   line-height: 1.55;
+}
+
+.labor-accounting-page .labor-payroll-issues small {
+  color: var(--labor-muted);
+  overflow-wrap: anywhere;
+}
+
+.labor-accounting-page .labor-attendance-method-badge {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 7px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e8f2eb;
+  color: #356449;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.labor-accounting-page .labor-attendance-method-badge[data-method='general'] {
+  background: #e7f0f6;
+  color: #315f7d;
+}
+
+.labor-accounting-page .labor-attendance-method-badge[data-method='exempt'] {
+  background: #f1e9f6;
+  color: #6a477b;
 }
 
 .labor-accounting-page .labor-payroll-write-area,

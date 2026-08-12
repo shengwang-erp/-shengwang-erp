@@ -11,6 +11,7 @@ const SAFE_ERRORS = Object.freeze({
   ATTENDANCE_ACCOUNTING_OPEN_SESSION: '员工仍在打卡中，暂不能确认当日核算',
   ATTENDANCE_ACCOUNTING_MONTH_INCOMPLETE: '本月仍有未处理考勤，暂不能确认工资',
   ATTENDANCE_ACCOUNTING_MONTH_LOCKED: '该月份工资已经确认，请先重新打开',
+  ATTENDANCE_GENERAL_PROJECT_COST_FORBIDDEN: '非项目考勤不能计入项目人工成本',
 })
 
 const ERROR_MESSAGES = Object.freeze({
@@ -38,6 +39,9 @@ const MAX_ALLOCATIONS = 100
 
 const RESOLUTION_TYPE_SET = new Set(ACCOUNTING_RESOLUTION_TYPES)
 const ISSUE_CODE_SET = new Set(ATTENDANCE_ISSUE_CODES)
+const ATTENDANCE_MODE_SET = new Set(['project', 'general'])
+const ATTENDANCE_METHOD_SET = new Set(['project', 'general', 'exempt'])
+const LOCATION_REVIEW_STATUS_SET = new Set(['confirmed_valid', 'recorded_abnormal'])
 const ISSUE_ORDER = Object.freeze([
   'abnormal_location', 'missing_clock_in', 'missing_clock_out',
   'late', 'early', 'overtime_pending',
@@ -67,12 +71,14 @@ const EVENT_KEYS = Object.freeze([
   'eventId', 'eventType', 'serverRecordedAt', 'result', 'abnormalReason',
 ])
 const SESSION_KEYS = Object.freeze([
-  'sessionId', 'projectId', 'projectName', 'status', 'openedAt', 'closedAt',
+  'sessionId', 'attendanceMode', 'projectId', 'projectName', 'status', 'openedAt', 'closedAt',
   'clockInEvent', 'clockOutEvent',
 ])
 const COMPACT_RESOLUTION_KEYS = Object.freeze([
   'resolutionId', 'resolutionType', 'attendanceUnits', 'accountingStatus',
-  'scheduleRequired', 'resolutionNote', 'confirmedAt', 'version',
+  'scheduleRequired', 'resolutionNote', 'locationReviewStatus',
+  'locationReviewNote', 'locationReviewedByEmployeeProfileId',
+  'locationReviewedAt', 'confirmedAt', 'version',
 ])
 const DASHBOARD_EMPLOYEE_KEYS = Object.freeze([
   'employeeProfileId', 'employeeNumber', 'name', 'department', 'position',
@@ -82,13 +88,14 @@ const DASHBOARD_EMPLOYEE_KEYS = Object.freeze([
 ])
 const MONTHLY_EMPLOYEE_KEYS = Object.freeze([
   'employeeProfileId', 'employeeNumber', 'employeeName', 'department',
+  'position', 'attendanceMethod', 'locationAbnormalCount', 'locationReviewSummary',
   'fullDays', 'halfDays', 'excusedDays', 'absenceDays', 'pendingDays',
   'issueCounts', 'status', 'payrollId', 'version',
 ])
 const MONTHLY_MONEY_KEYS = Object.freeze([
   'salaryType', 'baseSalarySnapshot', 'basePay', 'overtimePay', 'bonus',
   'deduction', 'netSalary', 'projectAllocatedAmount',
-  'projectUnallocatedAmount', 'confirmationNote', 'confirmedAt',
+  'projectUnallocatedAmount', 'companyPersonnelCost', 'confirmationNote', 'confirmedAt',
 ])
 
 export class LaborAccountingServiceError extends Error {
@@ -441,6 +448,15 @@ function validateAttendanceEvent(value, expectedType) {
 
 function validateSession(value) {
   const row = objectShape(value, SESSION_KEYS)
+  const attendanceMode = enumValue(row.attendanceMode, ATTENDANCE_MODE_SET)
+  const projectId = row.projectId === null ? null : identifier(row.projectId)
+  const projectName = row.projectName === null
+    ? null
+    : textValue(row.projectName, { min: 1, max: MAX_IDENTIFIER_LENGTH })
+  if ((attendanceMode === 'project' && (projectId === null || projectName === null)) ||
+      (attendanceMode === 'general' && (projectId !== null || projectName !== null))) {
+    throw invalidResponse()
+  }
   const status = enumValue(row.status, new Set(['open', 'closed']))
   const closedAt = instantValue(row.closedAt, { nullable: true })
   const clockInEvent = row.clockInEvent === null
@@ -455,8 +471,9 @@ function validateSession(value) {
   }
   return {
     sessionId: uuidValue(row.sessionId),
-    projectId: identifier(row.projectId),
-    projectName: textValue(row.projectName, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
+    attendanceMode,
+    projectId,
+    projectName,
     status,
     openedAt: instantValue(row.openedAt),
     closedAt,
@@ -486,12 +503,36 @@ function validateCompactResolution(value) {
   const confirmedAt = instantValue(row.confirmedAt, { nullable: true })
   if ((accountingStatus === 'draft' && confirmedAt !== null) ||
       (accountingStatus !== 'draft' && confirmedAt === null)) throw invalidResponse()
+  const locationReviewStatus = row.locationReviewStatus === null
+    ? null
+    : enumValue(row.locationReviewStatus, LOCATION_REVIEW_STATUS_SET)
+  const locationReviewNote = textValue(row.locationReviewNote, {
+    max: MAX_NOTE_LENGTH, trim: true,
+  })
+  if (locationReviewNote !== row.locationReviewNote) throw invalidResponse()
+  const locationReviewedByEmployeeProfileId = uuidValue(
+    row.locationReviewedByEmployeeProfileId, { nullable: true },
+  )
+  const locationReviewedAt = instantValue(row.locationReviewedAt, { nullable: true })
+  const noReview = locationReviewStatus === null && locationReviewNote === '' &&
+    locationReviewedByEmployeeProfileId === null && locationReviewedAt === null
+  const draftReview = locationReviewStatus !== null && locationReviewNote.length > 0 &&
+    accountingStatus === 'draft' && locationReviewedByEmployeeProfileId === null &&
+    locationReviewedAt === null
+  const finalReview = locationReviewStatus !== null && locationReviewNote.length > 0 &&
+    accountingStatus !== 'draft' && locationReviewedByEmployeeProfileId !== null &&
+    locationReviewedAt !== null
+  if (!noReview && !draftReview && !finalReview) throw invalidResponse()
   return {
     resolutionId: uuidValue(row.resolutionId),
     ...typeAndUnits,
     accountingStatus,
     scheduleRequired: booleanValue(row.scheduleRequired),
     resolutionNote: textValue(row.resolutionNote, { max: MAX_NOTE_LENGTH }),
+    locationReviewStatus,
+    locationReviewNote,
+    locationReviewedByEmployeeProfileId,
+    locationReviewedAt,
     confirmedAt,
     version: safeInteger(row.version, { min: 1 }),
   }
@@ -630,7 +671,7 @@ function validateResolutionFacts(value) {
   }
 }
 
-function validateResolutionSalary(value, canViewProjectCosts) {
+function validateResolutionSalary(value, canViewProjectCosts, generalOnly) {
   const row = objectShape(value, [
     'salaryType', 'baseSalary', 'dailySalary', 'hourlyWage', 'suggestedProjectCost',
   ])
@@ -639,7 +680,9 @@ function validateResolutionSalary(value, canViewProjectCosts) {
   })
   const suggestedProjectCost = canViewProjectCosts
     ? yenValue(row.suggestedProjectCost)
-    : row.suggestedProjectCost === null ? null : fail(invalidResponse)
+    : generalOnly && row.suggestedProjectCost === 0
+      ? 0
+      : row.suggestedProjectCost === null ? null : fail(invalidResponse)
   return { ...result, suggestedProjectCost }
 }
 
@@ -699,8 +742,12 @@ function validateResolutionDetail(value) {
   }
   if (permissions.canUpdateProjectCosts && (!permissions.canResolve ||
       !permissions.canViewSalary || !permissions.canViewProjectCosts)) throw invalidResponse()
+  const facts = validateResolutionFacts(row.facts)
+  const generalOnly = facts.sessions.length > 0 && facts.sessions.every(
+    (session) => session.attendanceMode === 'general',
+  )
   const salary = permissions.canViewSalary
-    ? validateResolutionSalary(row.salary, permissions.canViewProjectCosts)
+    ? validateResolutionSalary(row.salary, permissions.canViewProjectCosts, generalOnly)
     : row.salary === null ? null : fail(invalidResponse)
   const resolution = row.resolution === null
     ? null
@@ -737,6 +784,20 @@ function validateResolutionDetail(value) {
   if (!permissions.canViewProjectCosts && availableProjects.length !== 0) {
     throw invalidResponse()
   }
+  const hasMoneyScope = booleanValue(row.hasMoneyScope)
+  const hasAbnormalLocation = facts.issueCodes.includes('abnormal_location')
+  const hasLocationReview = resolution?.locationReviewStatus !== null &&
+    resolution?.locationReviewStatus !== undefined
+  if (resolution !== null && hasLocationReview !== hasAbnormalLocation) {
+    throw invalidResponse()
+  }
+  if (generalOnly && (
+    hasMoneyScope || allocations.length !== 0 || availableProjects.length !== 0 ||
+    salary?.suggestedProjectCost !== 0 ||
+    (permissions.canViewProjectCosts && resolution !== null && (
+      resolution.suggestedProjectCost !== 0 || resolution.finalProjectCost !== 0
+    ))
+  )) throw invalidResponse()
   return {
     employee: {
       employeeProfileId: uuidValue(employeeRow.employeeProfileId),
@@ -747,8 +808,8 @@ function validateResolutionDetail(value) {
     },
     workDate: dateValue(row.workDate),
     scheduleRequired: booleanValue(row.scheduleRequired),
-    facts: validateResolutionFacts(row.facts),
-    hasMoneyScope: booleanValue(row.hasMoneyScope),
+    facts,
+    hasMoneyScope,
     permissions,
     salary,
     resolution,
@@ -781,6 +842,7 @@ function validateMonthlyEmployee(value, canViewSalary) {
   const status = enumValue(row.status, PAYROLL_ROW_STATUS_SET)
   const payrollId = uuidValue(row.payrollId, { nullable: true })
   const version = safeInteger(row.version)
+  const attendanceMethod = enumValue(row.attendanceMethod, ATTENDANCE_METHOD_SET)
   if (legacy && (row.source !== 'legacy' || status !== 'confirmed' || payrollId !== null || version !== 0)) {
     throw invalidResponse()
   }
@@ -793,6 +855,12 @@ function validateMonthlyEmployee(value, canViewSalary) {
     employeeNumber: textValue(row.employeeNumber, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
     employeeName: textValue(row.employeeName, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
     department: textValue(row.department, { max: MAX_IDENTIFIER_LENGTH }),
+    position: textValue(row.position, { max: MAX_IDENTIFIER_LENGTH }),
+    attendanceMethod,
+    locationAbnormalCount: safeInteger(row.locationAbnormalCount),
+    locationReviewSummary: textValue(row.locationReviewSummary, {
+      max: MAX_NOTE_LENGTH, trim: true,
+    }),
     fullDays: safeInteger(row.fullDays),
     halfDays: safeInteger(row.halfDays),
     excusedDays: safeInteger(row.excusedDays),
@@ -816,6 +884,15 @@ function validateMonthlyEmployee(value, canViewSalary) {
     const confirmedAt = instantValue(row.confirmedAt, { nullable: true })
     if ((!legacy && status === 'confirmed' && confirmedAt === null) ||
         (status !== 'confirmed' && confirmedAt !== null)) throw invalidResponse()
+    const projectAllocatedAmount = yenValue(row.projectAllocatedAmount)
+    const projectUnallocatedAmount = yenValue(row.projectUnallocatedAmount)
+    const companyPersonnelCost = yenValue(row.companyPersonnelCost)
+    const expectedCompanyCost = netSalary === null ? 0 : netSalary
+    if ((attendanceMethod === 'project' && companyPersonnelCost !== 0) ||
+        (attendanceMethod !== 'project' && (
+          companyPersonnelCost !== expectedCompanyCost ||
+          projectAllocatedAmount !== 0 || projectUnallocatedAmount !== 0
+        ))) throw invalidResponse()
     Object.assign(result, {
       salaryType,
       baseSalarySnapshot: yenValue(row.baseSalarySnapshot),
@@ -824,8 +901,9 @@ function validateMonthlyEmployee(value, canViewSalary) {
       bonus: yenValue(row.bonus),
       deduction: yenValue(row.deduction),
       netSalary,
-      projectAllocatedAmount: yenValue(row.projectAllocatedAmount),
-      projectUnallocatedAmount: yenValue(row.projectUnallocatedAmount),
+      projectAllocatedAmount,
+      projectUnallocatedAmount,
+      companyPersonnelCost,
       confirmationNote: textValue(row.confirmationNote, { max: MAX_NOTE_LENGTH }),
       confirmedAt,
     })
@@ -992,19 +1070,23 @@ function validateEmployeeMonthCalendar(value, employeeProfileId, month) {
 function validatePayrollResult(value) {
   const row = objectShape(value, ['employee', 'payroll'])
   const employeeRow = objectShape(row.employee, [
-    'employeeProfileId', 'employeeNumber', 'employeeName', 'department',
+    'employeeProfileId', 'employeeNumber', 'employeeName', 'department', 'position',
   ])
   const baseKeys = [
     'payrollId', 'salaryMonth', 'fullDays', 'halfDays', 'absenceDays',
-    'status', 'confirmedAt', 'version',
+    'status', 'attendanceMethodSnapshot', 'locationAbnormalCount',
+    'locationReviewSummary', 'confirmedAt', 'version',
   ]
   const moneyKeys = [
     'salaryTypeSnapshot', 'baseSalarySnapshot', 'basePay', 'overtimePay',
-    'bonus', 'deduction', 'netSalary', 'confirmationNote',
+    'bonus', 'deduction', 'netSalary', 'companyPersonnelCost', 'confirmationNote',
   ]
   const hasMoney = ownDataValue(row.payroll, 'salaryTypeSnapshot') !== undefined
   const payrollRow = objectShape(row.payroll, hasMoney ? [...baseKeys, ...moneyKeys] : baseKeys)
   const status = enumValue(payrollRow.status, PAYROLL_STATUS_SET)
+  const attendanceMethodSnapshot = enumValue(
+    payrollRow.attendanceMethodSnapshot, ATTENDANCE_METHOD_SET,
+  )
   const confirmedAt = instantValue(payrollRow.confirmedAt, { nullable: true })
   if ((status === 'confirmed' && confirmedAt === null) ||
       (status !== 'confirmed' && confirmedAt !== null)) throw invalidResponse()
@@ -1015,10 +1097,21 @@ function validatePayrollResult(value) {
     halfDays: safeInteger(payrollRow.halfDays),
     absenceDays: safeInteger(payrollRow.absenceDays),
     status,
+    attendanceMethodSnapshot,
+    locationAbnormalCount: safeInteger(payrollRow.locationAbnormalCount),
+    locationReviewSummary: textValue(payrollRow.locationReviewSummary, {
+      max: MAX_NOTE_LENGTH, trim: true,
+    }),
     confirmedAt,
     version: safeInteger(payrollRow.version, { min: 1 }),
   }
   if (hasMoney) {
+    const netSalary = yenValue(payrollRow.netSalary)
+    const companyPersonnelCost = yenValue(payrollRow.companyPersonnelCost)
+    if ((attendanceMethodSnapshot === 'project' && companyPersonnelCost !== 0) ||
+        (attendanceMethodSnapshot !== 'project' && companyPersonnelCost !== netSalary)) {
+      throw invalidResponse()
+    }
     Object.assign(payroll, {
       salaryTypeSnapshot: enumValue(payrollRow.salaryTypeSnapshot, SALARY_TYPE_SET),
       baseSalarySnapshot: yenValue(payrollRow.baseSalarySnapshot),
@@ -1026,7 +1119,8 @@ function validatePayrollResult(value) {
       overtimePay: yenValue(payrollRow.overtimePay),
       bonus: yenValue(payrollRow.bonus),
       deduction: yenValue(payrollRow.deduction),
-      netSalary: yenValue(payrollRow.netSalary),
+      netSalary,
+      companyPersonnelCost,
       confirmationNote: textValue(payrollRow.confirmationNote, { max: MAX_NOTE_LENGTH }),
     })
   }
@@ -1036,6 +1130,7 @@ function validatePayrollResult(value) {
       employeeNumber: textValue(employeeRow.employeeNumber, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
       employeeName: textValue(employeeRow.employeeName, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
       department: textValue(employeeRow.department, { min: 1, max: MAX_IDENTIFIER_LENGTH }),
+      position: textValue(employeeRow.position, { max: MAX_IDENTIFIER_LENGTH }),
     },
     payroll,
   }
@@ -1299,7 +1394,8 @@ function inputYen(value) {
 function validateResolutionInput(value, { requireBalance = false } = {}) {
   const row = inputObject(value, [
     'employeeProfileId', 'workDate', 'resolutionType', 'attendanceUnits',
-    'finalProjectCost', 'allocations', 'resolutionNote', 'version',
+    'finalProjectCost', 'allocations', 'resolutionNote',
+    'locationReviewStatus', 'locationReviewNote', 'version',
   ])
   const typeAndUnits = resolutionUnits(row.resolutionType, row.attendanceUnits, invalidInput)
   const finalProjectCost = inputYen(row.finalProjectCost)
@@ -1321,6 +1417,13 @@ function validateResolutionInput(value, { requireBalance = false } = {}) {
     }
   })
   if (requireBalance && allocatedTotal !== finalProjectCost) throw invalidInput()
+  const rawReviewStatus = inputText(row.locationReviewStatus, { max: MAX_IDENTIFIER_LENGTH })
+  const locationReviewStatus = rawReviewStatus === ''
+    ? null
+    : enumValue(rawReviewStatus, LOCATION_REVIEW_STATUS_SET, invalidInput)
+  const locationReviewNote = inputText(row.locationReviewNote, { max: MAX_NOTE_LENGTH })
+  if ((locationReviewStatus === null && locationReviewNote !== '') ||
+      (locationReviewStatus !== null && locationReviewNote === '')) throw invalidInput()
   return {
     employeeProfileId: inputUuid(row.employeeProfileId),
     workDate: inputDate(row.workDate),
@@ -1328,6 +1431,8 @@ function validateResolutionInput(value, { requireBalance = false } = {}) {
     finalProjectCost,
     allocations,
     resolutionNote: inputText(row.resolutionNote, { max: MAX_NOTE_LENGTH }),
+    locationReviewStatus,
+    locationReviewNote,
     version: inputInteger(row.version),
   }
 }
@@ -1518,6 +1623,8 @@ export function createLaborAccountingService(client = supabase, options) {
         p_final_project_cost: row.finalProjectCost,
         p_allocations: row.allocations,
         p_resolution_note: row.resolutionNote,
+        p_location_review_status: row.locationReviewStatus,
+        p_location_review_note: row.locationReviewNote,
         p_version: row.version,
       }))
     },
@@ -1532,6 +1639,8 @@ export function createLaborAccountingService(client = supabase, options) {
         p_final_project_cost: row.finalProjectCost,
         p_allocations: row.allocations,
         p_resolution_note: row.resolutionNote,
+        p_location_review_status: row.locationReviewStatus,
+        p_location_review_note: row.locationReviewNote,
         p_version: row.version,
       }))
     },
