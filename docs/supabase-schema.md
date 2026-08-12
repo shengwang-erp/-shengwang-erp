@@ -4,7 +4,8 @@
 迁移为唯一规范路径，并按目录内实际文件名排序执行，不可跳过或交换顺序。本功能的直接链为
 `202607140001`、`202607140002`、`202607140003`、`202607140004`、`202607150001`、
 `202607150003`、`202607160001`、`202607160002`、`202608080001`–`005`、
-`202608090001`、`202608100002`、`202608100003`；目录中存在的其他功能迁移同样按文件名插入正确顺序。
+`202608090001`、`202608100002`、`202608100003`、`202608110001`–`003`、`202608120001`；
+目录中存在的其他功能迁移同样按文件名插入正确顺序。
 [supabase-schema.sql](./supabase-schema.sql) 包含 `202607140001` 历史基础快照和
 `202607160001` 考勤核算审查快照以及截至 `202608100002` 的账本接口摘要；它没有复制
 `202608100003_project_cost_accounting_summary.sql` 的可执行定义，也不包含中间迁移的完整依赖，
@@ -133,6 +134,43 @@ NFKC、trim 和空白折叠。担当只接受当前在职、启用且属于准�
 - `operator_id text`
 - `operator_name text`
 - `remark text`
+
+### 部门打卡模式与 v2 契约
+
+`202608120001_department_attendance_modes.sql` 在不删除 v1 RPC 的前提下增加部门打卡策略：
+
+- `employee_profiles.attendance_required boolean not null default true`：是否要求员工打卡；
+- `employee_profiles.attendance_policy_updated_at timestamptz`：策略更新时间；
+- `employee_profiles.attendance_policy_updated_by uuid`：引用规范员工主表的策略更新人；
+- `project_attendance_sessions.attendance_mode text not null default 'project'`：只允许
+  `project / general`，所有历史场次由默认值兼容回填为 `project`；
+- `project_attendance_events.out_of_range_confirmed_at timestamptz`：v2 项目越界确认的服务端时间。
+
+`attendance_session_mode_payload_check` 强制项目场次保存完整且非空的项目、地址、坐标和半径快照，
+通用场次则强制这些项目成本身份字段全部为 `null`。事件形状约束要求通用场次只能保存
+`result = 'not_applicable'`，且 `distance_meters / radius_meters` 都为 `null`；项目场次继续使用
+`normal / abnormal` 与正数半径。触发器同时校验事件和场次模式，通用场次不能新增或更新项目
+点位与照片元数据。
+
+服务器按规范员工字段派生策略：`attendance_required = false` 为 `exempt`；需要打卡且部门为
+`工程部` 时为 `project`；其他需要打卡的部门为 `general`。浏览器不能传入或覆盖模式。
+
+新增 RPC：
+
+- `list_attendance_projects_v2_secure()`：仅项目模式返回当前合格工程；其他模式返回空集合；
+- `get_my_today_attendance_v2_secure()`：保留 v1 今日考勤字段并新增
+  `policy.attendanceRequired / policy.attendanceMode`，场次和事件 DTO 分别新增
+  `attendanceMode / outOfRangeConfirmedAt`；
+- `clock_in_project_v2_secure(text, uuid, float8, float8, numeric, timestamptz, boolean)`：项目打卡；
+- `clock_in_general_secure(uuid, float8, float8, numeric, timestamptz)`：无项目身份的公司通用打卡；
+- `clock_out_attendance_v2_secure(uuid, uuid, float8, float8, numeric, timestamptz, boolean)`：按场次
+  模式打卡下班。
+
+v2 写 RPC 只返回两种联合结果：未确认越界且没有任何写入时返回
+`{ status: 'confirmation_required', confirmation: ... }`；写入成功或命中同请求幂等记录时返回
+`{ status: 'saved', session: ..., event: ... }`。项目距离、半径、项目快照、结果和确认时间均由
+服务器计算。所有 v2 函数先撤销 `public / anon` 执行权，再仅授权 `authenticated / service_role`；
+v1 签名与既有权限在过渡期保持不变。
 
 ### attendance_accounting 人工考勤核算
 

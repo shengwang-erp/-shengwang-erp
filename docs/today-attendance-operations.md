@@ -18,6 +18,16 @@
 
 发布前应确认隔离目录只包含这些已提交前提：`202607140001`–`202607140004`、`202607150001` 和 attendance `202607150003`。任何额外或未提交 SQL 都会使本指南的数据库证据失效。
 
+### 部门打卡模式 v2 的安全发布顺序
+
+1. Apply `202608120001_department_attendance_modes.sql`.
+2. Verify v1 and v2 RPC signatures are both executable.
+3. Deploy the frontend that calls v2 RPCs.
+4. Keep v1 RPCs until a later independently reviewed cleanup migration.
+
+该顺序是兼容性边界：数据库迁移先为历史场次回填 `project` 模式并同时保留 v1/v2，前端随后
+切换到 v2。不得在同一迁移中删除或收回 v1 RPC；只有单独评审的后续清理迁移才能结束过渡期。
+
 ## 2. 私有照片桶设置
 
 照片桶的固定契约如下：
@@ -94,6 +104,11 @@ npx supabase stop --workdir /private/tmp/kaobeierp-task7-db --no-backup
 ## 4. 角色与读取矩阵
 
 所有角色都必须先满足：员工为 `在职`、账号为 `active`、无需强制改密且未删除。模块权限不是进入今日打卡的前提；有效的零模块员工仍可进入。
+
+`202608120001` 起，服务器还会按 `employee_profiles.attendance_required` 与规范部门决定打卡模式：
+免打卡员工为 `exempt`；需打卡的工程部员工为 `project`；其他需打卡员工为 `general`。项目模式
+保留项目快照、半径、点位和照片；公司通用模式不携带项目身份，事件固定为 `not_applicable`，
+距离和半径为空，且不能创建点位或照片。客户端部门名称、缓存或请求参数都不能覆盖该策略。
 
 每个满足该身份门槛的员工都可列出全部考勤合格项目，并可对任一合格项目打卡；项目担当关系只扩大读取范围，不限制打卡项目，也不赋予代写权限。合格项目必须同时满足 active 数据 envelope、业务状态为 `待开工`/`进行中`、已确认且仍匹配的非空地址快照、有效经纬度和正数半径。
 
