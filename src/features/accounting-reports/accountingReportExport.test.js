@@ -11,6 +11,7 @@ import {
   printAccountingReport,
 } from './accountingReportExport.js'
 import { createMonthlySummaryReport } from './monthlySummaryReport.js'
+import { createMonthlyPayrollReport } from './monthlyPayrollReport.js'
 import { createOperatingExpenseReport } from './operatingExpenseReport.js'
 import { createPurchaseAccountingReport } from './purchaseAccountingReport.js'
 import { createSalaryReport } from './salaryReport.js'
@@ -208,6 +209,65 @@ test('real four-adapter workbooks preserve typed formats and inferred date, amou
   assert.equal(monthlySheet.getCell(percentRow, 2).value, 80)
   assert.equal(monthlySheet.getCell(percentRow, 2).numFmt, '0.####"%"')
   assert.equal(monthlySheet.getCell(percentRow, 2).alignment.horizontal, 'right')
+})
+
+test('monthly payroll workbook round-trips three neutral A4 sheets with native values and print controls', async () => {
+  const report = createMonthlyPayrollReport({
+    employees: [{
+      employeeProfileId: 'E-1', employeeNumber: 'SW-001', employeeName: '=山田太郎',
+      department: '工程部', position: '大工', attendanceMethod: 'project',
+      fullDays: 20, halfDays: 1, excusedDays: 0, absenceDays: 0, pendingDays: 1,
+      locationAbnormalCount: 1, locationReviewSummary: '判定异常：距离现场 420 米。'.repeat(8),
+      basePay: 290000, overtimePay: 10000, bonus: 0, deduction: 0, netSalary: 300000,
+      projectAllocatedAmount: 300000, projectUnallocatedAmount: 0, companyPersonnelCost: 0,
+      status: 'confirmed', confirmationNote: '已复核', confirmedAt: '2026-08-31T09:00:00+09:00',
+    }],
+    month: '2026-08', preparedBy: '会计甲', generatedAt: '2026-09-01T03:04:05.678Z',
+  })
+  const workbook = createAccountingReportWorkbook(ExcelJS, report)
+
+  assert.deepEqual(workbook.worksheets.map(({ name }) => name), [
+    '工资汇总', '工资明细', '定位异常记录',
+  ])
+  for (const sheet of workbook.worksheets) {
+    const firstHeaderLabel = sheet.name === '工资汇总' ? '汇总项目' : '员工编号'
+    const firstHeader = findHeaderRow(sheet, firstHeaderLabel)
+    assert.equal(sheet.pageSetup.paperSize, 9)
+    assert.equal(sheet.pageSetup.orientation, 'landscape')
+    assert.match(sheet.pageSetup.printArea, /^A1:[A-Z]+\d+$/u)
+    assert.match(sheet.pageSetup.printTitlesRow, /^1:\d+$/u)
+    assert.ok(sheet.getRows(1, sheet.rowCount).some((row) => row.values.includes('复核人：')))
+    assert.ok(sheet.getRows(1, sheet.rowCount).some((row) => row.values.includes('审批人：')))
+    assert.equal(sheet.getCell(firstHeader, 1).fill.fgColor.argb, 'FFF2F2F2')
+  }
+
+  const detail = workbook.getWorksheet('工资明细')
+  const detailHeader = findHeaderRow(detail, '员工编号')
+  const detailRow = detailHeader + 1
+  const netSalary = detail.getCell(detailRow, headerColumn(detail, detailHeader, '实发工资'))
+  const confirmedAt = detail.getCell(detailRow, headerColumn(detail, detailHeader, '确认日期'))
+  assert.equal(typeof netSalary.value, 'number')
+  assert.equal(netSalary.numFmt, ACCOUNTING_REPORT_MONEY_FORMAT)
+  assert.ok(confirmedAt.value instanceof Date)
+  assert.equal(confirmedAt.numFmt, 'yyyy-mm-dd')
+  assert.equal(detail.getCell(detailRow, headerColumn(detail, detailHeader, '员工姓名')).value, "'=山田太郎")
+
+  const anomaly = workbook.getWorksheet('定位异常记录')
+  const anomalyHeader = findHeaderRow(anomaly, '员工编号')
+  assert.equal(
+    anomaly.getCell(anomalyHeader + 1, headerColumn(anomaly, anomalyHeader, '定位复核摘要')).alignment.wrapText,
+    true,
+  )
+
+  const buffer = await workbook.xlsx.writeBuffer()
+  const loaded = new ExcelJS.Workbook()
+  await loaded.xlsx.load(buffer)
+  assert.deepEqual(loaded.worksheets.map(({ name }) => name), [
+    '工资汇总', '工资明细', '定位异常记录',
+  ])
+  assert.ok(loaded.getWorksheet('工资明细').getCell(
+    detailRow, headerColumn(detail, detailHeader, '确认日期'),
+  ).value instanceof Date)
 })
 
 test('forced-multipage salary repeats its exact header while monthly repeats only safe metadata', () => {

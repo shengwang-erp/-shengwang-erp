@@ -7,6 +7,7 @@ import { createServer } from 'vite'
 
 import { createAccountingReportModel } from './accountingReportModel.js'
 import { createMonthlySummaryReport } from './monthlySummaryReport.js'
+import { createMonthlyPayrollReport } from './monthlyPayrollReport.js'
 import { createOperatingExpenseReport } from './operatingExpenseReport.js'
 import { createPurchaseAccountingReport } from './purchaseAccountingReport.js'
 import { createSalaryReport } from './salaryReport.js'
@@ -93,6 +94,7 @@ test('print CSS selects named A4 pages, repeats headers, and stays independent o
   assert.match(css, /\.accounting-report-sheet\s*>\s*section\s*>\s*h2\s*\{[^}]*font-size:\s*1[2-4]pt/isu)
   assert.match(css, /thead\s*\{[^}]*display:\s*table-header-group/isu)
   assert.match(css, /break-inside:\s*avoid/iu)
+  assert.match(css, /overflow-wrap:\s*anywhere/iu)
   assert.match(css, /body\.accounting-report-printing\s*>\s*:not\(\.accounting-report-print-root\)\s*\{[^}]*display:\s*none/isu)
   assert.equal((css.match(/@bottom-center\s*\{/gu) || []).length, 2)
   assert.match(css, /content:\s*"第 " counter\(page\) " 页 \/ 共 " counter\(pages\) " 页"/u)
@@ -162,6 +164,32 @@ test('real four-adapter print markup formats and aligns values and preserves pro
   const monthlyHtml = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: monthly }))
   assert.match(monthlyHtml, /<td class="align-left">公司总成本<\/td><td class="align-right">¥654,321<\/td>/u)
   assert.match(monthlyHtml, /<td class="align-left">项目人工分摊率<\/td><td class="align-right">80%<\/td>/u)
+})
+
+test('monthly payroll print keeps formula-like names readable and long location reviews in proportional tables', () => {
+  const locationReviewSummary = '判定异常：员工到达临时材料搬入口，距离现场中心点 420 米，已核实原始定位并保留管理记录。'
+  const payroll = createMonthlyPayrollReport({
+    employees: [{
+      employeeNumber: 'SW-001', employeeName: '=工程员工', department: '工程部', position: '大工',
+      attendanceMethod: 'project', fullDays: 20, halfDays: 1, excusedDays: 0,
+      absenceDays: 0, pendingDays: 1, locationAbnormalCount: 1, locationReviewSummary,
+      basePay: 290000, overtimePay: 10000, bonus: 0, deduction: 0, netSalary: 300000,
+      projectAllocatedAmount: 300000, companyPersonnelCost: 0, status: 'confirmed',
+      confirmationNote: '工资不因定位记录自动变化', confirmedAt: '2026-08-31T09:00:00+09:00',
+    }],
+    month: '2026-08', preparedBy: '会计甲', generatedAt: '2026-09-01T03:04:05.678Z',
+  })
+  const html = renderToStaticMarkup(createElement(AccountingReportPrintSheet, { report: payroll }))
+
+  assert.match(html, /accounting-report-sheet landscape/u)
+  assert.match(html, />=工程员工</u)
+  assert.match(html, new RegExp(locationReviewSummary, 'u'))
+  assert.match(html, /<footer><span>制表人：会计甲<\/span><span>复核人：<\/span><span>审批人：<\/span><\/footer>/u)
+  const anomalyTable = html.match(/<h2>定位异常记录<\/h2><table>([\s\S]*?)<\/table>/u)?.[1] || ''
+  const widths = [...anomalyTable.matchAll(/<col style="width:([^%]+)%"\/>/gu)]
+    .map((match) => Number(match[1]))
+  assert.equal(widths.length, 5)
+  assert.ok(widths[3] > widths[2])
 })
 
 test('forced-multipage salary and monthly markup retain named pages, repeated tables, and signature-only footers', () => {

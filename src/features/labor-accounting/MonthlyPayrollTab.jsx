@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 
+import AccountingReportActions from '../accounting-reports/AccountingReportActions.jsx'
+import { createMonthlyPayrollReport } from '../accounting-reports/monthlyPayrollReport.js'
 import { useLaborModalFocus } from './AttendanceResolutionDialog.jsx'
 import { ATTENDANCE_ISSUE_LABELS } from './AttendanceStatusTable.jsx'
 
@@ -575,6 +577,8 @@ export default function MonthlyPayrollTab({
   onAuthInvalid,
   onOpenDailyDate,
   initialReport = null,
+  reportPreparedBy = '',
+  reportActionDependencies = {},
 }) {
   const [department, setDepartment] = useState('')
   const [employeeProfileId, setEmployeeProfileId] = useState('')
@@ -925,6 +929,38 @@ export default function MonthlyPayrollTab({
   const companyPersonnelCostTotal = useMemo(() => permissions.canViewSalary
     ? employees.reduce((total, employee) => total + employee.companyPersonnelCost, 0)
     : 0, [employees, permissions.canViewSalary])
+  const outputBlocked = loadState.status !== 'success' ||
+    report === null || permissions.canViewSalary !== true
+  const selectedEmployee = employeeProfileId
+    ? employeeOptions.find((employee) => employee.employeeProfileId === employeeProfileId)
+    : null
+  const employeeLabel = selectedEmployee
+    ? `${selectedEmployee.employeeName} · ${selectedEmployee.employeeNumber}`
+    : ''
+  const payrollReport = useMemo(() => {
+    if (loadState.status !== 'success' || report === null ||
+        report.permissions.canViewSalary !== true) return null
+    return createMonthlyPayrollReport({
+      employees,
+      summary: report.summary,
+      month,
+      department,
+      employeeLabel,
+      onlyPending,
+      preparedBy: reportPreparedBy,
+    })
+  }, [
+    department, employeeLabel, employees, loadState.status, month,
+    onlyPending, report, reportPreparedBy,
+  ])
+  const reportContextIdentity = JSON.stringify({
+    month,
+    department,
+    employeeProfileId,
+    onlyPending,
+    rows: employees.map((row) => `${row.employeeProfileId}:${row.version}`).join('|'),
+    outputBlocked,
+  })
 
   return (
     <div className="labor-report-tab labor-monthly-payroll-tab">
@@ -1007,6 +1043,15 @@ export default function MonthlyPayrollTab({
 
       {report && (
         <>
+          {payrollReport && (
+            <AccountingReportActions
+              title="月度工资表"
+              report={payrollReport}
+              disabled={outputBlocked}
+              contextIdentity={reportContextIdentity}
+              {...reportActionDependencies}
+            />
+          )}
           <section className="labor-report-summary" aria-label="月度工资汇总">
             {summaryCards.map(([label, value]) => (
               <article key={label}><small>{label}</small><strong>{value}</strong></article>

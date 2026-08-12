@@ -25,12 +25,18 @@ function writeCell(cell, value, format = 'text') {
   if ((format === 'money' || format === 'number' || format === 'percent') &&
       Number.isFinite(Number(value))) {
     cell.value = Number(value)
+  } else if (format === 'date' && value !== null && value !== undefined && value !== '') {
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value)
+    cell.value = Number.isNaN(date.getTime())
+      ? escapeAccountingSpreadsheetText(formatAccountingReportDisplayValue(value, format))
+      : date
   } else {
     cell.value = escapeAccountingSpreadsheetText(formatAccountingReportDisplayValue(value, format))
   }
   if (format === 'money') cell.numFmt = ACCOUNTING_REPORT_MONEY_FORMAT
   if (format === 'number') cell.numFmt = '#,##0.####;[Red]-#,##0.####'
   if (format === 'percent') cell.numFmt = '0.####"%"'
+  if (format === 'date' && cell.value instanceof Date) cell.numFmt = 'yyyy-mm-dd'
 }
 
 function mergeTextRow(sheet, rowNumber, columnCount, value, style = {}) {

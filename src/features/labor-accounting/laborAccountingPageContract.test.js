@@ -1294,6 +1294,12 @@ test('monthly payroll, project costs, and settings render the approved accountin
   assert.match(monthlyMarkup, /项目打卡/u)
   assert.match(monthlyMarkup, /确认有效 1 条/u)
   assert.match(monthlyMarkup, /公司人员成本/u)
+  assert.match(monthlyMarkup, /aria-label="月度工资表输出操作"/u)
+  assert.match(monthlyMarkup, /导出 Excel/u)
+  assert.ok(
+    monthlyMarkup.indexOf('accounting-report-toolbar') < monthlyMarkup.indexOf('labor-report-summary'),
+    'report actions appear above summary cards',
+  )
 
   const projectMarkup = render(ProjectLaborCostTab, {
     service: {},
@@ -1380,6 +1386,7 @@ test('salary and employee-level project data are absent under redacted permissio
   assert.doesNotMatch(monthlyMarkup, /奖金/u)
   assert.doesNotMatch(monthlyMarkup, /扣款/u)
   assert.doesNotMatch(monthlyMarkup, /type="number"/u)
+  assert.doesNotMatch(monthlyMarkup, /月度工资表输出操作|导出 Excel|导出 PDF/u)
   const redactedSummaryMarkup = monthlyMarkup.match(
     /<section class="labor-report-summary"[^>]*>([\s\S]*?)<\/section>/u,
   )?.[1] || ''
@@ -1753,6 +1760,15 @@ test('settings are read-only without update permission and all async tabs guard 
   assert.match(sources.monthly, /writeLocked/u)
   assert.match(sources.project, /exportLocked/u)
   assert.match(sources.settings, /writeLocked/u)
+})
+
+test('monthly payroll export construction is permission-gated and stale output identity tracks filters and rows', () => {
+  assert.match(sources.monthly, /loadState\.status === 'success'/u)
+  assert.match(sources.monthly, /permissions\.canViewSalary/u)
+  assert.match(sources.monthly, /createMonthlyPayrollReport/u)
+  assert.match(sources.monthly, /employees\.map\(\(row\) => `\$\{row\.employeeProfileId\}:\$\{row\.version\}`\)\.join\('\|'\)/u)
+  assert.match(sources.monthly, /month[\s\S]*department[\s\S]*employeeProfileId[\s\S]*onlyPending/u)
+  assert.match(sources.monthly, /outputBlocked/u)
 })
 
 test('every rendered form control has an accessible label and the page is SSR-safe', () => {
