@@ -667,7 +667,7 @@
   width: 100%;
   min-width: 1080px;
   border-collapse: collapse;
-  color: var(--erp-text-secondary);
+  color: var(--erp-text-primary);
   background: var(--erp-bg-surface);
   font-size: 0.72rem;
 }
@@ -685,7 +685,7 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  color: var(--erp-text-muted);
+  color: var(--erp-text-secondary);
   background: var(--erp-bg-elevated);
   font-size: 0.64rem;
   font-weight: 800;
@@ -708,7 +708,7 @@
 .erp-black-gold .executive-project-table tbody th span {
   display: block;
   margin-top: 3px;
-  color: var(--erp-text-muted);
+  color: var(--erp-text-secondary);
   font-family: var(--erp-font-numeric);
   font-size: 0.62rem;
   font-weight: 500;
@@ -740,7 +740,7 @@
 
 .erp-black-gold [data-profit-cell] > strong {
   display: block;
-  color: var(--erp-text-primary);
+  color: var(--erp-accent-gold);
 }
 
 .erp-black-gold [data-profit-cell] > small {

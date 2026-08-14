@@ -887,3 +887,42 @@ test('dashboard CSS is directly imported, fully scoped, variable-colored, and de
     assert.notEqual(declarations.get('overflow'), 'hidden')
   }
 })
+
+test('project operating detail keeps an explicit high-contrast hierarchy on the black surface', () => {
+  const root = postcss.parse(cssSource, { from: 'executiveDashboard.css' })
+  const colorFor = (selector) => {
+    let color = ''
+    root.walkRules((rule) => {
+      if (!rule.selectors.includes(selector)) return
+      const declaration = rule.nodes.find((node) => node.type === 'decl' && node.prop === 'color')
+      if (declaration) color = declaration.value
+    })
+    return color
+  }
+
+  assert.equal(
+    colorFor('.erp-black-gold .executive-project-table'),
+    'var(--erp-text-primary)',
+    'ordinary project-table values must use the warm-white primary token',
+  )
+  assert.equal(
+    colorFor('.erp-black-gold .executive-project-table thead th'),
+    'var(--erp-text-secondary)',
+    'table headings must use the readable light-gray token',
+  )
+  assert.equal(
+    colorFor('.erp-black-gold .executive-project-table tbody th strong'),
+    'var(--erp-text-primary)',
+    'project names must remain warm white',
+  )
+  assert.equal(
+    colorFor('.erp-black-gold .executive-project-table tbody th span'),
+    'var(--erp-text-secondary)',
+    'project identifiers must remain readable light gray',
+  )
+  assert.equal(
+    colorFor('.erp-black-gold [data-profit-cell] > strong'),
+    'var(--erp-accent-gold)',
+    'ready profit values must use the approved gold emphasis',
+  )
+})
