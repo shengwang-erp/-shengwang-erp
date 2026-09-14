@@ -134,7 +134,7 @@ export function createProjectService(client = supabase, { configured = isSupabas
       return validateProjectReferenceList(data)
     },
     async createProject(payload) {
-      return validateProject(await call('create_project_secure', { p_payload: payload }))
+      return validateProject(await call('create_project_secure', { p_project: payload }))
     },
     async updateProject(projectId, patch) {
       return validateProject(await call('update_project_secure', { p_project_id: projectId, p_patch: patch }))

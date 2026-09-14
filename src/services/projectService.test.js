@@ -14,6 +14,19 @@ test('project writes use only secure RPCs', async () => {
   assert.deepEqual(calls.map(([name]) => name), ['create_project_secure', 'update_project_secure', 'soft_delete_project_secure'])
 })
 
+test('project creation sends the database p_project argument', async () => {
+  const calls = []
+  const payload = { projectName: '安全项目' }
+  const service = createProjectService({ rpc: async (name, args) => {
+    calls.push([name, args])
+    return { data: { projectId: 'P001' }, error: null }
+  } }, { configured: true })
+
+  await service.createProject(payload)
+
+  assert.deepEqual(calls, [['create_project_secure', { p_project: payload }]])
+})
+
 test('unconfigured access fails closed without generic adapter', async () => {
   const service = createProjectService({ from: () => { throw new Error('generic') } }, { configured: false })
   await assert.rejects(() => service.listProjects(), (error) => error instanceof ProjectServiceError && error.code === 'notConfigured')
