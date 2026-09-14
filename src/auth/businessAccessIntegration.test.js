@@ -330,6 +330,70 @@ test('AuthenticatedApp SSR renders no Home or business content for an invalid ac
   assert.doesNotMatch(activeMarkup, /老板驾驶舱|工程项目/u)
 })
 
+test('AuthenticatedApp restores an account-scoped project workspace and its main-project draft after a browser reload', () => {
+  const AuthenticatedApp = requireExport('AuthenticatedApp')
+  if (!AuthenticatedApp) return
+
+  const currentUser = activeUser([
+    'module.projects.view',
+    'module.projects.create',
+  ])
+  const routeKey = 'shengwang-erp:ui-session:v1:auth-user-route:current-view'
+  const draftKey = 'shengwang-erp:form-draft:v1:auth-user-route:project-create'
+  const entries = new Map([
+    [routeKey, 'projects'],
+    [draftKey, JSON.stringify({
+      version: 1,
+      form: {
+        projectType: 'standard',
+        projectName: '切回后保留的主项目',
+        customerName: '恢复测试客户',
+        address: '東京都千代田区',
+        status: '报价中',
+      },
+    })],
+  ])
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    configurable: true,
+    value: {
+      getItem: (key) => entries.get(key) ?? null,
+      setItem: (key, value) => entries.set(key, String(value)),
+      removeItem: (key) => entries.delete(key),
+    },
+  })
+
+  try {
+    const markup = renderToStaticMarkup(createElement(AuthenticatedApp, {
+      currentUser,
+      onLogout() {},
+    }))
+    assert.match(markup, /class="[^"]*project-page/u)
+    assert.match(markup, /value="切回后保留的主项目"/u)
+    assert.match(markup, /value="恢复测试客户"/u)
+  } finally {
+    if (previousStorage) Object.defineProperty(globalThis, 'sessionStorage', previousStorage)
+    else delete globalThis.sessionStorage
+  }
+})
+
+test('authenticated view recovery safely falls back when browser storage is blocked', () => {
+  const loadAuthenticatedView = requireExport('loadAuthenticatedView')
+  if (!loadAuthenticatedView) return
+
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    configurable: true,
+    get() { throw new Error('storage blocked') },
+  })
+  try {
+    assert.equal(loadAuthenticatedView('auth-user-route'), 'home')
+  } finally {
+    if (previousStorage) Object.defineProperty(globalThis, 'sessionStorage', previousStorage)
+    else delete globalThis.sessionStorage
+  }
+})
+
 test('AuthenticatedApp consumes the executed resolver, controller, summary, and finance access', () => {
   assert.match(appSource, /resolveAuthorizedView\(currentUser, currentView\)/u)
   assert.match(appSource, /resolveGuardedNavigation\(\{/u)

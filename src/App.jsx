@@ -2089,6 +2089,48 @@ export function resolveAuthorizedView(currentUser, currentView) {
   return canAccessView(currentUser, currentView) ? currentView : 'home'
 }
 
+const AUTHENTICATED_VIEW_SESSION_PREFIX = 'shengwang-erp:ui-session:v1'
+
+function authenticatedViewSessionKey(accountId) {
+  const normalizedAccountId = typeof accountId === 'string' ? accountId.trim() : ''
+  return normalizedAccountId
+    ? `${AUTHENTICATED_VIEW_SESSION_PREFIX}:${encodeURIComponent(normalizedAccountId)}:current-view`
+    : ''
+}
+
+function authenticatedViewSessionStorage() {
+  try {
+    return globalThis.sessionStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+export function loadAuthenticatedView(accountId, storage = authenticatedViewSessionStorage()) {
+  const key = authenticatedViewSessionKey(accountId)
+  if (!key || !storage) return 'home'
+  try {
+    const savedView = storage.getItem(key)
+    return typeof savedView === 'string' && savedView ? savedView : 'home'
+  } catch {
+    return 'home'
+  }
+}
+
+export function saveAuthenticatedView(
+  accountId,
+  currentView,
+  storage = authenticatedViewSessionStorage(),
+) {
+  const key = authenticatedViewSessionKey(accountId)
+  if (!key || !storage || typeof currentView !== 'string' || !currentView) return
+  try {
+    storage.setItem(key, currentView)
+  } catch {
+    // Browser session storage is best effort; authorization remains server-derived.
+  }
+}
+
 export function resolveGuardedNavigation({
   currentUser,
   currentView,
@@ -2506,7 +2548,8 @@ export function useProjectDirectoryLifecycle({
 }
 
 export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }) {
-  const [currentView, setCurrentView] = useState('home')
+  const activeAccountId = typeof currentUser?.id === 'string' ? currentUser.id : ''
+  const [currentView, setCurrentView] = useState(() => loadAuthenticatedView(activeAccountId))
   const [miraisyaProjectId, setMiraisyaProjectId] = useState('')
   const authorizedView = resolveAuthorizedView(currentUser, currentView)
   useEffect(() => {
@@ -2514,6 +2557,9 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
       setCurrentView(authorizedView)
     }
   }, [authorizedView, currentView])
+  useEffect(() => {
+    if (authorizedView !== null) saveAuthenticatedView(activeAccountId, authorizedView)
+  }, [activeAccountId, authorizedView])
   const activeActorId = authorizedView === null ? '' : currentUser.id
   const activePermissionKeys = authorizedView === null
     ? []
