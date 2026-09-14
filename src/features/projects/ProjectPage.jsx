@@ -266,12 +266,11 @@ export function ProjectPage({
   }
 
   const discardForm = () => {
-    if (editingProjectId) {
-      closeForm()
-      return
-    }
-    if (!window.confirm('确定放弃并清空当前填写的项目内容吗？')) return
-    projectDraftStore.clear(draftAccountId)
+    const message = editingProjectId
+      ? '确定放弃当前未保存的项目修改吗？'
+      : '确定放弃并清空当前填写的项目内容吗？'
+    if (!window.confirm(message)) return
+    if (!editingProjectId) projectDraftStore.clear(draftAccountId)
     closeForm()
   }
 

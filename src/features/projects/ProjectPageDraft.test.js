@@ -176,3 +176,30 @@ test('cancel requires confirmation before discarding a new-project draft', async
   mounted.dom.cleanup()
   delete globalThis.sessionStorage
 })
+
+test('editing an existing project also requires confirmation before discarding changes', async () => {
+  const storage = memoryStorage()
+  const mounted = await mount(storage, {
+    projects: [{
+      projectId: 'project-existing',
+      projectType: 'standard',
+      projectName: '原项目名称',
+      status: '报价中',
+    }],
+  })
+  await act(async () => button(mounted.container, '编辑').click())
+  await change(field(mounted.container, '项目名称'), '尚未保存的修改')
+
+  window.confirm = () => false
+  await act(async () => button(mounted.container, '取消').click())
+  assert.equal(field(mounted.container, '项目名称').value, '尚未保存的修改')
+
+  window.confirm = () => true
+  await act(async () => button(mounted.container, '取消').click())
+  assert.equal(button(mounted.container, '保存修改'), null)
+  assert.equal(storage.size(), 0)
+
+  await act(async () => mounted.root.unmount())
+  mounted.dom.cleanup()
+  delete globalThis.sessionStorage
+})
