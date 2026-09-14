@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { buildProjectRevenueReadModel } from '../contract-revenue/contractRevenueCalculations.js'
 import LightweightProjectForm from './LightweightProjectForm.jsx'
+import { createProjectCreateDraftStore } from './projectCreateDraft.js'
 import ProjectLocationPicker from './ProjectLocationPicker.jsx'
 import {
   PROJECT_TYPES,
@@ -187,14 +188,21 @@ export function ProjectPage({
   onOpenMiraisyaSettlement,
   onBack,
 }) {
-  const [isFormOpen, setIsFormOpen] = useState(false)
+  const projectDraftStore = useMemo(() => createProjectCreateDraftStore(), [])
+  const draftAccountId = typeof currentUser?.id === 'string' ? currentUser.id : ''
+  const initialCreateDraft = useMemo(
+    () => projectDraftStore.load(draftAccountId),
+    [draftAccountId, projectDraftStore],
+  )
+  const [isFormOpen, setIsFormOpen] = useState(() => Boolean(initialCreateDraft))
   const [editingProjectId, setEditingProjectId] = useState('')
-  const [form, setForm] = useState(() => createEmptyProject())
+  const [form, setForm] = useState(() => initialCreateDraft || createEmptyProject())
   const [error, setError] = useState('')
   const [listError, setListError] = useState('')
   const [saving, setSaving] = useState(false)
   const [deletingProjectId, setDeletingProjectId] = useState('')
   const locationSectionRef = useRef(null)
+  const draftAccountIdRef = useRef(draftAccountId)
 
   const directoryLoading = directoryState?.loading === true
   const directoryError = directoryState?.error || ''
@@ -230,15 +238,54 @@ export function ProjectPage({
   const canDeleteProject = canDeleteTypedProject(currentUser)
   const canManageSettlement = canManageMiraisyaSettlement(currentUser)
 
-  const resetForm = () => {
+  useEffect(() => {
+    if (
+      draftAccountIdRef.current !== draftAccountId ||
+      !draftAccountId ||
+      !isFormOpen ||
+      editingProjectId
+    ) return
+    projectDraftStore.save(draftAccountId, form)
+  }, [draftAccountId, editingProjectId, form, isFormOpen, projectDraftStore])
+
+  useEffect(() => {
+    if (draftAccountIdRef.current === draftAccountId) return
+    const nextDraft = projectDraftStore.load(draftAccountId)
+    draftAccountIdRef.current = draftAccountId
+    setForm(nextDraft || createEmptyProject())
+    setEditingProjectId('')
+    setError('')
+    setIsFormOpen(Boolean(nextDraft))
+  }, [draftAccountId, projectDraftStore])
+
+  const closeForm = () => {
     setForm(createEmptyProject())
     setEditingProjectId('')
     setError('')
     setIsFormOpen(false)
   }
 
+  const discardForm = () => {
+    if (editingProjectId) {
+      closeForm()
+      return
+    }
+    if (!window.confirm('确定放弃并清空当前填写的项目内容吗？')) return
+    projectDraftStore.clear(draftAccountId)
+    closeForm()
+  }
+
   const openCreateForm = (projectType) => {
-    setForm(createEmptyProject(undefined, { projectType }))
+    const savedDraft = projectDraftStore.load(draftAccountId)
+    if (savedDraft && savedDraft.projectType !== projectType) {
+      if (!window.confirm('切换项目类型会清空当前草稿，确定继续吗？')) return
+      projectDraftStore.clear(draftAccountId)
+    }
+    setForm(
+      savedDraft?.projectType === projectType
+        ? savedDraft
+        : createEmptyProject(undefined, { projectType }),
+    )
     setEditingProjectId('')
     setError('')
     setIsFormOpen(true)
@@ -268,7 +315,8 @@ export function ProjectPage({
       const payload = buildProjectPayload(form)
       if (editingProjectId) await onUpdateProject(editingProjectId, payload)
       else await onCreateProject(payload)
-      resetForm()
+      if (!editingProjectId) projectDraftStore.clear(draftAccountId)
+      closeForm()
     } catch (operationError) {
       setError(
         operationError?.name === 'ProjectServiceError'
@@ -367,7 +415,7 @@ export function ProjectPage({
           editing={Boolean(editingProjectId)}
           onChange={setForm}
           onSubmit={handleSubmit}
-          onCancel={resetForm}
+          onCancel={discardForm}
         />
       ) : null}
 
@@ -528,7 +576,7 @@ export function ProjectPage({
             <button className="primary-button" type="submit" disabled={saving}>
               {saving ? '保存中…' : editingProjectId ? '保存修改' : '保存项目'}
             </button>
-            <button className="ghost-button" type="button" onClick={resetForm} disabled={saving}>
+            <button className="ghost-button" type="button" onClick={discardForm} disabled={saving}>
               取消
             </button>
           </div>

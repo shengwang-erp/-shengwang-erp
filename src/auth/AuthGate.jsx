@@ -55,6 +55,18 @@ function toBusinessCurrentUser(profile) {
   }
 }
 
+function sessionUserId(session) {
+  return typeof session?.user?.id === 'string' ? session.user.id.trim() : ''
+}
+
+function canKeepAuthenticatedRuntime(gate, session) {
+  const nextAuthUserId = sessionUserId(session)
+  return gate.status === 'authenticated'
+    && Boolean(gate.currentUser)
+    && Boolean(gate.authUserId)
+    && gate.authUserId === nextAuthUserId
+}
+
 export default function AuthGate({
   children,
   authService = employeeAuthService,
@@ -63,13 +75,14 @@ export default function AuthGate({
   const [gate, setGate] = useState(() => ({
     status: localDemoMode ? 'authenticated' : configured ? 'loading' : 'configuration-error',
     currentUser: localDemoMode ? localDemoUser : null,
+    authUserId: localDemoMode ? 'local-demo' : '',
   }))
   const validationVersion = useRef(0)
   const validationInFlight = useRef(null)
 
   const moveToLogin = useCallback(async () => {
     validationVersion.current += 1
-    setGate({ status: 'login', currentUser: null })
+    setGate({ status: 'login', currentUser: null, authUserId: '' })
     try {
       await authService.logout()
     } catch {
@@ -79,7 +92,7 @@ export default function AuthGate({
 
   const moveToValidationError = useCallback(() => {
     validationVersion.current += 1
-    setGate({ status: 'validation-error', currentUser: null })
+    setGate({ status: 'validation-error', currentUser: null, authUserId: '' })
   }, [])
 
   const performSessionValidation = useCallback(
@@ -87,11 +100,18 @@ export default function AuthGate({
       const currentValidation = validationVersion.current + 1
       validationVersion.current = currentValidation
       if (!session?.access_token) {
-        setGate({ status: 'login', currentUser: null })
+        setGate({ status: 'login', currentUser: null, authUserId: '' })
         return null
       }
 
-      setGate({ status: 'loading', currentUser: null })
+      const nextAuthUserId = sessionUserId(session)
+      setGate((currentGate) => canKeepAuthenticatedRuntime(currentGate, session)
+        ? currentGate
+        : {
+            status: 'loading',
+            currentUser: null,
+            authUserId: nextAuthUserId,
+          })
       try {
         const profile = await authService.getCurrentEmployee()
         if (validationVersion.current !== currentValidation) return null
@@ -100,6 +120,7 @@ export default function AuthGate({
           status: currentUser.mustChangePassword ? 'password-change' : 'authenticated',
           currentUser,
           passwordMode: currentUser.mustChangePassword ? 'forced' : null,
+          authUserId: nextAuthUserId,
         })
         return currentUser
       } catch (error) {
@@ -126,7 +147,7 @@ export default function AuthGate({
     if (localDemoMode) return undefined
     if (!configured) {
       validationVersion.current += 1
-      setGate({ status: 'configuration-error', currentUser: null })
+      setGate({ status: 'configuration-error', currentUser: null, authUserId: '' })
       return undefined
     }
 
@@ -147,7 +168,7 @@ export default function AuthGate({
         scheduleValidation(session)
       })
     } catch {
-      setGate({ status: 'configuration-error', currentUser: null })
+      setGate({ status: 'configuration-error', currentUser: null, authUserId: '' })
       return undefined
     }
 
@@ -180,7 +201,7 @@ export default function AuthGate({
 
   const onRefreshCurrentUser = useCallback(async () => {
     if (localDemoMode) {
-      setGate({ status: 'authenticated', currentUser: localDemoUser })
+      setGate({ status: 'authenticated', currentUser: localDemoUser, authUserId: 'local-demo' })
       return localDemoUser
     }
 
@@ -218,7 +239,7 @@ export default function AuthGate({
           credentials.employeeNumber.trim().toUpperCase() !== localDemoCredentials.employeeNumber ||
           credentials.password !== localDemoCredentials.password
         ) throw new EmployeeAuthError('AUTH_INVALID', '员工编号或密码错误')
-        setGate({ status: 'authenticated', currentUser: localDemoUser })
+        setGate({ status: 'authenticated', currentUser: localDemoUser, authUserId: 'local-demo' })
         return
       }
       const session = await authService.loginWithEmployeeNumber(credentials)
