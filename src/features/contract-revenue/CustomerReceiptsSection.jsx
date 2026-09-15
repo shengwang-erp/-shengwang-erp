@@ -179,12 +179,12 @@ export default function CustomerReceiptsSection({
 
       {mode === 'legacy_readonly' && (
         <div className="warning-note contract-warning">
-          需要迁移后复核。未迁移旧项目仅可查看原金额，暂时不能登记实际收款。
+          需要完成历史合同迁移。未迁移旧项目仅可查看原金额，暂时不能登记实际收款。
         </div>
       )}
       {mode !== 'legacy_readonly' && !creationAllowed && (
         <div className="warning-note contract-warning">
-          原始合同完成会计确认后才能登记实际收款。
+          请先完整保存原始合同后再登记实际收款。
         </div>
       )}
       {viewResult.error && (

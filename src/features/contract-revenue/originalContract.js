@@ -1,5 +1,10 @@
 import { sanitizeProjectForPersistence } from '../../services/contractRevenueService.js'
-import { validateTaxBreakdown } from './contractRevenueValidation.js'
+import {
+  ContractRevenueValidationError,
+  parseRequiredRate,
+  parseRequiredYen,
+  validateTaxBreakdown,
+} from './contractRevenueValidation.js'
 
 export const CONTRACT_REVENUE_SETUP_NOT_STARTED = 'not_started'
 export const CONTRACT_REVENUE_SETUP_CONFIGURED = 'configured'
@@ -31,20 +36,89 @@ function requireProject(project) {
   }
 }
 
-function clearConfirmationMetadata(project) {
-  const result = { ...project }
-  delete result.contractConfirmedById
-  delete result.contractConfirmedByName
-  delete result.contractConfirmedAt
-  return result
-}
-
 function originalContractTaxInput(project) {
   return {
     taxExclusiveAmount: project.originalContractTaxExclusiveAmount,
     taxRate: project.originalContractTaxRate,
     taxAmount: project.originalContractTaxAmount,
     taxInclusiveAmount: project.originalContractTaxInclusiveAmount,
+  }
+}
+
+export function calculateOriginalContractAmounts(taxInclusiveAmount, taxRate) {
+  const inclusive = parseRequiredYen(
+    taxInclusiveAmount,
+    'taxInclusiveAmount',
+  )
+  if (!Number.isSafeInteger(inclusive)) {
+    throw new ContractRevenueValidationError(
+      'taxInclusiveAmount',
+      '含税总金额必须是安全范围内的整数日元',
+    )
+  }
+  const rate = parseRequiredRate(taxRate, 'taxRate')
+  const exclusive = Math.round(inclusive / (1 + rate / 100))
+  const tax = inclusive - exclusive
+  if (!Number.isSafeInteger(exclusive) || exclusive <= 0 || !Number.isSafeInteger(tax)) {
+    throw new ContractRevenueValidationError(
+      'taxInclusiveAmount',
+      '含税总金额无法计算为有效的整数日元',
+    )
+  }
+  return {
+    taxExclusiveAmount: exclusive,
+    taxRate: rate,
+    taxAmount: tax,
+    taxInclusiveAmount: inclusive,
+  }
+}
+
+export function isOriginalContractSaved(project) {
+  const schemaVersion = Number(project?.contractRevenueSchemaVersion)
+  if (
+    typeof project?.projectId !== 'string' ||
+    !project.projectId.trim() ||
+    !Number.isInteger(schemaVersion) ||
+    schemaVersion < CONTRACT_REVENUE_SCHEMA_VERSION ||
+    project?.contractRevenueSetupStatus !== CONTRACT_REVENUE_SETUP_CONFIGURED
+  ) {
+    return false
+  }
+  try {
+    const amounts = validateTaxBreakdown(originalContractTaxInput(project))
+    const areSafeIntegers = [
+      amounts.taxExclusiveAmount,
+      amounts.taxAmount,
+      amounts.taxInclusiveAmount,
+    ].every(Number.isSafeInteger)
+    if (!areSafeIntegers) return false
+    const calculated = calculateOriginalContractAmounts(
+      amounts.taxInclusiveAmount,
+      amounts.taxRate,
+    )
+    return Math.abs(calculated.taxExclusiveAmount - amounts.taxExclusiveAmount) <= 1 &&
+      Math.abs(calculated.taxAmount - amounts.taxAmount) <= 1
+  } catch {
+    return false
+  }
+}
+
+export function getOriginalContractRoundingWarning(project) {
+  if (!isOriginalContractSaved(project)) return ''
+  try {
+    const calculated = calculateOriginalContractAmounts(
+      project.originalContractTaxInclusiveAmount,
+      project.originalContractTaxRate,
+    )
+    const exclusiveDifference = Math.abs(
+      calculated.taxExclusiveAmount - project.originalContractTaxExclusiveAmount,
+    )
+    const taxDifference = Math.abs(calculated.taxAmount - project.originalContractTaxAmount)
+    return exclusiveDifference === 1 && taxDifference === 1
+      ? '合同原金额与当前自动计算结果相差1日元，请核对原件采用的取整规则。'
+      : ''
+  } catch {
+    return ''
   }
 }
 
@@ -71,125 +145,36 @@ export function getOriginalContractMode(project) {
     : CONTRACT_CONFIRMATION_CONFIRMED
 }
 
-export function saveOriginalContractDraft(project, input) {
+export function saveOriginalContract(project, input) {
   requireProject(project)
   const mode = getOriginalContractMode(project)
-
   if (mode === CONTRACT_CONFIRMATION_CONFIRMED) {
     throw new OriginalContractStateError(
       'original_contract_locked',
-      '原始合同已确认，不能直接修改',
+      '原始合同已锁定，不能直接修改',
     )
   }
   if (mode === 'legacy_readonly') {
     throw new OriginalContractStateError(
       'legacy_migration_required',
-      '需要迁移后复核',
+      '需要完成历史合同迁移',
     )
   }
 
-  const amounts = validateTaxBreakdown(input)
-  const draft = clearConfirmationMetadata({
+  const amounts = calculateOriginalContractAmounts(
+    input?.taxInclusiveAmount,
+    input?.taxRate,
+  )
+  return sanitizeProjectForPersistence({
     ...project,
     contractRevenueSchemaVersion: CONTRACT_REVENUE_SCHEMA_VERSION,
     contractRevenueSetupStatus: CONTRACT_REVENUE_SETUP_CONFIGURED,
-    contractConfirmationStatus: CONTRACT_CONFIRMATION_DRAFT,
+    contractConfirmationStatus:
+      project.contractConfirmationStatus || CONTRACT_CONFIRMATION_DRAFT,
     originalContractTaxExclusiveAmount: amounts.taxExclusiveAmount,
     originalContractTaxRate: amounts.taxRate,
     originalContractTaxAmount: amounts.taxAmount,
     originalContractTaxInclusiveAmount: amounts.taxInclusiveAmount,
     needsManualReview: false,
-  })
-
-  return sanitizeProjectForPersistence(draft)
-}
-
-export function confirmOriginalContract(project, actor, confirmedAt) {
-  requireProject(project)
-  if (getOriginalContractMode(project) !== CONTRACT_CONFIRMATION_DRAFT) {
-    throw new OriginalContractStateError(
-      'original_contract_draft_required',
-      '必须先保存原始合同草稿',
-    )
-  }
-
-  const employeeId =
-    typeof actor?.employeeId === 'string' && actor.employeeId.trim()
-      ? actor.employeeId.trim()
-      : ''
-  const employeeName =
-    typeof actor?.name === 'string' && actor.name.trim() ? actor.name.trim() : ''
-  if (!employeeId || !employeeName) {
-    throw new OriginalContractStateError(
-      'confirmation_actor_required',
-      '会计确认人不能为空',
-    )
-  }
-  if (typeof confirmedAt !== 'string' || !confirmedAt.trim()) {
-    throw new OriginalContractStateError(
-      'confirmation_time_required',
-      '会计确认时间不能为空',
-    )
-  }
-
-  const amounts = validateTaxBreakdown(originalContractTaxInput(project))
-  return sanitizeProjectForPersistence({
-    ...project,
-    contractRevenueSetupStatus: CONTRACT_REVENUE_SETUP_CONFIGURED,
-    contractConfirmationStatus: CONTRACT_CONFIRMATION_CONFIRMED,
-    originalContractTaxExclusiveAmount: amounts.taxExclusiveAmount,
-    originalContractTaxRate: amounts.taxRate,
-    originalContractTaxAmount: amounts.taxAmount,
-    originalContractTaxInclusiveAmount: amounts.taxInclusiveAmount,
-    contractConfirmedById: employeeId,
-    contractConfirmedByName: employeeName,
-    contractConfirmedAt: confirmedAt.trim(),
-  })
-}
-
-export function confirmHistoricalContractReview(project, input, actor, confirmedAt) {
-  requireProject(project)
-  if (
-    project.contractConfirmationStatus !== HISTORICAL_MIGRATED_CONFIRMED ||
-    project.needsManualReview !== true
-  ) {
-    throw new OriginalContractStateError(
-      'historical_review_not_required',
-      '该项目不需要历史合同复核',
-    )
-  }
-
-  const amounts = validateTaxBreakdown(input)
-  const employeeId =
-    typeof actor?.employeeId === 'string' && actor.employeeId.trim()
-      ? actor.employeeId.trim()
-      : ''
-  const employeeName =
-    typeof actor?.name === 'string' && actor.name.trim() ? actor.name.trim() : ''
-  if (!employeeId || !employeeName) {
-    throw new OriginalContractStateError(
-      'confirmation_actor_required',
-      '会计确认人不能为空',
-    )
-  }
-  if (typeof confirmedAt !== 'string' || !confirmedAt.trim()) {
-    throw new OriginalContractStateError(
-      'confirmation_time_required',
-      '会计确认时间不能为空',
-    )
-  }
-
-  return sanitizeProjectForPersistence({
-    ...project,
-    contractRevenueSetupStatus: CONTRACT_REVENUE_SETUP_CONFIGURED,
-    contractConfirmationStatus: CONTRACT_CONFIRMATION_CONFIRMED,
-    originalContractTaxExclusiveAmount: amounts.taxExclusiveAmount,
-    originalContractTaxRate: amounts.taxRate,
-    originalContractTaxAmount: amounts.taxAmount,
-    originalContractTaxInclusiveAmount: amounts.taxInclusiveAmount,
-    needsManualReview: false,
-    contractConfirmedById: employeeId,
-    contractConfirmedByName: employeeName,
-    contractConfirmedAt: confirmedAt.trim(),
   })
 }

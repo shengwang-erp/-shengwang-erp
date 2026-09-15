@@ -15,6 +15,7 @@ function confirmedProject(overrides = {}) {
     projectId: 'P200',
     projectName: '三期收款项目',
     contractRevenueSchemaVersion: 1,
+    contractRevenueSetupStatus: 'configured',
     contractConfirmationStatus: 'confirmed',
     originalContractTaxExclusiveAmount: 1000000,
     originalContractTaxRate: 10,
@@ -80,7 +81,7 @@ function assertValidationError(field) {
   }
 }
 
-test('only confirmed and historical confirmed projects can manage payment plans', () => {
+test('only complete saved contracts can manage payment plans regardless of historical confirmation status', () => {
   const canManagePaymentPlans = requireExport('canManagePaymentPlans')
   const preparePaymentPlanSave = requireExport('preparePaymentPlanSave')
   const PaymentPlanStateError = requireExport('PaymentPlanStateError')
@@ -94,7 +95,11 @@ test('only confirmed and historical confirmed projects can manage payment plans'
   )
   assert.equal(
     canManagePaymentPlans(confirmedProject({ contractConfirmationStatus: 'draft' })),
-    false,
+    true,
+  )
+  assert.equal(
+    canManagePaymentPlans(confirmedProject({ contractConfirmationStatus: undefined })),
+    true,
   )
   assert.equal(
     canManagePaymentPlans({ projectId: 'P-LEGACY', contractAmount: 1100000 }),
@@ -102,7 +107,8 @@ test('only confirmed and historical confirmed projects can manage payment plans'
   )
 
   for (const project of [
-    confirmedProject({ contractConfirmationStatus: 'draft' }),
+    confirmedProject({ contractRevenueSetupStatus: 'not_started' }),
+    confirmedProject({ originalContractTaxInclusiveAmount: 1099999 }),
     { projectId: 'P-LEGACY', contractAmount: 1100000, paidAmount: 0 },
   ]) {
     assert.throws(
@@ -118,6 +124,11 @@ test('only confirmed and historical confirmed projects can manage payment plans'
       (error) => error instanceof PaymentPlanStateError,
     )
   }
+
+  assert.equal(
+    preparePaymentPlanSave({ project: confirmedProject({ contractConfirmationStatus: 'draft' }), adjustedTaxInclusiveAmount: 1100000, proposedPlans: ['initial', 'middle', 'final'].map((stage) => proposedPlan(stage)), actor })[0].projectId,
+    'P200',
+  )
 })
 
 test('first save requires exactly 100 percent and stores rounded yen amounts with final absorbing remainder', () => {

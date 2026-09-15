@@ -77,6 +77,144 @@ test('new project initialization marks contract setup pending and strips compati
   assert.deepEqual(source, original)
 })
 
+test('inclusive-first calculation rounds tax-exclusive yen and keeps the entered total exact', () => {
+  const calculateOriginalContractAmounts = requireExport(
+    'calculateOriginalContractAmounts',
+  )
+
+  assert.deepEqual(calculateOriginalContractAmounts('110000', '10'), {
+    taxExclusiveAmount: 100000,
+    taxRate: 10,
+    taxAmount: 10000,
+    taxInclusiveAmount: 110000,
+  })
+  assert.deepEqual(calculateOriginalContractAmounts('100000', '10'), {
+    taxExclusiveAmount: 90909,
+    taxRate: 10,
+    taxAmount: 9091,
+    taxInclusiveAmount: 100000,
+  })
+  assert.deepEqual(calculateOriginalContractAmounts('100001', '0'), {
+    taxExclusiveAmount: 100001,
+    taxRate: 0,
+    taxAmount: 0,
+    taxInclusiveAmount: 100001,
+  })
+})
+
+test('inclusive-first calculation rejects negative, fractional, blank, and unsafe yen input', () => {
+  const calculateOriginalContractAmounts = requireExport(
+    'calculateOriginalContractAmounts',
+  )
+
+  for (const taxInclusiveAmount of ['-1', '1.5', '', String(Number.MAX_SAFE_INTEGER + 1)]) {
+    assert.throws(
+      () => calculateOriginalContractAmounts(taxInclusiveAmount, '10'),
+      (error) =>
+        error instanceof ContractRevenueValidationError &&
+        error.field === 'taxInclusiveAmount',
+    )
+  }
+  assert.throws(
+    () => calculateOriginalContractAmounts('1000', '-1'),
+    (error) =>
+      error instanceof ContractRevenueValidationError && error.field === 'taxRate',
+  )
+})
+
+test('saved contract validity depends on persisted complete amounts rather than confirmation status', () => {
+  const isOriginalContractSaved = requireExport('isOriginalContractSaved')
+
+  for (const contractConfirmationStatus of [
+    'draft',
+    'confirmed',
+    'historical_migrated_confirmed',
+    undefined,
+  ]) {
+    assert.equal(
+      isOriginalContractSaved(draftProject({ contractConfirmationStatus })),
+      true,
+    )
+  }
+  assert.equal(
+    isOriginalContractSaved(draftProject({ contractRevenueSetupStatus: 'not_started' })),
+    false,
+  )
+  assert.equal(
+    isOriginalContractSaved(draftProject({ originalContractTaxAmount: undefined })),
+    false,
+  )
+  assert.equal(
+    isOriginalContractSaved(draftProject({ originalContractTaxInclusiveAmount: 1099999 })),
+    false,
+  )
+  assert.equal(
+    isOriginalContractSaved(draftProject({
+      originalContractTaxExclusiveAmount: 90911,
+      originalContractTaxRate: 10,
+      originalContractTaxAmount: 9089,
+      originalContractTaxInclusiveAmount: 100000,
+    })),
+    false,
+  )
+  assert.equal(
+    isOriginalContractSaved(draftProject({
+      originalContractTaxExclusiveAmount: 90910,
+      originalContractTaxRate: 10,
+      originalContractTaxAmount: 9090,
+      originalContractTaxInclusiveAmount: 100000,
+    })),
+    true,
+  )
+})
+
+test('rounding warning reports only a one-yen historical discrepancy without rewriting it', () => {
+  const getOriginalContractRoundingWarning = requireExport(
+    'getOriginalContractRoundingWarning',
+  )
+  const historical = historicalProject({
+    originalContractTaxExclusiveAmount: 90910,
+    originalContractTaxRate: 10,
+    originalContractTaxAmount: 9090,
+    originalContractTaxInclusiveAmount: 100000,
+  })
+
+  assert.match(getOriginalContractRoundingWarning(historical), /相差1日元/u)
+  assert.equal(historical.originalContractTaxExclusiveAmount, 90910)
+  assert.equal(historical.originalContractTaxAmount, 9090)
+  assert.equal(
+    getOriginalContractRoundingWarning(
+      draftProject({
+        originalContractTaxExclusiveAmount: 90911,
+        originalContractTaxRate: 10,
+        originalContractTaxAmount: 9089,
+        originalContractTaxInclusiveAmount: 100000,
+      }),
+    ),
+    '',
+  )
+})
+
+test('saving a complete original contract stores derived amounts without creating confirmation metadata', () => {
+  const saveOriginalContract = requireExport('saveOriginalContract')
+  const source = pendingProject()
+
+  const result = saveOriginalContract(source, {
+    taxInclusiveAmount: '100000',
+    taxRate: '10',
+    taxExclusiveAmount: '90909',
+    taxAmount: '9091',
+  })
+
+  assert.equal(result.contractRevenueSetupStatus, 'configured')
+  assert.equal(result.contractConfirmationStatus, 'draft')
+  assert.equal(result.originalContractTaxExclusiveAmount, 90909)
+  assert.equal(result.originalContractTaxAmount, 9091)
+  assert.equal(result.originalContractTaxInclusiveAmount, 100000)
+  assert.equal(Object.hasOwn(result, 'contractConfirmedById'), false)
+  assert.equal(Object.hasOwn(result, 'contractConfirmedAt'), false)
+})
+
 test('original contract mode distinguishes legacy, pending, draft and locked projects', () => {
   const getOriginalContractMode = requireExport('getOriginalContractMode')
 
@@ -98,236 +236,24 @@ test('original contract mode distinguishes legacy, pending, draft and locked pro
   )
 })
 
-test('saving an original contract draft uses strict validation and stores normalized tax fields', () => {
-  const saveOriginalContractDraft = requireExport('saveOriginalContractDraft')
-  const source = pendingProject({ contractAmount: 1, paidAmount: 2 })
-  const original = clone(source)
 
-  const result = saveOriginalContractDraft(source, {
-    taxExclusiveAmount: '1000000',
-    taxRate: '10',
-    taxAmount: '100000',
-    taxInclusiveAmount: '1100000',
-  })
-
-  assert.equal(result.contractRevenueSchemaVersion, 1)
-  assert.equal(result.contractRevenueSetupStatus, 'configured')
-  assert.equal(result.contractConfirmationStatus, 'draft')
-  assert.equal(result.originalContractTaxExclusiveAmount, 1000000)
-  assert.equal(result.originalContractTaxRate, 10)
-  assert.equal(result.originalContractTaxAmount, 100000)
-  assert.equal(result.originalContractTaxInclusiveAmount, 1100000)
-  assert.equal(result.needsManualReview, false)
-  assert.equal(Object.hasOwn(result, 'contractAmount'), false)
-  assert.equal(Object.hasOwn(result, 'paidAmount'), false)
-  assert.deepEqual(source, original)
-})
-
-test('draft save rejects blank and inconsistent amounts through existing strict validation', () => {
-  const saveOriginalContractDraft = requireExport('saveOriginalContractDraft')
-
-  assert.throws(
-    () =>
-      saveOriginalContractDraft(pendingProject(), {
-        taxExclusiveAmount: '',
-        taxRate: 10,
-        taxAmount: 100000,
-        taxInclusiveAmount: 1100000,
-      }),
-    (error) =>
-      error instanceof ContractRevenueValidationError &&
-      error.field === 'taxExclusiveAmount',
-  )
-  assert.throws(
-    () =>
-      saveOriginalContractDraft(pendingProject(), {
-        taxExclusiveAmount: 1000000,
-        taxRate: 10,
-        taxAmount: 100000,
-        taxInclusiveAmount: 1099999,
-      }),
-    (error) =>
-      error instanceof ContractRevenueValidationError &&
-      error.field === 'taxInclusiveAmount',
-  )
-})
-
-test('accounting confirmation transitions a draft to confirmed and records actor and time', () => {
-  const confirmOriginalContract = requireExport('confirmOriginalContract')
-  const source = draftProject()
-  const original = clone(source)
-
-  const result = confirmOriginalContract(
-    source,
-    { employeeId: 'E009', name: '会计王' },
-    '2026-07-14T10:20:30.000Z',
-  )
-
-  assert.equal(result.contractConfirmationStatus, 'confirmed')
-  assert.equal(result.contractConfirmedById, 'E009')
-  assert.equal(result.contractConfirmedByName, '会计王')
-  assert.equal(result.contractConfirmedAt, '2026-07-14T10:20:30.000Z')
-  assert.equal(result.originalContractTaxExclusiveAmount, 1000000)
-  assert.equal(result.originalContractTaxInclusiveAmount, 1100000)
-  assert.equal(Object.hasOwn(result, 'contractAmount'), false)
-  assert.deepEqual(source, original)
-})
-
-test('confirmed and historical confirmed original contracts are locked against direct edits', () => {
-  const saveOriginalContractDraft = requireExport('saveOriginalContractDraft')
+test('historically confirmed contracts retain their existing edit lock after confirmation removal', () => {
+  const saveOriginalContract = requireExport('saveOriginalContract')
   const OriginalContractStateError = requireExport('OriginalContractStateError')
-  const input = {
-    taxExclusiveAmount: 1200000,
-    taxRate: 10,
-    taxAmount: 120000,
-    taxInclusiveAmount: 1320000,
-  }
 
-  for (const contractConfirmationStatus of [
-    'confirmed',
-    'historical_migrated_confirmed',
-  ]) {
+  for (const contractConfirmationStatus of ['confirmed', 'historical_migrated_confirmed']) {
     assert.throws(
-      () =>
-        saveOriginalContractDraft(
-          draftProject({ contractConfirmationStatus }),
-          input,
-        ),
-      (error) =>
-        error instanceof OriginalContractStateError &&
-        error.code === 'original_contract_locked',
+      () => saveOriginalContract(
+        draftProject({ contractConfirmationStatus }),
+        { taxInclusiveAmount: '1320000', taxRate: '10' },
+      ),
+      (error) => error instanceof OriginalContractStateError && error.code === 'original_contract_locked',
     )
   }
 })
 
-test('legacy and not-started projects cannot bypass the required draft confirmation transition', () => {
-  const confirmOriginalContract = requireExport('confirmOriginalContract')
-  const OriginalContractStateError = requireExport('OriginalContractStateError')
-  const actor = { employeeId: 'E009', name: '会计王' }
-
-  for (const project of [
-    { projectId: 'P-LEGACY', contractAmount: 500000, paidAmount: 0 },
-    pendingProject(),
-  ]) {
-    assert.throws(
-      () => confirmOriginalContract(project, actor, '2026-07-14T10:20:30.000Z'),
-      (error) =>
-        error instanceof OriginalContractStateError &&
-        error.code === 'original_contract_draft_required',
-    )
-  }
-})
-
-test('historical review strictly validates tax fields and confirms the contract once', () => {
-  const confirmHistoricalContractReview = requireExport(
-    'confirmHistoricalContractReview',
-  )
-  const source = historicalProject()
-  const original = clone(source)
-
-  const result = confirmHistoricalContractReview(
-    source,
-    {
-      taxExclusiveAmount: '1000000',
-      taxRate: '10',
-      taxAmount: '100000',
-      taxInclusiveAmount: '1100000',
-    },
-    { employeeId: 'E009', name: '会计王' },
-    '2026-07-14T13:00:00.000Z',
-  )
-
-  assert.equal(result.contractConfirmationStatus, 'confirmed')
-  assert.equal(result.needsManualReview, false)
-  assert.equal(result.originalContractTaxExclusiveAmount, 1000000)
-  assert.equal(result.originalContractTaxRate, 10)
-  assert.equal(result.originalContractTaxAmount, 100000)
-  assert.equal(result.originalContractTaxInclusiveAmount, 1100000)
-  assert.equal(result.contractConfirmedById, 'E009')
-  assert.equal(result.contractConfirmedByName, '会计王')
-  assert.equal(result.contractConfirmedAt, '2026-07-14T13:00:00.000Z')
-  assert.deepEqual(source, original)
-})
-
-test('historical review rejects inconsistent tax amounts and preserves the migrated project', () => {
-  const confirmHistoricalContractReview = requireExport(
-    'confirmHistoricalContractReview',
-  )
-  const source = historicalProject()
-  const original = clone(source)
-
-  assert.throws(
-    () =>
-      confirmHistoricalContractReview(
-        source,
-        {
-          taxExclusiveAmount: 1000000,
-          taxRate: 10,
-          taxAmount: 100000,
-          taxInclusiveAmount: 1099999,
-        },
-        { employeeId: 'E009', name: '会计王' },
-        '2026-07-14T13:00:00.000Z',
-      ),
-    (error) =>
-      error instanceof ContractRevenueValidationError &&
-      error.field === 'taxInclusiveAmount',
-  )
-  assert.deepEqual(source, original)
-})
-
-test('historical review requires the pending-review state, actor and review time', () => {
-  const confirmHistoricalContractReview = requireExport(
-    'confirmHistoricalContractReview',
-  )
-  const OriginalContractStateError = requireExport('OriginalContractStateError')
-  const validInput = {
-    taxExclusiveAmount: 1000000,
-    taxRate: 0,
-    taxAmount: 0,
-    taxInclusiveAmount: 1000000,
-  }
-
-  for (const project of [
-    historicalProject({ needsManualReview: false }),
-    historicalProject({ contractConfirmationStatus: 'confirmed' }),
-  ]) {
-    assert.throws(
-      () =>
-        confirmHistoricalContractReview(
-          project,
-          validInput,
-          { employeeId: 'E009', name: '会计王' },
-          '2026-07-14T13:00:00.000Z',
-        ),
-      (error) =>
-        error instanceof OriginalContractStateError &&
-        error.code === 'historical_review_not_required',
-    )
-  }
-
-  assert.throws(
-    () =>
-      confirmHistoricalContractReview(
-        historicalProject(),
-        validInput,
-        { employeeId: '', name: '' },
-        '2026-07-14T13:00:00.000Z',
-      ),
-    (error) =>
-      error instanceof OriginalContractStateError &&
-      error.code === 'confirmation_actor_required',
-  )
-  assert.throws(
-    () =>
-      confirmHistoricalContractReview(
-        historicalProject(),
-        validInput,
-        { employeeId: 'E009', name: '会计王' },
-        '',
-      ),
-    (error) =>
-      error instanceof OriginalContractStateError &&
-      error.code === 'confirmation_time_required',
-  )
+test('the removed accounting confirmation workflow is no longer exported', () => {
+  assert.equal(originalContract.saveOriginalContractDraft, undefined)
+  assert.equal(originalContract.confirmOriginalContract, undefined)
+  assert.equal(originalContract.confirmHistoricalContractReview, undefined)
 })

@@ -69,6 +69,49 @@ function requireExport(name) {
   return typeof value === 'function' ? value : null
 }
 
+test('contract save persists through the secure project service before exposing success', async () => {
+  const persistContractRevenueProjectUpdate = requireExport(
+    'persistContractRevenueProjectUpdate',
+  )
+  if (!persistContractRevenueProjectUpdate) return
+  const calls = []
+  const databaseProject = {
+    projectId: 'P-CONTRACT',
+    projectName: '数据库合同项目',
+    contractRevenueSchemaVersion: 1,
+    contractRevenueSetupStatus: 'configured',
+    contractConfirmationStatus: 'draft',
+    originalContractTaxExclusiveAmount: 90909,
+    originalContractTaxRate: 10,
+    originalContractTaxAmount: 9091,
+    originalContractTaxInclusiveAmount: 100000,
+    status: '进行中',
+    remark: '不得被合同保存覆盖',
+  }
+  const service = {
+    async updateProject(projectId, patch) {
+      calls.push([projectId, patch])
+      return databaseProject
+    },
+  }
+
+  assert.equal(await persistContractRevenueProjectUpdate(service, databaseProject), databaseProject)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'P-CONTRACT')
+  assert.equal(calls[0][1].originalContractTaxInclusiveAmount, 100000)
+  assert.deepEqual(Object.keys(calls[0][1]).sort(), [
+    'contractConfirmationStatus',
+    'contractRevenueSchemaVersion',
+    'contractRevenueSetupStatus',
+    'originalContractTaxAmount',
+    'originalContractTaxExclusiveAmount',
+    'originalContractTaxInclusiveAmount',
+    'originalContractTaxRate',
+  ])
+  assert.equal(Object.hasOwn(calls[0][1], 'status'), false)
+  assert.equal(Object.hasOwn(calls[0][1], 'remark'), false)
+})
+
 const currentMonth = (() => {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`

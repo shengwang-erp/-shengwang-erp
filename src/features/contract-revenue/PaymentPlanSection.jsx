@@ -163,8 +163,8 @@ export default function PaymentPlanSection({
   return (
     <section className="form-panel contract-section payment-plan-section">
       <div className="contract-section-heading"><div><p className="eyebrow payment-plan-eyebrow">收款安排</p><h2>收款计划</h2></div><span className={`contract-state-badge ${creationAllowed ? 'confirmed' : ''}`}>{editorState?.mode === 'initial' ? '待建立' : `${formPlans.length}期`}</span></div>
-      {mode === 'legacy_readonly' && <div className="warning-note contract-warning">需要迁移后复核。未迁移旧项目仅可查看，暂时不能建立收款计划。</div>}
-      {mode !== 'legacy_readonly' && !creationAllowed && <div className="warning-note contract-warning">原始合同完成会计确认后才能设置收款计划。</div>}
+      {mode === 'legacy_readonly' && <div className="warning-note contract-warning">需要完成历史合同迁移。未迁移旧项目仅可查看，暂时不能建立收款计划。</div>}
+      {mode !== 'legacy_readonly' && !creationAllowed && <div className="warning-note contract-warning">请先完整保存原始合同后再设置收款计划。</div>}
       {editorResult.error && <div className="form-error contract-message">{editorResult.error}</div>}
       {creationAllowed && editorState && (
         <form onSubmit={handleSave}>

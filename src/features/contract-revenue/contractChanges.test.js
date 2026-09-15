@@ -72,12 +72,12 @@ function assertValidationError(field) {
   }
 }
 
-test('only an explicitly confirmed original contract can create a change', () => {
+test('only a complete saved original contract can create a change', () => {
   const prepareContractChangeInput = requireExport('prepareContractChangeInput')
   const ContractChangeStateError = requireExport('ContractChangeStateError')
   const disallowedProjects = [
-    confirmedProject({ contractConfirmationStatus: 'draft' }),
-    confirmedProject({ contractConfirmationStatus: undefined }),
+    confirmedProject({ contractRevenueSetupStatus: 'not_started' }),
+    confirmedProject({ originalContractTaxInclusiveAmount: 1099999 }),
     {
       projectId: 'P-LEGACY',
       contractAmount: 1100000,
@@ -90,7 +90,7 @@ test('only an explicitly confirmed original contract can create a change', () =>
       () => prepareContractChangeInput(project, [], changeInput(), actor),
       (error) =>
         error instanceof ContractChangeStateError &&
-        ['original_contract_confirmation_required', 'legacy_migration_required'].includes(
+        ['original_contract_save_required', 'legacy_migration_required'].includes(
           error.code,
         ),
     )
@@ -100,6 +100,11 @@ test('only an explicitly confirmed original contract can create a change', () =>
     contractConfirmationStatus: 'historical_migrated_confirmed',
     needsManualReview: true,
   })
+  const savedWithoutReview = confirmedProject({ contractConfirmationStatus: 'draft' })
+  assert.equal(
+    prepareContractChangeInput(savedWithoutReview, [], changeInput(), actor).projectId,
+    'P100',
+  )
   assert.equal(
     prepareContractChangeInput(historical, [], changeInput(), actor).projectId,
     'P100',

@@ -28,12 +28,12 @@ test('the form supports blank defaults, configurable periods, names, percentage,
   assert.doesNotMatch(sectionSource, /plannedTaxInclusiveAmount.*保存。/)
 })
 
-test('legacy and unconfirmed projects stay read-only while confirmed plans use domain validation and drafts', () => {
+test('legacy and incomplete projects stay read-only while saved contracts use domain validation and drafts', () => {
   assert.match(sectionSource, /canManagePaymentPlans\(/)
   assert.match(sectionSource, /preparePaymentPlanSetSave\(/)
   assert.match(sectionSource, /createPaymentPlanDraftStore/)
-  assert.match(sectionSource, /需要迁移后复核/)
-  assert.match(sectionSource, /原始合同完成会计确认后才能设置收款计划/)
+  assert.match(sectionSource, /需要完成历史合同迁移/)
+  assert.match(sectionSource, /请先完整保存原始合同后再设置收款计划/)
   assert.match(sectionSource, /creationAllowed/)
 })
 

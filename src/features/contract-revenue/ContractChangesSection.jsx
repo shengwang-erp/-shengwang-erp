@@ -152,12 +152,12 @@ export default function ContractChangesSection({
 
       {mode === 'legacy_readonly' && (
         <div className="warning-note contract-warning">
-          需要迁移后复核。未迁移旧项目仅可查看，暂时不能新增增减项。
+          需要完成历史合同迁移。未迁移旧项目仅可查看，暂时不能新增增减项。
         </div>
       )}
       {mode !== 'legacy_readonly' && !creationAllowed && (
         <div className="warning-note contract-warning">
-          原始合同完成会计确认后才能新增增减项。
+          请先完整保存原始合同后再新增增减项。
         </div>
       )}
 

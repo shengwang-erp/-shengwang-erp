@@ -85,7 +85,7 @@ function assertValidationError(field) {
   }
 }
 
-test('only confirmed and historical confirmed projects can register customer receipts', () => {
+test('only complete saved contracts can register customer receipts regardless of historical confirmation status', () => {
   const canManageCustomerReceipts = requireExport('canManageCustomerReceipts')
   const prepareCustomerReceiptInput = requireExport('prepareCustomerReceiptInput')
   const CustomerReceiptStateError = requireExport('CustomerReceiptStateError')
@@ -105,7 +105,11 @@ test('only confirmed and historical confirmed projects can register customer rec
     canManageCustomerReceipts(
       confirmedProject({ contractConfirmationStatus: 'draft' }),
     ),
-    false,
+    true,
+  )
+  assert.equal(
+    canManageCustomerReceipts(confirmedProject({ contractConfirmationStatus: undefined })),
+    true,
   )
   assert.equal(
     canManageCustomerReceipts({
@@ -117,7 +121,8 @@ test('only confirmed and historical confirmed projects can register customer rec
   )
 
   for (const project of [
-    confirmedProject({ contractConfirmationStatus: 'draft' }),
+    confirmedProject({ contractRevenueSetupStatus: 'not_started' }),
+    confirmedProject({ originalContractTaxInclusiveAmount: 1099999 }),
     { projectId: 'P-LEGACY', contractAmount: 1100000, paidAmount: 0 },
   ]) {
     assert.throws(
@@ -125,6 +130,11 @@ test('only confirmed and historical confirmed projects can register customer rec
       (error) => error instanceof CustomerReceiptStateError,
     )
   }
+
+  assert.equal(
+    prepareCustomerReceiptInput(confirmedProject({ contractConfirmationStatus: 'draft' }), plans, receiptInput(), actor).projectId,
+    'P300',
+  )
 })
 
 test('a planned-stage receipt is normalized, linked to its plan and records the operator', () => {

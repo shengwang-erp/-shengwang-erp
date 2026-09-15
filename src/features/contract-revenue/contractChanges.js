@@ -4,15 +4,7 @@ import {
   parseRequiredYen,
   validateTaxBreakdown,
 } from './contractRevenueValidation.js'
-import {
-  CONTRACT_CONFIRMATION_CONFIRMED,
-  HISTORICAL_MIGRATED_CONFIRMED,
-} from './originalContract.js'
-
-const CONFIRMED_STATUSES = new Set([
-  CONTRACT_CONFIRMATION_CONFIRMED,
-  HISTORICAL_MIGRATED_CONFIRMED,
-])
+import { isOriginalContractSaved } from './originalContract.js'
 
 export class ContractChangeStateError extends Error {
   constructor(code, message) {
@@ -31,17 +23,17 @@ function requireProjectId(project) {
   return projectId
 }
 
-function requireConfirmedProject(project) {
+function requireSavedProject(project) {
   const projectId = requireProjectId(project)
   const schemaVersion = Number(project?.contractRevenueSchemaVersion)
 
   if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
-    throw new ContractChangeStateError('legacy_migration_required', '需要迁移后复核')
+    throw new ContractChangeStateError('legacy_migration_required', '需要完成历史合同迁移')
   }
-  if (!CONFIRMED_STATUSES.has(project?.contractConfirmationStatus)) {
+  if (!isOriginalContractSaved(project)) {
     throw new ContractChangeStateError(
-      'original_contract_confirmation_required',
-      '原始合同完成会计确认后才能新增增减项',
+      'original_contract_save_required',
+      '请先完整保存原始合同后再新增增减项',
     )
   }
 
@@ -49,14 +41,7 @@ function requireConfirmedProject(project) {
 }
 
 export function canCreateContractChange(project) {
-  const schemaVersion = Number(project?.contractRevenueSchemaVersion)
-  return (
-    typeof project?.projectId === 'string' &&
-    Boolean(project.projectId.trim()) &&
-    Number.isInteger(schemaVersion) &&
-    schemaVersion >= 1 &&
-    CONFIRMED_STATUSES.has(project?.contractConfirmationStatus)
-  )
+  return isOriginalContractSaved(project)
 }
 
 function normalizeChangeType(value) {
@@ -161,7 +146,7 @@ function assertPositiveAdjustedTotals(totals) {
 }
 
 export function prepareContractChangeInput(project, changes, input, actor) {
-  const projectId = requireConfirmedProject(project)
+  const projectId = requireSavedProject(project)
   const changeType = normalizeChangeType(input?.changeType)
   const amounts = normalizePositiveTaxBreakdown(input || {})
   const candidate = {
@@ -188,7 +173,7 @@ export function prepareContractChangeVoid(
   actor,
   reason,
 ) {
-  const projectId = requireConfirmedProject(project)
+  const projectId = requireSavedProject(project)
   const changeId = normalizeRequiredText(
     targetChange?.changeId,
     'changeId',

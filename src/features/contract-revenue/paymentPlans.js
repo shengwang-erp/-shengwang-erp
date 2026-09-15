@@ -2,10 +2,7 @@ import {
   ContractRevenueValidationError,
   parseRequiredYen,
 } from './contractRevenueValidation.js'
-import {
-  CONTRACT_CONFIRMATION_CONFIRMED,
-  HISTORICAL_MIGRATED_CONFIRMED,
-} from './originalContract.js'
+import { isOriginalContractSaved } from './originalContract.js'
 
 export const PAYMENT_STAGE_LABELS = Object.freeze({
   initial: '首期款',
@@ -14,10 +11,6 @@ export const PAYMENT_STAGE_LABELS = Object.freeze({
 })
 
 const LEGACY_STAGE_ORDER = Object.freeze({ initial: 1, middle: 2, final: 3 })
-const CONFIRMED_STATUSES = new Set([
-  CONTRACT_CONFIRMATION_CONFIRMED,
-  HISTORICAL_MIGRATED_CONFIRMED,
-])
 const MAX_INSTALLMENTS = 24
 const TOTAL_BASIS_POINTS = 10000
 
@@ -47,14 +40,7 @@ function requireProjectId(project) {
 }
 
 export function canManagePaymentPlans(project) {
-  const schemaVersion = Number(project?.contractRevenueSchemaVersion)
-  return Boolean(
-    typeof project?.projectId === 'string' &&
-    project.projectId.trim() &&
-    Number.isInteger(schemaVersion) &&
-    schemaVersion >= 1 &&
-    CONFIRMED_STATUSES.has(project?.contractConfirmationStatus),
-  )
+  return isOriginalContractSaved(project)
 }
 
 function requireManageableProject(project) {
@@ -63,8 +49,8 @@ function requireManageableProject(project) {
     const schemaVersion = Number(project?.contractRevenueSchemaVersion)
     const legacy = !Number.isInteger(schemaVersion) || schemaVersion < 1
     throw new PaymentPlanStateError(
-      legacy ? 'legacy_migration_required' : 'original_contract_confirmation_required',
-      legacy ? '需要迁移后复核' : '原始合同完成会计确认后才能设置收款计划',
+      legacy ? 'legacy_migration_required' : 'original_contract_save_required',
+      legacy ? '需要完成历史合同迁移' : '请先完整保存原始合同后再设置收款计划',
     )
   }
   return projectId

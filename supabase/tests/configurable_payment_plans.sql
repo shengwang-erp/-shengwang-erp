@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = pg_temp, public, auth, extensions;
-select plan(15);
+select plan(20);
 
 select has_function('public', 'replace_project_payment_plan_secure', array['text', 'jsonb'], 'atomic payment-plan RPC exists');
 select function_privs_are('public', 'replace_project_payment_plan_secure', array['text', 'jsonb'], 'authenticated', array['EXECUTE'], 'authenticated can use only the atomic plan RPC');
@@ -21,13 +21,54 @@ on conflict do nothing;
 insert into public.projects (record_key, payload, status)
 values ('PAYMENT-PLAN-TEST', jsonb_build_object(
   'projectId', 'PAYMENT-PLAN-TEST', 'projectName', '收款计划测试',
-  'contractRevenueSchemaVersion', 1, 'contractConfirmationStatus', 'confirmed',
+  'contractRevenueSchemaVersion', 1, 'contractRevenueSetupStatus', 'configured',
+  'contractConfirmationStatus', 'draft',
+  'originalContractTaxExclusiveAmount', 909092,
+  'originalContractTaxRate', 10,
+  'originalContractTaxAmount', 90909,
   'originalContractTaxInclusiveAmount', 1000001
-), 'active');
+), 'active'), ('PAYMENT-PLAN-INCOMPLETE', jsonb_build_object(
+  'projectId', 'PAYMENT-PLAN-INCOMPLETE', 'projectName', '不完整合同测试',
+  'contractRevenueSchemaVersion', 1, 'contractRevenueSetupStatus', 'configured',
+  'contractConfirmationStatus', 'confirmed',
+  'originalContractTaxExclusiveAmount', 900000,
+  'originalContractTaxRate', 10,
+  'originalContractTaxAmount', 100000,
+  'originalContractTaxInclusiveAmount', 1000000
+), 'active'), ('OTHER-PROJECT', jsonb_build_object('projectId','OTHER-PROJECT','projectName','其他项目','contractRevenueSchemaVersion',1,'contractRevenueSetupStatus','configured','contractConfirmationStatus','draft','originalContractTaxExclusiveAmount',1,'originalContractTaxRate',0,'originalContractTaxAmount',0,'originalContractTaxInclusiveAmount',1), 'active'), ('PENDING-WITH-RECEIPT', jsonb_build_object('projectId','PENDING-WITH-RECEIPT','projectName','已有到账但未保存合同','contractRevenueSetupStatus','not_started'), 'active');
+select ok(private.project_has_valid_saved_contract((select payload from public.projects where record_key = 'PAYMENT-PLAN-TEST')), 'complete saved draft-status contract is formally usable');
+
+alter table public.project_receipts disable trigger project_receipts_lock_project;
+insert into public.project_receipts (record_key, payload, status)
+values ('pending-receipt', jsonb_build_object('receiptId','pending-receipt','projectId','PENDING-WITH-RECEIPT','taxInclusiveAmount',1,'statusCode','active'), 'active');
+alter table public.project_receipts enable trigger project_receipts_lock_project;
+
+insert into public.project_payment_plans (record_key, payload, status)
+values ('plan-other-project', jsonb_build_object('planId','plan-other-project','projectId','OTHER-PROJECT','installmentOrder',1,'name','其他项目一期','allocationWeight',100,'plannedTaxInclusiveAmount',1,'dueDate','2026-10-01','statusCode','active'), 'active');
 
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000001', true);
+
+select throws_ok(
+  $$select public.update_project_secure('PENDING-WITH-RECEIPT', '{"contractRevenueSchemaVersion":1,"contractRevenueSetupStatus":"configured","contractConfirmationStatus":"draft","originalContractTaxExclusiveAmount":909,"originalContractTaxRate":10,"originalContractTaxAmount":91,"originalContractTaxInclusiveAmount":1000,"needsManualReview":false}'::jsonb)$$,
+  '23514',
+  'original contract with revenue activity cannot be changed directly',
+  'first contract save is rejected when downstream revenue activity already exists'
+);
+
+select throws_ok(
+  $$select public.replace_project_payment_plan_secure('PAYMENT-PLAN-INCOMPLETE', '[{"planId":"bad-contract","projectId":"PAYMENT-PLAN-INCOMPLETE","installmentOrder":1,"name":"一期","allocationWeight":100,"plannedTaxInclusiveAmount":1000000,"dueDate":"2026-10-01"}]'::jsonb)$$,
+  '22023',
+  'complete saved original contract required',
+  'inconsistent persisted contract cannot establish a payment plan'
+);
+
+select throws_ok(
+  $$select public.replace_project_payment_plan_secure('PAYMENT-PLAN-TEST', '[{"planId":"plan-other-project","projectId":"PAYMENT-PLAN-TEST","installmentOrder":1,"name":"一期","allocationWeight":100,"plannedTaxInclusiveAmount":1000001,"dueDate":"2026-10-01"}]'::jsonb)$$,
+  '23514', 'payment plan belongs to another project',
+  'a payment plan id cannot be moved from another project'
+);
 
 create temporary table saved_result(payload jsonb) on commit drop;
 grant select, insert on saved_result to authenticated;
@@ -39,6 +80,12 @@ insert into saved_result select public.replace_project_payment_plan_secure('PAYM
 ));
 select is(jsonb_array_length(payload), 4, 'four installments save atomically') from saved_result;
 select is((payload->3->>'plannedTaxInclusiveAmount')::bigint, 250001::bigint, 'final installment carries integer-yen remainder') from saved_result;
+
+select throws_ok(
+  $$select public.update_project_secure('PAYMENT-PLAN-TEST', '{"originalContractTaxExclusiveAmount":181818,"originalContractTaxRate":10,"originalContractTaxAmount":18182,"originalContractTaxInclusiveAmount":200000}'::jsonb)$$,
+  '23514', 'original contract with revenue activity cannot be changed directly',
+  'saved original contract cannot be changed directly after a payment plan exists'
+);
 
 select public.upsert_project_receipt_secure(jsonb_build_object('receiptId','receipt-locked','projectId','PAYMENT-PLAN-TEST','planId','plan-2','stage','installment','taxInclusiveAmount',100000,'statusCode','active'));
 

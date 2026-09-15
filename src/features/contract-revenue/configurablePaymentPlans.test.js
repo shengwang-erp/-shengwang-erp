@@ -13,7 +13,12 @@ function requireExport(name) {
 const project = {
   projectId: 'P200',
   contractRevenueSchemaVersion: 1,
+  contractRevenueSetupStatus: 'configured',
   contractConfirmationStatus: 'confirmed',
+  originalContractTaxExclusiveAmount: 1000000,
+  originalContractTaxRate: 10,
+  originalContractTaxAmount: 100000,
+  originalContractTaxInclusiveAmount: 1100000,
 }
 const actor = { employeeId: 'E009', name: '会计王' }
 const legacy = [

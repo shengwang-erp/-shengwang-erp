@@ -2,6 +2,7 @@ import ContractChangesSection from './ContractChangesSection.jsx'
 import CustomerReceiptsSection from './CustomerReceiptsSection.jsx'
 import OriginalContractSection from './OriginalContractSection.jsx'
 import PaymentPlanSection from './PaymentPlanSection.jsx'
+import { hasActiveContractRevenueRows } from './contractRevenueActivity.js'
 
 function formatYen(value) {
   const amount = Number(value)
@@ -18,7 +19,6 @@ export default function ContractRevenuePage({
   canViewFinancials = true,
   canUpdateFinancials = true,
   onProjectChange,
-  onHistoricalReview,
   onCreateContractChange,
   onVoidContractChange,
   onSavePaymentPlanSet,
@@ -78,10 +78,14 @@ export default function ContractRevenuePage({
 
       <OriginalContractSection
         project={project}
-        revenueSnapshot={revenueSnapshot}
         currentUser={currentUser}
+        canEditContract={canUpdateFinancials}
+        editBlockedByRevenueActivity={
+          hasActiveContractRevenueRows(contractChanges, project.projectId) ||
+          hasActiveContractRevenueRows(paymentPlans, project.projectId) ||
+          hasActiveContractRevenueRows(receipts, project.projectId)
+        }
         onProjectChange={onProjectChange}
-        onHistoricalReview={onHistoricalReview}
       />
 
       <ContractChangesSection

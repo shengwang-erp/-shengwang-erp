@@ -37,8 +37,8 @@ test('change form exposes every required field and delegates strict domain valid
     assert.match(sectionSource, new RegExp(`name="${field}"`))
   }
   assert.match(sectionSource, /min="1"/)
-  assert.match(sectionSource, /原始合同完成会计确认后才能新增增减项/)
-  assert.match(sectionSource, /需要迁移后复核/)
+  assert.match(sectionSource, /请先完整保存原始合同后再新增增减项/)
+  assert.match(sectionSource, /需要完成历史合同迁移/)
 })
 
 test('change list uses running balances and exposes voiding without edit or hard delete actions', () => {

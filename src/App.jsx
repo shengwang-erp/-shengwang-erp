@@ -2548,6 +2548,34 @@ export function useProjectDirectoryLifecycle({
   return { rows: directoryState.rows, rawState: directoryState.rawState, setRows }
 }
 
+const ORIGINAL_CONTRACT_UPDATE_FIELDS = Object.freeze([
+  'contractRevenueSchemaVersion',
+  'contractRevenueSetupStatus',
+  'contractConfirmationStatus',
+  'originalContractTaxExclusiveAmount',
+  'originalContractTaxRate',
+  'originalContractTaxAmount',
+  'originalContractTaxInclusiveAmount',
+  'needsManualReview',
+])
+
+export async function persistContractRevenueProjectUpdate(service, nextProject) {
+  if (!service || typeof service.updateProject !== 'function') {
+    throw new TypeError('项目保存服务不可用')
+  }
+  const persistedProject = prepareProjectForPersistence(nextProject)
+  const { projectId } = persistedProject
+  if (!projectId) {
+    throw new TypeError('项目编号不能为空')
+  }
+  const patch = Object.fromEntries(
+    ORIGINAL_CONTRACT_UPDATE_FIELDS
+      .filter((field) => Object.hasOwn(persistedProject, field))
+      .map((field) => [field, persistedProject[field]]),
+  )
+  return service.updateProject(projectId, patch)
+}
+
 export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }) {
   const activeAccountId = typeof currentUser?.id === 'string' ? currentUser.id : ''
   const [currentView, setCurrentView] = useState(() => loadAuthenticatedView(activeAccountId))
@@ -3790,23 +3818,17 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
     setContractRevenueProjectId(projectId)
   }
 
-  const handleContractRevenueProjectChange = (nextProject) => {
+  const handleContractRevenueProjectChange = async (nextProject) => {
+    const serverProject = normalizeProject(
+      await persistContractRevenueProjectUpdate(projectService, nextProject),
+    )
     setProjects((currentProjects) =>
       currentProjects.map((project) =>
-        project.projectId === nextProject.projectId
-          ? { ...project, ...nextProject }
+        project.projectId === serverProject.projectId
+          ? { ...project, ...serverProject }
           : project,
       ),
     )
-  }
-
-  const handleHistoricalContractReview = async (nextProject) => {
-    const persistedProject = prepareProjectForPersistence(nextProject)
-    const serverProject = await projectService.updateProject(
-      persistedProject.projectId,
-      persistedProject,
-    )
-    await refreshStoredProjectsFromLocal()
     return serverProject
   }
 
@@ -3815,7 +3837,7 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
     migrateLegacyProjectContractSecure: async (projectId, project, openingReceipt) => {
       const result = await supabase.rpc('migrate_legacy_project_contract_secure', {
         p_project_id: projectId,
-        p_project: project,
+        p_expected_legacy_contract: project,
         p_opening_receipt: openingReceipt,
       })
       if (result?.error) throw result.error
@@ -4212,7 +4234,6 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
         canViewFinancials={contractRevenueAccess.view}
         canUpdateFinancials={contractRevenueAccess.update}
         onProjectChange={handleContractRevenueProjectChange}
-        onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}
         onVoidContractChange={handleVoidContractChange}
         onSavePaymentPlanSet={handleSavePaymentPlanSet}

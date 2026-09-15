@@ -1,12 +1,11 @@
 import { calculateReceiptSummary } from './contractRevenueCalculations.js'
 import { ContractRevenueValidationError, parseRequiredYen } from './contractRevenueValidation.js'
 import { normalizePaymentPlans, PAYMENT_STAGE_LABELS } from './paymentPlans.js'
-import { CONTRACT_CONFIRMATION_CONFIRMED, HISTORICAL_MIGRATED_CONFIRMED } from './originalContract.js'
+import { isOriginalContractSaved } from './originalContract.js'
 
 export const CUSTOMER_RECEIPT_STAGES = Object.freeze(['initial', 'middle', 'final', 'unallocated'])
 export const CUSTOMER_RECEIPT_STAGE_LABELS = Object.freeze({ ...PAYMENT_STAGE_LABELS, installment: '收款计划', unallocated: '未分配' })
 
-const CONFIRMED_STATUSES = new Set([CONTRACT_CONFIRMATION_CONFIRMED, HISTORICAL_MIGRATED_CONFIRMED])
 
 export class CustomerReceiptStateError extends Error {
   constructor(code, message) { super(message); this.name = 'CustomerReceiptStateError'; this.code = code }
@@ -24,15 +23,14 @@ function optionalText(value) { return typeof value === 'string' ? value.trim() :
 function requireProjectId(project) { return requiredText(project?.projectId, 'projectId', 'projectId不能为空') }
 
 export function canManageCustomerReceipts(project) {
-  const schemaVersion = Number(project?.contractRevenueSchemaVersion)
-  return typeof project?.projectId === 'string' && Boolean(project.projectId.trim()) && Number.isInteger(schemaVersion) && schemaVersion >= 1 && CONFIRMED_STATUSES.has(project?.contractConfirmationStatus)
+  return isOriginalContractSaved(project)
 }
 
-function requireConfirmedProject(project) {
+function requireSavedProject(project) {
   const projectId = requireProjectId(project)
   const schemaVersion = Number(project?.contractRevenueSchemaVersion)
-  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) throw new CustomerReceiptStateError('legacy_migration_required', '需要迁移后复核')
-  if (!CONFIRMED_STATUSES.has(project?.contractConfirmationStatus)) throw new CustomerReceiptStateError('original_contract_confirmation_required', '原始合同完成会计确认后才能登记实际收款')
+  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) throw new CustomerReceiptStateError('legacy_migration_required', '需要完成历史合同迁移')
+  if (!isOriginalContractSaved(project)) throw new CustomerReceiptStateError('original_contract_save_required', '请先完整保存原始合同后再登记实际收款')
   return projectId
 }
 
@@ -77,7 +75,7 @@ function resolveSelectedPlan(paymentPlans, projectId, input) {
 }
 
 export function prepareCustomerReceiptInput(project, paymentPlans, input, actor) {
-  const projectId = requireConfirmedProject(project)
+  const projectId = requireSavedProject(project)
   const plan = resolveSelectedPlan(paymentPlans, projectId, input)
   const legacyStage = plan?.stage && ['initial', 'middle', 'final'].includes(plan.stage) ? plan.stage : null
   return {
@@ -94,7 +92,7 @@ export function prepareCustomerReceiptInput(project, paymentPlans, input, actor)
 }
 
 export function prepareCustomerReceiptVoid(project, receipts, targetReceipt, actor, reason) {
-  const projectId = requireConfirmedProject(project)
+  const projectId = requireSavedProject(project)
   const receiptId = requiredText(targetReceipt?.receiptId, 'receiptId', 'receiptId不能为空')
   const stored = projectRecords(receipts, projectId).find((receipt) => receipt?.receiptId === receiptId)
   if (!stored) throw new CustomerReceiptStateError('receipt_not_found', '未找到需要作废的实际收款流水')

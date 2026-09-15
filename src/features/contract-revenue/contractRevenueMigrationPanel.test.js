@@ -41,34 +41,21 @@ test('the panel only previews on demand and requires an explicit confirmation be
   assert.match(panelSource, /projectResults/)
 })
 
-test('migration and historical review refresh local project and receipt state without cloud persistence', () => {
+test('migration refreshes local project and receipt state without restoring the removed review callback', () => {
   assert.match(appSource, /refreshStoredProjectsFromLocal/)
   assert.match(appSource, /executeContractMigration/)
-  assert.match(appSource, /handleHistoricalContractReview/)
-  assert.match(appSource, /executeMigration=\{executeContractMigration\}/)
-  assert.match(appSource, /loadPreview=\{loadContractMigrationPreview\}/)
-  assert.match(appSource, /onHistoricalReview=\{handleHistoricalContractReview\}/)
-  assert.match(
-    appSource,
-    /\[\s*projects,\s*projectContractChanges,\s*projectPaymentPlans,\s*projectReceipts,\s*contractRevenueAccess\.view,?\s*\]/,
-  )
+  assert.match(appSource, /executeMigration={executeContractMigration}/)
+  assert.match(appSource, /loadPreview={loadContractMigrationPreview}/)
+  assert.match(appSource, /p_expected_legacy_contract: project/u)
+  assert.doesNotMatch(appSource, /handleHistoricalContractReview/)
+  assert.doesNotMatch(appSource, /onHistoricalReview/)
 })
 
-test('the original contract area exposes one-time strict historical review while leaving the snapshot unchanged until confirmation', () => {
-  assert.match(pageSource, /revenueSnapshot=\{revenueSnapshot\}/)
-  assert.match(pageSource, /onHistoricalReview=\{onHistoricalReview\}/)
-  assert.match(originalSectionSource, /confirmHistoricalContractReview\(/)
+test('historical contract values remain visible and usable without a review action', () => {
   assert.match(originalSectionSource, /needsManualReview/)
-  assert.match(originalSectionSource, /确认历史合同复核/)
-  assert.match(originalSectionSource, /复核确认前/)
-  assert.match(originalSectionSource, /adjustedTaxInclusiveAmount/)
-  assert.match(originalSectionSource, /paymentProgress/)
-  for (const field of [
-    'taxExclusiveAmount',
-    'taxRate',
-    'taxAmount',
-    'taxInclusiveAmount',
-  ]) {
-    assert.match(originalSectionSource, new RegExp(`name="${field}"`))
-  }
+  assert.match(originalSectionSource, /历史合同资料已保留；金额完整有效时可直接用于收款业务。/)
+  assert.match(originalSectionSource, /历史记录人/)
+  assert.match(originalSectionSource, /历史记录时间/)
+  assert.doesNotMatch(originalSectionSource, /confirmHistoricalContractReview|确认历史合同复核|会计确认/)
+  assert.doesNotMatch(pageSource, /onHistoricalReview/)
 })

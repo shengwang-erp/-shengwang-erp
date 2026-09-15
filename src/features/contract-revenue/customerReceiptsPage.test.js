@@ -44,8 +44,8 @@ test('the receipt form exposes every required field and dynamically links paymen
   assert.ok(sectionSource.includes('plan.planId'))
   assert.match(sectionSource, /min="1"/)
   assert.match(sectionSource, /step="1"/)
-  assert.match(sectionSource, /原始合同完成会计确认后才能登记实际收款/)
-  assert.match(sectionSource, /需要迁移后复核/)
+  assert.match(sectionSource, /请先完整保存原始合同后再登记实际收款/)
+  assert.match(sectionSource, /需要完成历史合同迁移/)
 })
 
 test('the page shows stage and project receipt summaries with prominent overpayment flags', () => {

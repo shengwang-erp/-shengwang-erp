@@ -9,7 +9,12 @@ import {
 const project = {
   projectId: 'P-DYNAMIC',
   contractRevenueSchemaVersion: 1,
+  contractRevenueSetupStatus: 'configured',
   contractConfirmationStatus: 'confirmed',
+  originalContractTaxExclusiveAmount: 909092,
+  originalContractTaxRate: 10,
+  originalContractTaxAmount: 90909,
+  originalContractTaxInclusiveAmount: 1000001,
 }
 
 const actor = { employeeId: 'E-1', name: '会计' }

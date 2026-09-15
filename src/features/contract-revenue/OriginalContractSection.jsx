@@ -1,49 +1,50 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
-  confirmHistoricalContractReview,
-  confirmOriginalContract,
+  calculateOriginalContractAmounts,
   getOriginalContractMode,
-  saveOriginalContractDraft,
+  getOriginalContractRoundingWarning,
+  isOriginalContractSaved,
+  saveOriginalContract,
 } from './originalContract.js'
+import { createOriginalContractDraftStore } from './originalContractDraft.js'
 
 function formatYen(value) {
   const amount = Number(value)
   return `¥${(Number.isFinite(amount) ? amount : 0).toLocaleString('ja-JP')}`
 }
 
-function formatProgress(value) {
-  const progress = Number(value)
-  return `${Number.isFinite(progress) ? Math.round(progress) : 0}%`
-}
-
 function createFormValue(project) {
   return {
-    taxExclusiveAmount: project?.originalContractTaxExclusiveAmount ?? '',
-    taxRate: project?.originalContractTaxRate ?? '',
-    taxAmount: project?.originalContractTaxAmount ?? '',
-    taxInclusiveAmount: project?.originalContractTaxInclusiveAmount ?? '',
+    taxInclusiveAmount: String(project?.originalContractTaxInclusiveAmount ?? ''),
+    taxRate: String(project?.originalContractTaxRate ?? ''),
+    taxExclusiveAmount: String(project?.originalContractTaxExclusiveAmount ?? ''),
+    taxAmount: String(project?.originalContractTaxAmount ?? ''),
   }
+}
+
+function accountId(currentUser) {
+  return currentUser?.id || currentUser?.employeeId || currentUser?.accountId || ''
 }
 
 function ContractAmountDetails({ project }) {
   return (
     <dl className="detail-list contract-amount-details">
       <div>
-        <dt>税抜金额</dt>
-        <dd>{formatYen(project.originalContractTaxExclusiveAmount)}</dd>
+        <dt>含税总金额</dt>
+        <dd>{formatYen(project.originalContractTaxInclusiveAmount)}</dd>
       </div>
       <div>
         <dt>税率</dt>
         <dd>{Number(project.originalContractTaxRate) || 0}%</dd>
       </div>
       <div>
-        <dt>税额</dt>
-        <dd>{formatYen(project.originalContractTaxAmount)}</dd>
+        <dt>税拔金额</dt>
+        <dd>{formatYen(project.originalContractTaxExclusiveAmount)}</dd>
       </div>
       <div>
-        <dt>税込金额</dt>
-        <dd>{formatYen(project.originalContractTaxInclusiveAmount)}</dd>
+        <dt>税额</dt>
+        <dd>{formatYen(project.originalContractTaxAmount)}</dd>
       </div>
     </dl>
   )
@@ -51,96 +52,94 @@ function ContractAmountDetails({ project }) {
 
 export default function OriginalContractSection({
   project,
-  revenueSnapshot,
   currentUser,
+  canEditContract = false,
+  editBlockedByRevenueActivity = false,
   onProjectChange,
-  onHistoricalReview,
 }) {
   const mode = getOriginalContractMode(project)
+  const persisted = isOriginalContractSaved(project)
+  const isEditable = canEditContract && !editBlockedByRevenueActivity
   const [form, setForm] = useState(() => createFormValue(project))
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const savedForm = createFormValue(project)
-  const isDraftDirty =
-    mode === 'draft' &&
-    Object.keys(savedForm).some(
-      (field) => String(form[field]) !== String(savedForm[field]),
-    )
+  const loadedKey = useRef('')
+  const draftStore = useMemo(() => createOriginalContractDraftStore(), [])
+  const draftKey = `${accountId(currentUser)}:${project?.projectId || ''}`
 
   useEffect(() => {
-    setForm(createFormValue(project))
+    if (!project?.projectId || loadedKey.current === draftKey) return
+    loadedKey.current = draftKey
+    const storedDraft = mode === 'confirmed'
+      ? null
+      : draftStore.load(accountId(currentUser), project.projectId)
+    setForm(storedDraft || createFormValue(project))
+    setDirty(Boolean(storedDraft))
     setError('')
-  }, [project])
+    setMessage(storedDraft ? '已恢复本项目尚未保存的原始合同内容。' : '')
+  }, [draftKey, draftStore, currentUser, mode, project])
 
-  const updateField = (field, value) => {
-    setForm((current) => ({ ...current, [field]: value }))
-    setError('')
+  useEffect(() => {
+    if (!dirty || mode === 'confirmed' || !project?.projectId) return
+    draftStore.save(accountId(currentUser), project.projectId, form)
+  }, [dirty, draftStore, form, currentUser, mode, project?.projectId])
+
+  const updateCalculationField = (field, value) => {
+    let nextForm = { ...form, [field]: value }
+    let nextError = ''
+    if (nextForm.taxInclusiveAmount === '' || nextForm.taxRate === '') {
+      nextForm = { ...nextForm, taxExclusiveAmount: '', taxAmount: '' }
+    } else {
+      try {
+        const calculated = calculateOriginalContractAmounts(
+          nextForm.taxInclusiveAmount,
+          nextForm.taxRate,
+        )
+        nextForm = {
+          ...nextForm,
+          taxExclusiveAmount: String(calculated.taxExclusiveAmount),
+          taxAmount: String(calculated.taxAmount),
+        }
+      } catch (calculationError) {
+        nextForm = { ...nextForm, taxExclusiveAmount: '', taxAmount: '' }
+        nextError = calculationError?.message || '合同金额输入无效'
+      }
+    }
+    setForm(nextForm)
+    setDirty(true)
+    setError(nextError)
     setMessage('')
   }
 
-  const handleSaveDraft = (event) => {
+  const handleSave = async (event) => {
     event.preventDefault()
+    if (!isEditable || typeof onProjectChange !== 'function') {
+      setError('当前账号没有修改合同金额的权限。')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setMessage('')
     try {
-      const nextProject = saveOriginalContractDraft(project, form)
-      onProjectChange(nextProject)
-      setMessage('原始合同草稿已保存，可以执行会计确认。')
-      setError('')
+      const nextProject = saveOriginalContract(project, form)
+      const savedProject = await onProjectChange(nextProject)
+      if (
+        !savedProject ||
+        savedProject.projectId !== project.projectId ||
+        !isOriginalContractSaved(savedProject)
+      ) {
+        throw new Error('数据库未返回完整有效的合同记录')
+      }
+      draftStore.clear(accountId(currentUser), project.projectId)
+      setForm(createFormValue(savedProject))
+      setDirty(false)
+      setMessage('合同已成功保存到数据库，可以建立收款计划。')
     } catch (saveError) {
-      setError(saveError?.message || '原始合同草稿保存失败')
-      setMessage('')
-    }
-  }
-
-  const handleConfirm = () => {
-    if (isDraftDirty) {
-      setError('请先保存最新草稿后再执行会计确认。')
-      setMessage('')
-      return
-    }
-
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('会计确认后原始合同金额将锁定，确定继续吗？')
-    ) {
-      return
-    }
-
-    try {
-      const nextProject = confirmOriginalContract(
-        project,
-        currentUser,
-        new Date().toISOString(),
-      )
-      onProjectChange(nextProject)
-      setMessage('原始合同已完成会计确认并锁定。')
-      setError('')
-    } catch (confirmError) {
-      setError(confirmError?.message || '会计确认失败')
-      setMessage('')
-    }
-  }
-
-  const handleHistoricalReview = async () => {
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('历史合同复核确认后将转为正式确认并锁定，确定继续吗？')
-    ) {
-      return
-    }
-
-    try {
-      const nextProject = confirmHistoricalContractReview(
-        project,
-        form,
-        currentUser,
-        new Date().toISOString(),
-      )
-      await onHistoricalReview(nextProject)
-      setMessage('历史合同已完成会计复核并锁定。')
-      setError('')
-    } catch (reviewError) {
-      setError(reviewError?.message || '历史合同复核失败')
-      setMessage('')
+      setError(`${saveError?.message || '合同保存失败'}，已保留当前输入。`)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -155,7 +154,7 @@ export default function OriginalContractSection({
           <span className="contract-state-badge legacy">未迁移</span>
         </div>
         <div className="warning-note contract-warning">
-          需要迁移后复核。当前仅显示旧合同金额和旧已收款金额，暂时不能编辑。
+          需要完成历史合同迁移。当前仅显示旧合同金额和旧已收款金额，暂时不能编辑。
         </div>
         <dl className="detail-list">
           <div>
@@ -172,226 +171,133 @@ export default function OriginalContractSection({
   }
 
   if (mode === 'confirmed') {
-    const historical =
-      project.contractConfirmationStatus === 'historical_migrated_confirmed'
-
-    if (historical && project.needsManualReview) {
-      return (
-        <section className="form-panel contract-section historical-contract-review">
-          <div className="contract-section-heading">
-            <div>
-              <p className="eyebrow dark-text">原始合同</p>
-              <h2>历史合同人工复核</h2>
-            </div>
-            <span className="contract-state-badge legacy">待会计复核</span>
-          </div>
-
-          <div className="warning-note contract-warning">
-            复核确认前，当前历史税込合同金额、累计收款和收款进度保持不变。
-          </div>
-          <ContractAmountDetails project={project} />
-          <dl className="detail-list compact historical-review-baseline">
-            <div>
-              <dt>当前税込合同金额</dt>
-              <dd>
-                {formatYen(
-                  revenueSnapshot?.adjustedTaxInclusiveAmount ??
-                    project.originalContractTaxInclusiveAmount,
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>当前累计收款</dt>
-              <dd>{formatYen(revenueSnapshot?.totalReceivedTaxInclusiveAmount)}</dd>
-            </div>
-            <div>
-              <dt>当前收款进度</dt>
-              <dd>{formatProgress(revenueSnapshot?.paymentProgress)}</dd>
-            </div>
-          </dl>
-
-          <div className="contract-change-form">
-            <div className="form-grid">
-              <label className="field">
-                <span>正确税抜金额（日元）</span>
-                <input
-                  name="taxExclusiveAmount"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={form.taxExclusiveAmount}
-                  onChange={(event) =>
-                    updateField('taxExclusiveAmount', event.target.value)
-                  }
-                  required
-                />
-              </label>
-              <label className="field">
-                <span>正确税率（%）</span>
-                <input
-                  name="taxRate"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  value={form.taxRate}
-                  onChange={(event) => updateField('taxRate', event.target.value)}
-                  required
-                />
-              </label>
-              <label className="field">
-                <span>正确税额（日元）</span>
-                <input
-                  name="taxAmount"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={form.taxAmount}
-                  onChange={(event) => updateField('taxAmount', event.target.value)}
-                  required
-                />
-              </label>
-              <label className="field">
-                <span>正确税込金额（日元）</span>
-                <input
-                  name="taxInclusiveAmount"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={form.taxInclusiveAmount}
-                  onChange={(event) =>
-                    updateField('taxInclusiveAmount', event.target.value)
-                  }
-                  required
-                />
-              </label>
-            </div>
-
-            {error && <div className="form-error contract-message">{error}</div>}
-            {message && <div className="contract-success contract-message">{message}</div>}
-
-            <div className="form-actions contract-actions">
-              <button
-                className="primary-button"
-                type="button"
-                onClick={handleHistoricalReview}
-              >
-                确认历史合同复核
-              </button>
-            </div>
-          </div>
-        </section>
-      )
-    }
-
+    const historical = project.contractConfirmationStatus === 'historical_migrated_confirmed'
+    const roundingWarning = getOriginalContractRoundingWarning(project)
     return (
       <section className="form-panel contract-section">
         <div className="contract-section-heading">
           <div>
             <p className="eyebrow dark-text">原始合同</p>
-            <h2>已确认合同</h2>
+            <h2>已保存合同</h2>
           </div>
           <span className="contract-state-badge confirmed">
-            {historical ? '历史迁移确认' : '已确认'}
+            {historical ? '历史合同' : '已锁定'}
           </span>
         </div>
-        <div className="contract-lock-note">原始合同已锁定，不能直接修改。</div>
+        <div className="contract-lock-note">该历史合同保持原有锁定规则，不能直接修改。</div>
         {historical && project.needsManualReview && (
-          <div className="warning-note contract-warning">历史迁移数据仍需要会计复核。</div>
+          <div className="warning-note contract-warning">
+            历史合同资料已保留；金额完整有效时可直接用于收款业务。
+          </div>
+        )}
+        {roundingWarning && (
+          <div className="warning-note contract-warning" role="alert">{roundingWarning}</div>
         )}
         <ContractAmountDetails project={project} />
-        <dl className="detail-list compact contract-confirmation-details">
-          <div>
-            <dt>确认人</dt>
-            <dd>{project.contractConfirmedByName || '历史迁移记录'}</dd>
-          </div>
-          <div>
-            <dt>确认人ID</dt>
-            <dd>{project.contractConfirmedById || '未记录'}</dd>
-          </div>
-          <div>
-            <dt>确认时间</dt>
-            <dd>{project.contractConfirmedAt || '未记录'}</dd>
-          </div>
-        </dl>
+        {(project.contractConfirmedByName || project.contractConfirmedAt) && (
+          <dl className="detail-list compact contract-confirmation-details">
+            <div>
+              <dt>历史记录人</dt>
+              <dd>{project.contractConfirmedByName || '未记录'}</dd>
+            </div>
+            <div>
+              <dt>历史记录时间</dt>
+              <dd>{project.contractConfirmedAt || '未记录'}</dd>
+            </div>
+          </dl>
+        )}
       </section>
     )
   }
 
+  const roundingWarning = !dirty ? getOriginalContractRoundingWarning(project) : ''
   return (
     <section className="form-panel contract-section">
       <div className="contract-section-heading">
         <div>
           <p className="eyebrow dark-text">原始合同</p>
-          <h2>{mode === 'draft' ? '合同金额草稿' : '录入原始合同'}</h2>
+          <h2>{persisted ? '合同金额' : '录入原始合同'}</h2>
         </div>
-        <span className={`contract-state-badge ${mode}`}>
-          {mode === 'draft' ? '草稿' : '待录入'}
+        <span className={`contract-state-badge ${persisted ? 'confirmed' : mode}`}>
+          {persisted ? '已保存' : '待录入'}
         </span>
       </div>
 
-      <form onSubmit={handleSaveDraft}>
+      {editBlockedByRevenueActivity && (
+        <div className="warning-note contract-warning">
+          已有合同增减项、收款计划或实际到账，原始合同金额不能直接修改，请按现有调整流程处理。
+        </div>
+      )}
+      {!canEditContract && !editBlockedByRevenueActivity && (
+        <div className="warning-note contract-warning">当前账号只能查看合同，不能修改。</div>
+      )}
+      {roundingWarning && (
+        <div className="warning-note contract-warning" role="alert">{roundingWarning}</div>
+      )}
+
+      <form onSubmit={handleSave}>
         <div className="form-grid">
           <label className="field">
-            <span>税抜金额（日元）</span>
+            <span>含税总金额（日元）</span>
             <input
+              name="taxInclusiveAmount"
               type="number"
               min="1"
               step="1"
-              value={form.taxExclusiveAmount}
-              onChange={(event) => updateField('taxExclusiveAmount', event.target.value)}
+              value={form.taxInclusiveAmount}
+              onChange={(event) =>
+                updateCalculationField('taxInclusiveAmount', event.target.value)
+              }
+              readOnly={!isEditable}
               required
             />
           </label>
           <label className="field">
             <span>税率（%）</span>
             <input
+              name="taxRate"
               type="number"
               min="0"
               max="100"
               step="0.01"
               value={form.taxRate}
-              onChange={(event) => updateField('taxRate', event.target.value)}
+              onChange={(event) => updateCalculationField('taxRate', event.target.value)}
+              readOnly={!isEditable}
               required
+            />
+          </label>
+          <label className="field">
+            <span>税拔金额（日元）</span>
+            <input
+              name="taxExclusiveAmount"
+              type="number"
+              value={form.taxExclusiveAmount}
+              readOnly
+              aria-readonly="true"
             />
           </label>
           <label className="field">
             <span>税额（日元）</span>
             <input
+              name="taxAmount"
               type="number"
-              min="0"
-              step="1"
               value={form.taxAmount}
-              onChange={(event) => updateField('taxAmount', event.target.value)}
-              required
-            />
-          </label>
-          <label className="field">
-            <span>税込金额（日元）</span>
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={form.taxInclusiveAmount}
-              onChange={(event) => updateField('taxInclusiveAmount', event.target.value)}
-              required
+              readOnly
+              aria-readonly="true"
             />
           </label>
         </div>
 
-        {error && <div className="form-error contract-message">{error}</div>}
+        {error && <div className="form-error contract-message" role="alert">{error}</div>}
         {message && <div className="contract-success contract-message">{message}</div>}
 
-        <div className="form-actions contract-actions">
-          <button className="primary-button" type="submit">
-            保存草稿
-          </button>
-          {mode === 'draft' && (
-            <button className="ghost-button contract-confirm-button" type="button" onClick={handleConfirm}>
-              会计确认
+        {isEditable && (
+          <div className="form-actions contract-actions">
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? '保存中…' : '保存合同'}
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </form>
     </section>
   )
