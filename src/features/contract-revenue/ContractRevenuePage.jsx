@@ -21,7 +21,7 @@ export default function ContractRevenuePage({
   onHistoricalReview,
   onCreateContractChange,
   onVoidContractChange,
-  onSavePaymentPlan,
+  onSavePaymentPlanSet,
   onCreateCustomerReceipt,
   onVoidCustomerReceipt,
   onBack,
@@ -98,7 +98,7 @@ export default function ContractRevenuePage({
         paymentPlans={paymentPlans}
         receipts={receipts}
         currentUser={currentUser}
-        onSavePaymentPlan={canUpdateFinancials ? onSavePaymentPlan : undefined}
+        onSavePaymentPlanSet={canUpdateFinancials ? onSavePaymentPlanSet : undefined}
       />
 
       <CustomerReceiptsSection

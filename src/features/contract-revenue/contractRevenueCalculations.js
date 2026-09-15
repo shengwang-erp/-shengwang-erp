@@ -3,6 +3,7 @@ import {
   parseRequiredYen,
   validateTaxBreakdown,
 } from './contractRevenueValidation.js'
+import { summarizeConfigurablePaymentPlans } from './paymentPlanSummary.js'
 
 export const PAYMENT_STAGES = ['initial', 'middle', 'final']
 
@@ -453,11 +454,11 @@ export function buildProjectRevenueSnapshot(
     adjustedTotals.adjustedTaxInclusiveAmount,
     projectReceipts,
   )
-  const { plans: _allocatedPlans, ...allocationSummary } = reallocateUnpaidPaymentStages({
-    adjustedTaxInclusiveAmount: adjustedTotals.adjustedTaxInclusiveAmount,
-    plans: projectPlans,
-    receipts: projectReceipts,
-  })
+  const allocationSummary = summarizeConfigurablePaymentPlans(
+    adjustedTotals.adjustedTaxInclusiveAmount,
+    projectPlans,
+    projectReceipts,
+  )
 
   return {
     ...adjustedTotals,

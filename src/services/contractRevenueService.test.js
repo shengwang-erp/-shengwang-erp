@@ -220,6 +220,8 @@ test('sanitizeProjectForPersistence removes every compatibility and revenue snap
     allocationStatus: 'manual_review_required',
     allocationReason: 'all_stages_locked',
     lockedStages: ['initial'],
+    lockedPlanIds: ['plan-initial'],
+    unlockedPlanIds: ['plan-middle', 'plan-final'],
     unlockedStages: ['middle', 'final'],
     lockedPlannedTaxInclusiveAmount: 330000,
     remainingAssignableTaxInclusiveAmount: 770000,

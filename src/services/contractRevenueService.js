@@ -22,6 +22,8 @@ export const PROJECT_REVENUE_SNAPSHOT_FIELDS = Object.freeze([
   'allocationStatus',
   'allocationReason',
   'lockedStages',
+  'lockedPlanIds',
+  'unlockedPlanIds',
   'unlockedStages',
   'lockedPlannedTaxInclusiveAmount',
   'remainingAssignableTaxInclusiveAmount',
@@ -70,6 +72,7 @@ export function createContractRevenueService(overrides = {}) {
   const readProjectReceipts = overrides.readProjectReceipts || (() => getList ? getList(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts) : rpc ? rpc('list_project_receipts_secure', {}) : explicitRpc('list_project_receipts_secure', {}))
   const writeContractChange = overrides.writeContractChange || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, record) : rpc ? rpc('upsert_project_contract_change_secure', { p_payload: record }) : explicitRpc('upsert_project_contract_change_secure', { p_payload: record }))
   const writePaymentPlan = overrides.writePaymentPlan || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.paymentPlans, record) : rpc ? rpc('upsert_project_payment_plan_secure', { p_payload: record }) : explicitRpc('upsert_project_payment_plan_secure', { p_payload: record }))
+  const writePaymentPlanSet = overrides.writePaymentPlanSet || ((projectId, plans) => rpc ? rpc("replace_project_payment_plan_secure", { p_project_id: projectId, p_plans: plans }) : explicitRpc("replace_project_payment_plan_secure", { p_project_id: projectId, p_plans: plans }))
   const writeProjectReceipt = overrides.writeProjectReceipt || ((record) => upsertRecord ? upsertRecord(CONTRACT_REVENUE_STORAGE_KEYS.projectReceipts, record) : rpc ? rpc('upsert_project_receipt_secure', { p_payload: record }) : explicitRpc('upsert_project_receipt_secure', { p_payload: record }))
   const now = overrides.now || (() => new Date().toISOString())
   const randomUUID = overrides.randomUUID || defaultRandomUUID
@@ -139,6 +142,12 @@ export function createContractRevenueService(overrides = {}) {
     loadContractChanges: async () => { const rows = await readContractChanges(); return Array.isArray(rows) ? rows : [] },
     loadPaymentPlans: async () => { const rows = await readPaymentPlans(); return Array.isArray(rows) ? rows : [] },
     loadProjectReceipts: async () => { const rows = await readProjectReceipts(); return Array.isArray(rows) ? rows : [] },
+    savePaymentPlanSet: async (projectId, plans) => {
+      requireRecordId({ projectId }, 'projectId')
+      const result = await writePaymentPlanSet(projectId, plans)
+      if (!Array.isArray(result)) throw new Error('收款计划保存结果无效')
+      return result
+    },
 
     createContractChange: (input) =>
       createRecord(CONTRACT_REVENUE_STORAGE_KEYS.contractChanges, 'changeId', input),
@@ -192,6 +201,7 @@ export const loadProjectReceipts = (...args) =>
 export const createContractChange = (...args) =>
   contractRevenueService.createContractChange(...args)
 export const createPaymentPlan = (...args) => contractRevenueService.createPaymentPlan(...args)
+export const savePaymentPlanSet = (...args) => contractRevenueService.savePaymentPlanSet(...args)
 export const createProjectReceipt = (...args) =>
   contractRevenueService.createProjectReceipt(...args)
 

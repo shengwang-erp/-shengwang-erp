@@ -135,6 +135,7 @@ import {
   CONTRACT_REVENUE_STORAGE_KEYS,
   createContractChange as persistContractChange,
   createPaymentPlan as persistCreatePaymentPlan,
+  savePaymentPlanSet as persistPaymentPlanSet,
   createProjectReceipt as persistCreateCustomerReceipt,
   sanitizeProjectForPersistence,
   updatePaymentPlan as persistUpdatePaymentPlan,
@@ -3842,22 +3843,13 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
     return voided
   }
 
-  const handleSavePaymentPlan = async (input) => {
-    const saved = input.planId
-      ? await persistUpdatePaymentPlan(input)
-      : await persistCreatePaymentPlan(input)
+  const handleSavePaymentPlanSet = async (projectId, plans) => {
+    const savedPlans = await persistPaymentPlanSet(projectId, plans)
     setProjectPaymentPlans((currentPlans) => [
-      saved,
-      ...currentPlans.filter((plan) => {
-        const sameActiveStage =
-          plan.projectId === saved.projectId &&
-          plan.stage === saved.stage &&
-          plan.statusCode !== 'void' &&
-          plan.statusCode !== 'deleted'
-        return plan.planId !== saved.planId && !sameActiveStage
-      }),
+      ...savedPlans,
+      ...currentPlans.filter((plan) => plan.projectId !== projectId),
     ])
-    return saved
+    return savedPlans
   }
 
   const handleCreateCustomerReceipt = async (input) => {
@@ -4223,7 +4215,7 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
         onHistoricalReview={handleHistoricalContractReview}
         onCreateContractChange={handleCreateContractChange}
         onVoidContractChange={handleVoidContractChange}
-        onSavePaymentPlan={handleSavePaymentPlan}
+        onSavePaymentPlanSet={handleSavePaymentPlanSet}
         onCreateCustomerReceipt={handleCreateCustomerReceipt}
         onVoidCustomerReceipt={handleVoidCustomerReceipt}
         onBack={() => handlePersonnelAwareNavigate('projects')}

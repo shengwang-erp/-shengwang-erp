@@ -27,7 +27,7 @@ function todayValue() {
 
 function createEmptyForm() {
   return {
-    stage: 'initial',
+    planId: '',
     taxInclusiveAmount: '',
     receivedDate: todayValue(),
     paymentMethod: '银行转账',
@@ -195,17 +195,18 @@ export default function CustomerReceiptsSection({
         <form className="customer-receipt-form" onSubmit={handleCreate}>
           <div className="form-grid customer-receipt-form-grid">
             <label className="field">
-              <span>收款阶段</span>
+              <span>关联收款计划</span>
               <select
-                name="stage"
-                value={form.stage}
-                onChange={(event) => updateField('stage', event.target.value)}
-                required
+                name="planId"
+                value={form.planId}
+                onChange={(event) => updateField('planId', event.target.value)}
               >
-                <option value="initial">首期款</option>
-                <option value="middle">中期款</option>
-                <option value="final">尾款</option>
-                <option value="unallocated">未分配</option>
+                <option value="">未分配</option>
+                {paymentPlans.filter((plan) => plan.projectId === project.projectId && plan.statusCode !== 'void' && plan.statusCode !== 'deleted').sort((left, right) => Number(left.installmentOrder || 0) - Number(right.installmentOrder || 0)).map((plan, index) => (
+                  <option key={plan.planId} value={plan.planId}>
+                    {plan.name || CUSTOMER_RECEIPT_STAGE_LABELS[plan.stage] || ('第' + (index + 1) + '期')}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="field">
@@ -319,7 +320,7 @@ export default function CustomerReceiptsSection({
           {receiptView.hasStageOverpayment && (
             <div className="customer-receipt-overpayment-alert stage" role="alert">
               <strong>存在阶段超额到账</strong>
-              <span>阶段实际到账超过计划金额，已保留真实到账金额并在下方标记。</span>
+              <span>期次实际到账超过计划金额，已保留真实到账金额并在下方标记。</span>
             </div>
           )}
           {receiptView.unallocatedReceivedTaxInclusiveAmount > 0 && (
@@ -328,7 +329,7 @@ export default function CustomerReceiptsSection({
               <strong>
                 {formatYen(receiptView.unallocatedReceivedTaxInclusiveAmount)}
               </strong>
-              ，计入项目累计收款，但不会锁定首期、中期或尾款计划。
+              ，计入项目累计收款，但不会锁定任何收款计划。
             </div>
           )}
 
@@ -338,7 +339,7 @@ export default function CustomerReceiptsSection({
                 className={`customer-receipt-stage-card ${
                   stageSummary.overpaidTaxInclusiveAmount > 0 ? 'overpaid' : ''
                 }`}
-                key={stageSummary.stage}
+                key={stageSummary.planId || stageSummary.stage}
               >
                 <div className="customer-receipt-stage-heading">
                   <h3>{stageSummary.label}</h3>
@@ -384,7 +385,7 @@ export default function CustomerReceiptsSection({
 
           <div className="contract-change-list-heading customer-receipt-list-heading">
             <h3>实际收款流水</h3>
-            <span>同一阶段允许多次到账；已作废流水不参与汇总和锁定。</span>
+            <span>同一期次允许多次到账；已作废流水不参与汇总和锁定。</span>
           </div>
 
           {receiptView.receiptRows.length === 0 ? (
@@ -415,7 +416,7 @@ export default function CustomerReceiptsSection({
                         <td>
                           <strong>{receiptRow.receivedDate || '期初迁移'}</strong>
                           <span className="customer-receipt-stage-label">
-                            {CUSTOMER_RECEIPT_STAGE_LABELS[receiptRow.stage]}
+                            {receiptRow.displayPlanName || CUSTOMER_RECEIPT_STAGE_LABELS[receiptRow.stage]}
                           </span>
                           <small>流水ID：{receiptRow.receiptId}</small>
                         </td>

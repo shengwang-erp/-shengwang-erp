@@ -26,11 +26,11 @@ test('customer receipts are connected to the revenue page and mutations are upda
   assert.match(pageSource, /onVoidCustomerReceipt=\{canUpdateFinancials \? onVoidCustomerReceipt : undefined\}/)
 })
 
-test('the receipt form exposes every required field and all four supported stages', () => {
+test('the receipt form exposes every required field and dynamically links payment plans', () => {
   assert.match(sectionSource, /canManageCustomerReceipts\(/)
   assert.match(sectionSource, /prepareCustomerReceiptInput\(/)
   for (const field of [
-    'stage',
+    'planId',
     'taxInclusiveAmount',
     'receivedDate',
     'paymentMethod',
@@ -39,10 +39,9 @@ test('the receipt form exposes every required field and all four supported stage
   ]) {
     assert.match(sectionSource, new RegExp(`name="${field}"`))
   }
-  assert.match(sectionSource, /value="initial"/)
-  assert.match(sectionSource, /value="middle"/)
-  assert.match(sectionSource, /value="final"/)
-  assert.match(sectionSource, /value="unallocated"/)
+  assert.match(sectionSource, /未分配/)
+  assert.ok(sectionSource.includes('paymentPlans.filter('))
+  assert.ok(sectionSource.includes('plan.planId'))
   assert.match(sectionSource, /min="1"/)
   assert.match(sectionSource, /step="1"/)
   assert.match(sectionSource, /原始合同完成会计确认后才能登记实际收款/)
