@@ -56,6 +56,60 @@
   color: #6ed5a2;
 }
 
+.erp-black-gold .payment-plan-card {
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+  border-color: var(--erp-border-subtle);
+  box-shadow: var(--erp-shadow-card);
+}
+
+.erp-black-gold .payment-plan-card legend {
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-bg-canvas);
+  border: 1px solid var(--erp-border-gold-muted);
+  border-radius: 999px;
+}
+
+.erp-black-gold .payment-plan-card.locked {
+  color: var(--erp-text-primary);
+  background: var(--erp-status-success-surface);
+  border-color: var(--erp-status-success);
+  box-shadow: inset 3px 0 0 var(--erp-status-success);
+}
+
+.erp-black-gold .payment-plan-card legend span {
+  color: var(--erp-status-success);
+  background: var(--erp-status-success-surface);
+}
+
+.erp-black-gold .payment-plan-card input:disabled,
+.erp-black-gold .payment-plan-card textarea:disabled {
+  color: var(--erp-text-secondary);
+  background: var(--erp-bg-surface);
+  border-color: var(--erp-border-subtle);
+  opacity: 1;
+}
+
+.erp-black-gold .payment-plan-summary > div {
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .payment-plan-summary span {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .payment-plan-summary strong {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .payment-plan-note {
+  color: var(--erp-status-info);
+  background: var(--erp-status-info-surface);
+  border-color: var(--erp-status-info);
+}
+
 @media (max-width: 900px) {
   .payment-plan-row { grid-template-columns: 1fr 1fr; }
   .payment-plan-row .payment-plan-remark { grid-column: 1 / -1; }

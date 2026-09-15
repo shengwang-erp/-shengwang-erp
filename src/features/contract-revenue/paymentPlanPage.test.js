@@ -3,7 +3,12 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 async function readSource(relativePath) { return readFile(new URL(relativePath, import.meta.url), 'utf8').catch(() => '') }
-const [appSource, pageSource, sectionSource] = await Promise.all([readSource('../../App.jsx'), readSource('./ContractRevenuePage.jsx'), readSource('./PaymentPlanSection.jsx')])
+const [appSource, pageSource, sectionSource, paymentPlanCss] = await Promise.all([
+  readSource('../../App.jsx'),
+  readSource('./ContractRevenuePage.jsx'),
+  readSource('./PaymentPlanSection.jsx'),
+  readSource('./configurablePaymentPlans.css'),
+])
 
 test('payment plans connect to the revenue page through an update-gated atomic set save', () => {
   assert.match(sectionSource, /function PaymentPlanSection/)
@@ -52,4 +57,19 @@ test('payment plan page has no hard-delete or void workflow', () => {
   assert.doesNotMatch(sectionSource, /voidPaymentPlan/)
   assert.doesNotMatch(sectionSource, /onDeletePaymentPlan/)
   assert.doesNotMatch(sectionSource, /onVoidPaymentPlan/)
+})
+
+test('black gold payment plan cards never fall back to light surfaces', () => {
+  assert.match(
+    paymentPlanCss,
+    /\.erp-black-gold\s+\.payment-plan-card\s*\{[^}]*background:\s*var\(--erp-bg-elevated\)[^}]*border-color:\s*var\(--erp-border-subtle\)/s,
+  )
+  assert.match(
+    paymentPlanCss,
+    /\.erp-black-gold\s+\.payment-plan-card\s+legend\s*\{[^}]*color:\s*var\(--erp-accent-gold-soft\)[^}]*background:\s*var\(--erp-bg-canvas\)/s,
+  )
+  assert.match(
+    paymentPlanCss,
+    /\.erp-black-gold\s+\.payment-plan-card\s+input:disabled[\s\S]*?background:\s*var\(--erp-bg-surface\)/s,
+  )
 })
