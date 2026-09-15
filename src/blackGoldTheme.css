@@ -380,6 +380,46 @@
   border-color: var(--erp-border-subtle);
 }
 
+.erp-black-gold .contract-section-heading h2,
+.erp-black-gold .contract-change-list-heading h3 {
+  color: var(--erp-text-primary);
+}
+
+.erp-black-gold .contract-change-list-heading span,
+.erp-black-gold .contract-change-table td > small {
+  color: var(--erp-text-muted);
+}
+
+.erp-black-gold .contract-change-form {
+  color: var(--erp-text-primary);
+  background: var(--erp-bg-elevated);
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .contract-change-table-wrap {
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .contract-change-table {
+  background: var(--erp-bg-surface);
+}
+
+.erp-black-gold .contract-change-table th {
+  color: var(--erp-accent-gold-soft);
+  background: var(--erp-bg-elevated);
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .contract-change-table td {
+  color: var(--erp-text-secondary);
+  border-color: var(--erp-border-subtle);
+}
+
+.erp-black-gold .contract-change-table .void-row td {
+  color: var(--erp-text-muted);
+  background: var(--erp-bg-elevated);
+}
+
 .erp-black-gold .form-group {
   border: 1px solid var(--erp-border-subtle);
   color: var(--erp-text-primary);

@@ -441,6 +441,28 @@ test('attendance result and error states use dark semantic surfaces', () => {
   }
 })
 
+test('contract change form and history use black-gold surfaces', () => {
+  const heading = declarationsFor('.erp-black-gold .contract-section-heading h2')
+  assert.equal(heading.get('color'), 'var(--erp-text-primary)')
+
+  const form = declarationsFor('.erp-black-gold .contract-change-form')
+  assert.equal(form.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(form.get('border-color'), 'var(--erp-border-subtle)')
+
+  const listHeading = declarationsFor('.erp-black-gold .contract-change-list-heading h3')
+  const listHelp = declarationsFor('.erp-black-gold .contract-change-list-heading span')
+  assert.equal(listHeading.get('color'), 'var(--erp-text-primary)')
+  assert.equal(listHelp.get('color'), 'var(--erp-text-muted)')
+
+  const table = declarationsFor('.erp-black-gold .contract-change-table')
+  const tableHead = declarationsFor('.erp-black-gold .contract-change-table th')
+  const tableCell = declarationsFor('.erp-black-gold .contract-change-table td')
+  assert.equal(table.get('background'), 'var(--erp-bg-surface)')
+  assert.equal(tableHead.get('background'), 'var(--erp-bg-elevated)')
+  assert.equal(tableHead.get('color'), 'var(--erp-accent-gold-soft)')
+  assert.equal(tableCell.get('color'), 'var(--erp-text-secondary)')
+})
+
 test('attendance result badges use dark semantic surfaces', () => {
   const expected = new Map([
     ['.erp-black-gold .attendance-page .attendance-location-result strong', 'warning'],
