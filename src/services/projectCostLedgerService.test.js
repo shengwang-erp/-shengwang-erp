@@ -175,6 +175,33 @@ test('mutation methods emit exact secure RPC argument shapes and normalize retur
   ])
 })
 
+test('manual cost accepts empty optional text without inventing operator or audit prose', async () => {
+  const requestId = '33333333-3333-4333-8333-333333333333'
+  const entry = {
+    projectId: 'P1', category: '其他费用', date: '2026-08-10', amount: 20,
+    description: '', operator: '', reason: '',
+  }
+  const { client, calls } = clientReturning({
+    data: {
+      sourceKey: `manual:${requestId}`, ...entry,
+      actorName: '会计账号', createdAt: '2026-08-10T01:00:00.000Z',
+    },
+    error: null,
+    status: 200,
+  })
+  const service = createProjectCostLedgerService(client, { configured: true })
+
+  const result = await service.createManual({ requestId, entry })
+
+  assert.equal(result.description, '')
+  assert.equal(result.operator, '')
+  assert.equal(result.reason, '')
+  assert.equal(result.actorName, '会计账号')
+  assert.deepEqual(calls, [[
+    'create_manual_project_cost_secure', { p_request_id: requestId, p_entry: entry },
+  ]])
+})
+
 test('listAudit accepts only documented filters and rejects hostile supplier response graphs', async () => {
   const hostile = { status: 'ready', generatedAt: '2026-08-10T01:00:00.000Z' }
   Object.defineProperty(hostile, 'events', { enumerable: true, get() { return [] } })

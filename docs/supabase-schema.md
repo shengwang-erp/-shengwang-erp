@@ -599,7 +599,7 @@ ID 即使在供应商 JSON 中类型或格式错误，只要日期与金额仍�
 
 | 表 | 用途与关键字段 |
 | --- | --- |
-| `project_cost_manual_entries` | 不可变完整 `manual:<uuid>` `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、摘要、经办人、必填原因与服务端创建人/时间 |
+| `project_cost_manual_entries` | 不可变完整 `manual:<uuid>` `source_key`、项目/类别/日期、带符号 `original_amount numeric(18,4)`、选填摘要/经办人/录入原因与服务端创建人/时间 |
 | `project_cost_adjustment_events` | `source_key + sequence_no` 唯一，调整前/调整额/调整后、原因、服务端操作人/时间 |
 | `project_cost_allocation_events` | `source_key + sequence_no` 唯一，金额快照、项目分摊 JSON、原因、服务端操作人/时间 |
 
@@ -644,7 +644,7 @@ Task 1 四位小数安全单位校验，客户端还会交叉核对各维度与�
   在用且不重复，金额为带符号四位小数，分摊合计必须与当前有效金额完全相等；每次保存一份
   新的不可变分摊快照。
 - `create_manual_project_cost_secure(requestId, entry)`：要求 `module.project_costs.create`。客户端
-  只提交项目、类别、日期、金额、摘要、经办人与原因；项目名称、创建人和创建时间均由服务端
+  提交项目、类别、日期、金额以及可为空的摘要、经办人与原因；项目名称、创建人和创建时间均由服务端
   生成。完整 UUID 是幂等键；服务端先锁定并查询请求键，只比较规范化后的七个客户端字段，
   因此项目之后改名或停用仍返回首次创建快照且保持单行。只有新请求才以 `FOR SHARE` 锁定并
   重验在用项目；不同内容复用 UUID 仍失败。

@@ -223,8 +223,8 @@ export function normalizeProjectCostManualRequest(value) {
     requestId: source.requestId,
     entry: {
       projectId: text(entry.projectId, 500), category: text(entry.category, 100), date: validDate(entry.date),
-      amount: money(entry.amount, { nonzero: true }), description: text(entry.description, 2000),
-      operator: text(entry.operator, 500), reason: text(entry.reason, 2000),
+      amount: money(entry.amount, { nonzero: true }), description: text(entry.description, 2000, { empty: true }),
+      operator: text(entry.operator, 500, { empty: true }), reason: text(entry.reason, 2000, { empty: true }),
     },
   }
 }
@@ -246,8 +246,8 @@ function normalizeManualResponse(value) {
   return deepFreeze({
     sourceKey: text(source.sourceKey, 600, { input: false }), projectId: text(source.projectId, 500, { input: false }),
     category: text(source.category, 100, { input: false }), date: validDate(source.date, { input: false }), amount: money(source.amount, { input: false }),
-    description: text(source.description, 2000, { input: false }), operator: text(source.operator, 500, { input: false }),
-    reason: text(source.reason, 2000, { input: false }), actorName: text(source.actorName, 500, { input: false }), createdAt: validInstant(source.createdAt),
+    description: text(source.description, 2000, { empty: true, input: false }), operator: text(source.operator, 500, { empty: true, input: false }),
+    reason: text(source.reason, 2000, { empty: true, input: false }), actorName: text(source.actorName, 500, { input: false }), createdAt: validInstant(source.createdAt),
   })
 }
 

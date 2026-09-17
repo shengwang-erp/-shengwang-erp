@@ -45,8 +45,11 @@ export default function ProjectCostManualEntryDialog({
 
   const amount = form.amount === '' ? null : Number(form.amount)
   const amountUnits = toSignedFourDecimalUnits(amount)
-  const textFieldsValid = ['projectId', 'category', 'date', 'description', 'operator', 'reason'].every((field) =>
+  const requiredTextFieldsValid = ['projectId', 'category', 'date'].every((field) =>
     typeof form[field] === 'string' && form[field].trim().length > 0 && form[field] === form[field].trim())
+  const optionalTextFieldsValid = ['description', 'operator', 'reason'].every((field) =>
+    typeof form[field] === 'string' && form[field] === form[field].trim())
+  const textFieldsValid = requiredTextFieldsValid && optionalTextFieldsValid
   const valid = allowed && typeof onSubmit === 'function' && requestId && textFieldsValid && amountUnits !== null && amountUnits !== 0
 
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }))
@@ -105,10 +108,10 @@ export default function ProjectCostManualEntryDialog({
             </label>
             <label>日期<input type="date" value={form.date} disabled={!allowed || submitting} onChange={(event) => update('date', event.target.value)} /></label>
             <label>金额（可输入正数或负数）<input type="number" step="0.0001" value={form.amount} disabled={!allowed || submitting} onChange={(event) => update('amount', event.target.value)} /></label>
-            <label>经办人<input value={form.operator} maxLength="500" disabled={!allowed || submitting} onChange={(event) => update('operator', event.target.value)} /></label>
+            <label>经办人（选填）<input value={form.operator} maxLength="500" disabled={!allowed || submitting} onChange={(event) => update('operator', event.target.value)} /></label>
           </div>
-          <label>费用说明<textarea value={form.description} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('description', event.target.value)} /></label>
-          <label>录入原因<textarea value={form.reason} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('reason', event.target.value)} placeholder="说明新增或冲销依据，保存后自动留痕" /></label>
+          <label>费用说明（选填）<textarea value={form.description} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('description', event.target.value)} /></label>
+          <label>录入原因（选填）<textarea value={form.reason} maxLength="2000" disabled={!allowed || submitting} onChange={(event) => update('reason', event.target.value)} placeholder="说明新增或冲销依据，保存后自动留痕" /></label>
           {error && <div className="project-cost-dialog-error" role="alert">{error}</div>}
           {!allowed && <div className="project-cost-dialog-error" role="alert">您没有新增项目成本的权限</div>}
           <footer><button type="button" onClick={modal.requestClose}>取消</button><button className="project-cost-ledger-primary" type="submit" disabled={!valid || submitting}>{submitting ? '保存中…' : '保存费用'}</button></footer>

@@ -273,6 +273,41 @@ test('manual entry keeps one request id across a failed retry and only clears it
   }
 })
 
+test('manual entry saves with only project category date and amount while optional text stays empty', async () => {
+  const submitted = []
+  const view = await renderDialog(ProjectCostManualEntryDialog, {
+    open: true, projects, allowed: true,
+    createRequestId: () => '33333333-3333-4333-8333-333333333333',
+    async onSubmit(request) {
+      submitted.push(request)
+      return { sourceKey: `manual:${request.requestId}` }
+    },
+    async onSuccess() { return true }, onCancel() {},
+  })
+  try {
+    assert.match(renderedText(view.container), /经办人（选填）/u)
+    assert.match(renderedText(view.container), /费用说明（选填）/u)
+    assert.match(renderedText(view.container), /录入原因（选填）/u)
+    await change(field(view.container, '项目'), 'P-1')
+    await change(field(view.container, '费用类别'), '其他费用')
+    await change(field(view.container, '日期'), '2026-08-10')
+    await change(field(view.container, '金额'), '20')
+    assert.equal(button(view.container, '保存费用').disabled, false)
+
+    await submitForm(view.container)
+
+    assert.equal(submitted.length, 1)
+    assert.deepEqual(submitted[0], {
+      requestId: '33333333-3333-4333-8333-333333333333',
+      projectId: 'P-1', category: '其他费用', date: '2026-08-10', amount: 20,
+      description: '', operator: '', reason: '',
+    })
+  } finally {
+    await act(async () => { view.root.unmount() })
+    view.dom.cleanup()
+  }
+})
+
 test('dialog submit latches synchronously and maps allocation and missing-source failures to safe actionable messages', async () => {
   const pending = deferred()
   let calls = 0

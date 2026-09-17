@@ -2233,6 +2233,75 @@ select ok(
   'manual replay remains one immutable row with the original project snapshot'
 );
 
+select set_config('request.jwt.claim.sub', 'a9100000-0000-4000-8000-000000000001', true);
+set local role authenticated;
+create temporary table optional_manual_result as
+select public.create_manual_project_cost_secure(
+  'a9700000-0000-4000-8000-000000000004',
+  '{
+    "projectId":"LEDGER-P-A","category":"其他费用",
+    "date":"2099-12-28","amount":23.4500,
+    "description":"","operator":"","reason":""
+  }'
+) payload;
+select lives_ok(
+  $$select public.create_manual_project_cost_secure(
+    'a9700000-0000-4000-8000-000000000004',
+    '{
+      "projectId":"LEDGER-P-A","category":"其他费用",
+      "date":"2099-12-28","amount":23.4500,
+      "description":"","operator":"","reason":""
+    }'
+  )$$,
+  'empty optional manual text replays idempotently'
+);
+create temporary table optional_manual_ledger as
+select public.list_project_cost_ledger_secure(
+  '{"projectId":"LEDGER-P-A","dateFrom":"2099-12-28","dateTo":"2099-12-28","pageSize":100}'
+) payload;
+create temporary table optional_manual_report as
+select public.export_project_cost_report_secure(
+  '{"projectId":"LEDGER-P-A","dateFrom":"2099-12-28","dateTo":"2099-12-28"}'
+) payload;
+reset role;
+select ok(
+  (select payload->>'description' = ''
+      and payload->>'operator' = ''
+      and payload->>'reason' = ''
+      and payload->>'actorName' = '成本会计'
+      and payload->>'createdAt' is not null
+   from optional_manual_result),
+  'manual RPC preserves empty optional text and server-authored audit identity'
+);
+select ok(
+  (select entry.description = ''
+      and entry.operator = ''
+      and entry.reason = ''
+      and entry.created_by_name = '成本会计'
+   from public.project_cost_manual_entries entry
+   where entry.source_key = 'manual:a9700000-0000-4000-8000-000000000004'),
+  'manual table stores genuine empty optional text without fabricated values'
+);
+select ok(
+  (select payload->>'status' = 'ready'
+      and payload->>'totalRows' = '1'
+      and (payload->>'totalAmount')::numeric = 23.4500
+      and not (payload->'incompleteSources' ?
+        'manual:a9700000-0000-4000-8000-000000000004')
+      and payload->'rows'->0->>'description' = ''
+      and payload->'rows'->0->>'operator' = ''
+   from optional_manual_ledger),
+  'empty optional text remains a complete counted ledger source'
+);
+select ok(
+  (select payload->'ledgerSnapshot'->>'totalAmount' = '23.4500'
+      and not (payload->'ledgerSnapshot'->'incompleteSources' ?
+        'manual:a9700000-0000-4000-8000-000000000004')
+      and payload->'ledgerSnapshot'->'rows'->0->>'operator' = ''
+   from optional_manual_report),
+  'atomic export includes optional-empty manual costs without incompleteness'
+);
+
 select throws_ok(
   $$update public.project_cost_adjustment_events
       set reason = '篡改' where sequence_no = 1$$,
