@@ -209,7 +209,7 @@ test('detail rejects an otherwise valid employee returned for a different target
 test('provision sends an exact allowlisted and normalized profile', async () => {
   const { client, calls } = createClient({
     invoke: async () => ({
-      data: { employee: SAFE_EMPLOYEE, initialPassword: 'SecureStart2A' },
+      data: { employee: SAFE_EMPLOYEE, initialPassword: '012345' },
       error: null,
     }),
   })
@@ -255,14 +255,14 @@ test('provision sends an exact allowlisted and normalized profile', async () => 
   ])
   assert.deepEqual(result, {
     employee: SAFE_EMPLOYEE,
-    initialPassword: 'SecureStart2A',
+    initialPassword: '012345',
   })
 })
 
 test('provision maps the database default when the provision Edge returns its legacy safe summary', async () => {
   const { client } = createClient({
     invoke: async () => ({
-      data: { employee: PROVISION_EMPLOYEE, initialPassword: 'SecureStart2A' },
+      data: { employee: PROVISION_EMPLOYEE, initialPassword: '012345' },
       error: null,
     }),
   })
@@ -472,7 +472,7 @@ test('account status rejects an otherwise valid employee returned for a differen
 test('reset uses the exact operation and maps temporaryPassword to initialPassword', async () => {
   const { client, calls } = createClient({
     invoke: async () => ({
-      data: { employee: SAFE_EMPLOYEE, temporaryPassword: 'ResetSecure2A' },
+      data: { employee: SAFE_EMPLOYEE, temporaryPassword: '012345' },
       error: null,
     }),
   })
@@ -480,7 +480,7 @@ test('reset uses the exact operation and maps temporaryPassword to initialPasswo
 
   assert.deepEqual(
     await service.resetTemporaryPassword({ employeeId: EMPLOYEE_ID }),
-    { employee: SAFE_EMPLOYEE, initialPassword: 'ResetSecure2A' },
+    { employee: SAFE_EMPLOYEE, initialPassword: '012345' },
   )
   assert.deepEqual(calls.invoke, [
     [
@@ -497,7 +497,7 @@ test('reset rejects a password response bound to a different target UUID', async
     invoke: async () => ({
       data: {
         employee: { ...SAFE_EMPLOYEE, id: OTHER_EMPLOYEE_ID, employeeNumber: 'SW-002' },
-        temporaryPassword: 'ResetSecure2A',
+        temporaryPassword: '012345',
       },
       error: null,
     }),

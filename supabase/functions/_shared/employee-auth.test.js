@@ -586,14 +586,11 @@ test('deriveAuthEmail uses normalized employee number and the server-only HMAC s
   )
 })
 
-test('createTemporaryPassword returns 12 composed characters without ambiguous symbols', () => {
+test('createTemporaryPassword returns six digits and preserves a leading zero', () => {
   const password = createTemporaryPassword({
-    randomBytes: (size) => Uint8Array.from({ length: size }, (_, index) => (index * 29 + 7) % 256),
+    randomBytes: (size) => Uint8Array.from({ length: size }, (_, index) => index),
   })
 
-  assert.equal(password.length, 12)
-  assert.match(password, /[A-Z]/)
-  assert.match(password, /[a-z]/)
-  assert.match(password, /[2-9]/)
-  assert.doesNotMatch(password, /[0O1Il]/)
+  assert.equal(password, '012345')
+  assert.match(password, /^\d{6}$/u)
 })

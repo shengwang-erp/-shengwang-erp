@@ -574,10 +574,8 @@ test('provision password PRF is stable per request, distinct across requests, an
 
   assert.equal(first, retry)
   assert.notEqual(first, another)
-  assert.equal(first.length, 12)
-  assert.match(first, /[A-Z]/u)
-  assert.match(first, /[a-z]/u)
-  assert.match(first, /[2-9]/u)
+  assert.equal(first.length, 6)
+  assert.match(first, /^[0-9]{6}$/u)
   assert.doesNotMatch(first, /SW-001|10000000/iu)
 })
 

@@ -102,24 +102,42 @@ test('forced-password terminal account errors clear the session instead of keepi
   )
 })
 
-test('forced password page explains one-time password and offers only change and logout', () => {
+test('new-password page uses the six-digit mobile contract and supports visibility toggles', () => {
   assert.match(passwordPageSource, /初始密码|临时密码/)
-  assert.match(passwordPageSource, /至少 12 位/)
+  assert.match(passwordPageSource, /请输入6位数字/)
+  assert.match(passwordPageSource, /inputMode="numeric"/)
+  assert.match(passwordPageSource, /pattern="\[0-9\]\{6\}"/)
+  assert.match(passwordPageSource, /maxLength=\{6\}/)
+  assert.match(passwordPageSource, /显示|隐藏/)
   assert.match(passwordPageSource, /autoComplete="new-password"/)
   assert.match(passwordPageSource, /退出登录/)
   assert.doesNotMatch(passwordPageSource, />\s*(?:跳过|稍后|进入 ERP)\s*</)
+})
+
+test('normal login keeps unrestricted current-password input and explains administrator recovery', () => {
+  assert.match(loginSource, /type="password"/)
+  assert.match(loginSource, /autoComplete="current-password"/)
+  assert.doesNotMatch(loginSource, /id="employee-password"[\s\S]*?inputMode="numeric"/)
+  assert.match(loginSource, /忘记密码请联系管理员/)
+})
+
+test('authenticated profile can open an optional password change without adding another auth method', () => {
+  assert.match(authGateSource, /onOpenPasswordChange/)
+  assert.match(authGateSource, /passwordMode:\s*'optional'/)
+  assert.match(appSource, /onOpenPasswordChange/)
+  assert.doesNotMatch(appSource, /passkey|webauthn|biometric|faceId/i)
 })
 
 test('App receives currentUser only from AuthGate and contains no legacy browser auth path', () => {
   assert.match(appSource, /import AuthGate from '\.\/auth\/AuthGate'/)
   assert.match(
     appSource,
-    /function AuthenticatedApp\(\{ currentUser, onLogout, onRefreshCurrentUser \}\)/,
+    /function AuthenticatedApp\(\{[\s\S]*currentUser,[\s\S]*onLogout,[\s\S]*onRefreshCurrentUser,[\s\S]*onOpenPasswordChange,[\s\S]*\}\)/,
   )
   assert.match(appSource, /<AuthGate>[\s\S]*<AuthenticatedApp/)
   assert.match(
     appSource,
-    /\{\(\{ currentUser, onLogout, onRefreshCurrentUser \}\) => \([\s\S]*onRefreshCurrentUser=\{onRefreshCurrentUser\}/,
+    /\{\(\{ currentUser, onLogout, onRefreshCurrentUser, onOpenPasswordChange \}\) => \([\s\S]*onRefreshCurrentUser=\{onRefreshCurrentUser\}/,
   )
   assert.doesNotMatch(appSource, /STORAGE_KEYS\.currentUser|setCurrentUser|handleLogin|handleRegister|createDefaultAdmin|ensureSuperAdminEmployee|isSixDigitPassword/)
   assert.doesNotMatch(appSource, /passwordHash|loginEnabled|employee\.username|SUPER_ADMIN/)

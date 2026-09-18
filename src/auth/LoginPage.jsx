@@ -86,6 +86,7 @@ export default function LoginPage({ onLogin }) {
           </button>
         </form>
 
+        <p className="auth-security-note">忘记密码请联系管理员重置</p>
         <p className="auth-security-note">账号状态会在每次访问时由服务端重新确认</p>
       </section>
     </main>

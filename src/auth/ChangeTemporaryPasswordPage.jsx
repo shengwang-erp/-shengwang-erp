@@ -1,14 +1,6 @@
 import { useState } from 'react'
 
-function validatePassword(password) {
-  return (
-    password.length >= 12 &&
-    /[A-Z]/u.test(password) &&
-    /[a-z]/u.test(password) &&
-    /[0-9]/u.test(password) &&
-    !/\s/u.test(password)
-  )
-}
+import { isSixDigitPassword } from './employeeAuthDomain.js'
 
 export default function ChangeTemporaryPasswordPage({
   currentUser,
@@ -18,18 +10,19 @@ export default function ChangeTemporaryPasswordPage({
   onLogout,
 }) {
   const [form, setForm] = useState({ password: '', confirmation: '' })
+  const [passwordVisible, setPasswordVisible] = useState(false)
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (isSubmitting) return
-    if (!validatePassword(form.password)) {
-      setError('新密码至少 12 位，且需包含大写字母、小写字母和数字')
+    if (!isSixDigitPassword(form.password)) {
+      setError('请输入6位数字')
       return
     }
     if (form.password !== form.confirmation) {
-      setError('两次输入的新密码不一致')
+      setError('两次输入的密码不一致')
       return
     }
 
@@ -43,6 +36,8 @@ export default function ChangeTemporaryPasswordPage({
       setIsSubmitting(false)
     }
   }
+
+  const passwordType = passwordVisible ? 'text' : 'password'
 
   return (
     <main className="auth-shell">
@@ -64,46 +59,65 @@ export default function ChangeTemporaryPasswordPage({
 
         <div className="auth-guidance" role="status">
           {isForced
-            ? '当前使用的是一次性初始密码。首次登录必须设置新密码后，才能进入 ERP。'
-            : '请输入新的登录密码。保存成功后，新密码立即生效。'}
+            ? '首次使用初始密码登录后，请设置新密码。保存成功后直接进入 ERP。'
+            : '设置后新密码立即生效。'}
         </div>
 
         <form className="auth-form" onSubmit={handleSubmit}>
           <label className="auth-field" htmlFor="new-password">
             <span>新密码</span>
-            <input
-              id="new-password"
-              name="newPassword"
-              type="password"
-              value={form.password}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, password: event.target.value }))
-              }
-              autoComplete="new-password"
-              disabled={isSubmitting}
-              aria-describedby="password-requirements"
-              required
-              autoFocus
-            />
+            <div className="auth-password-control">
+              <input
+                id="new-password"
+                name="newPassword"
+                type={passwordType}
+                value={form.password}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, password: event.target.value }))
+                }
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                autoComplete="new-password"
+                disabled={isSubmitting}
+                aria-describedby="password-requirements"
+                required
+                autoFocus
+              />
+              <button
+                className="auth-password-toggle"
+                type="button"
+                onClick={() => setPasswordVisible((visible) => !visible)}
+                disabled={isSubmitting}
+                aria-label={passwordVisible ? '隐藏密码' : '显示密码'}
+              >
+                {passwordVisible ? '隐藏' : '显示'}
+              </button>
+            </div>
           </label>
           <p className="auth-field-help" id="password-requirements">
-            至少 12 位，包含大写字母、小写字母和数字，不能包含空格。
+            请输入6位数字
           </p>
 
           <label className="auth-field" htmlFor="confirm-new-password">
-            <span>确认新密码</span>
-            <input
-              id="confirm-new-password"
-              name="confirmNewPassword"
-              type="password"
-              value={form.confirmation}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, confirmation: event.target.value }))
-              }
-              autoComplete="new-password"
-              disabled={isSubmitting}
-              required
-            />
+            <span>再次确认</span>
+            <div className="auth-password-control">
+              <input
+                id="confirm-new-password"
+                name="confirmNewPassword"
+                type={passwordType}
+                value={form.confirmation}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, confirmation: event.target.value }))
+                }
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                autoComplete="new-password"
+                disabled={isSubmitting}
+                required
+              />
+            </div>
           </label>
 
           {error && (
@@ -113,7 +127,7 @@ export default function ChangeTemporaryPasswordPage({
           )}
 
           <button className="auth-primary-button" type="submit" disabled={isSubmitting}>
-            {isSubmitting ? '正在更新…' : '保存新密码'}
+            {isSubmitting ? '正在保存…' : '保存密码'}
           </button>
           {!isForced && (
             <button

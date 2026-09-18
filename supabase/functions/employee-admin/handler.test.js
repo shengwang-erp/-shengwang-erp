@@ -528,10 +528,8 @@ test('reset password PRF is stable only for one reset request and policy-complia
 
   assert.equal(first, retry)
   assert.notEqual(first, another)
-  assert.equal(first.length, 12)
-  assert.match(first, /[A-Z]/u)
-  assert.match(first, /[a-z]/u)
-  assert.match(first, /[2-9]/u)
+  assert.equal(first.length, 6)
+  assert.match(first, /^[0-9]{6}$/u)
 })
 
 test('an active password-reset owner rejects a second request before password or Auth work', async () => {

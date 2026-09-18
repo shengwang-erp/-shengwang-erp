@@ -170,7 +170,7 @@ test('failed post-provision attendance policy remains retryable without provisio
           attendanceRequired: true,
           mustChangePassword: true,
         },
-        initialPassword: 'SecureStart2A',
+        initialPassword: '012345',
       }
     },
     async updateProfile(input) {

@@ -27,7 +27,7 @@ const SAFE_ERROR_MESSAGES = Object.freeze({
   LOGIN_INPUT_INVALID: '请填写有效的员工编号和密码',
   LOGIN_LOCKED: '登录尝试过多，请稍后再试',
   PASSWORD_INPUT_INVALID: '请输入符合要求的新密码',
-  PASSWORD_POLICY_INVALID: '新密码至少12位，且需包含大写字母、小写字母和数字',
+  PASSWORD_POLICY_INVALID: '请输入6位数字',
   PASSWORD_STATE_SYNC_FAILED: '密码已更新，请重新登录后继续',
   PASSWORD_UPDATE_FAILED: '密码更新失败，请稍后重试',
 })

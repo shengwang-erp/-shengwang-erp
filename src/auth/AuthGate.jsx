@@ -249,6 +249,19 @@ export default function AuthGate({
     [authService, validateSession],
   )
 
+  const onOpenPasswordChange = useCallback(() => {
+    setGate((currentGate) => currentGate.status === 'authenticated' && currentGate.currentUser
+      ? { ...currentGate, status: 'password-change', passwordMode: 'optional' }
+      : currentGate)
+  }, [])
+
+  const handleCancelPasswordChange = useCallback(() => {
+    setGate((currentGate) => currentGate.status === 'password-change' &&
+      currentGate.passwordMode === 'optional' && currentGate.currentUser
+      ? { ...currentGate, status: 'authenticated', passwordMode: null }
+      : currentGate)
+  }, [])
+
   const handlePasswordChange = useCallback(
     async (password) => {
       try {
@@ -306,8 +319,9 @@ export default function AuthGate({
     return (
       <ChangeTemporaryPasswordPage
         currentUser={gate.currentUser}
-        isForced
+        isForced={gate.passwordMode !== 'optional'}
         onChangePassword={handlePasswordChange}
+        onCancel={handleCancelPasswordChange}
         onLogout={moveToLogin}
       />
     )
@@ -319,5 +333,6 @@ export default function AuthGate({
     currentUser: gate.currentUser,
     onLogout: moveToLogin,
     onRefreshCurrentUser,
+    onOpenPasswordChange,
   })
 }

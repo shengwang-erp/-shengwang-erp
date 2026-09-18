@@ -30,11 +30,9 @@ export const POSITION_OPTIONS = Object.freeze([
 ])
 
 const EMPLOYEE_NUMBER_PATTERN = /^SW-\d{3,}$/
-const UPPERCASE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
-const LOWERCASE_ALPHABET = 'abcdefghijkmnopqrstuvwxyz'
-const DIGIT_ALPHABET = '23456789'
-const PASSWORD_ALPHABET = `${UPPERCASE_ALPHABET}${LOWERCASE_ALPHABET}${DIGIT_ALPHABET}`
-const TEMPORARY_PASSWORD_LENGTH = 12
+const DIGIT_ALPHABET = '0123456789'
+const TEMPORARY_PASSWORD_LENGTH = 6
+const SIX_DIGIT_PASSWORD_PATTERN = /^[0-9]{6}$/u
 
 export function normalizeEmployeeNumber(value) {
   return typeof value === 'string' ? value.trim().toUpperCase() : ''
@@ -96,31 +94,17 @@ function defaultRandomBytes(size) {
   return globalThis.crypto.getRandomValues(new Uint8Array(size))
 }
 
-function pickCharacter(alphabet, byte) {
-  return alphabet[byte % alphabet.length]
+export function isSixDigitPassword(value) {
+  return typeof value === 'string' && SIX_DIGIT_PASSWORD_PATTERN.test(value)
 }
 
 export function generateTemporaryPassword(randomBytes = defaultRandomBytes) {
   const bytes = randomBytes(TEMPORARY_PASSWORD_LENGTH)
   if (!(bytes instanceof Uint8Array) || bytes.length < TEMPORARY_PASSWORD_LENGTH) {
-    throw new TypeError('randomBytes 必须返回至少 12 字节的 Uint8Array')
+    throw new TypeError('randomBytes 必须返回至少 6 字节的 Uint8Array')
   }
-
-  const characters = [
-    pickCharacter(UPPERCASE_ALPHABET, bytes[0]),
-    pickCharacter(LOWERCASE_ALPHABET, bytes[1]),
-    pickCharacter(DIGIT_ALPHABET, bytes[2]),
-  ]
-  for (let index = characters.length; index < TEMPORARY_PASSWORD_LENGTH; index += 1) {
-    characters.push(pickCharacter(PASSWORD_ALPHABET, bytes[index]))
-  }
-
-  for (let index = characters.length - 1; index > 0; index -= 1) {
-    const swapIndex = bytes[index] % (index + 1)
-    ;[characters[index], characters[swapIndex]] = [characters[swapIndex], characters[index]]
-  }
-
-  return characters.join('')
+  return Array.from(bytes.slice(0, TEMPORARY_PASSWORD_LENGTH), (byte) =>
+    DIGIT_ALPHABET[byte % DIGIT_ALPHABET.length]).join('')
 }
 
 export function mergePermissionKeys(departmentKeys, positionKeys) {

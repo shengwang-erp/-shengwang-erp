@@ -2548,7 +2548,12 @@ export function useProjectDirectoryLifecycle({
   return { rows: directoryState.rows, rawState: directoryState.rawState, setRows }
 }
 
-export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }) {
+export function AuthenticatedApp({
+  currentUser,
+  onLogout,
+  onRefreshCurrentUser,
+  onOpenPasswordChange,
+}) {
   const activeAccountId = typeof currentUser?.id === 'string' ? currentUser.id : ''
   const [currentView, setCurrentView] = useState(() => loadAuthenticatedView(activeAccountId))
   const [miraisyaProjectId, setMiraisyaProjectId] = useState('')
@@ -4165,6 +4170,7 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
       currentUser={currentUser}
       onNavigate={handlePersonnelAwareNavigate}
       onLogout={handlePersonnelAwareLogout}
+      onChangePassword={onOpenPasswordChange}
       laborAlertCount={laborAlertCount}
       laborAlertStale={laborAlertStale}
       workbenchItems={workbenchItems}
@@ -4196,7 +4202,11 @@ export function AuthenticatedApp({ currentUser, onLogout, onRefreshCurrentUser }
 
   if (authorizedView === 'profile') {
     return renderInDesktopShell(
-      <MobileProfilePage currentUser={currentUser} onLogout={handlePersonnelAwareLogout} />,
+      <MobileProfilePage
+        currentUser={currentUser}
+        onChangePassword={onOpenPasswordChange}
+        onLogout={handlePersonnelAwareLogout}
+      />,
     )
   }
 
@@ -10097,7 +10107,7 @@ function fieldLabel(fields, fieldName) {
 function App() {
   return (
     <AuthGate>
-      {({ currentUser, onLogout, onRefreshCurrentUser }) => (
+      {({ currentUser, onLogout, onRefreshCurrentUser, onOpenPasswordChange }) => (
         <AuthenticatedBusinessRuntime
           actorId={currentUser.id}
           onLogout={onLogout}
@@ -10107,6 +10117,7 @@ function App() {
             currentUser={currentUser}
             onLogout={onLogout}
             onRefreshCurrentUser={onRefreshCurrentUser}
+            onOpenPasswordChange={onOpenPasswordChange}
           />
         </AuthenticatedBusinessRuntime>
       )}

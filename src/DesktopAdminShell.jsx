@@ -7,6 +7,7 @@ export default function DesktopAdminShell({
   currentUser,
   onNavigate,
   onLogout,
+  onChangePassword,
   laborAlertCount = 0,
   laborAlertStale = false,
   workbenchItems = [],
@@ -92,6 +93,9 @@ export default function DesktopAdminShell({
               <strong>{currentUser.name}</strong>
               <small>{currentUser.position || currentUser.department || '员工'}</small>
             </span>
+            <button type="button" onClick={onChangePassword}>
+              修改密码
+            </button>
             <button type="button" onClick={onLogout}>
               退出登录
             </button>

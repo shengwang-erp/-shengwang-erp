@@ -2475,6 +2475,32 @@ button:disabled {
   color: #776e5f;
 }
 
+.auth-password-control {
+  position: relative;
+}
+
+.auth-password-control input {
+  padding-right: 70px;
+}
+
+.auth-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  min-width: 52px;
+  min-height: 36px;
+  color: #dcc38f;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.auth-password-toggle:focus-visible {
+  outline: 2px solid rgba(236, 195, 111, 0.45);
+}
+
 .auth-field input:focus-visible {
   background: rgba(8, 8, 6, 0.88);
   border-color: #d5a952;

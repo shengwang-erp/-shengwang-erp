@@ -3,10 +3,9 @@ import {
   createUserClient as createDefaultUserClient,
 } from '../_shared/clients.ts'
 import { EdgeSecurityError, jsonResponse, safeErrorResponse } from '../_shared/responses.ts'
+import { isSixDigitPassword } from '../../../src/auth/employeeAuthDomain.js'
 
 const MAX_REQUEST_BYTES = 2048
-const MIN_PASSWORD_LENGTH = 12
-const MAX_PASSWORD_LENGTH = 128
 
 function authServiceError() {
   return new EdgeSecurityError('AUTH_SERVICE_UNAVAILABLE', '认证服务暂不可用', 503)
@@ -59,17 +58,10 @@ async function readPasswordInput(request) {
   }
 
   const password = body.password
-  if (
-    password.length < MIN_PASSWORD_LENGTH ||
-    password.length > MAX_PASSWORD_LENGTH ||
-    !/[A-Z]/u.test(password) ||
-    !/[a-z]/u.test(password) ||
-    !/[0-9]/u.test(password) ||
-    /\s/u.test(password)
-  ) {
+  if (!isSixDigitPassword(password)) {
     throw new EdgeSecurityError(
       'PASSWORD_POLICY_INVALID',
-      '新密码至少12位，且需包含大写字母、小写字母和数字',
+      '请输入6位数字',
       400,
     )
   }

@@ -375,13 +375,13 @@ test('temporary password change uses the authenticated endpoint and refresh rema
   })
   const service = createEmployeeAuthService(client, { configured: true })
 
-  await service.changeTemporaryPassword('NewSecurePassword2')
+  await service.changeTemporaryPassword('012345')
   const employee = await service.getCurrentEmployee()
 
   assert.deepEqual(calls.invoke, [
     {
       name: 'employee-change-password',
-      options: { body: { password: 'NewSecurePassword2' } },
+      options: { body: { password: '012345' } },
     },
   ])
   assert.deepEqual(calls.order, ['changePassword', 'profile'])
@@ -409,7 +409,7 @@ test('terminal password-change account errors remain distinguishable and safe', 
     const service = createEmployeeAuthService(client, { configured: true })
 
     await assert.rejects(
-      service.changeTemporaryPassword('NewSecurePassword2'),
+      service.changeTemporaryPassword('012345'),
       (error) =>
         error instanceof EmployeeAuthError &&
         error.code === code &&
@@ -462,7 +462,7 @@ test('logout calls Supabase Auth signOut and configuration errors fail closed be
         employeeNumber: 'SW-001',
         password: 'TemporaryPassword2',
       }),
-    () => unconfiguredService.changeTemporaryPassword('NewSecurePassword2'),
+    () => unconfiguredService.changeTemporaryPassword('012345'),
     () => unconfiguredService.logout(),
   ]) {
     await assert.rejects(

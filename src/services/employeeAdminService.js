@@ -417,7 +417,7 @@ function mapEmployeeDetail(value) {
 }
 
 function validCredential(value) {
-  return typeof value === 'string' && value.length >= 12 && value.length <= 256
+  return typeof value === 'string' && /^[0-9]{6}$/u.test(value)
 }
 
 function parseProvisionResponse(value) {

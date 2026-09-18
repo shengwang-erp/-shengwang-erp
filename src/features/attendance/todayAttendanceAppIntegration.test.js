@@ -179,7 +179,7 @@ test('valid zero-module profiles authenticate with every dead permission-gate st
   assert.match(authSource, /gate\.status !== 'authenticated'/u)
   assert.match(
     authSource,
-    /children\(\{\s*currentUser:\s*gate\.currentUser,\s*onLogout:\s*moveToLogin,\s*onRefreshCurrentUser,\s*\}\)/u,
+    /children\(\{\s*currentUser:\s*gate\.currentUser,\s*onLogout:\s*moveToLogin,\s*onRefreshCurrentUser,\s*onOpenPasswordChange,\s*\}\)/u,
   )
 })
 

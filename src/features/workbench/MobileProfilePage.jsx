@@ -1,7 +1,7 @@
 import { getVisibleAdminRoutes } from '../../auth/businessAccess.js'
 import { getAdminRoute } from '../../navigation/adminRoutes.js'
 
-export default function MobileProfilePage({ currentUser, onLogout }) {
+export default function MobileProfilePage({ currentUser, onChangePassword, onLogout }) {
   const visibleModules = getVisibleAdminRoutes(currentUser)
     .filter((route) => route.view !== 'home')
     .filter((route) => getAdminRoute(route.view)?.desktop === true)
@@ -32,6 +32,9 @@ export default function MobileProfilePage({ currentUser, onLogout }) {
         </div>
       </section>
 
+      <button className="mobile-profile-logout" type="button" onClick={onChangePassword}>
+        修改密码
+      </button>
       <button className="mobile-profile-logout" type="button" onClick={onLogout}>
         退出登录
       </button>

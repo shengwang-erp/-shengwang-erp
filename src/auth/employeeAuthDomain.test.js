@@ -85,16 +85,13 @@ test('builds the deterministic opaque internal Auth alias with HMAC-SHA256', asy
   assert.doesNotMatch(alias, /SW-001/i)
 })
 
-test('generates a 12-character temporary password with all required character classes', () => {
+test('generates a six-digit temporary password as a string', () => {
   const password = generateTemporaryPassword((size) =>
-    Uint8Array.from({ length: size }, (_, index) => (index * 37 + 11) % 256),
+    Uint8Array.from({ length: size }, (_, index) => index),
   )
 
-  assert.equal(password.length, 12)
-  assert.match(password, /[A-Z]/)
-  assert.match(password, /[a-z]/)
-  assert.match(password, /[2-9]/)
-  assert.doesNotMatch(password, /[0O1Il]/)
+  assert.equal(password, '012345')
+  assert.match(password, /^[0-9]{6}$/u)
 })
 
 test('merges department and position permission keys without duplicates', () => {

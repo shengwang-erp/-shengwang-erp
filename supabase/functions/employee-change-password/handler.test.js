@@ -4,7 +4,7 @@ import test from 'node:test'
 import { createEmployeeChangePasswordHandler } from './handler.js'
 
 const ACCESS_TOKEN = 'caller-access-token'
-const NEW_PASSWORD = 'SecureValue2468'
+const NEW_PASSWORD = '012345'
 const AUTH_USER_ID = 'auth-user-1'
 const ACTIVE_PROFILE = Object.freeze({
   id: 'employee-profile-1',
@@ -150,14 +150,15 @@ test('missing or malformed Bearer credentials are rejected before any client is 
   }
 })
 
-test('weak passwords and any caller-selected target are rejected before Auth', async () => {
+test('only exactly six ASCII digits are accepted before Auth', async () => {
   const invalidBodies = [
     { password: '' },
-    { password: 'Short2A' },
-    { password: 'alllowercase2468' },
-    { password: 'ALLUPPERCASE2468' },
-    { password: 'NoDigitsInValue' },
-    { password: `Secure2A${'x'.repeat(121)}` },
+    { password: '12345' },
+    { password: '1234567' },
+    { password: '12a456' },
+    { password: '１２３４５６' },
+    { password: ' 123456' },
+    { password: 'SecureValue2468' },
     { password: NEW_PASSWORD, authUserId: 'another-user' },
     { password: NEW_PASSWORD, employeeNumber: 'SW-999' },
   ]
